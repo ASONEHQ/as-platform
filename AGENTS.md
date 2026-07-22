@@ -1,4 +1,4 @@
-# AS ONE â€” Instructions for Codex
+# AS ONE — Instructions for Codex
 
 ## Project
 
