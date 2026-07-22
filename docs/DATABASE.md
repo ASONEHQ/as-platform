@@ -4,6 +4,17 @@
 
 The official logical model for the first commercial transactional core is defined in [CORE_DATA_MODEL.md](CORE_DATA_MODEL.md). It specifies the approved core entities, ownership boundaries, relationships, invariants, indexes, offline metadata, idempotency, audit, and outbox strategy. This document remains the general database standard; when core model details are required, `CORE_DATA_MODEL.md` is authoritative.
 
+## Accepted core decisions
+
+- [ADR-0001: Money and rounding](adr/ADR-0001-money-and-rounding.md)
+- [ADR-0002: UUID strategy](adr/ADR-0002-uuid-strategy.md)
+- [ADR-0003: Offline command synchronization](adr/ADR-0003-offline-command-sync.md)
+- [ADR-0004: Inventory ledger](adr/ADR-0004-inventory-ledger.md)
+- [ADR-0005: Idempotency and transactional outbox](adr/ADR-0005-idempotency-and-outbox.md)
+- [ADR-0006: Tenant and branch isolation](adr/ADR-0006-tenant-isolation.md)
+
+These ADRs resolve implementation-blocking policy. They do not create tables, SQL, migrations, or backend code.
+
 ## Scope
 
 This document defines database philosophy and conventions. It intentionally defines no tables or product schema.
@@ -46,7 +57,7 @@ Sales, payments, inventory movements, cash operations, and other invariant-prese
 
 ## Money handling
 
-Currency values use exact decimal or integer minor-unit representationsâ€”never floating point. Store currency where multiple currencies are possible. Define rounding, tax, allocation, and precision rules at business boundaries and test them. Corrections use explicit reversal or adjustment records.
+Currency values use exact decimal or integer minor-unit representations—never floating point. Store currency where multiple currencies are possible. Define rounding, tax, allocation, and precision rules at business boundaries and test them. Corrections use explicit reversal or adjustment records.
 
 ## Record lifecycle and soft deletion
 
@@ -76,4 +87,3 @@ Production requires encrypted automated backups, access controls, retention sche
 ## Scalability considerations
 
 Start with sound schemas, bounded queries, connection pooling, appropriate indexes, and measured query plans. Partitioning, read replicas, derived read models, archival, or specialized stores require demonstrated constraints and documented consistency behavior. Tenant isolation must survive every scaling technique.
-

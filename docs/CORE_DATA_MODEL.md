@@ -339,7 +339,160 @@ flowchart LR
 | Item | Specification |
 | --- | --- |
 | Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `product_id uuid*`; `is_available boolean*`; `sales_channel text*`; `display_order integer`; `created_at*`; `updated_at*`; actor fields; `version bigint*`; `deleted_at` |
-| Foreign keys | Composite branch and same-company product |…2678 tokens truncated…ffline | Central server-side receipt; outcomes are accepted, duplicate, rejected, or reconciliation-required with checkpoint progression |
+| Foreign keys | Composite branch and same-company product |
+| Unique/checks | Unique active `(company_id,branch_id,product_id,sales_channel)`; nonnegative order |
+| Ownership | Company and branch scoped |
+| Delete/audit | Soft-delete/disable; changes audited |
+| Offline | Versioned branch catalog projection cached locally |
+
+### 6.5 Inventory
+
+#### `inventory_locations`
+
+**Purpose:** branch-owned stock-holding location.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `code text*`; `name text*`; `location_type text*`; `status text*`; audit fields; `version bigint*`; `deleted_at` |
+| Foreign keys | Composite branch and actors |
+| Unique/checks | Unique active `(company_id,branch_id,code)`; valid type/status |
+| Ownership | Company and branch scoped |
+| Delete/audit | Deactivate; cannot delete with balance/movements; lifecycle audited |
+| Offline | Location reference cached; administration online-only |
+
+#### `inventory_balances`
+
+**Purpose:** rebuildable current quantity projection per product and location.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `inventory_location_id uuid*`; `product_id uuid*`; `quantity_on_hand numeric(19,6)*`; `quantity_reserved numeric(19,6)*`; `updated_at*`; `version bigint*` |
+| Foreign keys | Composite location and same-company product |
+| Unique/checks | Unique `(company_id,inventory_location_id,product_id)`; reserved nonnegative; negative on-hand policy deferred/configured |
+| Ownership | Company and branch scoped |
+| Delete/audit | Never manually edited/deleted; derived only from movements and rebuildable |
+| Offline | Cached projection with checkpoint; not an offline authority; optimistic version detects stale commands |
+
+#### `inventory_movements`
+
+**Purpose:** immutable source for every stock change.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `inventory_location_id uuid*`; `product_id uuid*`; `movement_type text*`; `quantity numeric(19,6)*`; `occurred_at*`; `reference_type text*`; `reference_id uuid`; `created_at*`; `created_by uuid*`; `device_id uuid`; `sync_operation_id uuid`; `reversal_of_id uuid`; `balance_version_after bigint*` |
+| Foreign keys | Composite location, product, actor, device, sync operation, optional reversed movement |
+| Unique/checks | `quantity <> 0`; allowed type; reversal uniqueness; referenced company/branch must match |
+| Ownership | Company and branch scoped |
+| Delete/audit | Immutable; correction is compensating movement; itself provides inventory audit evidence |
+| Offline | Client UUID + idempotency; server applies transactionally with balance version check and returns conflict/reconciliation outcome |
+
+### 6.6 Sales
+
+#### `sales`
+
+**Purpose:** authoritative sale aggregate and lifecycle.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `cash_session_id uuid`; `cash_register_id uuid*`; `device_id uuid*`; `sale_number text*`; `status text*`; `currency char(3)*`; `subtotal`; `discount_total`; `tax_total`; `total`; `paid_total`; `change_total` as `numeric(19,4)*`; `occurred_at*`; `completed_at`; `cancelled_at`; `cancelled_by`; `created_at*`; `created_by*`; `version bigint*`; `sync_operation_id uuid` |
+| Foreign keys | Composite register/session/device; actor; sync operation |
+| Unique/checks | Unique `(company_id,branch_id,sale_number)`; nonnegative totals; arithmetic equality; status timestamps consistent; session scope matches |
+| Ownership | Company and branch scoped |
+| Delete/audit | Never delete; completed rows immutable; cancellation/refund/compensation only |
+| Offline | Client-generated ID, idempotency key, product/price snapshots, ordered command; server returns accepted/duplicate/rejected/reconcile |
+
+#### `sale_items`
+
+**Purpose:** immutable commercial snapshot of each sold line.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `sale_id uuid*`; `line_number integer*`; `product_id uuid`; `product_version bigint`; `sku_snapshot text`; `name_snapshot text*`; `quantity numeric(19,6)*`; `unit_price`; `subtotal`; `discount_total`; `tax_total`; `line_total` as `numeric(19,4)*`; `tax_snapshot jsonb`; `created_at*` |
+| Foreign keys | Composite sale; optional same-company product |
+| Unique/checks | Unique `(company_id,sale_id,line_number)`; quantity positive; exact line arithmetic; currency inherited from sale |
+| Ownership | Company and branch scoped through copied keys and sale constraint |
+| Delete/audit | Immutable; refunds reference lines; product edits never rewrite snapshots |
+| Offline | Included atomically in sale command; never synchronized as an independent mutable record |
+
+#### `payments`
+
+**Purpose:** append-only payment attempts and successful settlement records.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `sale_id uuid*`; `cash_session_id uuid`; `payment_method text*`; `status text*`; `amount numeric(19,4)*`; `currency char(3)*`; `provider_reference text`; `authorization_reference text`; `occurred_at*`; `created_at*`; `created_by*`; `device_id*`; `sync_operation_id`; `reversal_of_id uuid` |
+| Foreign keys | Composite sale/session/device; actor; sync operation; optional reversed payment |
+| Unique/checks | `amount > 0`; currency matches sale; provider reference unique within company/provider when present; reversal uniqueness |
+| Ownership | Company and branch scoped |
+| Delete/audit | Never delete/edit successful payment; reversal/refund records only; sensitive provider data minimized |
+| Offline | Cash may queue under approved policy; external electronic authorization is online; all attempts idempotent |
+
+#### `refunds`
+
+**Purpose:** authorized correction aggregate referencing an original sale.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `sale_id uuid*`; `cash_session_id uuid`; `refund_number text*`; `status text*`; `reason_code text*`; `reason_note text`; `currency char(3)*`; `subtotal`; `tax_total`; `total` as `numeric(19,4)*`; `occurred_at*`; `completed_at`; `created_at*`; `created_by*`; `approved_by uuid`; `device_id*`; `sync_operation_id`; `version bigint*` |
+| Foreign keys | Original composite sale, optional session, actor/approver/device, sync operation |
+| Unique/checks | Unique `(company_id,branch_id,refund_number)`; positive total; currency matches sale; completed amount cannot exceed refundable balance |
+| Ownership | Company and branch scoped; normally original sale branch |
+| Delete/audit | Never delete; failed/cancelled statuses retained; completed refund immutable |
+| Offline | Normally online authorization; future offline policy must cap risk and remain idempotent |
+
+#### `refund_items`
+
+**Purpose:** immutable quantity/value link from refund to original sale item.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `refund_id uuid*`; `sale_item_id uuid*`; `quantity numeric(19,6)*`; `subtotal`; `tax_total`; `line_total` as `numeric(19,4)*`; `restock_disposition text*`; `created_at*` |
+| Foreign keys | Composite refund and original sale item; both must resolve to same original sale and scope |
+| Unique/checks | Unique `(company_id,refund_id,sale_item_id)` unless split disposition is later approved; positive quantity; cumulative quantity not above sold less prior refunds |
+| Ownership | Company and branch scoped |
+| Delete/audit | Immutable; inventory effects produce separate movements |
+| Offline | Part of atomic refund command, never independently mutable |
+
+### 6.7 Platform control
+
+#### `audit_logs`
+
+**Purpose:** append-only evidence of critical business and security actions.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid`; `actor_user_id uuid`; `actor_device_id uuid`; `action text*`; `resource_type text*`; `resource_id uuid`; `occurred_at*`; `request_id uuid*`; `correlation_id uuid*`; `source text*`; `result text*`; `reason text`; `before_data jsonb`; `after_data jsonb`; `metadata jsonb`; `created_at*` |
+| Foreign keys | Company; optional branch/user/device with matching scope where applicable |
+| Unique/checks | Unique `(company_id,id)` and optionally `(company_id,request_id,action,resource_id)` for dedupe; safe/redacted payload policy |
+| Ownership | Company scoped, optionally branch scoped |
+| Delete/audit | Append-only and inaccessible to ordinary mutation; retention/archival by policy |
+| Offline | Client may submit context, but server creates authoritative audit; offline command outcome links to its evidence |
+
+#### `idempotency_keys`
+
+**Purpose:** prevent duplicate effects across retries, terminals, and offline replay.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid`; `device_id uuid`; `actor_user_id uuid`; `operation_scope text*`; `idempotency_key text*`; `request_hash text*`; `status text*`; `resource_type text`; `resource_id uuid`; `response_code integer`; `response_body jsonb`; `locked_at`; `completed_at`; `expires_at*`; `created_at*`; `updated_at*` |
+| Foreign keys | Company and optional branch/device/actor |
+| Unique/checks | Unique `(company_id,operation_scope,idempotency_key)`; same key requires same request hash; valid lifecycle/expiry |
+| Ownership | Company-scoped, branch copied when applicable |
+| Delete/audit | Retain through maximum replay window; purge only after dependent retention guarantees |
+| Offline | Required on sale, payment, refund, cash, and inventory commands; duplicates return stored outcome |
+
+#### `sync_operations`
+
+**Purpose:** durable record of every offline command and reconciliation outcome.
+
+| Item | Specification |
+| --- | --- |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `device_id uuid*`; `actor_user_id uuid*`; `client_operation_id uuid*`; `operation_type text*`; `aggregate_type text*`; `aggregate_id uuid`; `base_version bigint`; `sequence_number bigint*`; `payload_hash text*`; `status text*`; `received_at*`; `processed_at`; `result_code text`; `result_data jsonb`; `conflict_data jsonb`; `idempotency_key_id uuid*`; `created_at*` |
+| Foreign keys | Composite branch/device, actor, idempotency record |
+| Unique/checks | Unique `(company_id,device_id,client_operation_id)` and `(company_id,device_id,sequence_number)`; positive sequence; payload hash immutable |
+| Ownership | Company and branch scoped |
+| Delete/audit | Retain for reconciliation window and financial retention when linked; never rewrite accepted payload identity |
+| Offline | Central server-side receipt; outcomes are accepted, duplicate, rejected, or reconciliation-required with checkpoint progression |
 
 #### `outbox_events`
 
@@ -472,14 +625,14 @@ The initial design proposes **70 indexes**, including unique indexes described a
 
 | IDs | Proposed index targets |
 | --- | --- |
-| I01â€“I08 Organization | company slug; company status; branch company/code; branch company/status; company setting key; company setting updated version; branch setting key; branch setting updated version |
-| I09â€“I22 Identity | user normalized email; user status; credential identifier; credential user/type; role company/code; role company/status; permission key; permission resource/action; active user-role equivalence; user-role user/company; user-role role; active role-permission; branch-access equivalence; branch-access user/company |
-| I23â€“I27 Sessions | active default branch grant; refresh token hash; session user/company; session family; active session expiry |
-| I28â€“I37 Devices/cash | device company/code; device branch/status; device last seen; register branch/code; register device; open session per register unique partial; session branch/opened time; session operator; movement session/time; movement reversal unique partial |
-| I38â€“I47 Catalog | category company/code; category parent/order; category company/status; product company/SKU; product barcode; product category/status; price effective lookup; price overlap support; availability branch/product/channel; availability version checkpoint |
-| I48â€“I55 Inventory | location branch/code; location status; balance location/product unique; balance product/branch; stale balance version; movement location/time; movement product/time; movement reference |
-| I56â€“I65 Sales | sale branch/number; sale branch/time; sale status/time; sale session/time; sale sync operation; sale-item sale/line; sale-item product/time via sale projection strategy; payment sale/time; payment provider reference; refund branch/number |
-| I66â€“I70 Control | refund original sale/time; audit company/occurred; idempotency scope/key; sync device/sequence; unpublished outbox available time |
+| I01–I08 Organization | company slug; company status; branch company/code; branch company/status; company setting key; company setting updated version; branch setting key; branch setting updated version |
+| I09–I22 Identity | user normalized email; user status; credential identifier; credential user/type; role company/code; role company/status; permission key; permission resource/action; active user-role equivalence; user-role user/company; user-role role; active role-permission; branch-access equivalence; branch-access user/company |
+| I23–I27 Sessions | active default branch grant; refresh token hash; session user/company; session family; active session expiry |
+| I28–I37 Devices/cash | device company/code; device branch/status; device last seen; register branch/code; register device; open session per register unique partial; session branch/opened time; session operator; movement session/time; movement reversal unique partial |
+| I38–I47 Catalog | category company/code; category parent/order; category company/status; product company/SKU; product barcode; product category/status; price effective lookup; price overlap support; availability branch/product/channel; availability version checkpoint |
+| I48–I55 Inventory | location branch/code; location status; balance location/product unique; balance product/branch; stale balance version; movement location/time; movement product/time; movement reference |
+| I56–I65 Sales | sale branch/number; sale branch/time; sale status/time; sale session/time; sale sync operation; sale-item sale/line; sale-item product/time via sale projection strategy; payment sale/time; payment provider reference; refund branch/number |
+| I66–I70 Control | refund original sale/time; audit company/occurred; idempotency scope/key; sync device/sequence; unpublished outbox available time |
 
 Additional production indexes require observed queries; audit resource lookup, outbox aggregate ordering, and refund-item cumulative checks are leading candidates but are not counted until query contracts are finalized.
 
@@ -638,10 +791,30 @@ Twelve decisions require product, operational, legal, or measured evidence:
 11. Whether PostgreSQL row-level security is adopted as defense in depth and how connection pooling preserves context.
 12. Partitioning thresholds for audit, outbox, sync, inventory movement, and sales tables based on measured volume.
 
+### Decision status after TASK 07.2.1
+
+The original questions above remain intact as the historical decision backlog. Their current status is:
+
+| # | Status | Resolution or remaining question |
+| ---: | --- | --- |
+| 1 | Partially resolved | [ADR-0001](adr/ADR-0001-money-and-rounding.md) fixes exact decimals and the MXN commercial baseline; country-specific fiscal rules remain open. |
+| 2 | Resolved | [ADR-0002](adr/ADR-0002-uuid-strategy.md) adopts UUIDv7 when supported with standard UUID fallback. |
+| 3 | Open | Cross-company email identity and authentication realm policy remain undecided. |
+| 4 | Open | Offline authentication and device private-key protection remain undecided. |
+| 5 | Open | Operations permitted without an open cash session remain undecided. |
+| 6 | Resolved | [ADR-0004](adr/ADR-0004-inventory-ledger.md) prohibits negative inventory initially; future exceptions require explicit configuration and a new decision. |
+| 7 | Open | Price precedence remains undecided. |
+| 8 | Partially resolved | [ADR-0003](adr/ADR-0003-offline-command-sync.md) fixes the command protocol; duration, batch limits, replay window, and sequence-reset recovery remain open. |
+| 9 | Open | Refund offline policy and approval thresholds remain undecided. |
+| 10 | Open | Legal, privacy, fiscal, and audit retention periods remain undecided by market. |
+| 11 | Resolved | [ADR-0006](adr/ADR-0006-tenant-isolation.md) defers RLS as optional defense in depth while requiring application authorization. |
+| 12 | Open | Partition thresholds remain measurement-driven and undecided. |
+
+[ADR-0005](adr/ADR-0005-idempotency-and-outbox.md) additionally formalizes transactionally consistent idempotency, audit, outbox, and checkpoint recovery.
+
 ## 20. Future extension points
 
 - Rewards and memberships may reference `companies`, `branches`, `users` or future customers, `sales`, and immutable ledger identifiers.
 - Events may reference branches, products, sales, payments, refunds, files, and access credentials while owning capacity/reservation data.
 - Promotions may contribute immutable evaluation snapshots to sale items without rewriting completed sales.
 - Suppliers, purchases, recipes, payroll, accounting, invoicing, AI, and analytics must use module-owned tables and public contracts; they must not add columns opportunistically to core ledgers without an ADR.
-

@@ -34,13 +34,13 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [SECURITY.md](SECURITY.md) | Identity, authorization, application, and operational security |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Environments, delivery, observability, rollback, and recovery |
 | [POS_V1_AUDIT.md](POS_V1_AUDIT.md) | Technical and functional audit of the AS POS V1 prototype |
-| [adr/README.md](adr/README.md) | Architecture Decision Record process |
+| [adr/README.md](adr/README.md) | Architecture Decision Record index, process, and accepted decisions |
 
 `AGENTS.md` at the repository root is the permanent rulebook for contributors and AI agents. This directory is the detailed engineering knowledge base.
 
 ## Current project status
 
-AS ONE is in **Phase 1 â€” Foundation**. The current focus is the professional monorepo scaffold and master technical documentation. Product features, database tables, backend services, Flutter applications, and infrastructure definitions are outside the present documentation-only task.
+AS ONE is in **Phase 1 — Foundation**. The current focus is the professional monorepo scaffold and master technical documentation. Product features, database tables, backend services, Flutter applications, and infrastructure definitions are outside the present documentation-only task.
 
 ## Engineering principles
 
@@ -58,4 +58,3 @@ AS ONE is in **Phase 1 â€” Foundation**. The current focus is the professio
 ## Documentation governance
 
 Update documentation in the same change as the decision or behavior it describes. Significant architectural changes require an ADR. Documentation must distinguish approved decisions from proposals and must never contain credentials, production data, or unverified claims.
-
