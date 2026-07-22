@@ -4,6 +4,7 @@ import { loadApiConfig, type ApiConfig } from '@asone/config';
 import { createLogger } from '@asone/logger';
 
 import { buildApp } from './app.js';
+import { installShutdownHandlers } from './bootstrap/shutdown.js';
 import { createInfrastructure } from './infrastructure/dependencies.js';
 
 export async function startServer(): Promise<void> {
@@ -25,26 +26,28 @@ export async function startServer(): Promise<void> {
     redisUrl: config.redisUrl,
   });
   const app = await buildApp({ config, infrastructure, logger });
-  let shuttingDown = false;
-
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info({ signal }, 'server shutdown started');
-    await app.close();
-    await infrastructure.close();
-    logger.info('server shutdown complete');
-  };
-
-  process.once('SIGINT', () => void shutdown('SIGINT'));
-  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  const shutdown = installShutdownHandlers({
+    close: async () => {
+      await app.close();
+      await infrastructure.close();
+      await new Promise<void>((resolve, reject) => {
+        logger.flush((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    },
+    logger,
+    timeoutMs: config.requestTimeoutMs + 5_000,
+  });
 
   try {
     await app.listen({ host: config.apiHost, port: config.apiPort });
   } catch (error: unknown) {
     logger.fatal({ err: error }, 'server startup failed');
-    await infrastructure.close();
-    process.exitCode = 1;
+    await shutdown.shutdown('startup failure', 1);
+  } finally {
+    if (process.exitCode === 1) shutdown.dispose();
   }
 }
 

@@ -38,13 +38,30 @@ Use `.env.example` as the local configuration reference. Do not commit a real `.
 pnpm dev
 ```
 
+The HTTP foundation reads validated environment settings. Use `.env.example` as the local reference and keep real `.env` files outside source control.
+
+| Variable                   | Purpose                                                         |
+| -------------------------- | --------------------------------------------------------------- |
+| `OPENAPI_UI_ENABLED`       | Expose the interactive OpenAPI UI; off by default in production |
+| `METRICS_ENABLED`          | Expose Prometheus metrics; off by default in production         |
+| `CORS_ALLOWED_ORIGINS`     | Comma-separated explicit origin allowlist                       |
+| `RATE_LIMIT_MAX`           | Maximum requests in the global rate-limit window                |
+| `RATE_LIMIT_WINDOW_MS`     | Rate-limit window in milliseconds                               |
+| `REQUEST_BODY_LIMIT_BYTES` | Maximum accepted request body size                              |
+| `REQUEST_TIMEOUT_MS`       | Request processing timeout                                      |
+| `KEEP_ALIVE_TIMEOUT_MS`    | HTTP keep-alive timeout                                         |
+| `TRUST_PROXY`              | Explicit Fastify proxy-trust setting                            |
+
 The API exposes technical endpoints only:
 
+- `GET /api/v1` — versioned API entry point
 - `GET /health` — application status and safe version
 - `GET /live` — process liveness only
 - `GET /ready` — PostgreSQL and Redis connectivity without internal endpoints or credentials
+- `GET /documentation` — OpenAPI UI when explicitly enabled
+- `GET /metrics` — Prometheus text format when explicitly enabled
 
-No business route prefix is registered yet.
+No business routes are registered. OpenAPI generation remains available internally even when its public UI is disabled. See [Backend Foundation](docs/BACKEND_FOUNDATION.md) for lifecycle, contracts, and operating decisions.
 
 ## Local services
 
