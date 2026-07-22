@@ -22,7 +22,13 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
-    "docker:reset": "docker compose down --volumes --remove-orphans"
+    "docker:reset": "docker compose down --volumes --remove-orphans",
+    "db:generate": "pnpm --filter @asone/database db:generate",
+    "db:check": "pnpm --filter @asone/database db:check",
+    "db:migrate": "pnpm --filter @asone/database db:migrate",
+    "db:seed": "pnpm --filter @asone/database db:seed",
+    "db:test": "pnpm --filter @asone/database db:test",
+    "db:studio": "pnpm --filter @asone/database db:studio"
   },
   "devDependencies": {
     "@asone/eslint-config": "workspace:*",

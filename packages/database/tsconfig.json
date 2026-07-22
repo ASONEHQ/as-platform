@@ -1,0 +1,8 @@
+{
+  "extends": "../typescript-config/library.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["drizzle.config.ts", "src/**/*.ts"]
+}

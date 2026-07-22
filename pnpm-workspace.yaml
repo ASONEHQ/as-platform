@@ -7,3 +7,10 @@ allowBuilds:
   esbuild: true
 
 onlyBuiltDependencies: []
+
+# Fastify Swagger UI currently reaches newer dual-package releases whose CommonJS
+# artifacts fail under the Vitest ESM runner; keep the last validated compatible set.
+overrides:
+  lru-cache: 11.2.4
+  minipass: 7.1.2
+  path-scurry: 2.0.1

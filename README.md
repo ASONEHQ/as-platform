@@ -78,6 +78,7 @@ See [infrastructure/docker/README.md](infrastructure/docker/README.md) for servi
 ```text
 apps/api/                    Fastify technical bootstrap
 apps/worker/                 Empty safe worker bootstrap
+packages/database/           Typed PostgreSQL schema, client, migrations, and tests
 packages/config/             Zod environment validation
 packages/logger/             Pino logger and redaction policy
 packages/errors/             Safe infrastructure error primitives
@@ -101,5 +102,10 @@ docs/                        Approved engineering documentation
 | `pnpm test:watch`   | Run Vitest in watch mode                                |
 | `pnpm clean`        | Remove generated workspace output and root dependencies |
 | `pnpm docker:*`     | Manage local Docker services                            |
+| `pnpm db:generate`  | Generate reviewed SQL from the typed Drizzle schema     |
+| `pnpm db:check`     | Check migration history and SQL safety                  |
+| `pnpm db:migrate`   | Apply pending migrations to `DATABASE_URL`              |
+| `pnpm db:seed`      | Insert approved deterministic technical permissions     |
+| `pnpm db:test`      | Run PostgreSQL migration/constraint integration tests   |
 
 Architecture and product decisions remain authoritative in [docs/README.md](docs/README.md) and `AGENTS.md`.

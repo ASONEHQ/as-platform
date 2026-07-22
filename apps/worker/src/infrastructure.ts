@@ -1,5 +1,6 @@
-import { Pool } from 'pg';
 import { createClient } from 'redis';
+
+import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 
 export interface WorkerInfrastructure {
   check(): Promise<boolean>;
@@ -10,14 +11,17 @@ export function createWorkerInfrastructure(options: {
   readonly databaseUrl: string;
   readonly redisUrl: string;
   readonly connectionTimeoutMs?: number;
+  readonly database?: DatabaseClient;
 }): WorkerInfrastructure {
   const connectionTimeoutMs = options.connectionTimeoutMs ?? 2_000;
-  const postgres = new Pool({
-    connectionString: options.databaseUrl,
-    connectionTimeoutMillis: connectionTimeoutMs,
-    idleTimeoutMillis: 10_000,
-    max: 2,
-  });
+  const database =
+    options.database ??
+    createDatabaseClient({
+      applicationName: 'asone-worker',
+      connectionString: options.databaseUrl,
+      connectionTimeoutMs,
+      maxConnections: 2,
+    });
   const redis = createClient({
     url: options.redisUrl,
     socket: { connectTimeout: connectionTimeoutMs, reconnectStrategy: false },
@@ -27,7 +31,7 @@ export function createWorkerInfrastructure(options: {
   return {
     async check(): Promise<boolean> {
       const results = await Promise.allSettled([
-        postgres.query('SELECT 1'),
+        database.check(),
         (async () => {
           if (!redis.isOpen) await redis.connect();
           await redis.ping();
@@ -36,7 +40,7 @@ export function createWorkerInfrastructure(options: {
       return results.every((result) => result.status === 'fulfilled');
     },
     async close(): Promise<void> {
-      await Promise.allSettled([postgres.end(), redis.isOpen ? redis.quit() : Promise.resolve()]);
+      await Promise.allSettled([database.close(), redis.isOpen ? redis.quit() : Promise.resolve()]);
     },
   };
 }

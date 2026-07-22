@@ -29,6 +29,7 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System boundaries, data flow, isolation, offline behavior, and scaling |
 | [TECH_STACK.md](TECH_STACK.md) | Approved technologies and selection rationale |
 | [DATABASE.md](DATABASE.md) | Data conventions, integrity, migrations, and recovery |
+| [DATABASE_FOUNDATION.md](DATABASE_FOUNDATION.md) | Implemented PostgreSQL schema, migrations, isolation, and lifecycle |
 | [CORE_DATA_MODEL.md](CORE_DATA_MODEL.md) | Authoritative logical model for the first commercial transactional core |
 | [API.md](API.md) | HTTP and real-time contract standards |
 | [API_CONTRACTS.md](API_CONTRACTS.md) | Authoritative REST contracts for the first transactional core |
