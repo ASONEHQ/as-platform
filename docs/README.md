@@ -31,6 +31,7 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [DATABASE.md](DATABASE.md) | Data conventions, integrity, migrations, and recovery |
 | [CORE_DATA_MODEL.md](CORE_DATA_MODEL.md) | Authoritative logical model for the first commercial transactional core |
 | [API.md](API.md) | HTTP and real-time contract standards |
+| [API_CONTRACTS.md](API_CONTRACTS.md) | Authoritative REST contracts for the first transactional core |
 | [SECURITY.md](SECURITY.md) | Identity, authorization, application, and operational security |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Environments, delivery, observability, rollback, and recovery |
 | [POS_V1_AUDIT.md](POS_V1_AUDIT.md) | Technical and functional audit of the AS POS V1 prototype |
