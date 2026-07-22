@@ -27,6 +27,7 @@ for (const required of [
   'user_roles',
   'devices',
   'sessions',
+  'session_refresh_tokens',
   'audit_log',
   'outbox_events',
   'idempotency_keys',
@@ -44,6 +45,9 @@ for (const requiredConstraint of [
   'user_roles_branch_scope_fk',
   'sessions_membership_context_fk',
   'sessions_device_scope_fk',
+  'sessions_branch_scope_fk',
+  'session_refresh_tokens_hash_uq',
+  'session_refresh_tokens_session_generation_uq',
 ]) {
   if (!combinedSource.includes(`"${requiredConstraint}"`)) {
     throw new Error(

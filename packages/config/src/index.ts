@@ -35,6 +35,23 @@ const sharedSchema = z.object({
 const apiSchema = sharedSchema.extend({
   API_HOST: z.string().trim().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65_535),
+  AUTH_ACCESS_TOKEN_SECRET: z.string().min(32),
+  AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
+  AUTH_JWT_AUDIENCE: z.string().trim().min(1),
+  AUTH_JWT_ISSUER: z.string().trim().min(1),
+  AUTH_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(60_000),
+  AUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(3_600)
+    .max(31_536_000)
+    .default(2_592_000),
   CORS_ALLOWED_ORIGINS: corsOriginsSchema,
   KEEP_ALIVE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(72_000),
   METRICS_ENABLED: optionalBooleanSchema,
@@ -58,6 +75,13 @@ export interface SharedConfig {
 export interface ApiConfig extends SharedConfig {
   readonly apiHost: string;
   readonly apiPort: number;
+  readonly authAccessTokenSecret: string;
+  readonly authAccessTokenTtlSeconds: number;
+  readonly authJwtAudience: string;
+  readonly authJwtIssuer: string;
+  readonly authLoginRateLimitMax: number;
+  readonly authLoginRateLimitWindowMs: number;
+  readonly authRefreshTokenTtlSeconds: number;
   readonly corsAllowedOrigins: readonly string[];
   readonly keepAliveTimeoutMs: number;
   readonly metricsEnabled: boolean;
@@ -91,6 +115,13 @@ export function loadApiConfig(environment: Environment = process.env): ApiConfig
     ...toSharedConfig(value),
     apiHost: value.API_HOST,
     apiPort: value.API_PORT,
+    authAccessTokenSecret: value.AUTH_ACCESS_TOKEN_SECRET,
+    authAccessTokenTtlSeconds: value.AUTH_ACCESS_TOKEN_TTL_SECONDS,
+    authJwtAudience: value.AUTH_JWT_AUDIENCE,
+    authJwtIssuer: value.AUTH_JWT_ISSUER,
+    authLoginRateLimitMax: value.AUTH_LOGIN_RATE_LIMIT_MAX,
+    authLoginRateLimitWindowMs: value.AUTH_LOGIN_RATE_LIMIT_WINDOW_MS,
+    authRefreshTokenTtlSeconds: value.AUTH_REFRESH_TOKEN_TTL_SECONDS,
     corsAllowedOrigins: value.CORS_ALLOWED_ORIGINS,
     keepAliveTimeoutMs: value.KEEP_ALIVE_TIMEOUT_MS,
     metricsEnabled:

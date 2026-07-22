@@ -6,6 +6,7 @@ import { loadApiConfig, type ApiConfig } from '@asone/config';
 
 import { buildApp } from './app.js';
 import type { InfrastructureDependencies, ReadinessResult } from './infrastructure/dependencies.js';
+import type { AuthRepository } from './modules/auth/auth.types.js';
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
@@ -16,6 +17,9 @@ const environment = {
   LOG_LEVEL: 'silent',
   API_HOST: '127.0.0.1',
   API_PORT: '3000',
+  AUTH_ACCESS_TOKEN_SECRET: 'test-secret-that-is-at-least-32-characters',
+  AUTH_JWT_AUDIENCE: 'asone-api-test',
+  AUTH_JWT_ISSUER: 'https://api.test.asone.mx',
   DATABASE_URL: 'postgresql://local:local@127.0.0.1:5432/test',
   REDIS_URL: 'redis://127.0.0.1:6379',
 } as const;
@@ -38,11 +42,65 @@ async function appFor(overrides: Readonly<Record<string, string>> = {}): Promise
   return app;
 }
 
+const emptyAuthRepository: AuthRepository = {
+  findUserByNormalizedEmail: () => Promise.resolve(null),
+  listActiveMemberships: () => Promise.resolve([]),
+  resolveContext: () => Promise.resolve(null),
+  createSession: () => Promise.reject(new Error('not expected')),
+  findRefreshToken: () => Promise.resolve(null),
+  rotateRefreshToken: () => Promise.resolve('invalid'),
+  findSession: () => Promise.resolve(null),
+  revokeSession: () => Promise.resolve(false),
+  revokeUserSessions: () => Promise.resolve(0),
+  getSafeIdentity: () => Promise.resolve(null),
+  audit: () => Promise.resolve(),
+};
+
+async function appWithAuth(): Promise<FastifyInstance> {
+  const app = await buildApp({
+    config: loadApiConfig(environment),
+    infrastructure: infrastructure({ postgres: 'unavailable', redis: 'unavailable' }),
+    logger: pino({ level: 'silent' }),
+    authRepository: emptyAuthRepository,
+  });
+  apps.push(app);
+  return app;
+}
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map(async (app) => app.close()));
 });
 
 describe('API foundation', () => {
+  it('registers only the seven approved authentication endpoints', async () => {
+    const app = await appWithAuth();
+    for (const [method, url] of [
+      ['POST', '/api/v1/auth/login'],
+      ['POST', '/api/v1/auth/refresh'],
+      ['POST', '/api/v1/auth/logout'],
+      ['POST', '/api/v1/auth/logout-all'],
+      ['GET', '/api/v1/auth/session'],
+      ['GET', '/api/v1/auth/me'],
+      ['GET', '/api/v1/auth/permissions'],
+    ] as const)
+      expect(app.hasRoute({ method, url })).toBe(true);
+    expect(app.hasRoute({ method: 'POST', url: '/api/v1/auth/switch-context' })).toBe(false);
+    expect(app.hasRoute({ method: 'GET', url: '/api/v1/auth/sessions' })).toBe(false);
+  });
+
+  it('keeps invalid login responses free of credentials and hashes', async () => {
+    const app = await appWithAuth();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { identifier: 'missing@example.test', password: 'Never-log-this-password!' },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({ error: { code: 'invalid_credentials' } });
+    expect(response.body).not.toContain('Never-log-this-password');
+    expect(response.body).not.toContain('password_hash');
+    expect(response.body).not.toContain('refresh_token');
+  });
   it('serves the versioned API envelope without business routes', async () => {
     const app = await appFor();
     const response = await app.inject({ method: 'GET', url: '/api/v1' });

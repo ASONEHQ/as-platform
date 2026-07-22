@@ -3,12 +3,14 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, LogController } 
 import type { ApiConfig } from '@asone/config';
 
 import type { InfrastructureDependencies } from '../infrastructure/dependencies.js';
+import type { AuthRepository } from '../modules/auth/auth.types.js';
 import { registerPlugins } from './register-plugins.js';
 
 export interface CreateAppOptions {
   readonly config: ApiConfig;
   readonly infrastructure: InfrastructureDependencies;
   readonly logger: FastifyBaseLogger;
+  readonly authRepository?: AuthRepository;
 }
 
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {

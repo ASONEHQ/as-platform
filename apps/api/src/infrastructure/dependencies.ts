@@ -10,6 +10,7 @@ export interface ReadinessResult {
 }
 
 export interface InfrastructureDependencies {
+  readonly database?: DatabaseClient;
   checkReadiness(): Promise<ReadinessResult>;
   close(): Promise<void>;
 }
@@ -38,6 +39,7 @@ export function createInfrastructure(options: InfrastructureOptions): Infrastruc
   redis.on('error', () => undefined);
 
   return {
+    database,
     async checkReadiness(): Promise<ReadinessResult> {
       const [postgresResult, redisResult] = await Promise.allSettled([
         database.check(),

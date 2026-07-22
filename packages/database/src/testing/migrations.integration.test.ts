@@ -294,6 +294,54 @@ integration('PostgreSQL migrations', () => {
       connection.release();
     }
   });
+
+  it('enforces contextual sessions and hashed refresh generations', async () => {
+    const connection = await client.pool.connect();
+    const companyId = randomUUID();
+    const userId = randomUUID();
+    const membershipId = randomUUID();
+    const sessionId = randomUUID();
+    const tokenHash = 'a'.repeat(64);
+    try {
+      await connection.query('begin');
+      await insertCompany(connection, companyId);
+      await connection.query(
+        `insert into users (id,email,normalized_email,display_name,status)
+         values ($1,'session@example.test','session@example.test','Session User','active')`,
+        [userId],
+      );
+      await connection.query(
+        `insert into company_memberships (id,company_id,user_id,status)
+         values ($1,$2,$3,'active')`,
+        [membershipId, companyId, userId],
+      );
+      await connection.query(
+        `insert into sessions
+         (id,company_id,user_id,membership_id,token_hash,status,expires_at,token_family_id,token_generation)
+         values ($1,$2,$3,$4,$5,'active',now()+interval '1 hour',$6,0)`,
+        [sessionId, companyId, userId, membershipId, tokenHash, randomUUID()],
+      );
+      await connection.query(
+        `insert into session_refresh_tokens
+         (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,0,'active',now()+interval '1 hour')`,
+        [randomUUID(), sessionId, tokenHash],
+      );
+      await connection.query('savepoint before_duplicate_generation');
+      await expect(
+        connection.query(
+          `insert into session_refresh_tokens
+           (id,session_id,token_hash,generation,status,expires_at)
+           values ($1,$2,$3,0,'active',now()+interval '1 hour')`,
+          [randomUUID(), sessionId, 'b'.repeat(64)],
+        ),
+      ).rejects.toMatchObject({ code: '23505' });
+      await connection.query('rollback to savepoint before_duplicate_generation');
+    } finally {
+      await connection.query('rollback');
+      connection.release();
+    }
+  });
 });
 
 async function insertCompany(

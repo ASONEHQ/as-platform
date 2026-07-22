@@ -9,6 +9,9 @@ const validEnvironment = {
   LOG_LEVEL: 'silent',
   API_HOST: '127.0.0.1',
   API_PORT: '3000',
+  AUTH_ACCESS_TOKEN_SECRET: 'test-secret-that-is-at-least-32-characters',
+  AUTH_JWT_AUDIENCE: 'asone-api-test',
+  AUTH_JWT_ISSUER: 'https://api.test.asone.mx',
   DATABASE_URL: 'postgresql://local:local@127.0.0.1:5432/asone_test',
   REDIS_URL: 'redis://127.0.0.1:6379',
 } as const;
@@ -19,6 +22,8 @@ describe('configuration', () => {
     const worker = loadWorkerConfig(validEnvironment);
 
     expect(api.apiPort).toBe(3000);
+    expect(api.authAccessTokenTtlSeconds).toBe(900);
+    expect(api.authRefreshTokenTtlSeconds).toBe(2_592_000);
     expect(api.corsAllowedOrigins).toEqual(['http://localhost:3000', 'http://127.0.0.1:3000']);
     expect(api.openapiUiEnabled).toBe(false);
     expect(api.metricsEnabled).toBe(false);

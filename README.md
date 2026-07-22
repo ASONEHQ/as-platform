@@ -63,6 +63,8 @@ The API exposes technical endpoints only:
 
 No business routes are registered. OpenAPI generation remains available internally even when its public UI is disabled. See [Backend Foundation](docs/BACKEND_FOUNDATION.md) for lifecycle, contracts, and operating decisions.
 
+The authentication foundation implements the approved identity and session boundary without adding business endpoints. See [Authentication Foundation](docs/AUTHENTICATION_FOUNDATION.md).
+
 ## Local services
 
 ```shell

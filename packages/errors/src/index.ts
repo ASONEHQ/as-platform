@@ -1,5 +1,12 @@
 export const infrastructureErrorCodes = [
   'configuration_error',
+  'authentication_required',
+  'invalid_credentials',
+  'session_expired',
+  'permission_denied',
+  'company_scope_mismatch',
+  'branch_scope_mismatch',
+  'device_revoked',
   'validation_error',
   'not_found',
   'method_not_allowed',

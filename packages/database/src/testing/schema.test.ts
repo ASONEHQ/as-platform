@@ -13,6 +13,7 @@ import {
   rolePermissions,
   roles,
   sessions,
+  sessionRefreshTokens,
   userRoles,
   users,
 } from '../schema/index.js';
@@ -29,6 +30,7 @@ const tableNames = [
   userRoles,
   devices,
   sessions,
+  sessionRefreshTokens,
   auditLog,
   outboxEvents,
   idempotencyKeys,
@@ -47,6 +49,7 @@ describe('database foundation schema', () => {
       'user_roles',
       'devices',
       'sessions',
+      'session_refresh_tokens',
       'audit_log',
       'outbox_events',
       'idempotency_keys',
@@ -107,6 +110,12 @@ describe('database foundation schema', () => {
     expect(columns).toContain('token_hash');
     expect(columns).not.toContain('token');
     expect(columns).not.toContain('refresh_token');
+    const refreshColumns = getTableConfig(sessionRefreshTokens).columns.map(
+      (column) => column.name,
+    );
+    expect(refreshColumns).toContain('token_hash');
+    expect(refreshColumns).not.toContain('token');
+    expect(refreshColumns).not.toContain('refresh_token');
   });
 
   it('models audit evidence and outbox payloads as append-only rows', () => {
