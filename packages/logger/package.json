@@ -1,0 +1,28 @@
+{
+  "name": "@asone/logger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "pino": "^10.3.0"
+  },
+  "devDependencies": {
+    "@asone/typescript-config": "workspace:*",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

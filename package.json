@@ -1,0 +1,38 @@
+{
+  "name": "asone-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AS ONE multi-tenant platform monorepo",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "pnpm": ">=11.9.0 <12"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "clean": "turbo run clean && node -e \"require('node:fs').rmSync('node_modules',{recursive:true,force:true})\"",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:reset": "docker compose down --volumes --remove-orphans"
+  },
+  "devDependencies": {
+    "@asone/eslint-config": "workspace:*",
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.7.4",
+    "turbo": "^2.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.50.0",
+    "vitest": "^4.0.18"
+  }
+}

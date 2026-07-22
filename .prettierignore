@@ -1,0 +1,15 @@
+node_modules
+.pnpm-store
+.turbo
+dist
+coverage
+pnpm-lock.yaml
+work
+outputs
+AS POS V1.html
+AGENTS.md
+docs/**
+docs/CORE_DATA_MODEL.md
+docs/API_CONTRACTS.md
+docs/REALTIME_EVENTS.md
+docs/adr/**

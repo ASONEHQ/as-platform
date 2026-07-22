@@ -1,0 +1,102 @@
+name: asone-local
+
+services:
+  postgres:
+    image: postgres:17.7-alpine3.22
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-asone_local}
+      POSTGRES_USER: ${POSTGRES_USER:-asone_local}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_postgres_password_change_me}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8
+      TZ: UTC
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - asone_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -q']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [asone_internal]
+
+  redis:
+    image: redis:8.2.7-alpine3.22
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-local_redis_password_change_me}
+      TZ: UTC
+    command: >-
+      sh -c 'if [ -n "$${REDIS_PASSWORD}" ]; then
+      exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}";
+      else exec redis-server --appendonly yes; fi'
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
+    volumes:
+      - asone_redis_data:/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "if [ -n '$${REDIS_PASSWORD}' ]; then redis-cli --no-auth-warning -a '$${REDIS_PASSWORD}' ping; else redis-cli ping; fi | grep PONG",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [asone_internal]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-asone_local_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local_minio_password_change_me}
+      TZ: UTC
+    ports:
+      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
+      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - asone_minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', 'http://localhost:9000/minio/health/live']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [asone_internal]
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: '1'
+      MP_SMTP_AUTH_ALLOW_INSECURE: '1'
+      TZ: UTC
+    ports:
+      - '127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025'
+      - '127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025'
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks: [asone_internal]
+
+networks:
+  asone_internal:
+    name: asone-local-internal
+    internal: true
+
+volumes:
+  asone_postgres_data:
+    name: asone-local-postgres-data
+  asone_redis_data:
+    name: asone-local-redis-data
+  asone_minio_data:
+    name: asone-local-minio-data
