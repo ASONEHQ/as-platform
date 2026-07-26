@@ -93,15 +93,20 @@ export class PostgresAuthRepository implements AuthRepository {
 
     const companyWide = await this.database.pool.query(
       `select 1 from user_roles ur join roles r on r.id = ur.role_id and r.company_id = ur.company_id
-       where ur.membership_id = $1 and ur.company_id = $2 and ur.branch_id is null and r.status = 'active' limit 1`,
+       where ur.membership_id = $1 and ur.company_id = $2 and ur.branch_id is null and ur.status = 'active' and r.status = 'active' limit 1`,
       [input.membershipId, input.companyId],
     );
     const branches = await this.database.pool.query<{ id: string }>(
       companyWide.rowCount === 1
         ? `select id from branches where company_id = $1 and status = 'active' order by id`
-        : `select distinct b.id from user_roles ur join roles r on r.id = ur.role_id and r.company_id = ur.company_id
-           join branches b on b.id = ur.branch_id and b.company_id = ur.company_id
-           where ur.membership_id = $1 and ur.company_id = $2 and r.status = 'active' and b.status = 'active' order by b.id`,
+        : `select distinct b.id from branches b
+           left join user_roles ur on ur.branch_id = b.id and ur.company_id = b.company_id
+           left join roles r on r.id = ur.role_id and r.company_id = ur.company_id and r.status = 'active'
+           left join user_branch_access uba on uba.branch_id = b.id and uba.company_id = b.company_id
+             and uba.membership_id = $1 and uba.status = 'active'
+           where b.company_id = $2 and b.status = 'active'
+             and ((ur.membership_id = $1 and ur.status = 'active' and r.id is not null) or uba.id is not null)
+           order by b.id`,
       companyWide.rowCount === 1 ? [input.companyId] : [input.membershipId, input.companyId],
     );
     const permittedBranchIds = branches.rows.map((row) => row.id);
@@ -110,9 +115,17 @@ export class PostgresAuthRepository implements AuthRepository {
     const permissions = await this.database.pool.query<{ code: string }>(
       `select distinct p.code from user_roles ur
        join roles r on r.id = ur.role_id and r.company_id = ur.company_id and r.status = 'active'
-       join role_permissions rp on rp.role_id = r.id and rp.company_id = r.company_id
+       join role_permissions rp on rp.role_id = r.id and rp.company_id = r.company_id and rp.effect = 'allow'
        join permissions p on p.id = rp.permission_id
-       where ur.membership_id = $1 and ur.company_id = $2 and (ur.branch_id is null or ur.branch_id = $3)
+       where ur.membership_id = $1 and ur.company_id = $2 and ur.status = 'active' and (ur.branch_id is null or ur.branch_id = $3)
+         and not exists (
+           select 1 from user_roles denied_ur
+           join roles denied_r on denied_r.id = denied_ur.role_id and denied_r.company_id = denied_ur.company_id and denied_r.status = 'active'
+           join role_permissions denied_rp on denied_rp.role_id = denied_r.id and denied_rp.company_id = denied_r.company_id
+           where denied_ur.membership_id = ur.membership_id and denied_ur.company_id = ur.company_id and denied_ur.status = 'active'
+             and (denied_ur.branch_id is null or denied_ur.branch_id = $3)
+             and denied_rp.permission_id = rp.permission_id and denied_rp.effect = 'deny'
+         )
        order by p.code`,
       [input.membershipId, input.companyId, branchId ?? null],
     );

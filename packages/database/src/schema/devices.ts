@@ -19,6 +19,7 @@ export const devices = pgTable(
     id: idColumn(),
     companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
     branchId: uuid('branch_id'),
+    deviceCode: text('device_code').notNull(),
     name: text('name').notNull(),
     deviceType: text('device_type').notNull(),
     status: text('status').notNull().default('pending'),
@@ -30,6 +31,7 @@ export const devices = pgTable(
   },
   (table) => [
     unique('devices_company_id_id_uq').on(table.companyId, table.id),
+    unique('devices_company_code_uq').on(table.companyId, table.deviceCode),
     foreignKey({
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],
@@ -39,6 +41,7 @@ export const devices = pgTable(
     index('devices_company_branch_idx').on(table.companyId, table.branchId),
     index('devices_company_status_idx').on(table.companyId, table.status),
     check('devices_name_nonblank_ck', sql`length(btrim(${table.name})) > 0`),
+    check('devices_code_nonblank_ck', sql`length(btrim(${table.deviceCode})) > 0`),
     check(
       'devices_type_ck',
       sql`${table.deviceType} in ('pos', 'kiosk', 'admin', 'worker', 'display', 'other')`,

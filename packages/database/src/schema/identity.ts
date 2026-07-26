@@ -124,6 +124,7 @@ export const rolePermissions = pgTable(
     permissionId: uuid('permission_id')
       .notNull()
       .references(() => permissions.id, { onDelete: 'restrict' }),
+    effect: text('effect').notNull().default('allow'),
     createdAt: createdAtColumn(),
   },
   (table) => [
@@ -138,6 +139,57 @@ export const rolePermissions = pgTable(
     }).onDelete('restrict'),
     index('role_permissions_role_idx').on(table.companyId, table.roleId),
     index('role_permissions_permission_idx').on(table.permissionId),
+    check('role_permissions_effect_ck', sql`${table.effect} in ('allow', 'deny')`),
+  ],
+);
+
+export const userBranchAccess = pgTable(
+  'user_branch_access',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id').notNull(),
+    status: text('status').notNull().default('active'),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    unique('user_branch_access_company_id_id_uq').on(table.companyId, table.id),
+    unique('user_branch_access_company_membership_branch_uq').on(
+      table.companyId,
+      table.membershipId,
+      table.branchId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.membershipId, table.userId],
+      foreignColumns: [
+        companyMemberships.companyId,
+        companyMemberships.id,
+        companyMemberships.userId,
+      ],
+      name: 'user_branch_access_membership_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'user_branch_access_branch_scope_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('user_branch_access_default_uq')
+      .on(table.companyId, table.membershipId)
+      .where(sql`${table.isDefault} is true and ${table.status} = 'active'`),
+    index('user_branch_access_membership_idx').on(table.companyId, table.membershipId),
+    index('user_branch_access_branch_idx').on(table.companyId, table.branchId),
+    check('user_branch_access_status_ck', sql`${table.status} in ('active', 'revoked')`),
+    check(
+      'user_branch_access_revocation_ck',
+      sql`${table.status} <> 'revoked' or ${table.revokedAt} is not null`,
+    ),
   ],
 );
 
@@ -149,7 +201,9 @@ export const userRoles = pgTable(
     membershipId: uuid('membership_id').notNull(),
     roleId: uuid('role_id').notNull(),
     branchId: uuid('branch_id'),
+    status: text('status').notNull().default('active'),
     createdAt: createdAtColumn(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
   },
   (table) => [
     unique('user_roles_company_id_id_uq').on(table.companyId, table.id),
@@ -177,6 +231,11 @@ export const userRoles = pgTable(
     index('user_roles_membership_idx').on(table.companyId, table.membershipId),
     index('user_roles_role_idx').on(table.companyId, table.roleId),
     index('user_roles_branch_idx').on(table.companyId, table.branchId),
+    check('user_roles_status_ck', sql`${table.status} in ('active', 'revoked')`),
+    check(
+      'user_roles_revocation_ck',
+      sql`${table.status} <> 'revoked' or ${table.revokedAt} is not null`,
+    ),
   ],
 );
 
@@ -184,3 +243,4 @@ export type User = typeof users.$inferSelect;
 export type CompanyMembership = typeof companyMemberships.$inferSelect;
 export type Role = typeof roles.$inferSelect;
 export type Permission = typeof permissions.$inferSelect;
+export type UserBranchAccess = typeof userBranchAccess.$inferSelect;

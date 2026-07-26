@@ -9,6 +9,9 @@ import { registerAuthRoutes } from '../modules/auth/auth.routes.js';
 import { AuthService } from '../modules/auth/auth.service.js';
 import { AuthTokens } from '../modules/auth/auth.tokens.js';
 import type { AuthRepository } from '../modules/auth/auth.types.js';
+import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
+import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
+import { AdministrationService } from '../modules/admin/shared/admin.service.js';
 import { registerErrorHandler } from '../plugins/error-handler.js';
 import { createObservability, registerObservability } from '../plugins/observability.js';
 import { registerOpenApi } from '../plugins/openapi.js';
@@ -48,17 +51,24 @@ export async function registerPlugins(
       secret: options.config.authAccessTokenSecret,
       ttlSeconds: options.config.authAccessTokenTtlSeconds,
     });
-    registerAuthRoutes(
-      app,
-      new AuthService({
-        repository: authRepository,
-        tokens,
-        dummyPasswordHash: await hashPassword('constant-time-dummy-password'),
-        accessTokenTtlSeconds: options.config.authAccessTokenTtlSeconds,
-        refreshTokenTtlSeconds: options.config.authRefreshTokenTtlSeconds,
-      }),
-      options.config,
-    );
+    const authentication = new AuthService({
+      repository: authRepository,
+      tokens,
+      dummyPasswordHash: await hashPassword('constant-time-dummy-password'),
+      accessTokenTtlSeconds: options.config.authAccessTokenTtlSeconds,
+      refreshTokenTtlSeconds: options.config.authRefreshTokenTtlSeconds,
+    });
+    registerAuthRoutes(app, authentication, options.config);
+    if (options.infrastructure.database !== undefined) {
+      registerAdministrationRoutes(
+        app,
+        authentication,
+        new AdministrationService(
+          new AdminRepository(options.infrastructure.database),
+          authentication,
+        ),
+      );
+    }
   }
   if (options.config.nodeEnv === 'test') registerTestOnlyRoutes(app);
 }
