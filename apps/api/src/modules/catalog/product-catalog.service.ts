@@ -381,11 +381,7 @@ export class ProductCatalogService {
     key: string,
     input: CreateVariantInput,
   ): Promise<{ value: ProductVariantRow; replayed: boolean }> {
-    if (input.optionValueIds.length !== 0)
-      throw new ProductCatalogError(
-        'validation_error',
-        'Product options are not available in this release.',
-      );
+    const optionValueIds = [...input.optionValueIds].sort();
     const normalized = {
       id: input.id ?? randomUUID(),
       productId,
@@ -399,7 +395,7 @@ export class ProductCatalogService {
       currencyCode: currency(input.currencyCode),
       isDefault: input.isDefault,
       status: input.status,
-      optionSignature: generateOptionSignature([]),
+      optionValueIds,
       barcode:
         input.barcode === undefined
           ? null
@@ -428,6 +424,11 @@ export class ProductCatalogService {
           const product = await this.repository.lockProduct(client, context.companyId, productId);
           if (product === null)
             throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+          if (product.productType !== 'variable' && optionValueIds.length > 0)
+            throw new ProductCatalogError(
+              'invalid_product_state',
+              'Only variable products may use option values.',
+            );
           if (
             (product.productType === 'service' || product.productType === 'kit') &&
             normalized.tracksInventory
@@ -441,14 +442,30 @@ export class ProductCatalogService {
             normalized.unitOfMeasureCode,
             normalized.quantityScale,
           );
+          const mappings = await this.repository.resolveOptionValues(
+            client,
+            context.companyId,
+            productId,
+            optionValueIds,
+          );
+          const optionSignature = generateOptionSignature(mappings);
           const created = await this.repository.insertVariant(client, {
             ...context,
             ...normalized,
+            optionSignature,
             tracksInventory:
               product.productType === 'service' || product.productType === 'kit'
                 ? false
                 : (normalized.tracksInventory ?? product.tracksInventory),
           });
+          await this.repository.insertVariantOptionMappings(
+            client,
+            context.companyId,
+            productId,
+            created.id,
+            mappings,
+            context.timestamp,
+          );
           const variants = await this.repository.variantsForState(
             client,
             context.companyId,

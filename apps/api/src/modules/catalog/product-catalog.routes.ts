@@ -196,7 +196,7 @@ const variantBodySchema = {
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
     is_default: { type: 'boolean' },
     status: { type: 'string', enum: ['active', 'inactive'] },
-    option_value_ids: { type: 'array', maxItems: 0, items: uuid },
+    option_value_ids: { type: 'array', maxItems: 16, uniqueItems: true, items: uuid },
     barcode: barcodeSchema,
   },
 } as const;

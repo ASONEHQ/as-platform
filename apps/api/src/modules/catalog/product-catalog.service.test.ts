@@ -106,20 +106,4 @@ describe('product catalog service validation', () => {
     await service.createProduct(context, 'two', input);
     expect(hashes).toEqual([hashes[0], hashes[0]]);
   });
-
-  it('rejects non-empty option sets until product options are implemented', () => {
-    const service = new ProductCatalogService({} as ProductCatalogRepository);
-    expect(() =>
-      service.createVariant(context, crypto.randomUUID(), 'key', {
-        sku: 'sku',
-        unitOfMeasureCode: 'unit',
-        quantityScale: 0,
-        standardCost: '0',
-        currencyCode: 'MXN',
-        isDefault: true,
-        status: 'active',
-        optionValueIds: [crypto.randomUUID()] as never,
-      }),
-    ).toThrow(ProductCatalogError);
-  });
 });

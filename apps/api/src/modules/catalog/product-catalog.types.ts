@@ -45,10 +45,42 @@ export interface ProductVariantRow {
 
 export interface ProductBarcodeRow {
   id: string;
+  companyId: string;
+  productVariantId: string;
   barcodeType: BarcodeType;
   value: string;
   isPrimary: boolean;
-  status: 'active' | 'inactive';
+  status: VariantStatus;
+  version: bigint;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ProductOptionRow {
+  id: string;
+  companyId: string;
+  productId: string;
+  code: string;
+  name: string;
+  displayOrder: number;
+  status: VariantStatus;
+  version: bigint;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ProductOptionValueRow {
+  id: string;
+  companyId: string;
+  productId: string;
+  optionDefinitionId: string;
+  code: string;
+  name: string;
+  displayOrder: number;
+  status: VariantStatus;
+  version: bigint;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export type ProductDetail = ProductRow & { defaultVariant: ProductVariantRow | null };
@@ -146,13 +178,19 @@ export interface ProductCatalogTransaction {
 export type ProductMutationContext = MutationContext;
 export type ProductCatalogErrorCode =
   | 'duplicate_barcode'
+  | 'duplicate_option_code'
+  | 'duplicate_option_selection'
+  | 'duplicate_option_value_code'
   | 'duplicate_product_code'
   | 'duplicate_sku'
   | 'idempotency_conflict'
   | 'invalid_product_state'
+  | 'invalid_option_state'
+  | 'invalid_option_value_state'
   | 'invalid_variant_state'
   | 'inventory_unit_locked'
   | 'option_combination_conflict'
+  | 'option_value_wrong_product'
   | 'resource_not_found'
   | 'validation_error'
   | 'version_conflict';

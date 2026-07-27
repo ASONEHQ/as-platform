@@ -91,9 +91,15 @@ Any future exception requires a new accepted decision covering precedence, autho
 - Unit and `quantity_scale` may change only before the first committed movement.
 - Active SKU and barcode values are unique per company after normalization.
 
-Block 2.3B exposes only the empty option set for E101. Because the option signature is authoritative and
-unique per active product variant, this permits one active empty-option variant per product until product
-options are implemented. The API does not accept ad hoc JSON as option authority.
+Block 2.3C resolves E101 `option_value_ids` against relational product options. It locks definitions and
+values deterministically, permits at most one value per definition, derives the canonical signature on
+the server, and persists the mappings atomically with the variant. Simple, service, and kit products keep
+the canonical empty signature. E103 does not change option composition; a future explicit aggregate
+contract is required for that mutation.
+
+Option definitions, values, and barcodes retire logically. Definitions and values used by active variants
+cannot retire, and creating a second active primary barcode is rejected rather than silently demoting the
+existing primary barcode.
 
 UOM and `quantity_scale` remain mutable during this block because inventory movement tables do not yet
 exist. E103 validates every currently provable invariant and preserves `inventory_unit_locked` as the

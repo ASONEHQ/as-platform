@@ -8,6 +8,9 @@ import type {
   ProductDetail,
   ProductFilters,
   ProductMutationContext,
+  ProductOptionRow,
+  ProductOptionValueRow,
+  ProductBarcodeRow,
   ProductPage,
   ProductRow,
   ProductVariantPage,
@@ -54,11 +57,44 @@ interface IdempotencyDb {
   request_hash: string;
   response_body: unknown;
 }
+interface OptionDb {
+  id: string;
+  company_id: string;
+  product_id: string;
+  code: string;
+  name: string;
+  sort_order: number;
+  status: ProductOptionRow['status'];
+  version: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+interface OptionValueDb extends OptionDb {
+  option_definition_id: string;
+}
+interface BarcodeDb {
+  id: string;
+  company_id: string;
+  product_variant_id: string;
+  barcode_type: ProductBarcodeRow['barcodeType'];
+  barcode: string;
+  is_primary: boolean;
+  status: ProductBarcodeRow['status'];
+  version: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
 
 const PRODUCT_COLUMNS =
   'id,company_id,category_id,brand_id,code,name,description,product_type,tracks_inventory,status,version,created_at,updated_at';
 const VARIANT_COLUMNS =
   'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,status,version,created_at,updated_at';
+const OPTION_COLUMNS =
+  'id,company_id,product_id,code,name,sort_order,status,version,created_at,updated_at';
+const VALUE_COLUMNS =
+  'id,company_id,product_id,option_definition_id,code,name,sort_order,status,version,created_at,updated_at';
+const BARCODE_COLUMNS =
+  'id,company_id,product_variant_id,barcode_type,barcode,is_primary,status,version,created_at,updated_at';
 
 function result<T>(value: unknown): QueryResult<T> {
   return value as QueryResult<T>;
@@ -93,6 +129,40 @@ function variant(row: VariantDb): ProductVariantRow {
     standardCost: row.standard_cost,
     currencyCode: row.currency_code,
     isDefault: row.is_default,
+    status: row.status,
+    version: BigInt(row.version),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+function option(row: OptionDb): ProductOptionRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    productId: row.product_id,
+    code: row.code,
+    name: row.name,
+    displayOrder: row.sort_order,
+    status: row.status,
+    version: BigInt(row.version),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+function optionValue(row: OptionValueDb): ProductOptionValueRow {
+  return {
+    ...option(row),
+    optionDefinitionId: row.option_definition_id,
+  };
+}
+function barcode(row: BarcodeDb): ProductBarcodeRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    productVariantId: row.product_variant_id,
+    barcodeType: row.barcode_type,
+    value: row.barcode,
+    isPrimary: row.is_primary,
     status: row.status,
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
@@ -535,6 +605,385 @@ export class ProductCatalogRepository {
     ).rows.map(variant);
   }
 
+  public async listOptions(
+    companyId: string,
+    productId: string,
+    input: { limit: number; cursor?: string; status?: ProductOptionRow['status']; search?: string },
+  ): Promise<{ items: ProductOptionRow[]; nextCursor: string | null } | null> {
+    if (!(await this.productExists(companyId, productId))) return null;
+    const values: unknown[] = [companyId, productId];
+    const where = ['company_id=$1', 'product_id=$2'];
+    if (input.status !== undefined) {
+      values.push(input.status);
+      where.push(`status=$${String(values.length)}`);
+    }
+    if (input.search !== undefined) {
+      values.push(`%${input.search}%`);
+      where.push(`(name ilike $${String(values.length)} or code ilike $${String(values.length)})`);
+    }
+    if (input.cursor !== undefined) {
+      values.push(input.cursor);
+      where.push(`id>$${String(values.length)}`);
+    }
+    values.push(input.limit + 1);
+    const rows = result<OptionDb>(
+      await this.database.pool.query(
+        `select ${OPTION_COLUMNS} from product_option_definitions where ${where.join(' and ')}
+         order by sort_order,id limit $${String(values.length)}`,
+        values,
+      ),
+    ).rows;
+    const items = rows.slice(0, input.limit).map(option);
+    return {
+      items,
+      nextCursor: rows.length > input.limit ? (items.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  public async listOptionValues(
+    companyId: string,
+    optionId: string,
+    input: { limit: number; cursor?: string; status?: ProductOptionRow['status']; search?: string },
+  ): Promise<{ items: ProductOptionValueRow[]; nextCursor: string | null } | null> {
+    const parent = await this.option(this.database.pool, companyId, optionId, false);
+    if (parent === null) return null;
+    const values: unknown[] = [companyId, optionId];
+    const where = ['company_id=$1', 'option_definition_id=$2'];
+    if (input.status !== undefined) {
+      values.push(input.status);
+      where.push(`status=$${String(values.length)}`);
+    }
+    if (input.search !== undefined) {
+      values.push(`%${input.search}%`);
+      where.push(`(name ilike $${String(values.length)} or code ilike $${String(values.length)})`);
+    }
+    if (input.cursor !== undefined) {
+      values.push(input.cursor);
+      where.push(`id>$${String(values.length)}`);
+    }
+    values.push(input.limit + 1);
+    const rows = result<OptionValueDb>(
+      await this.database.pool.query(
+        `select ${VALUE_COLUMNS} from product_option_values where ${where.join(' and ')}
+         order by sort_order,id limit $${String(values.length)}`,
+        values,
+      ),
+    ).rows;
+    const items = rows.slice(0, input.limit).map(optionValue);
+    return {
+      items,
+      nextCursor: rows.length > input.limit ? (items.at(-1)?.id ?? null) : null,
+    };
+  }
+
+  public async option(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    id: string,
+    lock = true,
+  ): Promise<ProductOptionRow | null> {
+    const row = result<OptionDb>(
+      await client.query(
+        `select ${OPTION_COLUMNS} from product_option_definitions
+         where company_id=$1 and id=$2${lock ? ' for update' : ''}`,
+        [companyId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : option(row);
+  }
+
+  public async optionValue(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    id: string,
+    lock = true,
+  ): Promise<ProductOptionValueRow | null> {
+    const row = result<OptionValueDb>(
+      await client.query(
+        `select ${VALUE_COLUMNS} from product_option_values
+         where company_id=$1 and id=$2${lock ? ' for update' : ''}`,
+        [companyId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : optionValue(row);
+  }
+
+  public async insertOption(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & {
+      id: string;
+      productId: string;
+      code: string;
+      normalizedCode: string;
+      name: string;
+      displayOrder: number;
+      status: ProductOptionRow['status'];
+    },
+  ): Promise<ProductOptionRow> {
+    const row = result<OptionDb>(
+      await client.query(
+        `insert into product_option_definitions
+         (id,company_id,product_id,code,normalized_code,name,sort_order,status,deleted_at,
+          created_by,updated_by,created_at,updated_at)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$11) returning ${OPTION_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.productId,
+          input.code,
+          input.normalizedCode,
+          input.name,
+          input.displayOrder,
+          input.status,
+          input.status === 'retired' ? input.timestamp : null,
+          input.actorId,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Option insertion failed.');
+    return option(row);
+  }
+
+  public async updateOption(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & ProductOptionRow & { expectedVersion: bigint },
+  ): Promise<ProductOptionRow> {
+    const row = result<OptionDb>(
+      await client.query(
+        `update product_option_definitions set name=$4,sort_order=$5,status=$6,
+         deleted_at=case when $6='retired' then $7::timestamptz else null end,
+         updated_by=$8,updated_at=$7,version=version+1
+         where company_id=$1 and id=$2 and version=$3 returning ${OPTION_COLUMNS}`,
+        [
+          input.companyId,
+          input.id,
+          input.expectedVersion.toString(),
+          input.name,
+          input.displayOrder,
+          input.status,
+          input.timestamp,
+          input.actorId,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined)
+      throw new ProductCatalogError('version_conflict', 'The option version changed.');
+    return option(row);
+  }
+
+  public async insertOptionValue(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & {
+      id: string;
+      productId: string;
+      optionDefinitionId: string;
+      code: string;
+      normalizedCode: string;
+      name: string;
+      displayOrder: number;
+      status: ProductOptionRow['status'];
+    },
+  ): Promise<ProductOptionValueRow> {
+    const row = result<OptionValueDb>(
+      await client.query(
+        `insert into product_option_values
+         (id,company_id,product_id,option_definition_id,code,normalized_code,name,sort_order,status,
+          deleted_at,created_by,updated_by,created_at,updated_at)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$12) returning ${VALUE_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.productId,
+          input.optionDefinitionId,
+          input.code,
+          input.normalizedCode,
+          input.name,
+          input.displayOrder,
+          input.status,
+          input.status === 'retired' ? input.timestamp : null,
+          input.actorId,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Option value insertion failed.');
+    return optionValue(row);
+  }
+
+  public async updateOptionValue(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & ProductOptionValueRow & { expectedVersion: bigint },
+  ): Promise<ProductOptionValueRow> {
+    const row = result<OptionValueDb>(
+      await client.query(
+        `update product_option_values set name=$4,sort_order=$5,status=$6,
+         deleted_at=case when $6='retired' then $7::timestamptz else null end,
+         updated_by=$8,updated_at=$7,version=version+1
+         where company_id=$1 and id=$2 and version=$3 returning ${VALUE_COLUMNS}`,
+        [
+          input.companyId,
+          input.id,
+          input.expectedVersion.toString(),
+          input.name,
+          input.displayOrder,
+          input.status,
+          input.timestamp,
+          input.actorId,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined)
+      throw new ProductCatalogError('version_conflict', 'The option value version changed.');
+    return optionValue(row);
+  }
+
+  public async hasActiveOptionDependency(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    input: { optionId?: string; valueId?: string },
+  ): Promise<boolean> {
+    const column = input.valueId === undefined ? 'option_definition_id' : 'option_value_id';
+    const id = input.valueId ?? input.optionId;
+    return (
+      result<{ exists: boolean }>(
+        await client.query(
+          `select exists(select 1 from product_variant_option_values m
+         join product_variants v on v.company_id=m.company_id and v.id=m.product_variant_id
+         where m.company_id=$1 and m.${column}=$2 and v.status='active') exists`,
+          [companyId, id],
+        ),
+      ).rows[0]?.exists ?? false
+    );
+  }
+
+  public async resolveOptionValues(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    productId: string,
+    ids: readonly string[],
+  ): Promise<{ optionDefinitionId: string; optionValueId: string }[]> {
+    if (ids.length === 0) return [];
+    const rows = result<{ option_definition_id: string; id: string }>(
+      await client.query(
+        `select v.option_definition_id,v.id from product_option_values v
+         join product_option_definitions d on d.company_id=v.company_id and d.id=v.option_definition_id
+         where v.company_id=$1 and v.product_id=$2 and v.id=any($3::uuid[])
+         and v.status='active' and d.status='active'
+         order by v.option_definition_id,v.id for update of d,v`,
+        [companyId, productId, ids],
+      ),
+    ).rows;
+    if (rows.length !== ids.length)
+      throw new ProductCatalogError(
+        'option_value_wrong_product',
+        'An option value is unavailable for this product.',
+      );
+    const seen = new Set<string>();
+    return rows.map((row) => {
+      if (seen.has(row.option_definition_id))
+        throw new ProductCatalogError(
+          'duplicate_option_selection',
+          'Only one value per option is allowed.',
+        );
+      seen.add(row.option_definition_id);
+      return { optionDefinitionId: row.option_definition_id, optionValueId: row.id };
+    });
+  }
+
+  public async insertVariantOptionMappings(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    productId: string,
+    variantId: string,
+    mappings: readonly { optionDefinitionId: string; optionValueId: string }[],
+    timestamp: Date,
+  ): Promise<void> {
+    for (const mapping of mappings)
+      await client.query(
+        `insert into product_variant_option_values
+         (company_id,product_id,product_variant_id,option_definition_id,option_value_id,created_at)
+         values($1,$2,$3,$4,$5,$6)`,
+        [
+          companyId,
+          productId,
+          variantId,
+          mapping.optionDefinitionId,
+          mapping.optionValueId,
+          timestamp,
+        ],
+      );
+  }
+
+  public async barcode(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    id: string,
+    lock = true,
+  ): Promise<ProductBarcodeRow | null> {
+    const row = result<BarcodeDb>(
+      await client.query(
+        `select ${BARCODE_COLUMNS} from product_barcodes where company_id=$1 and id=$2${lock ? ' for update' : ''}`,
+        [companyId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : barcode(row);
+  }
+
+  public async createBarcode(
+    client: ProductCatalogTransaction,
+    context: ProductMutationContext,
+    variantId: string,
+    input: CreateBarcodeInput & { id: string; normalizedValue: string },
+  ): Promise<ProductBarcodeRow> {
+    const row = result<BarcodeDb>(
+      await client.query(
+        `insert into product_barcodes
+         (id,company_id,product_variant_id,barcode_type,barcode,normalized_barcode,is_primary,status,
+          created_by,updated_by,created_at,updated_at)
+         values($1,$2,$3,$4,$5,$6,$7,'active',$8,$8,$9,$9) returning ${BARCODE_COLUMNS}`,
+        [
+          input.id,
+          context.companyId,
+          variantId,
+          input.type,
+          input.value,
+          input.normalizedValue,
+          input.isPrimary,
+          context.actorId,
+          context.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Barcode insertion failed.');
+    return barcode(row);
+  }
+
+  public async retireBarcode(
+    client: ProductCatalogTransaction,
+    context: ProductMutationContext,
+    current: ProductBarcodeRow,
+    expectedVersion: bigint,
+  ): Promise<ProductBarcodeRow> {
+    const row = result<BarcodeDb>(
+      await client.query(
+        `update product_barcodes set status='retired',is_primary=false,deleted_at=$4,
+         updated_by=$5,updated_at=$4,version=version+1
+         where company_id=$1 and id=$2 and version=$3 returning ${BARCODE_COLUMNS}`,
+        [
+          context.companyId,
+          current.id,
+          expectedVersion.toString(),
+          context.timestamp,
+          context.actorId,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined)
+      throw new ProductCatalogError('version_conflict', 'The barcode version changed.');
+    return barcode(row);
+  }
+
   public async idempotent<T>(
     client: ProductCatalogTransaction,
     context: ProductMutationContext,
@@ -592,7 +1041,12 @@ export class ProductCatalogRepository {
     context: ProductMutationContext,
     input: {
       action: string;
-      resourceType: 'product' | 'product_variant';
+      resourceType:
+        | 'product'
+        | 'product_variant'
+        | 'product_option'
+        | 'product_option_value'
+        | 'product_barcode';
       resourceId: string;
       eventType: string;
       version: bigint;
@@ -657,6 +1111,18 @@ export class ProductCatalogRepository {
         return new ProductCatalogError('duplicate_sku', 'The SKU already exists.');
       case 'product_barcodes_company_barcode_active_uq':
         return new ProductCatalogError('duplicate_barcode', 'The barcode already exists.');
+      case 'product_barcodes_variant_primary_active_uq':
+        return new ProductCatalogError(
+          'invalid_variant_state',
+          'The variant already has an active primary barcode.',
+        );
+      case 'product_option_definitions_product_code_uq':
+        return new ProductCatalogError('duplicate_option_code', 'The option code already exists.');
+      case 'product_option_values_definition_code_uq':
+        return new ProductCatalogError(
+          'duplicate_option_value_code',
+          'The option value code already exists.',
+        );
       case 'product_variants_product_option_signature_active_uq':
         return new ProductCatalogError(
           'option_combination_conflict',
