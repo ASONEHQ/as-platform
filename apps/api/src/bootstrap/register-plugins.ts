@@ -12,6 +12,9 @@ import type { AuthRepository } from '../modules/auth/auth.types.js';
 import { CatalogRepository } from '../modules/catalog/catalog.repository.js';
 import { registerCatalogRoutes } from '../modules/catalog/catalog.routes.js';
 import { CatalogService } from '../modules/catalog/catalog.service.js';
+import { ProductCatalogRepository } from '../modules/catalog/product-catalog.repository.js';
+import { registerProductCatalogRoutes } from '../modules/catalog/product-catalog.routes.js';
+import { ProductCatalogService } from '../modules/catalog/product-catalog.service.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
@@ -78,6 +81,11 @@ export async function registerPlugins(
         app,
         authentication,
         new CatalogService(new CatalogRepository(options.infrastructure.database)),
+      );
+      registerProductCatalogRoutes(
+        app,
+        authentication,
+        new ProductCatalogService(new ProductCatalogRepository(options.infrastructure.database)),
       );
     }
   }

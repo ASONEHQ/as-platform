@@ -91,6 +91,18 @@ Any future exception requires a new accepted decision covering precedence, autho
 - Unit and `quantity_scale` may change only before the first committed movement.
 - Active SKU and barcode values are unique per company after normalization.
 
+Block 2.3B exposes only the empty option set for E101. Because the option signature is authoritative and
+unique per active product variant, this permits one active empty-option variant per product until product
+options are implemented. The API does not accept ad hoc JSON as option authority.
+
+UOM and `quantity_scale` remain mutable during this block because inventory movement tables do not yet
+exist. E103 validates every currently provable invariant and preserves `inventory_unit_locked` as the
+future contractual error; it does not issue a synthetic movement query.
+
+Catalog mutations use a consistent lock order. Existing-product updates lock product, category, brand,
+and variant in that order. Product creation locks category, then brand, before inserting product and
+variant. This order is shared with brand retirement to reduce deadlock risk.
+
 ### Kits
 
 - A virtual kit has no balance.

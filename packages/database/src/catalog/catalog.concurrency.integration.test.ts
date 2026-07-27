@@ -45,12 +45,17 @@ integration('catalog PostgreSQL concurrency', () => {
       await second.query(`set local lock_timeout = '5s'`);
       await insertVariant(first, fixture, 'shared-sku', false, '1'.repeat(64));
 
-      const competingInsert = insertVariant(second, fixture, 'shared-sku', false, '2'.repeat(64));
+      const competingInsert = settled(
+        insertVariant(second, fixture, 'shared-sku', false, '2'.repeat(64)),
+      );
       await waitForIndexConflict();
       await first.query('commit');
-      await expect(competingInsert).rejects.toMatchObject({
-        code: '23505',
-        constraint: 'product_variants_company_sku_active_uq',
+      await expect(competingInsert).resolves.toMatchObject({
+        succeeded: false,
+        error: {
+          code: '23505',
+          constraint: 'product_variants_company_sku_active_uq',
+        },
       });
       await second.query('rollback');
     } finally {
@@ -71,12 +76,17 @@ integration('catalog PostgreSQL concurrency', () => {
       await second.query(`set local lock_timeout = '5s'`);
       await insertVariant(first, fixture, 'default-one', true, '3'.repeat(64));
 
-      const competingInsert = insertVariant(second, fixture, 'default-two', true, '4'.repeat(64));
+      const competingInsert = settled(
+        insertVariant(second, fixture, 'default-two', true, '4'.repeat(64)),
+      );
       await waitForIndexConflict();
       await first.query('commit');
-      await expect(competingInsert).rejects.toMatchObject({
-        code: '23505',
-        constraint: 'product_variants_product_default_active_uq',
+      await expect(competingInsert).resolves.toMatchObject({
+        succeeded: false,
+        error: {
+          code: '23505',
+          constraint: 'product_variants_product_default_active_uq',
+        },
       });
       await second.query('rollback');
     } finally {
@@ -158,4 +168,15 @@ async function waitForIndexConflict(): Promise<void> {
   await new Promise<void>((resolveWait) => {
     setTimeout(resolveWait, 100);
   });
+}
+
+async function settled(
+  operation: Promise<void>,
+): Promise<{ succeeded: true } | { succeeded: false; error: unknown }> {
+  try {
+    await operation;
+    return { succeeded: true };
+  } catch (error) {
+    return { succeeded: false, error };
+  }
 }
