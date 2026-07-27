@@ -172,9 +172,9 @@ integration('PostgreSQL migrations', () => {
       await expect(
         connection.query(
           `insert into sessions
-           (id, company_id, user_id, membership_id, token_hash, status, expires_at)
-           values ($1, $2, $3, $4, $5, 'active', now() + interval '1 hour')`,
-          [randomUUID(), firstCompanyId, userId, otherMembershipId, 'a'.repeat(64)],
+           (id, company_id, user_id, membership_id, token_hash, status, expires_at, token_family_id)
+           values ($1, $2, $3, $4, $5, 'active', now() + interval '1 hour', $6)`,
+          [randomUUID(), firstCompanyId, userId, otherMembershipId, 'a'.repeat(64), randomUUID()],
         ),
       ).rejects.toMatchObject({ code: '23503' });
       await connection.query('rollback to savepoint before_bad_session');
