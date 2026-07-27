@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-TASK 09.2 establishes the authenticated administration foundation for AS ONE. It covers contracts E008–E037 for company context, branches, global identities, company memberships, roles, permissions, explicit branch access, and devices. Settings E016–E019 are deliberately excluded because no authoritative settings model exists.
+TASK 09.2 establishes the authenticated administration foundation for AS ONE. TASK 09.3 completes contracts E016–E019 with scoped company and branch settings. Together they cover E008–E037 for company context, branches, typed settings, global identities, company memberships, roles, permissions, explicit branch access, and devices.
 
 ## Architecture
 
@@ -17,6 +17,12 @@ Suspending or disabling a membership revokes that user's active sessions and ref
 ## Companies and branches
 
 Company and branch reads and mutations are restricted to the current company. Branch-scoped access is explicit. An empty permitted-branch list means no branch access, never company-wide access.
+
+## Company and branch settings
+
+Settings use a closed, versioned, non-secret catalog. Effective company values resolve from an active override, an approved company field, or a technical fallback. Effective branch values additionally allow an authorized branch override. Persisted writes require `If-Match`, use logical retirement, and retain a monotonically increasing version. Collection checkpoints and ETags are derived from normalized effective values.
+
+Company scope comes from the authenticated session. Branch routes additionally require explicit branch access and verify tenant ownership. Mutation, safe audit metadata, and an outbox event commit atomically. Full setting values are omitted from audit and outbox payloads. See [SETTINGS_FOUNDATION.md](SETTINGS_FOUNDATION.md) for the catalog and resolution semantics.
 
 ## Roles and permissions
 
@@ -41,7 +47,7 @@ Material mutations write `audit_log` and `outbox_events` inside the mutation tra
 | Contracts | Status | Notes |
 | --- | --- | --- |
 | E008–E015 | Implemented | Context, company, and branch administration |
-| E016–E019 | Excluded | Awaiting an approved company/branch settings model |
+| E016–E019 | Implemented | Typed company/branch settings, effective resolution, ETags, retirement, audit, and outbox |
 | E020–E023 | Implemented | Users and company memberships; E022 supports `roles` and `branches` includes |
 | E024–E033 | Implemented | Roles, allow/deny permissions, assignments, and explicit branch access |
 | E034–E037 | Implemented | Device registration, reads, and revocation |
@@ -66,14 +72,13 @@ pnpm format
 pnpm lint
 pnpm typecheck
 pnpm test
-pnpm build
 pnpm db:generate
 pnpm db:check
-pnpm --filter @asone/api typecheck
+DATABASE_TEST_URL=<dedicated-test-url> pnpm db:test
+DATABASE_TEST_URL=<dedicated-test-url> pnpm --filter @asone/api test
 ```
 
 ## Current limitations
 
-- Company and branch settings await an approved data model.
-- Database-backed concurrency and constraint behavior require a dedicated PostgreSQL test environment.
+- Database-backed concurrency and constraint behavior require a disposable PostgreSQL test environment.
 - Device enrollment returns device state only; secure one-time credential delivery remains an explicit future decision.

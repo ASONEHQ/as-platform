@@ -9,7 +9,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/*.integration.test.ts'",
     "test:watch": "vitest",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },

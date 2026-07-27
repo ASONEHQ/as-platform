@@ -342,7 +342,129 @@ integration('PostgreSQL migrations', () => {
       connection.release();
     }
   });
+
+  it('enforces scoped setting structure, lifecycle, and tenant ownership', async () => {
+    const connection = await client.pool.connect();
+    const firstCompanyId = randomUUID();
+    const secondCompanyId = randomUUID();
+    const firstBranchId = randomUUID();
+    const secondBranchId = randomUUID();
+    const userId = randomUUID();
+    const companySettingId = randomUUID();
+    try {
+      await connection.query('begin');
+      await insertCompany(connection, firstCompanyId);
+      await insertCompany(connection, secondCompanyId);
+      await connection.query(
+        `insert into users (id, email, normalized_email, display_name, status)
+         values ($1, 'settings@example.test', 'settings@example.test', 'Settings User', 'active')`,
+        [userId],
+      );
+      await connection.query(
+        `insert into branches (id, company_id, name, code, status, timezone)
+         values ($1, $2, 'First Branch', 'FIRST', 'active', 'UTC'),
+                ($3, $4, 'Second Branch', 'SECOND', 'active', 'UTC')`,
+        [firstBranchId, firstCompanyId, secondBranchId, secondCompanyId],
+      );
+
+      await connection.query(
+        `insert into company_settings
+         (id, company_id, key, value, value_type, status, created_by, updated_by)
+         values ($1, $2, 'business.locale', '"es-MX"'::jsonb, 'string', 'active', $3, $3)`,
+        [companySettingId, firstCompanyId, userId],
+      );
+      const persistedDefault = await connection.query<{ version: string }>(
+        'select version from company_settings where id = $1',
+        [companySettingId],
+      );
+      expect(persistedDefault.rows[0]?.version).toBe('2');
+      await connection.query(
+        `insert into branch_settings
+         (id, company_id, branch_id, key, value, value_type, status, version, created_by, updated_by)
+         values ($1, $2, $3, 'ui.time_format', '"24h"'::jsonb, 'string', 'active', 2, $4, $4)`,
+        [randomUUID(), firstCompanyId, firstBranchId, userId],
+      );
+
+      await expectConstraintViolation(
+        connection,
+        'settings_cross_tenant',
+        `insert into branch_settings
+         (id, company_id, branch_id, key, value, value_type, status, version, created_by, updated_by)
+         values ($1, $2, $3, 'ui.date_format', '"DD/MM/YYYY"'::jsonb, 'string', 'active', 2, $4, $4)`,
+        [randomUUID(), firstCompanyId, secondBranchId, userId],
+        '23503',
+      );
+      await expectConstraintViolation(
+        connection,
+        'settings_version_one',
+        `insert into company_settings
+         (id, company_id, key, value, value_type, status, version, created_by, updated_by)
+         values ($1, $2, 'ui.time_format', '"24h"'::jsonb, 'string', 'active', 1, $3, $3)`,
+        [randomUUID(), firstCompanyId, userId],
+        '23514',
+      );
+      await expectConstraintViolation(
+        connection,
+        'settings_active_deleted',
+        `insert into company_settings
+         (id, company_id, key, value, value_type, status, version, created_by, updated_by, deleted_at)
+         values ($1, $2, 'ui.date_format', '"DD/MM/YYYY"'::jsonb, 'string', 'active', 2, $3, $3, now())`,
+        [randomUUID(), firstCompanyId, userId],
+        '23514',
+      );
+      await expectConstraintViolation(
+        connection,
+        'settings_retired_without_deleted',
+        `insert into company_settings
+         (id, company_id, key, value, value_type, status, version, created_by, updated_by)
+         values ($1, $2, 'receipts.header_text', '""'::jsonb, 'string', 'retired', 2, $3, $3)`,
+        [randomUUID(), firstCompanyId, userId],
+        '23514',
+      );
+      await expectConstraintViolation(
+        connection,
+        'settings_secret',
+        `insert into company_settings
+         (id, company_id, key, value, value_type, status, is_secret, version, created_by, updated_by)
+         values ($1, $2, 'receipts.footer_text', '""'::jsonb, 'string', 'active', true, 2, $3, $3)`,
+        [randomUUID(), firstCompanyId, userId],
+        '23514',
+      );
+
+      const incompatibleValues = [
+        ['string', 'true'],
+        ['boolean', '"true"'],
+        ['integer', '1.5'],
+      ] as const;
+      for (const [valueType, value] of incompatibleValues) {
+        await expectConstraintViolation(
+          connection,
+          `settings_bad_${valueType}`,
+          `insert into company_settings
+           (id, company_id, key, value, value_type, status, version, created_by, updated_by)
+           values ($1, $2, $3, $4::jsonb, $5, 'active', 2, $6, $6)`,
+          [randomUUID(), firstCompanyId, `test.${valueType}`, value, valueType, userId],
+          '23514',
+        );
+      }
+    } finally {
+      await connection.query('rollback');
+      connection.release();
+    }
+  });
 });
+
+async function expectConstraintViolation(
+  connection: { query(query: string, values?: readonly unknown[]): Promise<unknown> },
+  savepoint: string,
+  query: string,
+  values: readonly unknown[],
+  code: string,
+): Promise<void> {
+  await connection.query(`savepoint ${savepoint}`);
+  await expect(connection.query(query, values)).rejects.toMatchObject({ code });
+  await connection.query(`rollback to savepoint ${savepoint}`);
+}
 
 async function insertCompany(
   connection: { query(query: string, values?: readonly unknown[]): Promise<unknown> },

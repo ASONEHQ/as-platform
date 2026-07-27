@@ -8,6 +8,7 @@ export const infrastructureErrorCodes = [
   'branch_scope_mismatch',
   'device_revoked',
   'validation_error',
+  'version_conflict',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

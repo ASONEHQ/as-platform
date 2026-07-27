@@ -12,6 +12,8 @@ import type { AuthRepository } from '../modules/auth/auth.types.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
+import { SettingsRepository } from '../modules/admin/settings/settings.repository.js';
+import { SettingsService } from '../modules/admin/settings/settings.service.js';
 import { registerErrorHandler } from '../plugins/error-handler.js';
 import { createObservability, registerObservability } from '../plugins/observability.js';
 import { registerOpenApi } from '../plugins/openapi.js';
@@ -67,6 +69,7 @@ export async function registerPlugins(
           new AdminRepository(options.infrastructure.database),
           authentication,
         ),
+        new SettingsService(new SettingsRepository(options.infrastructure.database)),
       );
     }
   }

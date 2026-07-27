@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   auditLog,
+  branchSettings,
   branches,
   companyMemberships,
+  companySettings,
   companies,
   devices,
   idempotencyKeys,
@@ -34,6 +36,8 @@ const tableNames = [
   auditLog,
   outboxEvents,
   idempotencyKeys,
+  companySettings,
+  branchSettings,
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
@@ -53,6 +57,8 @@ describe('database foundation schema', () => {
       'audit_log',
       'outbox_events',
       'idempotency_keys',
+      'company_settings',
+      'branch_settings',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
   });
@@ -130,5 +136,57 @@ describe('database foundation schema', () => {
   it('contains exactly the 52 approved permission definitions', () => {
     expect(technicalPermissionCodes).toHaveLength(52);
     expect(new Set(technicalPermissionCodes).size).toBe(52);
+  });
+
+  it('defines scoped settings ownership, uniqueness, and structural checks', () => {
+    const companyConfig = getTableConfig(companySettings);
+    const branchConfig = getTableConfig(branchSettings);
+
+    expect(companyConfig.columns.find((column) => column.name === 'id')?.primary).toBe(true);
+    expect(branchConfig.columns.find((column) => column.name === 'id')?.primary).toBe(true);
+    expect(companyConfig.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+      'company_settings_company_key_uq',
+    );
+    expect(branchConfig.uniqueConstraints.map((constraint) => constraint.name)).toContain(
+      'branch_settings_company_branch_key_uq',
+    );
+    expect(branchConfig.foreignKeys.map((foreignKey) => foreignKey.getName())).toContain(
+      'branch_settings_branch_scope_fk',
+    );
+    expect(companyConfig.foreignKeys.map((foreignKey) => foreignKey.getName())).toEqual(
+      expect.arrayContaining([
+        'company_settings_company_id_companies_id_fk',
+        'company_settings_created_by_users_id_fk',
+        'company_settings_updated_by_users_id_fk',
+      ]),
+    );
+    expect(branchConfig.foreignKeys.map((foreignKey) => foreignKey.getName())).toEqual(
+      expect.arrayContaining([
+        'branch_settings_company_id_companies_id_fk',
+        'branch_settings_created_by_users_id_fk',
+        'branch_settings_updated_by_users_id_fk',
+        'branch_settings_branch_scope_fk',
+      ]),
+    );
+
+    for (const config of [companyConfig, branchConfig]) {
+      const checks = config.checks.map((constraint) => constraint.name);
+      expect(checks).toEqual(
+        expect.arrayContaining([
+          `${config.name}_key_nonblank_ck`,
+          `${config.name}_value_type_ck`,
+          `${config.name}_status_ck`,
+          `${config.name}_version_ck`,
+          `${config.name}_not_secret_ck`,
+          `${config.name}_retirement_ck`,
+          `${config.name}_value_structure_ck`,
+        ]),
+      );
+      expect(config.columns.find((column) => column.name === 'value')?.dataType).toBe('json');
+      expect(config.columns.find((column) => column.name === 'version')?.hasDefault).toBe(true);
+      expect(config.columns.find((column) => column.name === 'is_secret')?.default).toBe(false);
+      expect(config.columns.find((column) => column.name === 'created_by')?.notNull).toBe(true);
+      expect(config.columns.find((column) => column.name === 'updated_by')?.notNull).toBe(true);
+    }
   });
 });
