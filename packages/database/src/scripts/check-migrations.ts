@@ -31,6 +31,15 @@ for (const required of [
   'audit_log',
   'outbox_events',
   'idempotency_keys',
+  'product_categories',
+  'brands',
+  'units_of_measure',
+  'products',
+  'product_option_definitions',
+  'product_option_values',
+  'product_variants',
+  'product_variant_option_values',
+  'product_barcodes',
 ]) {
   if (!combinedSource.includes(`"${required}"`)) {
     throw new Error(`Migration history does not contain required table ${required}.`);
@@ -48,6 +57,17 @@ for (const requiredConstraint of [
   'sessions_branch_scope_fk',
   'session_refresh_tokens_hash_uq',
   'session_refresh_tokens_session_generation_uq',
+  'product_categories_parent_scope_fk',
+  'products_category_scope_fk',
+  'products_brand_scope_fk',
+  'product_option_values_definition_scope_fk',
+  'product_variant_option_values_variant_scope_fk',
+  'product_variant_option_values_value_scope_fk',
+  'product_variants_company_sku_active_uq',
+  'product_variants_product_default_active_uq',
+  'product_variants_product_option_signature_active_uq',
+  'product_barcodes_company_barcode_active_uq',
+  'product_barcodes_variant_primary_active_uq',
 ]) {
   if (!combinedSource.includes(`"${requiredConstraint}"`)) {
     throw new Error(

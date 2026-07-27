@@ -1,4 +1,5 @@
 export { createDatabaseClient } from './client.js';
+export * from './catalog/index.js';
 export type {
   Database,
   DatabaseClient,

@@ -159,7 +159,7 @@ All errors include trace IDs. New domain-safe codes may be added without changin
 
 ## 6. Authorization model and permission registry
 
-Permissions are action capabilities evaluated with active company membership, branch access, user role assignments, session, and device. Platform support access is outside this contract. The core uses **52 permissions**:
+Permissions are action capabilities evaluated with active company membership, branch access, user role assignments, session, and device. Platform support access is outside this contract. The core uses **53 permissions**:
 
 | Area | Permission keys |
 | --- | --- |
@@ -169,7 +169,7 @@ Permissions are action capabilities evaluated with active company membership, br
 | Devices | `device.read`, `device.register`, `device.revoke` |
 | Registers/cash | `cash_register.read`, `cash_register.manage`, `cash_session.read`, `cash_session.open`, `cash_movement.create`, `cash_session.close` |
 | Catalog | `catalog.read`, `category.manage`, `product.manage`, `price.manage`, `availability.manage` |
-| Inventory | `inventory.read`, `inventory_location.manage`, `inventory.adjust`, `inventory.count`, `inventory.reverse` |
+| Inventory | `inventory.read`, `inventory.cost.read`, `inventory_location.manage`, `inventory.adjust`, `inventory.count`, `inventory.reverse` |
 | Sales | `sale.read`, `sale.create`, `sale.complete`, `sale.cancel` |
 | Payments | `payment.read`, `payment.create`, `payment.reverse` |
 | Refunds | `refund.read`, `refund.create`, `refund.approve`, `refund.complete`, `refund.cancel` |
@@ -330,7 +330,7 @@ Administrative company/branch routes are separate from `/context/*`, which only 
 | E051 | `GET /categories/{category_id}`; category detail | `catalog.read`; company | `Q`; path | `200 category`; Common | ETag; — / — |
 | E052 | `PATCH /categories/{category_id}`; update/reorder/retire | `category.manage`; company | `O`; allowlisted fields | `200 category`; Common+V+OC | Cycle/dependency checks; `category.updated` / same |
 | E053 | `GET /products`; list/search products | `catalog.read`; company and optional branch availability | `S`; cursor, limit, category_id, branch_id, status, sku/barcode exact, search, updated_after | `200 products`; Common/scope | Stable cursor; optional effective availability expansion; — / — |
-| E054 | `POST /products`; create product | `product.manage`; company | `S` + JSON; body optional ID, category, `sku*`, barcode, `name*`, type/unit*, tracking/weight flags, tax code | `201 product`; Common+V+conflict | `product.created` / same |
+| E054 | `POST /products`; create product and, when supplied or required, its default variant | `product.manage`; company | `S` + JSON; body optional product ID, `code*`, `name*`, `product_type*`, status, tracking flag, category, brand, tax code, and nested `default_variant`; no SKU, barcode, UOM, quantity scale, cost, or currency exists directly on product | `201 product` with authorized default-variant representation; Common+V+conflict, `invalid_product_state`, duplicate SKU/barcode | Product and default variant commit atomically; `product.created` and `product_variant.updated` / same |
 | E055 | `GET /products/{product_id}`; detail | `catalog.read`; company | `Q`; optional include current prices/availability | `200 product`; Common | ETag; — / — |
 | E056 | `PATCH /products/{product_id}`; update/retire | `product.manage`; company | `O`; allowlisted mutable fields/status | `200 product`; Common+V+OC | Completed sale snapshots unaffected; `product.updated` / same |
 | E057 | `GET /products/{product_id}/prices`; list price records/effective result | `catalog.read`; company/authorized branch | `S`; cursor, limit, branch_id, price_type, currency, valid_at, status | `200` records plus `effective_price` when valid_at supplied; Common | Precedence remains an open decision; — / — |
@@ -340,6 +340,42 @@ Administrative company/branch routes are separate from `/context/*`, which only 
 | E061 | `PUT /branches/{branch_id}/products/{product_id}/availability`; upsert availability | `availability.manage`; branch | `O` if existing, `S` if absent; body `is_available*`, `sales_channel*`, display_order | `200/201 availability`; Common+V+OC | Same-company product; `product.availability_changed` / same |
 | E062 | `GET /catalog/checkpoints`; current catalog checkpoint | `catalog.read`; company/authorized branch | `S`; optional branch_id, channel | `200` opaque checkpoint and generated_at | Query; — / — |
 | E063 | `GET /catalog/changes`; incremental catalog read | `catalog.read`; company/branch | `R`; `since_checkpoint*`, limit, optional branch/channel | `200` ordered upserts/tombstones plus next checkpoint/has_more; invalid checkpoint, scope | Never LWW submission; read recovery only; — / — |
+
+### 14.1 E054 product and default-variant creation
+
+SKU, barcode, unit of measure, quantity scale, standard cost, and currency are attributes of a concrete variant, never direct product-owned fields. A representative request is:
+
+```json
+{
+  "code": "ACCESS-GENERAL",
+  "name": "Acceso general",
+  "product_type": "simple",
+  "status": "active",
+  "tracks_inventory": true,
+  "category_id": "018f0000-0000-7000-8000-000000000010",
+  "brand_id": null,
+  "default_variant": {
+    "sku": "ACCESS-GENERAL-DEFAULT",
+    "unit_of_measure_code": "unit",
+    "quantity_scale": 0,
+    "standard_cost": "0.0000",
+    "currency_code": "MXN",
+    "barcode": {
+      "type": "internal",
+      "value": "ACCESS001",
+      "is_primary": true
+    }
+  }
+}
+```
+
+- `simple`: `default_variant` is required; product and variant are created atomically.
+- `service`: `default_variant` is required; both product and variant have `tracks_inventory=false`.
+- `kit`: `default_variant` is required in this block and has `tracks_inventory=false`; E054 does not explode components and does not implement `product_components`.
+- `variable`: `default_variant` may be omitted only while the product remains `draft`. Activation requires at least one active variant and exactly one default variant.
+- Product and nested references are resolved only inside the authenticated company. The server rejects unknown fields and cross-company category, brand, unit, or barcode references.
+- `standard_cost` is an exact decimal string. It is accepted under `product.manage`, but is omitted from responses unless the actor also has effective `inventory.cost.read`; omission is used instead of a placeholder zero.
+- Future sale lines, inventory facts, and commercial item references use `product_variant_id`, not `product_id`.
 
 ## 15. Inventory — E064–E072
 
@@ -499,6 +535,92 @@ The authenticated device ID and branch determine scope. The envelope cannot over
 
 Audit records cannot be created, edited, or deleted through ordinary REST routes. Event/recovery responses exclude secrets and re-evaluate current authorization rather than trusting the permission that existed when the event was created.
 
+### 19.1 Proposed inventory extension — E097–E138
+
+E040–E096 are already allocated and must never be reassigned. TASK 09.4 reserves E097–E138 for the inventory architecture described in [INVENTORY_ENGINE.md](INVENTORY_ENGINE.md).
+
+All endpoints in this subsection are **Proposed, not Implemented**. E097–E107 establish the contract foundation required by the inventory-catalog block. E108–E138 reserve later workflow routes and require final request/response examples in their owning implementation block before they become implementation-ready.
+
+Common rules:
+
+- Company scope comes only from authenticated server context.
+- A requested branch or location narrows existing authorization and never expands it.
+- V1 branch access plus the relevant inventory permission grants access to active locations in that branch.
+- Mutations use the existing safe envelope, idempotency rules, request/correlation propagation, audit, and transactional outbox.
+- Mutable aggregates use strong row ETags and mandatory `If-Match` where noted.
+- Quantities and costs are decimal strings, never JSON floating-point numbers.
+- Collection reads use stable opaque cursors, bounded limits, allowlisted filters, and checkpoints where defined.
+- Cross-tenant resources remain hidden.
+- No balance has a POST, PUT, PATCH, or DELETE contract.
+
+| ID | Proposed method and route | Permission / scope | Concurrency and effects |
+| --- | --- | --- | --- |
+| E097 | `GET /brands` | `catalog.read`; company | Stable cursor; read only |
+| E098 | `POST /brands` | `product.manage`; company | Idempotent optional client UUID; audit and catalog event |
+| E099 | `PATCH /brands/{brand_id}` | `product.manage`; company | `If-Match`; logical retirement |
+| E100 | `GET /products/{product_id}/variants` | `catalog.read`; company | Cursor, status, SKU/barcode filters |
+| E101 | `POST /products/{product_id}/variants` | `product.manage`; company | Idempotent; duplicate SKU/barcode conflicts |
+| E102 | `GET /product-variants/{variant_id}` | `catalog.read`; company | Row ETag; safe option/barcode expansion |
+| E103 | `PATCH /product-variants/{variant_id}` | `product.manage`; company | `If-Match`; unit lock after first movement |
+| E104 | `POST /product-variants/{variant_id}/barcodes` | `product.manage`; company | Idempotent; tenant-unique normalized barcode |
+| E105 | `DELETE /product-barcodes/{barcode_id}` | `product.manage`; company | `If-Match`; logical retirement |
+| E106 | `GET /products/{product_id}/components` | `catalog.read`; company | Returns BOM version and exact quantity strings |
+| E107 | `PUT /products/{product_id}/components` | `product.manage`; company | `If-Match`; atomic replacement; cycle validation |
+| E108 | `GET /inventory/transfers` | `inventory.read`; authorized branches | Cursor and allowlisted filters |
+| E109 | `POST /inventory/transfers` | `inventory.transfer`; source/destination scope | Idempotent requested aggregate; no stock effect |
+| E110 | `GET /inventory/transfers/{transfer_id}` | `inventory.read`; transfer scope | Row ETag; lines and history |
+| E111 | `POST /inventory/transfers/{transfer_id}/approvals` | `inventory.approve`; transfer scope | Idempotent transition with base version |
+| E112 | `POST /inventory/transfers/{transfer_id}/shipments` | `inventory.transfer`; source scope | Idempotent source-to-transit movement |
+| E113 | `POST /inventory/transfers/{transfer_id}/receipts` | `inventory.receive`; destination scope | Idempotent partial receipt |
+| E114 | `POST /inventory/transfers/{transfer_id}/cancellations` | `inventory.transfer`; transfer scope | Base version; documented remainder disposition |
+| E115 | `GET /inventory/counts` | `inventory.read`; authorized branches | Cursor and count filters |
+| E116 | `POST /inventory/counts` | `inventory.count`; active location | Idempotent draft with bounded scope |
+| E117 | `GET /inventory/counts/{count_id}` | `inventory.read`; count scope | Row ETag |
+| E118 | `POST /inventory/counts/{count_id}/starts` | `inventory.count`; count scope | Idempotent snapshot and expiring locks |
+| E119 | `PUT /inventory/counts/{count_id}/lines/{variant_id}` | `inventory.count`; count scope | `If-Match`; no balance mutation |
+| E120 | `POST /inventory/counts/{count_id}/submissions` | `inventory.count`; count scope | Base version; freezes submitted result |
+| E121 | `POST /inventory/counts/{count_id}/approvals` | `inventory.approve`; count scope | Idempotent approve/reject |
+| E122 | `POST /inventory/counts/{count_id}/applications` | `inventory.approve`; count scope | Apply once; adjustment and controls atomically |
+| E123 | `POST /inventory/counts/{count_id}/cancellations` | `inventory.count`; count scope | Idempotent cancellation and lock release |
+| E124 | `GET /inventory/reservations` | `inventory.read`; authorized branches | Cursor and reservation filters |
+| E125 | `POST /inventory/reservations` | `inventory.reservation.manage` or internal sale capability | Idempotent; increases reserved |
+| E126 | `GET /inventory/reservations/{reservation_id}` | `inventory.read`; reservation scope | Row ETag |
+| E127 | `POST /inventory/reservations/{reservation_id}/confirmations` | Owning command capability | Idempotent; decreases reserved and on hand |
+| E128 | `POST /inventory/reservations/{reservation_id}/releases` | Managing or owning capability | Idempotent release/cancel/expire |
+| E129 | `GET /inventory/kardex` | `inventory.read`; authorized locations | Stable line cursor; cost redaction |
+| E130 | `GET /inventory/costs` | `inventory.cost.read`; authorized locations | Current exact costs |
+| E131 | `GET /inventory/cost-history` | `inventory.cost.read`; authorized locations | Stable cursor and source movement |
+| E132 | `GET /inventory/stock-policies` | `inventory.read`; authorized locations | Cursor and low-stock filters |
+| E133 | `PUT /inventory/stock-policies/{location_id}/{variant_id}` | `inventory.update`; active location | `If-Match`; metadata only |
+| E134 | `POST /inventory/receipts` | `inventory.adjust`; active location | Idempotent manual entry; reason required |
+| E135 | `POST /inventory/consumptions` | `inventory.adjust`; active location | Idempotent; negative stock prohibited |
+| E136 | `GET /users/{user_id}/inventory-location-access` | Reserved future administration extension | Not V1 |
+| E137 | `PUT /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; no behavior frozen |
+| E138 | `DELETE /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; logical revocation later |
+
+Reserved inventory and catalog errors are `insufficient_stock`, `inventory_version_conflict`, `inventory_count_in_progress`, `inventory_location_inactive`, `product_variant_inactive`, `duplicate_sku`, `duplicate_barcode`, `duplicate_option_code`, `duplicate_option_value_code`, `option_combination_conflict`, `invalid_product_state`, `reservation_expired`, `reservation_already_completed`, `transfer_invalid_transition`, `transfer_quantity_exceeded`, `idempotency_payload_mismatch`, `reconciliation_required`, and `inventory_unit_locked`.
+
+`validation_error`, `resource_not_found`, `permission_denied`, and `version_conflict` reuse the global error contract. `option_in_use` is not reserved because no physical-delete endpoint exists: E141 and E144 retire records logically, preserve relational mappings, and use `invalid_product_state` only when the requested lifecycle transition violates product invariants.
+
+E070 remains the compatible immediate count adjustment. E115–E123 do not replace it. E136–E138 reserve IDs only and do not approve explicit location-access storage in V1.
+
+### 19.2 Proposed product-option extension — E139–E144
+
+These six endpoints are **Proposed, not Implemented**. Options and values are company-owned through their product. They are authoritative relational definitions used by `product_variant_option_values`; a JSON option combination is never an authoritative substitute. Used definitions and values cannot be physically deleted, and no DELETE route is reserved.
+
+| ID | Proposed method and route; purpose | Permission / scope | Inputs | Success / stable errors | Idempotency, concurrency, effects |
+| --- | --- | --- | --- | --- | --- |
+| E139 | `GET /products/{product_id}/options`; list option definitions | `catalog.read`; company | `S`; cursor, limit, status, sort allowlist | `200 options`; Common | Stable cursor; read only |
+| E140 | `POST /products/{product_id}/options`; create option definition | `product.manage`; company | `C`; optional client UUID, `code*`, `name*`, sort_order, status | `201 option`; Common+V, `duplicate_option_code`, `invalid_product_state`, IC | Idempotency key required; product aggregate update, audit, outbox; `product.updated` / same |
+| E141 | `PATCH /product-options/{option_id}`; update or retire definition | `product.manage`; company | `O`; allowlisted name, sort_order, status | `200 option`; Common+V+OC, `duplicate_option_code`, `invalid_product_state` | `If-Match` required; logical retirement preserves mappings; audit/outbox; `product.updated` / same |
+| E142 | `GET /product-options/{option_id}/values`; list values | `catalog.read`; company | `S`; cursor, limit, status, sort allowlist | `200 option values`; Common | Stable cursor; read only |
+| E143 | `POST /product-options/{option_id}/values`; create value | `product.manage`; company | `C`; optional client UUID, `code*`, `name*`, sort_order, status | `201 option value`; Common+V, `duplicate_option_value_code`, `invalid_product_state`, IC | Idempotency key required; product aggregate update, audit, outbox; `product.updated` / same |
+| E144 | `PATCH /product-option-values/{value_id}`; update or retire value | `product.manage`; company | `O`; allowlisted name, sort_order, status | `200 option value`; Common+V+OC, `duplicate_option_value_code`, `option_combination_conflict`, `invalid_product_state` | `If-Match` required; logical retirement preserves mappings; audit/outbox; `product.updated` / same |
+
+All six routes derive `company_id` from the authenticated session, conceal cross-company resources as not found, validate normalized codes and lifecycle transitions, and reject unknown fields. Retiring an option or value does not rewrite historical variant mappings. Activation or later variant mutation must still satisfy the active-option combination and exactly-one-default-variant rules.
+
+The **48 proposed E097–E144 routes** are not included in the implementation-ready total below.
+
 ## 20. Endpoint and permission summary matrix
 
 | Range | Domain | Endpoint count | Principal permissions |
@@ -513,7 +635,7 @@ Audit records cannot be created, edited, or deleted through ordinary REST routes
 | E081–E087 | Refunds | 7 | refund read/create/approve/complete/cancel |
 | E088–E092 | Synchronization | 5 | `sync.execute` plus underlying command permission |
 | E093–E096 | Audit/recovery | 4 | `audit.read`, `recovery.read` |
-| **Total** |  | **96** | **52 unique permission keys** |
+| **Total** |  | **96** | **53 unique permission keys** |
 
 ## 21. State machines
 
@@ -773,7 +895,7 @@ Before implementing an endpoint:
 ## 26. Contract inventory
 
 - Endpoints: **96**.
-- Permission keys: **52**.
+- Permission keys: **53**.
 - State machines: **6**.
 - States: **29**.
 - Allowed transitions: **34**.

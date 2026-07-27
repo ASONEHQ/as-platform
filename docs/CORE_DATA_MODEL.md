@@ -812,6 +812,64 @@ The original questions above remain intact as the historical decision backlog. T
 
 [ADR-0005](adr/ADR-0005-idempotency-and-outbox.md) additionally formalizes transactionally consistent idempotency, audit, outbox, and checkpoint recovery.
 
+### Inventory model reconciliation after TASK 09.4 Block 1
+
+[INVENTORY_ENGINE.md](INVENTORY_ENGINE.md) is the authoritative design extension for inventory implementation. It preserves ADR-0004 while refining the original product-level three-table inventory concept into a variant-level ledger and workflow model. This remains logical documentation; no physical table or migration is created by this block.
+
+The canonical scope is:
+
+```text
+company -> branch -> inventory_location -> product_variant
+```
+
+`inventory_locations` remains the canonical name. A separate `warehouses` entity is prohibited. “Warehouse” and “almacén” are interface terminology.
+
+| Entity | Classification | Purpose |
+| --- | --- | --- |
+| `product_categories` | Implemented in migration 0004 | Company catalog hierarchy |
+| `brands` | Implemented in migration 0004 | Company-scoped product brand |
+| `units_of_measure` | Implemented in migration 0004 | Approved global technical units and quantity scale |
+| `products` | Implemented refined V1 in migration 0004 | Commercial product definition |
+| `product_option_definitions` | Implemented in migration 0004 | Configurable variant dimensions |
+| `product_option_values` | Implemented in migration 0004 | Approved values for variant dimensions |
+| `product_variants` | Implemented in migration 0004 | Concrete SKU and inventory identity |
+| `product_variant_option_values` | Implemented in migration 0004 | Authoritative relational variant-to-option combination |
+| `product_barcodes` | Implemented in migration 0004 | Tenant-unique catalog identifiers |
+| `product_components` | Proposed V1, implemented after base ledger | Fixed virtual-kit component definition |
+| `inventory_locations` | Existing logical core, V1 | Branch-owned stock-holding location |
+| `inventory_balances` | Existing logical core, refined V1 | Rebuildable location/variant projection |
+| `inventory_stock_policies` | Proposed V1 | Minimum, maximum, and reorder metadata |
+| `inventory_movements` | Existing logical core, refined V1 | Immutable movement aggregate |
+| `inventory_movement_lines` | Proposed V1 | Immutable location/variant deltas |
+| `inventory_transfers` | Proposed V1 | Approved transfer workflow |
+| `inventory_transfer_lines` | Proposed V1 | Requested, shipped, received, and rejected quantities |
+| `inventory_reservations` | Proposed V1 | Expiring reservation aggregate |
+| `inventory_reservation_lines` | Proposed V1 | Reserved location/variant quantities |
+| `inventory_counts` | Proposed V1 | Persistent physical-count workflow |
+| `inventory_count_lines` | Proposed V1 | Expected, counted, and adjustment quantities |
+| `inventory_cost_history` | Proposed V1 | Location/variant exact cost history |
+| `product_variant_identifiers` | Future NFC/RFID extension | Provider-neutral catalog identifier beyond V1 barcodes |
+| `inventory_item_identifiers` | Future serialization/assets extension | Identifier for one physical unit; outside V1 |
+
+The reconciled mandatory rules are:
+
+- Every simple inventory product has an explicit default variant.
+- E054 owns no direct SKU, barcode, unit, quantity-scale, cost, or currency fields; these belong to its nested default variant.
+- Services and V1 kits also create an explicit non-inventory default variant; variable products may omit one only while draft.
+- Inventory facts reference `product_variant_id`, never an ambiguous product-or-variant pair.
+- Future sale lines reference `product_variant_id`, not `product_id`.
+- Services and virtual kits have no balance; kits atomically explode fixed components.
+- `inventory_movements` plus `inventory_movement_lines` are the immutable ledger.
+- `inventory_balances` is transactionally maintained and rebuildable.
+- On-hand stock cannot be negative in V1; reserved is nonnegative and cannot exceed on hand.
+- Available stock is on hand minus reserved.
+- Corrections are compensating movements and balances have no mutation endpoint.
+- Quantities use `numeric(19,6)`; costs use exact `numeric(19,4)` in company currency.
+- Unit and quantity scale lock after the first committed movement.
+- Lots, expiration, serials, physical-unit RFID/NFC, manufacturing, suppliers, and purchasing remain outside V1.
+
+The original `categories`, product-level inventory fields, and three-table inventory descriptions above are retained as historical baseline. Migration 0004 settles the compatible physical naming transition to `product_categories` and variant references.
+
 ## 20. Future extension points
 
 - Rewards and memberships may reference `companies`, `branches`, `users` or future customers, `sales`, and immutable ledger identifiers.

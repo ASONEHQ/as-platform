@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   auditLog,
+  brands,
   branchSettings,
   branches,
   companyMemberships,
@@ -10,6 +11,13 @@ import {
   companies,
   devices,
   idempotencyKeys,
+  productBarcodes,
+  productCategories,
+  productOptionDefinitions,
+  productOptionValues,
+  products,
+  productVariantOptionValues,
+  productVariants,
   outboxEvents,
   permissions,
   rolePermissions,
@@ -18,6 +26,7 @@ import {
   sessionRefreshTokens,
   userRoles,
   users,
+  unitsOfMeasure,
 } from '../schema/index.js';
 import { technicalPermissionCodes } from '../seeds/technical-permissions.js';
 
@@ -38,6 +47,15 @@ const tableNames = [
   idempotencyKeys,
   companySettings,
   branchSettings,
+  productCategories,
+  brands,
+  unitsOfMeasure,
+  products,
+  productOptionDefinitions,
+  productOptionValues,
+  productVariants,
+  productVariantOptionValues,
+  productBarcodes,
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
@@ -59,6 +77,15 @@ describe('database foundation schema', () => {
       'idempotency_keys',
       'company_settings',
       'branch_settings',
+      'product_categories',
+      'brands',
+      'units_of_measure',
+      'products',
+      'product_option_definitions',
+      'product_option_values',
+      'product_variants',
+      'product_variant_option_values',
+      'product_barcodes',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
   });
@@ -133,9 +160,10 @@ describe('database foundation schema', () => {
     expect(outboxColumns).not.toContain('deleted_at');
   });
 
-  it('contains exactly the 52 approved permission definitions', () => {
-    expect(technicalPermissionCodes).toHaveLength(52);
-    expect(new Set(technicalPermissionCodes).size).toBe(52);
+  it('contains exactly the 53 approved permission definitions', () => {
+    expect(technicalPermissionCodes).toHaveLength(53);
+    expect(new Set(technicalPermissionCodes).size).toBe(53);
+    expect(technicalPermissionCodes).toContain('inventory.cost.read');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {
@@ -188,5 +216,42 @@ describe('database foundation schema', () => {
       expect(config.columns.find((column) => column.name === 'created_by')?.notNull).toBe(true);
       expect(config.columns.find((column) => column.name === 'updated_by')?.notNull).toBe(true);
     }
+  });
+
+  it('defines tenant-safe catalog relationships and concurrency-sensitive indexes', () => {
+    expect(getTableConfig(productCategories).foreignKeys.map((item) => item.getName())).toContain(
+      'product_categories_parent_scope_fk',
+    );
+    expect(getTableConfig(products).foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining(['products_category_scope_fk', 'products_brand_scope_fk']),
+    );
+    expect(getTableConfig(productOptionValues).foreignKeys.map((item) => item.getName())).toContain(
+      'product_option_values_definition_scope_fk',
+    );
+    expect(
+      getTableConfig(productVariantOptionValues).foreignKeys.map((item) => item.getName()),
+    ).toEqual(
+      expect.arrayContaining([
+        'product_variant_option_values_variant_scope_fk',
+        'product_variant_option_values_definition_scope_fk',
+        'product_variant_option_values_value_scope_fk',
+      ]),
+    );
+    expect(getTableConfig(productVariants).indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'product_variants_company_sku_active_uq',
+        'product_variants_product_default_active_uq',
+        'product_variants_product_option_signature_active_uq',
+      ]),
+    );
+    expect(getTableConfig(productBarcodes).indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'product_barcodes_company_barcode_active_uq',
+        'product_barcodes_variant_primary_active_uq',
+      ]),
+    );
+    expect(
+      getTableConfig(unitsOfMeasure).columns.find((item) => item.name === 'code')?.primary,
+    ).toBe(true);
   });
 });

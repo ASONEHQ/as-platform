@@ -237,7 +237,7 @@ Revocation enforcement does not depend on successful delivery of the control mes
 
 ## 11. Event catalogue conventions
 
-The catalogue defines **54 unique event types**. Every row inherits the normative envelope and security rules.
+The catalogue defines **70 unique event types**. Every row inherits the normative envelope and security rules.
 
 ### 11.1 Field and recovery profiles
 
@@ -295,19 +295,22 @@ For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `
 | `cash_movement.created` | cash / `cash_movement` | branch / `cash_session.read` | movement/session IDs, type, exact amount/currency, reason code, occurred_at; `P-CASH` | committed cash movement / `CASH` | C / CP |
 | `cash_session.closed` | cash sessions / `cash_session` | branch / `cash_session.read` | session ID, totals/discrepancy, currency, closed_at, version; `P-CASH` | committed closure / `CASH` | V / CP |
 
-### 11.5 Catalog — 7 events
+### 11.5 Catalog — 10 events
 
 | Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
 | `category.created` | catalog / `category` | company/branch visibility / `catalog.read` | category ID, parent, code/name, status, version; `P-CAT` | category creation / `CAT` | V / CP |
 | `category.updated` | catalog / `category` | company/branch visibility / `catalog.read` | ID, changed fields, status, version; `P-CAT` | category update / `CAT` | V / CP |
-| `product.created` | catalog / `product` | company/branch visibility / `catalog.read` | product ID, SKU/name/type/status, version; `P-CAT` | product creation / `CAT` | V / CP |
+| `brand.created` | catalog / `brand` | company/branch visibility / `catalog.read` | brand ID, code/name, status, version; `P-CAT` | brand creation / `CAT` | V / CP |
+| `brand.updated` | catalog / `brand` | company/branch visibility / `catalog.read` | brand ID, changed fields, status, version; `P-CAT` | brand update / `CAT` | V / CP |
+| `brand.retired` | catalog / `brand` | company/branch visibility / `catalog.read` | brand ID, status, version, retired_at; `P-CAT` | logical brand retirement / `CAT` | V / CP |
+| `product.created` | catalog / `product` | company/branch visibility / `catalog.read` | product ID, name/type/status, default variant ID when present, version; `P-CAT` | product creation / `CAT` | V / CP |
 | `product.updated` | catalog / `product` | company/branch visibility / `catalog.read` | ID, changed fields, status, version; `P-CAT` | product update / `CAT` | V / CP |
 | `product_price.created` | catalog / `product_price` | authorized visibility / `catalog.read` | price/product IDs, type, exact amount/currency, validity, version; `P-CAT` | price creation / `CAT` | V / CP |
 | `product_price.updated` | catalog / `product_price` | authorized visibility / `catalog.read` | ID, changed fields, status/validity, version; `P-CAT` | price update / `CAT` | V / CP |
 | `product.availability_changed` | catalog / `product_availability` | branch / `catalog.read` | product ID, branch ID, channel, availability, version; `P-CAT` | availability update / `CAT` | V / CP |
 
-### 11.6 Inventory — 6 events
+### 11.6 Inventory — 19 events
 
 | Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
@@ -317,6 +320,30 @@ For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `
 | `inventory.count_applied` | inventory / `inventory_movement` | branch / `inventory.read` | count reference, movement IDs, affected product/location, balance versions; `P-INV` | committed count result / `INV` | C / CP |
 | `inventory.movement_reversed` | inventory / `inventory_movement` | branch / `inventory.read` | reversal/original IDs, exact quantity, reason, balance version; `P-INV` | committed compensating movement / `INV` | C / CP |
 | `inventory.balance_changed` | inventory / `inventory_balance` | branch / `inventory.read` | location/product IDs, exact on-hand/reserved/available, version, source movement ID; `P-INV` | accepted inventory movement / `INV` | V / CP |
+
+TASK 09.4 reserves the following additional events. They are contractual proposals, not implemented producers. The existing `inventory.balance_changed` name remains reserved for compatibility; implementation must select one canonical stock-change fact and must not emit both names for one balance effect. The preferred variant-aware name is `inventory.stock.changed`.
+
+| Event type | Producer / aggregate | Scope / minimum permission | Minimum safe `data`; prohibited | Cause / recovery | Order / retention |
+| --- | --- | --- | --- | --- | --- |
+| `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | location and variant IDs; on-hand, reserved, available and in-transit decimal strings; balance version; source movement ID; `P-INV` | committed balance effect / `INV` | V / CP |
+| `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | movement ID/type/status, reason code, reference type/ID, occurred_at, affected line count; authorized decimal strings; `P-INV` | committed movement / `INV` | V / CP |
+| `inventory.transfer.created` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination locations, status, line count, version; `P-INV` | committed request / transfer detail | V / CP |
+| `inventory.transfer.approved` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe decision reason, version, approved_at; `P-INV` | committed approval / transfer detail | V / CP |
+| `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, shipped quantity summaries as decimal strings, movement ID, version, shipped_at; `P-INV` | committed shipment / transfer detail and `INV` | V / CP |
+| `inventory.transfer.received` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, partial/final status, received/rejected decimal summaries, movement ID, version, received_at; `P-INV` | committed receipt / transfer detail and `INV` | V / CP |
+| `inventory.transfer.cancelled` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe reason, remaining disposition, version, cancelled_at; `P-INV` | committed cancellation / transfer detail | V / CP |
+| `inventory.reservation.created` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, source type/ID, status, location, expires_at, line count, version; `P-INV` | committed reservation / reservation detail and `INV` | V / CP |
+| `inventory.reservation.confirmed` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, status, source movement ID, confirmed_at, version; `P-INV` | committed confirmation / reservation detail and `INV` | V / CP |
+| `inventory.reservation.released` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, terminal status, safe reason, released/expired_at, version; `P-INV` | committed release, cancellation, or expiration / reservation detail and `INV` | V / CP |
+| `inventory.count.completed` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID/type, location, status, safe variance summary, movement IDs, version, applied_at; `P-INV` | committed count application / count detail and `INV` | V / CP |
+| `inventory.low_stock.detected` | inventory projection / `inventory_stock_policy` | branch/location / `inventory.read` | location/variant IDs, threshold and available decimal strings, severity, balance version, detected_at; costs and `P-INV` | threshold crossing / balances and policies | C / CP |
+| `product_variant.updated` | catalog / `product_variant` | company/authorized branch visibility / `catalog.read` | product/variant IDs, changed fields, status, version; `P-CAT` | variant create/update/retire / `CAT` | V / CP |
+
+All inventory decimals are exact strings. Consumers deduplicate by `event_id`; no global order is guaranteed across aggregates or locations. Versioned consumers detect gaps and recover through authoritative REST detail or checkpoint routes. Payloads omit costs without `inventory.cost.read`, unrestricted notes, credentials, hardware secrets, and balances outside current authorization.
+
+`product.updated` is already defined once in §11.5 and applies to inventory catalog changes without a duplicate row here.
+
+Direct brand mutations emit the corresponding `brand.*` event and never masquerade as `product.updated`. An option or option-value change may emit `product.updated` because it changes the product aggregate. Every catalogue row uses the normative envelope, including `event_id`, `company_id`, `aggregate_id`, `aggregate_version`, and `occurred_at`. Actor identity remains in the correlated audit record; the current public event envelope does not add actor metadata ad hoc. Delivery is at least once, and consumers deduplicate with `event_id`.
 
 ### 11.7 Sales and payments — 6 events
 
@@ -429,12 +456,12 @@ These require measured load, deployment evidence, privacy/retention policy, clie
 
 ## 16. Contract inventory
 
-- Unique event types: **54**.
+- Unique event types: **70**.
 - Client-to-server protocol messages: **6**.
 - Server-to-client protocol messages: **11**.
 - Total protocol message types: **17**.
 - Mermaid diagrams: **4**.
-- Unique permission keys used by event delivery: **18**.
+- Unique permission keys used by event delivery: **19**.
 - Open decision areas: **11**.
 
-The 18 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `sale.read`, `payment.read`, `refund.read`, `sync.execute`, `recovery.read`, and `audit.read`.
+The 19 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `sync.execute`, `recovery.read`, and `audit.read`.

@@ -76,7 +76,13 @@ There is no automatic `db:reset` command. Data is never dropped silently.
 
 ## Seeds
 
-The technical seed contains exactly the 52 permission keys approved by `API_CONTRACTS.md`. IDs are deterministic UUIDv5 values under a project namespace so repeated execution is safe. The seed contains no company, branch, user, password, customer, or credential and never runs automatically in production.
+The technical seed contains exactly 53 permission keys, including `inventory.cost.read`. IDs are deterministic UUIDv5 values under a project namespace so repeated execution is safe and existing identities remain unchanged. The seed contains no company, branch, user, password, customer, or credential and never runs automatically in production.
+
+## Catalog foundation
+
+Migration 0004 adds `product_categories`, `brands`, the global technical `units_of_measure` catalog, `products`, option definitions and values, variants, relational variant-option mappings, and barcodes. It seeds only `unit`, `kg`, `g`, `l`, and `ml`. Catalog ownership and actor references are tenant-safe, retirement is logical, and partial unique indexes protect active SKU, barcode, default-variant, primary-barcode, and option-signature invariants.
+
+Category ancestry cycles and exactly-one-default activation are transactional domain validations because they are not row-local checks. No catalog HTTP route, inventory ledger, pricing engine, kit components, NFC, or RFID behavior is introduced by this migration.
 
 ## Audit, outbox, and idempotency
 

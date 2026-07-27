@@ -110,7 +110,10 @@ export const permissions = pgTable(
   (table) => [
     unique('permissions_code_uq').on(table.code),
     index('permissions_domain_idx').on(table.domain),
-    check('permissions_code_format_ck', sql`${table.code} ~ '^[a-z][a-z0-9_]*[.][a-z][a-z0-9_]*$'`),
+    check(
+      'permissions_code_format_ck',
+      sql`${table.code} ~ '^[a-z][a-z0-9_]*([.][a-z][a-z0-9_]*)+$'`,
+    ),
     check('permissions_description_nonblank_ck', sql`length(btrim(${table.description})) > 0`),
     check('permissions_domain_nonblank_ck', sql`length(btrim(${table.domain})) > 0`),
   ],
