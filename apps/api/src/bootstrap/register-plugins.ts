@@ -9,6 +9,9 @@ import { registerAuthRoutes } from '../modules/auth/auth.routes.js';
 import { AuthService } from '../modules/auth/auth.service.js';
 import { AuthTokens } from '../modules/auth/auth.tokens.js';
 import type { AuthRepository } from '../modules/auth/auth.types.js';
+import { CatalogRepository } from '../modules/catalog/catalog.repository.js';
+import { registerCatalogRoutes } from '../modules/catalog/catalog.routes.js';
+import { CatalogService } from '../modules/catalog/catalog.service.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
@@ -70,6 +73,11 @@ export async function registerPlugins(
           authentication,
         ),
         new SettingsService(new SettingsRepository(options.infrastructure.database)),
+      );
+      registerCatalogRoutes(
+        app,
+        authentication,
+        new CatalogService(new CatalogRepository(options.infrastructure.database)),
       );
     }
   }
