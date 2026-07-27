@@ -4,6 +4,9 @@
 
 This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 physically implements only the nine catalog tables, five technical units, domain primitives, and `inventory.cost.read`. Inventory ledger/workflow tables, HTTP endpoints, producers, consumers, workers, and hardware integrations do not yet exist.
 
+The detailed TASK 09.4 Block 3.1 physical and operational design is documented
+in [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md).
+
 ## Executive summary
 
 The Inventory Engine provides exact, auditable stock control for AS POS, ticket offices, snacks, events, kiosks, AS Admin, and AS CEO across independent companies, branches, and multiple stock-holding locations per branch.
