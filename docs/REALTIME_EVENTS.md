@@ -322,6 +322,12 @@ For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `
 
 `inventory.balance_changed` is replaced by `inventory.stock.changed`. It is not an active event type and no new producer may emit it. No dual-publish compatibility period is approved.
 
+Editable movement draft operations E145–E152 emit no public realtime event.
+`inventory.movement.created` is a posted-movement fact, not a draft-header fact.
+Draft header/line creation, edits, deletion, and cancellation are audited but
+remain absent from the public outbox catalogue. Posting later owns
+`inventory.movement.created` and `inventory.stock.changed`.
+
 TASK 09.4 reserves the following additional events. They are contractual proposals, not implemented producers. `inventory.stock.changed` is the single canonical stock-change fact.
 
 | Event type | Producer / aggregate | Scope / minimum permission | Minimum safe `data`; prohibited | Cause / recovery | Order / retention |

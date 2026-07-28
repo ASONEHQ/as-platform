@@ -463,11 +463,42 @@ Consumers recover gaps through E072/E095 and checkpoints.
 | Reservations | E124-E128 | Cursor/detail and idempotent terminal commands |
 | Kardex/cost/policy | E129-E133 | Stable cursors, cost permission, policy ETag |
 | Receipt/consumption | E134-E135 | Idempotent, reason required, strict stock policy |
+| Editable movement drafts | E145-E152 | Header/detail/cancel and line CRUD; parent ETag; no posting |
 
-No new IDs are reserved for generic movement detail/update/post routes. Typed
-commands preserve authorization and invariants. E136-E138 remain non-V1.
+No posting ID is reserved for generic movement drafts. Typed commands preserve
+authorization and invariants. E136-E138 remain non-V1.
 Collections use stable opaque cursors and allowlisted filters. Mutations use
-strict schemas, audit, outbox, `Idempotency-Key`, and required ETag/base version.
+strict schemas, audit, applicable idempotency and required ETag/base version.
+An outbox fact is required only when the canonical event catalogue defines one;
+draft edits deliberately define none.
+
+### Editable movement draft contract
+
+E145-E152 reserve the documentation-only contract for draft headers and lines.
+They do not implement posting, reversal, transfers, reservations, balance
+mutation, or E129.
+
+- `inventory.adjust` authorizes draft header/line mutation;
+  `inventory.read` authorizes detail and line reads.
+- Only `opening_balance` and `adjustment` are manually authorable through the
+  generic draft aggregate.
+- E145 creates a header without lines. IDs, movement number, `draft` status,
+  version, actors, and timestamps are server-owned.
+- E147, E148, and E150-E152 use the parent movement strong ETag. Every successful
+  mutation increments the parent version once; lines have no version.
+- E145, E148, and E150 require tenant/actor/operation-scoped idempotency.
+- Draft cancellation retains the aggregate and lines, writes audit evidence,
+  and has no stock effect.
+- Persisted line numbers are stable; deletion does not renumber survivors.
+- Quantities are positive exact strings. The temporary UOM rule requires the
+  variant base UOM and derives an equal base quantity.
+- Draft cost input is prohibited. Cost remains posting-owned and read-redacted.
+- Draft mutations write audit actions but no public outbox event.
+  `inventory.movement.created` remains a posted movement fact.
+
+The complete strict schemas, errors, replay behavior, direction rules, and
+response shapes are authoritative in
+[API_CONTRACTS.md](API_CONTRACTS.md#193-proposed-editable-inventory-movement-drafts--e145e152).
 
 ## Error catalog
 

@@ -676,7 +676,163 @@ These six endpoints are **Proposed, not Implemented**. Options and values are co
 
 All six routes derive `company_id` from the authenticated session, conceal cross-company resources as not found, validate normalized codes and lifecycle transitions, and reject unknown fields. Retiring an option or value does not rewrite historical variant mappings. Activation or later variant mutation must still satisfy the active-option combination and exactly-one-default-variant rules.
 
-The **48 proposed E097–E144 routes** are not included in the implementation-ready total below.
+### 19.3 Proposed editable inventory movement drafts — E145–E152
+
+These eight endpoints are **Proposed, not Implemented**. They manage an
+`inventory_movement` draft aggregate without posting, reversing, changing a
+balance, or emitting a stock event. E068 remains the canonical collection read;
+E146 adds aggregate detail without changing E068.
+
+| ID | Proposed method and route; purpose | Permission / scope | Inputs | Success / stable errors | Idempotency, concurrency, effects |
+| --- | --- | --- | --- | --- | --- |
+| E145 | `POST /inventory/movements`; create draft header | `inventory.adjust`; authorized branch | `C`; `branch_id*`, `movement_type*`, occurred_at, reason_code, reference pair, source_document_number, notes | `201 movement detail`; Common+V, `invalid_movement_type`, IC | `Idempotency-Key`; status/ID/number/version are server-owned; audit only |
+| E146 | `GET /inventory/movements/{movement_id}`; read movement detail | `inventory.read`; movement branch | No query parameters | `200 movement detail`; `inventory_movement_not_found` | Strong ETag; no embedded lines; no mutation |
+| E147 | `PATCH /inventory/movements/{movement_id}`; edit draft header | `inventory.adjust`; movement branch | `O`; allowlisted header fields | `200 movement detail`; Common+V+OC, `invalid_movement_state` | Strong `If-Match`; one aggregate-version increment; audit only |
+| E148 | `POST /inventory/movements/{movement_id}/cancel`; cancel draft | `inventory.adjust`; movement branch | `C+O`; `reason_code*`, note | `200 movement detail`; Common+V+IC, state errors | `Idempotency-Key` and strong `If-Match`; exact terminal replay; audit only |
+| E149 | `GET /inventory/movements/{movement_id}/lines`; list lines | `inventory.read`; movement branch | `S`; cursor, limit | `200 lines`; `inventory_movement_not_found` | Stable `(line_number,id)` cursor; cost redaction; no mutation |
+| E150 | `POST /inventory/movements/{movement_id}/lines`; add line | `inventory.adjust`; movement branch | `C+O`; line input | `201 line mutation result`; Common+V+IC, line/direction/UOM errors | `Idempotency-Key` and strong `If-Match`; increments movement version; audit only |
+| E151 | `PATCH /inventory/movements/{movement_id}/lines/{line_id}`; edit line | `inventory.adjust`; movement branch | `O`; allowlisted line fields | `200 line mutation result`; Common+V+OC, line/direction/UOM errors | Strong `If-Match`; increments movement version; audit only |
+| E152 | `DELETE /inventory/movements/{movement_id}/lines/{line_id}`; remove line | `inventory.adjust`; movement branch | `O`; no body | `200 deletion result`; Common+V+OC, line/state errors | Strong `If-Match`; draft-line deletion; increments movement version; audit only |
+
+#### Lifecycle and authoring
+
+| State | Editable | Cancellable | Postable | Immutable | Terminal |
+| --- | --- | --- | --- | --- | --- |
+| `draft` | Yes | Yes | No; a future command may submit it | No | No |
+| `pending` | No | Yes | Yes, outside this block | Yes except approved transition | No |
+| `posted` | No | No | Already posted | Yes | No; reversible outside this block |
+| `cancelled` | No | No | No | Yes | Yes |
+| `reversed` | No | No | No | Yes | Yes |
+
+New manually authored aggregates start in `draft`. This block approves only
+`opening_balance` and `adjustment` for the generic draft API. `receipt` and
+operational consumption remain typed commands E134 and E135. `issue`, `return`,
+`transfer_shipment`, `transfer_receipt`, and `reversal` are system/workflow
+owned. Sale, sale return, waste, consumption, event use, and correction are
+reason/reference classifications, not new persisted movement types.
+
+E145 creates the header only. The client may supply `branch_id`,
+`movement_type`, `occurred_at`, `reason_code`, the nullable
+`reference_type`/`reference_id` pair, `source_document_number`, and `notes`.
+Unknown fields, embedded lines, IDs, movement number, status, version, actors,
+lifecycle timestamps, and header metadata are rejected. `occurred_at` defaults
+to server time. E147 may edit those same descriptive fields while the movement
+is `draft`; changing branch or movement type is allowed only while it has zero
+lines. The reference fields are both null/omitted or both present.
+
+E146 returns a strict movement detail with ID, branch, movement number, exact
+type/status, reason/reference fields, source document number, notes, version,
+`occurred_at`, lifecycle timestamps, creation/update timestamps, and
+`line_count`. Actor summaries, capabilities, derived totals, metadata, and
+embedded lines are not approved. Unauthorized company/branch resources use the
+non-leaking `404 inventory_movement_not_found` response.
+
+Cancellation requires an allowlisted `reason_code` and optional sanitized note.
+The reason is retained in audit command evidence; the physical header retains
+its existing purpose fields and adds only its canonical cancellation actor/time.
+The movement and its lines remain queryable. An exact replay with the original
+idempotency key returns the stored successful response without another version,
+audit record, or effect. A new key against `cancelled` returns
+`movement_already_cancelled`.
+
+#### Line contract, direction, quantities, and costs
+
+Line responses contain `id`, `movement_id`, stable `line_number`,
+`product_variant_id`, nullable source/destination location IDs, `quantity`,
+`base_quantity`, `unit_of_measure_code`, nullable `unit_cost`,
+`extended_cost`, and `currency_code`, allowlisted `reason_code`, sanitized
+metadata, and `created_at`. Exact decimals are JSON strings. Cost fields are
+omitted without `inventory.cost.read`; they are nullable when visible.
+
+Line creation and update accept only `product_variant_id`,
+`source_inventory_location_id`, `destination_inventory_location_id`,
+`quantity`, `unit_of_measure_code`, `reason_code`, and sanitized metadata.
+`id`, `line_number`, `base_quantity`, costs, currency, timestamps, company,
+branch, and movement identity are server-owned. The current catalog has no
+approved arbitrary conversion graph, so submitted UOM must equal the variant
+base UOM and the server sets `base_quantity = quantity`. Both values use
+positive, nonzero, non-scientific decimal strings compatible with
+`numeric(19,6)` and the variant quantity scale.
+
+- `opening_balance`: source forbidden; active destination required.
+- `adjustment`: exactly one active endpoint is required; destination means
+  adjustment-in and source means adjustment-out.
+- Source and destination may never be equal.
+- Every location and variant belongs to the authenticated company; locations
+  belong to the movement branch and respect receive/issue flags.
+- Line numbers never change after deletion. A new line receives
+  `max(existing line_number) + 1`.
+- Duplicate active `(movement,variant,source,destination)` direction tuples
+  return `duplicate_movement_line`.
+
+Client-provided costs are not approved for drafts. `unit_cost`,
+`extended_cost`, and `currency_code` are posting-owned valuation evidence;
+`extended_cost` is never client input. A later posting contract defines
+valuation under lock. No `inventory.cost.manage` permission is added.
+
+#### Aggregate concurrency, idempotency, audit, and events
+
+E147, E148, and E150–E152 use the parent's strong quoted ETag:
+`If-Match: "<positive movement version>"`. Every successful header or line
+mutation increments `movement.version` exactly once and returns the new version
+and ETag. Lines do not have independent versions. Stale versions return
+`409 version_conflict`.
+
+E145, E148, and E150 require `Idempotency-Key`. Keys are scoped by authenticated
+company, actor, and operation; canonical request hashes include client fields,
+path identity, and expected parent version where applicable, but exclude
+server-generated values. Exact replay returns the stored status, body, and
+relevant headers. Mismatched reuse returns `409 idempotency_conflict`.
+Retention follows ADR-0005 and the configured offline retry window.
+
+Successful mutations write one of these audit actions in the same transaction:
+`inventory_movement.created`, `inventory_movement.updated`,
+`inventory_movement.cancelled`, `inventory_movement_line.created`,
+`inventory_movement_line.updated`, or `inventory_movement_line.deleted`.
+Evidence includes company, branch, actor, movement/line IDs, safe before/after
+summary, request ID, correlation ID, and sanitized metadata. It excludes
+secrets, unrestricted notes, idempotency hashes, and raw payloads.
+
+Draft edits emit no public/domain outbox event. The existing
+`inventory.movement.created` event remains a posted-movement fact and is not
+emitted by E145 or line edits. Posting later owns that event and
+`inventory.stock.changed`; this block emits neither.
+
+#### Strict response and error contracts
+
+All request and response objects set `additionalProperties: false`. UUIDs use
+the UUID format, timestamps use UTC `date-time`, enums are exact, and nullable
+fields are explicit JSON nulls in detail/line resources. Permission-redacted
+cost fields are omitted. Collection responses use the common envelope and
+opaque cursor metadata. Mutation responses always include the new aggregate
+version. E152 returns `{movement_id, deleted_line_id, version}` in the common
+success envelope.
+
+| Error | HTTP | Meaning |
+| --- | ---: | --- |
+| `inventory_movement_not_found` | 404 | Movement is absent or outside authorized company/branch scope |
+| `inventory_movement_line_not_found` | 404 | Line is absent or hidden with its aggregate |
+| `invalid_movement_state` | 409 | Requested edit/transition is not legal in the current state |
+| `movement_already_posted` | 409 | Posted movement requires a future reversal contract |
+| `movement_already_reversed` | 409 | Reversed movement is terminal for direct edits |
+| `movement_already_cancelled` | 409 | New cancellation command targets an already-cancelled movement |
+| `invalid_movement_direction` | 422 | Source/destination violates the movement type |
+| `invalid_movement_type` | 422 | Type is not in the generic manual-draft allowlist |
+| `invalid_inventory_location` | 422 | Location is inactive, incompatible, or outside the movement branch |
+| `duplicate_movement_line` | 409 | Equivalent draft line already exists |
+| `product_variant_not_found` | 404 | Variant is absent or outside company scope |
+| `unit_of_measure_not_found` | 404 | UOM is absent/inactive or not the variant base UOM |
+
+`validation_error` is `400`; `permission_denied` is `403`;
+`version_conflict` and `idempotency_conflict` are `409`. Errors use the common
+safe envelope and never disclose SQL, constraints, hashes, hidden-company
+existence, or internal lock details.
+
+E064–E072, E108–E144, and E129 retain their existing contracts and IDs. No
+posting route, generic movement DELETE, balance mutation, schema change, or
+migration is approved by E145–E152.
+
+The **56 proposed E097–E152 routes** are not included in the implementation-ready total below.
 
 ## 20. Endpoint and permission summary matrix
 

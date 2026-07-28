@@ -341,6 +341,25 @@ draft -> cancelled
 posted -> reversed
 ```
 
+Editable draft contracts are reserved as E145–E152. Only `draft` is editable;
+`draft` and `pending` are cancellable; `pending` is postable by a future
+contract; `posted` and `reversed` are immutable, and `cancelled` and `reversed`
+are terminal for direct edits. E145 creates a header only. Line mutations use
+the parent movement strong ETag and increment `movement.version`; lines have no
+independent version.
+
+The generic draft allowlist is deliberately limited to `opening_balance` and
+`adjustment`. Opening balances require a destination. Adjustment lines require
+exactly one endpoint: destination for adjustment-in or source for
+adjustment-out. Receipts and consumptions remain E134/E135; transfer, sale,
+return, and reversal movements remain workflow-owned.
+
+Draft line quantities are positive exact `numeric(19,6)` strings. Until a UOM
+conversion graph is approved, submitted UOM must equal the variant base UOM and
+the server derives an equal `base_quantity`. Client cost input is forbidden;
+valuation remains posting-owned, and visible cost evidence still requires
+`inventory.cost.read`.
+
 ### Transfer
 
 ```mermaid
