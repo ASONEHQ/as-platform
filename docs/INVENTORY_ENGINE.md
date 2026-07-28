@@ -53,7 +53,7 @@ Lots, expiration, and serialization are not represented by incomplete nullable c
 ### Ledger and projection
 
 - `inventory_movements` and `inventory_movement_lines` are immutable.
-- `inventory_balances` is read-only to external callers and rebuildable from committed ledger lines.
+- `inventory_balances` is read-only to external callers and rebuildable from posted ledger lines.
 - Corrections create compensating movements.
 - No artificial financial debit/credit model is used.
 - No HTTP endpoint edits a balance directly.
@@ -91,7 +91,7 @@ Any future exception requires a new accepted decision covering precedence, autho
 - Future commercial and sale-line references use `product_variant_id`, not `product_id`.
 - A service creates no balance or inventory movement.
 - A product or variant with history is retired logically.
-- Unit and `quantity_scale` may change only before the first committed movement.
+- Unit and `quantity_scale` may change only before the first posted movement.
 - Active SKU and barcode values are unique per company after normalization.
 
 Block 2.3C resolves E101 `option_value_ids` against relational product options. It locks definitions and
@@ -174,14 +174,14 @@ A cash register, channel, kiosk, event operation, or snacks operation may later 
 | Variant | Concrete SKU and inventory unit |
 | Location | Branch-owned stock-holding location; UI may say warehouse |
 | On hand | Physically controlled quantity |
-| Reserved | On-hand quantity committed to an active reservation |
+| Reserved | On-hand quantity allocated to an active reservation |
 | Available | On hand minus reserved |
 | In transit | Shipped transfer quantity not finally received or rejected |
 | Movement | Immutable command result header |
 | Movement line | Immutable balance delta for one location and variant |
 | Balance | Current rebuildable projection |
 | Kardex | Authorized chronological view over movement lines |
-| Compensating movement | New movement that corrects an earlier committed movement |
+| Compensating movement | New posted movement that corrects an earlier posted movement |
 
 ## Conceptual model
 
@@ -225,7 +225,7 @@ No parallel `warehouses` entity is permitted.
 
 ## Movement model and kardex
 
-A committed movement contains one or more lines. Each line records explicit:
+A posted movement contains one or more lines. Each line records explicit:
 
 - `on_hand_delta`
 - `reserved_delta`
@@ -300,9 +300,10 @@ Retirement requires zero quantities and no open reservations, transfers, or coun
 ### Movement
 
 ```text
-pending -> committed
+draft -> pending -> posted
 pending -> cancelled
-committed -> corrected by new compensating movement
+draft -> cancelled
+posted -> reversed
 ```
 
 ### Transfer
@@ -348,8 +349,8 @@ submitted -> rejected -> counting
 1. Available equals on hand minus reserved.
 2. V1 on-hand, reserved, and in-transit quantities never become negative.
 3. Reserved never exceeds on hand.
-4. Only committed movements affect balances.
-5. Committed movements and lines are immutable and never physically deleted.
+4. Only posted and reversal movements affect balances.
+5. Posted/reversed movement lines are immutable and never physically deleted; the header may only transition from `posted` to `reversed` after its compensating movement posts.
 6. Balances are changed only by the inventory application service.
 7. Ledger folding reconstructs every balance.
 8. A service product never owns inventory.
@@ -413,10 +414,16 @@ Explicit deny precedes allow. Sales invoke an internal inventory capability insi
 
 Reserved domain codes:
 
-- `insufficient_stock`
-- `inventory_version_conflict`
+- `insufficient_inventory`
+- `negative_inventory_not_allowed`
+- `inventory_location_not_found`
+- `inventory_balance_conflict`
+- `inventory_reconciliation_required`
 - `inventory_count_in_progress`
 - `inventory_location_inactive`
+- `invalid_movement_state`
+- `movement_already_posted`
+- `movement_already_reversed`
 - `product_variant_inactive`
 - `duplicate_sku`
 - `duplicate_barcode`
@@ -428,11 +435,14 @@ Reserved domain codes:
 - `reservation_already_completed`
 - `transfer_invalid_transition`
 - `transfer_quantity_exceeded`
-- `idempotency_payload_mismatch`
-- `reconciliation_required`
+- `idempotency_conflict`
 - `inventory_unit_locked`
 
 Unexpected PostgreSQL errors remain sanitized. These codes are documented contracts only; `@asone/errors` is unchanged in this block.
+
+The previous inventory aliases `insufficient_stock`, `inventory_version_conflict`,
+`reconciliation_required`, and `idempotency_payload_mismatch` are replaced and
+are not active canonical errors.
 
 The option contracts reuse `validation_error`, `resource_not_found`, `permission_denied`, and `version_conflict`. `option_in_use` is not reserved because option definitions and values have no physical-delete route and are retired logically without erasing relational variant mappings.
 
@@ -452,7 +462,7 @@ The proposed event inventory is defined in [REALTIME_EVENTS.md](REALTIME_EVENTS.
 
 - Catalog changes use the existing E062/E063 checkpoint pattern.
 - Inventory balances and movements use E072 and future recovery contracts.
-- Rebuild tooling folds committed movement lines into a new projection and compares it with live balances before controlled replacement.
+- Rebuild tooling folds posted and reversal movement lines into a new projection and compares it with live balances before controlled replacement.
 - Realtime clients stop applying a gapped aggregate stream and recover authorized state through REST.
 - Audit and outbox retention must cover the supported offline replay window.
 

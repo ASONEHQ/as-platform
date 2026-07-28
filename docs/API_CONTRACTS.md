@@ -384,11 +384,11 @@ SKU, barcode, unit of measure, quantity scale, standard cost, and currency are a
 | E064 | `GET /inventory/locations`; list locations | `inventory.read`; authorized branches | `S`; cursor, limit, branch_id, type, status | `200 locations`; Common | Query; — / — |
 | E065 | `POST /inventory/locations`; create location | `inventory_location.manage`; branch | `S` + JSON; body optional ID, `branch_id*`, `code*`, `name*`, `location_type*` | `201 location`; Common+V+conflict | `inventory_location.created` / same |
 | E066 | `PATCH /inventory/locations/{location_id}`; update/deactivate | `inventory_location.manage`; branch | `O`; allowlisted fields/status | `200 location`; Common+V+OC | Cannot deactivate with unresolved operations by policy; `inventory_location.updated` / same |
-| E067 | `GET /inventory/balances`; current projections | `inventory.read`; branch | `S`; cursor, limit, branch_id*, location_id, product_id, changed_after, below_zero=false | `200 balances` with checkpoint/freshness; Common | Balance is read-only projection; — / — |
-| E068 | `GET /inventory/movements`; ledger history | `inventory.read`; branch | `S`; cursor, limit, branch/location/product/type/reference, occurred_from/to | `200 movements`; Common | Stable `(occurred_at,id)`; — / — |
-| E069 | `POST /inventory/adjustments`; create adjustment movement | `inventory.adjust`; branch/location | `C`; body client movement UUID*, location/product*, signed nonzero quantity*, reason_code*, note, `expected_version*`, occurred_at, offline metadata | `201 movement` plus balance; insufficient inventory, version, IC, reconciliation | Atomic ledger+balance+audit+outbox; `inventory.adjusted` / `inventory.balance_changed` |
-| E070 | `POST /inventory/counts`; apply authorized physical count | `inventory.count`; branch/location | `C`; body client command ID*, location/product*, `counted_quantity*`, `expected_version*`, reason/note, occurred_at | `201` adjustment movement and balance; insufficient inventory, version, IC | No independent count table in approved model; response records calculated delta. Persistent count workflow is open; `inventory.count_applied` / `inventory.balance_changed` |
-| E071 | `POST /inventory/movements/{movement_id}/reversals`; compensate movement | `inventory.reverse`; original scope | `C`; body client UUID*, reason_code*, note, expected balance version*, occurred_at | `201 reversal movement` and balance; already reversed, insufficient, version, IC | Never edits original; `inventory.movement_reversed` / `inventory.balance_changed` |
+| E067 | `GET /inventory/balances`; current projections | `inventory.read`; branch | `S`; cursor, limit, branch_id*, location_id, `product_variant_id`, changed_after | `200 balances` with variant identity, exact quantities, version, checkpoint/freshness; Common | Balance is read-only projection; — / — |
+| E068 | `GET /inventory/movements`; posted ledger history | `inventory.read`; branch | `S`; cursor, limit, branch/location/`product_variant_id`/type/status/reference, occurred_from/to | `200 movements`; Common | Status vocabulary is `draft,pending,posted,cancelled,reversed`; stable `(occurred_at,id)`; — / — |
+| E069 | `POST /inventory/adjustments`; create and post adjustment | `inventory.adjust`; branch/location | `C`; body client movement UUID*, location*, `product_variant_id*`, `direction*`=`adjustment_in|adjustment_out`, positive `quantity*`, reason_code*, note, `expected_version*`, occurred_at, offline metadata | `201` posted movement plus balance; `insufficient_inventory`, `negative_inventory_not_allowed`, `inventory_balance_conflict`, IC | Atomic ledger+balance+audit+outbox; `inventory.adjusted` / `inventory.stock.changed` |
+| E070 | `POST /inventory/counts`; apply authorized immediate physical count | `inventory.count`; branch/location | `C`; body client command ID*, location*, `product_variant_id*`, nonnegative `counted_quantity*`, `expected_version*`, reason/note, occurred_at | `201` posted adjustment movement and balance; `insufficient_inventory`, `inventory_balance_conflict`, IC | Response records calculated direction and positive delta; persistent count workflow remains E115-E123; `inventory.count_applied` / `inventory.stock.changed` |
+| E071 | `POST /inventory/movements/{movement_id}/reversals`; compensate posted movement | `inventory.reverse`; original scope | `C`; body client UUID*, reason_code*, note, expected balance version*, occurred_at | `201` posted reversal movement and balance; `movement_already_reversed`, `insufficient_inventory`, `inventory_balance_conflict`, IC | Never edits original; `inventory.movement_reversed` / `inventory.stock.changed` |
 | E072 | `GET /inventory/changes`; incremental balances/movements | `inventory.read`; branch | `R`; `since_checkpoint*`, limit, branch/location filters | `200` ordered changes/tombstones and next checkpoint; invalid checkpoint/scope | Recovery/read model only; — / — |
 
 Inventory balances have no POST/PATCH endpoint. Every accepted mutation creates an immutable movement, and the initial policy rejects a resulting negative on-hand balance.
@@ -598,7 +598,64 @@ Common rules:
 | E137 | `PUT /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; no behavior frozen |
 | E138 | `DELETE /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; logical revocation later |
 
-Reserved inventory and catalog errors are `insufficient_stock`, `inventory_version_conflict`, `inventory_count_in_progress`, `inventory_location_inactive`, `product_variant_inactive`, `duplicate_sku`, `duplicate_barcode`, `duplicate_option_code`, `duplicate_option_value_code`, `option_combination_conflict`, `invalid_product_state`, `reservation_expired`, `reservation_already_completed`, `transfer_invalid_transition`, `transfer_quantity_exceeded`, `idempotency_payload_mismatch`, `reconciliation_required`, and `inventory_unit_locked`.
+#### 19.1.1 Canonical inventory contract overlay
+
+The following rules are normative for E064-E072 and E108-E135:
+
+- Inventory identity in request fields, response fields, filters, lines, balance
+  keys, transfer lines, reservation lines, count lines, and kardex is
+  `product_variant_id`. `product_id` may appear only as derived catalog metadata.
+- Persisted movement status is one of `draft`, `pending`, `posted`, `cancelled`,
+  or `reversed`. Legal transitions are `draft -> pending -> posted`,
+  `draft|pending -> cancelled`, and `posted -> reversed` only when the full
+  compensating movement posts atomically.
+- Persisted movement-line quantities are positive and nonzero. Direction is
+  explicit. Adjustment input uses `adjustment_in` or `adjustment_out`; transfer
+  input uses source/destination locations; count input is a nonnegative absolute
+  quantity from which the server derives direction and positive delta.
+- E065, E069-E071, E109, E111-E114, E116, E118, E120-E123, E125, E127-E128,
+  E134, and E135 require `Idempotency-Key`. Reusing a key with different
+  canonical content returns `idempotency_conflict`.
+- E066 and E133 require `If-Match`. E111-E114, E118-E123, and E127-E128 require
+  the published aggregate base version and may additionally expose a strong
+  ETag. Read-only E064, E067-E068, E072, E108, E110, E115, E117, E124, E126,
+  and E129-E132 require neither header.
+- Collection endpoints use stable opaque cursor pagination and only their
+  allowlisted company/branch/location/variant/status/time/reference filters.
+- Mutations return the affected aggregate and version. Stock-affecting commands
+  also return posted movement ID and resulting balance versions.
+- Canonical stock errors are those listed below. General errors remain
+  `validation_error`, `resource_not_found`, `permission_denied`,
+  `version_conflict`, and `idempotency_conflict`.
+- E065-E066 use `inventory_location.manage`. No
+  `inventory.location.manage` permission exists.
+- Stock effects emit `inventory.stock.changed` once per changed balance.
+  `inventory.balance_changed` is replaced and must not be emitted.
+- Every material mutation records audit and transactional outbox facts. General
+  realtime payloads omit cost.
+
+Reserved inventory and catalog errors are `insufficient_inventory`, `negative_inventory_not_allowed`, `inventory_location_not_found`, `inventory_location_inactive`, `invalid_movement_state`, `movement_already_posted`, `movement_already_reversed`, `inventory_balance_conflict`, `inventory_reconciliation_required`, `inventory_count_in_progress`, `product_variant_inactive`, `duplicate_sku`, `duplicate_barcode`, `duplicate_option_code`, `duplicate_option_value_code`, `option_combination_conflict`, `invalid_product_state`, `reservation_expired`, `reservation_already_completed`, `transfer_invalid_transition`, `transfer_quantity_exceeded`, `idempotency_conflict`, and `inventory_unit_locked`.
+
+`insufficient_stock`, `inventory_version_conflict`, `reconciliation_required`, and `idempotency_payload_mismatch` are replaced inventory aliases and are not active canonical errors for E064-E072 or E108-E135. `insufficient_inventory` returns HTTP `409`, is not automatically retryable without a changed command or authoritative refresh, and may expose only safe exact quantities and current versions. It never exposes SQL, constraint, or internal lock details.
+
+| Canonical error | HTTP | Retry policy | Safe optional details |
+| --- | --- | --- | --- |
+| `insufficient_inventory` | 409 | Change command or refresh authority first | requested and available exact quantities, current version |
+| `negative_inventory_not_allowed` | 409 | Not unchanged | resulting exact quantity, policy scope |
+| `inventory_location_not_found` | 404 | Not unchanged | none |
+| `inventory_location_inactive` | 409 | Only after authorized lifecycle change | location ID and safe status/blocked direction |
+| `invalid_movement_state` | 409 | Only after aggregate refresh | current status and version |
+| `movement_already_posted` | 409 | Use reversal contract when applicable | movement ID, current status/version |
+| `movement_already_reversed` | 409 | No | original and reversal IDs |
+| `inventory_balance_conflict` | 409 | Refresh, reconcile, and submit a new command | expected/current balance versions |
+| `inventory_reconciliation_required` | 409 | Recover authoritative state first | safe checkpoint and affected aggregate IDs |
+| `inventory_unit_locked` | 409 | No direct retry | variant ID and safe lock reason |
+| `version_conflict` | 409 | Refresh aggregate and submit a new command | expected/current versions |
+| `idempotency_conflict` | 409 | New key only for a genuinely new command | operation scope; never hashes or stored payload |
+
+Messages remain stable, user-safe summaries of these conditions. Detail fields
+are allowlisted, cost-redacted, tenant-scoped, and omit SQL text, constraints,
+lock diagnostics, stack traces, request hashes, and unrestricted payloads.
 
 `validation_error`, `resource_not_found`, `permission_denied`, and `version_conflict` reuse the global error contract. `option_in_use` is not reserved because no physical-delete endpoint exists: E141 and E144 retire records logically, preserve relational mappings, and use `invalid_product_state` only when the requested lifecycle transition violates product invariants.
 
@@ -790,13 +847,13 @@ Response:
 Request:
 
 ```json
-{"id":"018f0000-0000-7000-8000-000000000040","inventory_location_id":"018f0000-0000-7000-8000-000000000041","product_id":"018f0000-0000-7000-8000-000000000042","quantity":"-5.000000","reason_code":"damage","expected_version":8,"occurred_at":"2026-07-22T16:10:00.000Z"}
+{"id":"018f0000-0000-7000-8000-000000000040","inventory_location_id":"018f0000-0000-7000-8000-000000000041","product_variant_id":"018f0000-0000-7000-8000-000000000042","direction":"adjustment_out","quantity":"5.000000","reason_code":"damage","expected_version":8,"occurred_at":"2026-07-22T16:10:00.000Z"}
 ```
 
 Response:
 
 ```json
-{"error":{"code":"insufficient_inventory","message":"The movement would produce a negative inventory balance.","details":{"available_quantity":"3.000000","requested_delta":"-5.000000","current_version":8},"request_id":"018f0000-0000-7000-8000-000000000043","correlation_id":"018f0000-0000-7000-8000-000000000044"}}
+{"error":{"code":"insufficient_inventory","message":"The requested inventory quantity is not available.","details":{"available_quantity":"3.000000","requested_quantity":"5.000000","current_version":8},"request_id":"018f0000-0000-7000-8000-000000000043","correlation_id":"018f0000-0000-7000-8000-000000000044"}}
 ```
 
 ### EX07 — Complete sale accepted

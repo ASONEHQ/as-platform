@@ -366,9 +366,9 @@ flowchart LR
 
 | Item | Specification |
 | --- | --- |
-| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `inventory_location_id uuid*`; `product_id uuid*`; `quantity_on_hand numeric(19,6)*`; `quantity_reserved numeric(19,6)*`; `updated_at*`; `version bigint*` |
-| Foreign keys | Composite location and same-company product |
-| Unique/checks | Unique `(company_id,inventory_location_id,product_id)`; reserved nonnegative; negative on-hand policy deferred/configured |
+| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `inventory_location_id uuid*`; `product_variant_id uuid*`; `quantity_on_hand numeric(19,6)*`; `quantity_reserved numeric(19,6)*`; `quantity_in_transit numeric(19,6)*`; `updated_at*`; `version bigint*` |
+| Foreign keys | Composite location and same-company product variant |
+| Unique/checks | Unique `(company_id,inventory_location_id,product_variant_id)`; on-hand, reserved, and in-transit nonnegative; reserved cannot exceed on-hand |
 | Ownership | Company and branch scoped |
 | Delete/audit | Never manually edited/deleted; derived only from movements and rebuildable |
 | Offline | Cached projection with checkpoint; not an offline authority; optimistic version detects stale commands |
@@ -379,11 +379,11 @@ flowchart LR
 
 | Item | Specification |
 | --- | --- |
-| Key fields | `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `inventory_location_id uuid*`; `product_id uuid*`; `movement_type text*`; `quantity numeric(19,6)*`; `occurred_at*`; `reference_type text*`; `reference_id uuid`; `created_at*`; `created_by uuid*`; `device_id uuid`; `sync_operation_id uuid`; `reversal_of_id uuid`; `balance_version_after bigint*` |
-| Foreign keys | Composite location, product, actor, device, sync operation, optional reversed movement |
-| Unique/checks | `quantity <> 0`; allowed type; reversal uniqueness; referenced company/branch must match |
+| Key fields | Header: `id uuid*`; `company_id uuid*`; `branch_id uuid*`; `movement_type text*`; `status text*`; `occurred_at*`; `posted_at`; references, actors, device/sync fields, `reversal_of_id uuid`; `version bigint*`. Lines: `product_variant_id uuid*`; positive `quantity numeric(19,6)*`; explicit effect/source/destination; exact deltas and before/after versions |
+| Foreign keys | Tenant-safe movement lines, locations, product variants, actors, devices, sync operations, and optional reversed movement |
+| Unique/checks | Line `quantity > 0`; explicit nonzero effect; canonical status; full-reversal uniqueness; referenced company/branch must match |
 | Ownership | Company and branch scoped |
-| Delete/audit | Immutable; correction is compensating movement; itself provides inventory audit evidence |
+| Delete/audit | Posted header and lines are immutable; correction is a compensating movement; itself provides inventory audit evidence |
 | Offline | Client UUID + idempotency; server applies transactionally with balance version check and returns conflict/reconciliation outcome |
 
 ### 6.6 Sales
@@ -669,7 +669,7 @@ The core documents **24 mandatory invariants**:
 14. A refund references one original sale and cannot exceed the remaining refundable quantity/value.
 15. Refund items reference sale items from that same original sale.
 16. Inventory cannot change without an inventory movement.
-17. Inventory balances equal the fold of committed movements and can be rebuilt.
+17. Inventory balances equal the fold of posted movements and can be rebuilt.
 18. A movement reversal references one prior movement and cannot be applied twice.
 19. Product price intervals cannot overlap for the same product, scope, type, and currency.
 20. A user operates only in companies and branches granted by active server-side assignments.
@@ -865,7 +865,7 @@ The reconciled mandatory rules are:
 - Available stock is on hand minus reserved.
 - Corrections are compensating movements and balances have no mutation endpoint.
 - Quantities use `numeric(19,6)`; costs use exact `numeric(19,4)` in company currency.
-- Unit and quantity scale lock after the first committed movement.
+- Unit and quantity scale lock after the first posted movement.
 - Lots, expiration, serials, physical-unit RFID/NFC, manufacturing, suppliers, and purchasing remain outside V1.
 
 The original `categories`, product-level inventory fields, and three-table inventory descriptions above are retained as historical baseline. Migration 0004 settles the compatible physical naming transition to `product_categories` and variant references.

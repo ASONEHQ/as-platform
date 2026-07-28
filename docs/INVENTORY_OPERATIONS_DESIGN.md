@@ -46,15 +46,23 @@ overselling and partial posting.
 
 | Topic | Existing conflict | Design decision |
 | --- | --- | --- |
-| Stock identity | Older E067-E070/core rows use `product_id` | Use `product_variant_id`; reconcile examples before implementation |
-| Movement terminal name | Existing design says `committed`; task vocabulary says `posted` | Canonical physical status is `posted`; historical `committed` means posted |
-| Adjustment sign | E069 accepts signed quantity | Boundary may accept signed input; stored line quantity is positive with explicit direction |
-| Insufficient-stock code | `insufficient_stock` and `insufficient_inventory` coexist | Canonical new code is `insufficient_inventory`; preserve published aliases only at compatibility boundaries |
-| Balance event | Both `inventory.balance_changed` and `inventory.stock.changed` are reserved | New variant-aware producers emit only `inventory.stock.changed` |
-| Location permission | Requested dotted form conflicts with seeded key | Retain `inventory_location.manage` |
+| Stock identity | Resolved | `product_variant_id`; `product_id` is catalog metadata only |
+| Movement state | Resolved | `draft,pending,posted,cancelled,reversed`; `committed` is not a persisted inventory state |
+| Adjustment sign | Resolved | E069 uses positive quantity plus `adjustment_in|adjustment_out` |
+| Insufficient-stock code | Resolved | `insufficient_inventory`; `insufficient_stock` is replaced |
+| Balance event | Resolved | Only `inventory.stock.changed`; `inventory.balance_changed` is replaced |
+| Location permission | Resolved | `inventory_location.manage` |
 | Count model | E070 is immediate while E115-E123 are durable | Preserve both; E070 does not replace the durable workflow |
 
 No existing endpoint ID or event name is reassigned.
+
+### Block 3.1A contract readiness
+
+The inventory identity, movement state, quantity direction, insufficient-stock
+error, stock-change event, and location-management permission are now reconciled
+across the core model, API contract, realtime contract, and inventory design.
+Migration 0005 may use these canonical names without compatibility columns,
+duplicate states, duplicate events, or permission aliases.
 
 ## Business model
 
@@ -86,7 +94,7 @@ All quantities use exact `numeric(19,6)` and JSON decimal strings.
 | Quantity | Definition | Stored or derived |
 | --- | --- | --- |
 | `quantity_on_hand` | Physical quantity under location custody | Stored projection |
-| `quantity_reserved` | On-hand committed by active reservations | Stored projection |
+| `quantity_reserved` | On-hand allocated to active reservations | Stored projection |
 | `quantity_available` | New commitment capacity | Derived: on hand minus reserved |
 | `quantity_in_transit` | Shipped, not finally received/rejected | Stored in destination-scoped transit balance |
 | `quantity_damaged` | On-hand in damaged locations | Derived |
@@ -115,8 +123,8 @@ balance projection**. It is not general event sourcing.
 4. Transfer custody balances by workflow reference and variant.
 5. Ledger, projection, workflow, cost, audit, outbox, and idempotency commit or
    roll back together.
-6. Posted headers and lines cannot be updated or deleted.
-7. Reversal creates a new movement.
+6. Posted/reversed lines cannot be updated or deleted; a posted header can only become `reversed` after its compensating movement posts.
+7. Reversal creates a new movement and transitions the original header to `reversed`.
 8. Folding posted lines reconstructs all balance quantities.
 9. Drift is detected and never silently repaired.
 10. Important records are retired or compensated, never destructively deleted.
@@ -222,11 +230,12 @@ than redundant movement types.
 ```text
 draft -> pending -> posted
 draft|pending -> cancelled
-posted -> compensated by a new posted reversal
+posted -> reversed: compensating movement posted
 ```
 
-Posted movements are immutable. Cancellation means no stock effect occurred.
-The original movement remains posted after reversal; `is_reversed` is derived.
+Posted lines are immutable. Cancellation means no stock effect occurred. A
+successful full reversal posts a new compensating movement and atomically
+transitions the original header from `posted` to `reversed`.
 
 ## Negative inventory
 
@@ -320,6 +329,7 @@ creation therefore serialize on the authoritative balance rows.
 
 - Only posted movements may be reversed.
 - A new reversal mirrors every original quantity and cost effect.
+- The original lines remain unchanged and its header becomes `reversed`.
 - One full reversal is allowed per original.
 - Partial reversal is outside initial scope; returns and transfer discrepancies
   use their own commands.
@@ -445,8 +455,10 @@ strict schemas, audit, outbox, `Idempotency-Key`, and required ETag/base version
 | `version_conflict` | Aggregate ETag/base version mismatch |
 | `idempotency_conflict` | Key reused with different canonical payload |
 
-Published aliases must be reconciled in the owning contract block before code.
-Unknown PostgreSQL errors stay sanitized.
+The earlier aliases `insufficient_stock`, `inventory_version_conflict`,
+`reconciliation_required`, and `idempotency_payload_mismatch` are replaced for
+inventory operations and are not active canonical errors. Unknown PostgreSQL
+errors stay sanitized.
 
 ## Test matrix
 

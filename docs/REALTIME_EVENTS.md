@@ -316,17 +316,18 @@ For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `
 | --- | --- | --- | --- | --- | --- |
 | `inventory_location.created` | inventory / `inventory_location` | branch / `inventory.read` | location ID, code/name/type/status, version; `P-INV` | location creation / `INV` | V / CP |
 | `inventory_location.updated` | inventory / `inventory_location` | branch / `inventory.read` | ID, changed fields, status, version; `P-INV` | location update / `INV` | V / CP |
-| `inventory.adjusted` | inventory / `inventory_movement` | branch / `inventory.read` | movement/location/product IDs, exact quantity, reason, balance version; `P-INV` | committed adjustment / `INV` | C / CP |
-| `inventory.count_applied` | inventory / `inventory_movement` | branch / `inventory.read` | count reference, movement IDs, affected product/location, balance versions; `P-INV` | committed count result / `INV` | C / CP |
-| `inventory.movement_reversed` | inventory / `inventory_movement` | branch / `inventory.read` | reversal/original IDs, exact quantity, reason, balance version; `P-INV` | committed compensating movement / `INV` | C / CP |
-| `inventory.balance_changed` | inventory / `inventory_balance` | branch / `inventory.read` | location/product IDs, exact on-hand/reserved/available, version, source movement ID; `P-INV` | accepted inventory movement / `INV` | V / CP |
+| `inventory.adjusted` | inventory / `inventory_movement` | branch / `inventory.read` | movement/location/variant IDs, positive exact quantity, direction, reason, balance version; `P-INV` | posted adjustment / `INV` | C / CP |
+| `inventory.count_applied` | inventory / `inventory_movement` | branch / `inventory.read` | count reference, movement IDs, affected variant/location, balance versions; `P-INV` | posted count result / `INV` | C / CP |
+| `inventory.movement_reversed` | inventory / `inventory_movement` | branch / `inventory.read` | reversal/original IDs, positive exact quantities with explicit effects, reason, balance versions; `P-INV` | posted compensating movement / `INV` | C / CP |
 
-TASK 09.4 reserves the following additional events. They are contractual proposals, not implemented producers. The existing `inventory.balance_changed` name remains reserved for compatibility; implementation must select one canonical stock-change fact and must not emit both names for one balance effect. The preferred variant-aware name is `inventory.stock.changed`.
+`inventory.balance_changed` is replaced by `inventory.stock.changed`. It is not an active event type and no new producer may emit it. No dual-publish compatibility period is approved.
+
+TASK 09.4 reserves the following additional events. They are contractual proposals, not implemented producers. `inventory.stock.changed` is the single canonical stock-change fact.
 
 | Event type | Producer / aggregate | Scope / minimum permission | Minimum safe `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
-| `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | location and variant IDs; on-hand, reserved, available and in-transit decimal strings; balance version; source movement ID; `P-INV` | committed balance effect / `INV` | V / CP |
-| `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | movement ID/type/status, reason code, reference type/ID, occurred_at, affected line count; authorized decimal strings; `P-INV` | committed movement / `INV` | V / CP |
+| `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | branch/location/`product_variant_id`; on-hand, reserved, available and in-transit decimal strings; reason code; balance version; source movement ID; occurred_at; correlation_id; `P-INV`; no costs | posted balance effect / `INV` | V / CP |
+| `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | movement ID/type/status, reason code, reference type/ID, occurred_at, affected line count; authorized positive decimal strings and explicit directions; `P-INV` | posted movement / `INV` | V / CP |
 | `inventory.transfer.created` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination locations, status, line count, version; `P-INV` | committed request / transfer detail | V / CP |
 | `inventory.transfer.approved` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe decision reason, version, approved_at; `P-INV` | committed approval / transfer detail | V / CP |
 | `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, shipped quantity summaries as decimal strings, movement ID, version, shipped_at; `P-INV` | committed shipment / transfer detail and `INV` | V / CP |
