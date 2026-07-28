@@ -15,6 +15,10 @@ import {
   inventoryLocations,
   inventoryMovementLines,
   inventoryMovements,
+  inventoryReservationLines,
+  inventoryReservations,
+  inventoryTransferLines,
+  inventoryTransfers,
   productBarcodes,
   productCategories,
   productOptionDefinitions,
@@ -64,6 +68,10 @@ const tableNames = [
   inventoryBalances,
   inventoryMovements,
   inventoryMovementLines,
+  inventoryTransfers,
+  inventoryTransferLines,
+  inventoryReservations,
+  inventoryReservationLines,
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
@@ -98,6 +106,10 @@ describe('database foundation schema', () => {
       'inventory_balances',
       'inventory_movements',
       'inventory_movement_lines',
+      'inventory_transfers',
+      'inventory_transfer_lines',
+      'inventory_reservations',
+      'inventory_reservation_lines',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
   });
@@ -314,5 +326,48 @@ describe('database foundation schema', () => {
       'string',
     );
     expect(lines.columns.find((item) => item.name === 'quantity')?.dataType).toBe('string');
+  });
+
+  it('defines tenant-safe transfer and reservation physical foundations', () => {
+    const transfers = getTableConfig(inventoryTransfers);
+    const transferLines = getTableConfig(inventoryTransferLines);
+    const reservations = getTableConfig(inventoryReservations);
+    const reservationLines = getTableConfig(inventoryReservationLines);
+
+    expect(transfers.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_transfers_source_branch_scope_fk',
+        'inventory_transfers_destination_branch_scope_fk',
+        'inventory_transfers_source_location_scope_fk',
+        'inventory_transfers_destination_location_scope_fk',
+        'inventory_transfers_transit_location_scope_fk',
+        'inventory_transfers_shipment_movement_scope_fk',
+        'inventory_transfers_receipt_movement_scope_fk',
+      ]),
+    );
+    expect(transferLines.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_transfer_lines_transfer_scope_fk',
+        'inventory_transfer_lines_variant_scope_fk',
+      ]),
+    );
+    expect(reservations.foreignKeys.map((item) => item.getName())).toContain(
+      'inventory_reservations_branch_scope_fk',
+    );
+    expect(reservationLines.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_reservation_lines_reservation_scope_fk',
+        'inventory_reservation_lines_variant_scope_fk',
+        'inventory_reservation_lines_location_scope_fk',
+      ]),
+    );
+    expect(
+      reservationLines.columns.find((item) => item.name === 'remaining_quantity'),
+    ).toBeUndefined();
+    for (const column of [
+      ...transferLines.columns.filter((item) => item.name.endsWith('_quantity')),
+      ...reservationLines.columns.filter((item) => item.name.endsWith('_quantity')),
+    ])
+      expect(column.dataType).toBe('string');
   });
 });

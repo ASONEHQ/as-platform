@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 implements the catalog foundation. Block 3.2A adds the physical `inventory_locations`, `inventory_balances`, `inventory_movements`, and `inventory_movement_lines` tables through migration `0005_inventory_operations_foundation`. HTTP endpoints, posting and balance-mutation services, transfers, reservations, producers, consumers, workers, and hardware integrations do not yet exist.
+This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 implements the catalog foundation. Block 3.2A adds the physical `inventory_locations`, `inventory_balances`, `inventory_movements`, and `inventory_movement_lines` tables through migration `0005_inventory_operations_foundation`. Block 3.2B adds the physical transfer and reservation aggregates through migration `0006_inventory_transfers_and_reservations`. HTTP endpoints, orchestration, posting and balance-mutation services, producers, consumers, workers, and hardware integrations do not yet exist.
 
 The detailed TASK 09.4 Block 3.1 physical and operational design is documented
 in [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md).
@@ -239,6 +239,24 @@ No parallel `warehouses` entity is permitted.
 - All cross-company inventory references are rejected by physical foreign keys.
 - Immutability remains an application-service responsibility; no trigger or
   posting behavior is included in 0005.
+
+### Physical transfer and reservation foundation implemented by migration 0006
+
+- `inventory_transfers` uses the canonical requested, approved, shipped,
+  partially received, received, rejected, cancelled, and remainder-rejected
+  lifecycle. Row-local timestamp and actor consistency is enforced physically.
+- `inventory_transfer_lines` stores requested, shipped, received, and rejected
+  quantities as `numeric(19,6)` and enforces
+  `received + rejected <= shipped <= requested`.
+- `inventory_reservations` uses only active, confirmed, released, expired, and
+  cancelled states with owner types `pos_cart`, `event`, `booking`, and `order`.
+- `inventory_reservation_lines` owns the concrete inventory location and variant.
+  Its defensive `branch_id` enables composite foreign keys proving that each
+  line belongs to the reservation branch.
+- Remaining reserved quantity is derived as
+  `reserved_quantity - consumed_quantity - released_quantity`; it is not stored.
+- Migration 0006 creates no triggers, stock mutation, posting, orchestration,
+  expiration worker, audit producer, or outbox producer.
 
 ## Movement model and kardex
 

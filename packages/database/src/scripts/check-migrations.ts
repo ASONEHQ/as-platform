@@ -44,6 +44,10 @@ for (const required of [
   'inventory_balances',
   'inventory_movements',
   'inventory_movement_lines',
+  'inventory_transfers',
+  'inventory_transfer_lines',
+  'inventory_reservations',
+  'inventory_reservation_lines',
 ]) {
   if (!combinedSource.includes(`"${required}"`)) {
     throw new Error(`Migration history does not contain required table ${required}.`);
@@ -82,6 +86,17 @@ for (const requiredConstraint of [
   'inventory_movement_lines_variant_scope_fk',
   'inventory_movement_lines_source_scope_fk',
   'inventory_movement_lines_destination_scope_fk',
+  'inventory_transfers_source_location_scope_fk',
+  'inventory_transfers_destination_location_scope_fk',
+  'inventory_transfers_transit_location_scope_fk',
+  'inventory_transfers_shipment_movement_scope_fk',
+  'inventory_transfers_receipt_movement_scope_fk',
+  'inventory_transfer_lines_transfer_scope_fk',
+  'inventory_transfer_lines_variant_scope_fk',
+  'inventory_reservations_branch_scope_fk',
+  'inventory_reservation_lines_reservation_scope_fk',
+  'inventory_reservation_lines_location_scope_fk',
+  'inventory_reservation_lines_variant_scope_fk',
 ]) {
   if (!combinedSource.includes(`"${requiredConstraint}"`)) {
     throw new Error(

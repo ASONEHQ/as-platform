@@ -23,6 +23,23 @@ Physical decisions confirmed by 0005:
 - metadata is an optional JSON object limited to 8192 serialized bytes;
 - `quantity_available` remains derived and is not stored;
 - no lookup tables, seed rows, triggers, transfer tables, or reservation tables
+
+Physical decisions confirmed by
+`0006_inventory_transfers_and_reservations`:
+
+- exactly four tables: `inventory_transfers`, `inventory_transfer_lines`,
+  `inventory_reservations`, and `inventory_reservation_lines`
+- transfer states are `requested`, `approved`, `shipped`,
+  `partially_received`, `received`, `rejected`, `cancelled`, and
+  `remainder_rejected`
+- reservation states are `active`, `confirmed`, `released`, `expired`, and
+  `cancelled`; owner types are `pos_cart`, `event`, `booking`, and `order`
+- quantities use `numeric(19,6)` and remaining reservation quantity is derived
+- reservation location belongs to each line; a defensive line `branch_id`
+  supports branch-safe composite foreign keys without changing aggregate scope
+- lifecycle checks are row-local; movement compatibility, orchestration,
+  posting, balance mutation, expiration jobs, audit, and outbox behavior remain
+  deferred to service blocks
   are introduced.
 
 ## Executive summary

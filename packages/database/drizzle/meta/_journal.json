@@ -43,6 +43,13 @@
       "when": 1785197737724,
       "tag": "0005_inventory_operations_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785200196513,
+      "tag": "0006_inventory_transfers_and_reservations",
+      "breakpoints": true
     }
   ]
 }
