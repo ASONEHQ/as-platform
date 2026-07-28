@@ -17,6 +17,17 @@ import { registerProductCatalogRoutes } from '../modules/catalog/product-catalog
 import { ProductCatalogService } from '../modules/catalog/product-catalog.service.js';
 import { registerProductOptionsRoutes } from '../modules/catalog/product-options.routes.js';
 import { ProductOptionsService } from '../modules/catalog/product-options.service.js';
+import {
+  InventoryBalanceReadRepository,
+  InventoryLocationRepository,
+  InventoryMovementReadRepository,
+} from '../modules/inventory/inventory.repository.js';
+import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
+import {
+  InventoryBalanceReadService,
+  InventoryLocationService,
+  InventoryMovementReadService,
+} from '../modules/inventory/inventory.service.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
@@ -93,6 +104,19 @@ export async function registerPlugins(
         app,
         authentication,
         new ProductOptionsService(new ProductCatalogRepository(options.infrastructure.database)),
+      );
+      registerInventoryRoutes(
+        app,
+        authentication,
+        new InventoryLocationService(
+          new InventoryLocationRepository(options.infrastructure.database),
+        ),
+        new InventoryBalanceReadService(
+          new InventoryBalanceReadRepository(options.infrastructure.database),
+        ),
+        new InventoryMovementReadService(
+          new InventoryMovementReadRepository(options.infrastructure.database),
+        ),
       );
     }
   }

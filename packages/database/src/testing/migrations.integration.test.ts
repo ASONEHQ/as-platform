@@ -213,8 +213,8 @@ integration('PostgreSQL migrations', () => {
       );
       await connection.query(
         `insert into permissions (id, code, description, domain)
-         values ($1, 'company.read', 'Read company', 'company')`,
-        [permissionId],
+         values ($1, $2, 'Read company', 'company')`,
+        [permissionId, `migration.company_read_${permissionId.replaceAll('-', '')}`],
       );
       await connection.query(
         'insert into role_permissions (company_id, role_id, permission_id) values ($1, $2, $3)',

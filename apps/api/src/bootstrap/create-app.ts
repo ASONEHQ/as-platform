@@ -15,6 +15,7 @@ export interface CreateAppOptions {
 
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
+    ajv: { customOptions: { removeAdditional: false } },
     bodyLimit: options.config.requestBodyLimitBytes,
     keepAliveTimeout: options.config.keepAliveTimeoutMs,
     logController: new LogController({ disableRequestLogging: true }),
