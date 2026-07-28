@@ -484,6 +484,16 @@ mutation, or E129.
   generic draft aggregate.
 - E145 creates a header without lines. IDs, movement number, `draft` status,
   version, actors, and timestamps are server-owned.
+- The E145 number is `IMV-<lowercase UUIDv7 without hyphens>` and matches
+  `^IMV-[0-9a-f]{32}$`. It is derived deterministically from the generated
+  movement ID and persisted with it in the same insert transaction.
+- Movement numbers are opaque, immutable, non-sequential, non-reusable, and
+  contain no company, branch, year, type, fiscal, accounting, or legal-folio
+  semantics. Exact idempotency replay returns the stored ID/number pair.
+- Number allocation uses no `MAX()+1`, sequence, folio table, or allocation
+  lock. UUIDv7 generation is safe across concurrent API instances, while the
+  existing `(company_id,movement_number)` unique constraint remains defense in
+  depth.
 - E147, E148, and E150-E152 use the parent movement strong ETag. Every successful
   mutation increments the parent version once; lines have no version.
 - E145, E148, and E150 require tenant/actor/operation-scoped idempotency.

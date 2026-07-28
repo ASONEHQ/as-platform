@@ -360,6 +360,14 @@ the server derives an equal `base_quantity`. Client cost input is forbidden;
 valuation remains posting-owned, and visible cost evidence still requires
 `inventory.cost.read`.
 
+Movement numbers are opaque server identifiers derived from the generated
+UUIDv7 movement ID: lowercase canonical UUID, hyphens removed, prefixed with
+`IMV-`. The exact regex is `^IMV-[0-9a-f]{32}$`. ID and number are inserted
+atomically. The number is immutable, non-sequential, non-reusable, and carries
+no company, branch, date, type, accounting, fiscal, or legal-folio semantics.
+Generation needs no sequence, folio table, `MAX()+1`, or allocation lock, and
+exact idempotent replay returns the original pair.
+
 ### Transfer
 
 ```mermaid

@@ -685,7 +685,7 @@ E146 adds aggregate detail without changing E068.
 
 | ID | Proposed method and route; purpose | Permission / scope | Inputs | Success / stable errors | Idempotency, concurrency, effects |
 | --- | --- | --- | --- | --- | --- |
-| E145 | `POST /inventory/movements`; create draft header | `inventory.adjust`; authorized branch | `C`; `branch_id*`, `movement_type*`, occurred_at, reason_code, reference pair, source_document_number, notes | `201 movement detail`; Common+V, `invalid_movement_type`, IC | `Idempotency-Key`; status/ID/number/version are server-owned; audit only |
+| E145 | `POST /inventory/movements`; create draft header | `inventory.adjust`; authorized branch | `C`; `branch_id*`, `movement_type*`, occurred_at, reason_code, reference pair, source_document_number, notes | `201 movement detail`; Common+V, `invalid_movement_type`, IC | `Idempotency-Key`; UUIDv7 ID and deterministic `IMV-<uuid-without-hyphens>` number are server-owned; audit only |
 | E146 | `GET /inventory/movements/{movement_id}`; read movement detail | `inventory.read`; movement branch | No query parameters | `200 movement detail`; `inventory_movement_not_found` | Strong ETag; no embedded lines; no mutation |
 | E147 | `PATCH /inventory/movements/{movement_id}`; edit draft header | `inventory.adjust`; movement branch | `O`; allowlisted header fields | `200 movement detail`; Common+V+OC, `invalid_movement_state` | Strong `If-Match`; one aggregate-version increment; audit only |
 | E148 | `POST /inventory/movements/{movement_id}/cancel`; cancel draft | `inventory.adjust`; movement branch | `C+O`; `reason_code*`, note | `200 movement detail`; Common+V+IC, state errors | `Idempotency-Key` and strong `If-Match`; exact terminal replay; audit only |
@@ -719,6 +719,34 @@ lifecycle timestamps, and header metadata are rejected. `occurred_at` defaults
 to server time. E147 may edit those same descriptive fields while the movement
 is `draft`; changing branch or movement type is allowed only while it has zero
 lines. The reference fields are both null/omitted or both present.
+
+#### Movement number
+
+`movement_number` is an opaque, immutable, server-generated identifier with
+canonical format `IMV-<UUIDv7 without hyphens>` and regex
+`^IMV-[0-9a-f]{32}$`. Given movement ID
+`019c12e4-7a91-7e52-b84a-b41592784f31`, its movement number is
+`IMV-019c12e47a917e52b84ab41592784f31`.
+
+E145 generates `movement_id` with the approved UUIDv7 application utility,
+serializes it in lowercase canonical form, removes its hyphens, prefixes
+`IMV-`, and inserts both values in the same transaction. The value is
+non-sequential, non-reusable, deterministic for that generated ID, globally
+unique in practice, and additionally protected by
+`UNIQUE(company_id,movement_number)`.
+
+Clients cannot provide or modify the number, calculate a successor, depend on
+contiguous order, or infer company, branch, year, movement type, or sequence
+from it. APIs may display and filter by it only as an opaque value. It is not a
+fiscal folio, ticket number, accounting sequence, purchase-receipt number,
+transfer number, or legally sequential document number; those identifiers
+belong to their owning workflows.
+
+Allocation uses neither `MAX(number)+1`, a PostgreSQL sequence, a folio table,
+nor number-allocation locks, so it is safe across API instances, companies, and
+branches. An exact E145 idempotency replay returns the originally stored
+`movement_id` and `movement_number`; after commit, no retry generates or exposes
+a second number.
 
 E146 returns a strict movement detail with ID, branch, movement number, exact
 type/status, reason/reference fields, source document number, notes, version,
