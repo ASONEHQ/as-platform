@@ -40,6 +40,10 @@ for (const required of [
   'product_variants',
   'product_variant_option_values',
   'product_barcodes',
+  'inventory_locations',
+  'inventory_balances',
+  'inventory_movements',
+  'inventory_movement_lines',
 ]) {
   if (!combinedSource.includes(`"${required}"`)) {
     throw new Error(`Migration history does not contain required table ${required}.`);
@@ -68,6 +72,16 @@ for (const requiredConstraint of [
   'product_variants_product_option_signature_active_uq',
   'product_barcodes_company_barcode_active_uq',
   'product_barcodes_variant_primary_active_uq',
+  'inventory_locations_branch_scope_fk',
+  'inventory_locations_company_branch_code_active_uq',
+  'inventory_locations_company_branch_default_active_uq',
+  'inventory_balances_location_scope_fk',
+  'inventory_balances_variant_scope_fk',
+  'inventory_movements_reversal_of_scope_fk',
+  'inventory_movement_lines_movement_scope_fk',
+  'inventory_movement_lines_variant_scope_fk',
+  'inventory_movement_lines_source_scope_fk',
+  'inventory_movement_lines_destination_scope_fk',
 ]) {
   if (!combinedSource.includes(`"${requiredConstraint}"`)) {
     throw new Error(

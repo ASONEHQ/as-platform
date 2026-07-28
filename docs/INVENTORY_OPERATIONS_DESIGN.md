@@ -6,6 +6,25 @@ This is the TASK 09.4 Block 3.1 design report. It creates no schema, migration,
 route, or production code. Authority remains, in order: accepted ADRs, published
 contracts, the reconciled core model, and this implementation design.
 
+TASK 09.4 Block 3.2A now implements the physical foundation in migration
+`0005_inventory_operations_foundation`: `inventory_locations`,
+`inventory_balances`, `inventory_movements`, and
+`inventory_movement_lines`. This does not implement posting, balance mutation,
+transfers, reservations, or HTTP behavior.
+
+Physical decisions confirmed by 0005:
+
+- every location and movement is branch-owned, including transit locations;
+- no default location is inserted or backfilled by the migration;
+- default creation is deferred to the controlled idempotent location service;
+- quantities are `numeric(19,6)` and costs are `numeric(19,4)`;
+- movement numbers and location codes are limited to 64 characters;
+- UOM uses the existing `unit_of_measure_code` primary key;
+- metadata is an optional JSON object limited to 8192 serialized bytes;
+- `quantity_available` remains derived and is not stored;
+- no lookup tables, seed rows, triggers, transfer tables, or reservation tables
+  are introduced.
+
 ## Executive summary
 
 AS ONE will use an immutable movement ledger as inventory accounting truth and a

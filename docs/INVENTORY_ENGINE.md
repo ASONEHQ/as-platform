@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 physically implements only the nine catalog tables, five technical units, domain primitives, and `inventory.cost.read`. Inventory ledger/workflow tables, HTTP endpoints, producers, consumers, workers, and hardware integrations do not yet exist.
+This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 implements the catalog foundation. Block 3.2A adds the physical `inventory_locations`, `inventory_balances`, `inventory_movements`, and `inventory_movement_lines` tables through migration `0005_inventory_operations_foundation`. HTTP endpoints, posting and balance-mutation services, transfers, reservations, producers, consumers, workers, and hardware integrations do not yet exist.
 
 The detailed TASK 09.4 Block 3.1 physical and operational design is documented
 in [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md).
@@ -222,6 +222,23 @@ The detailed logical specifications live in [CORE_DATA_MODEL.md](CORE_DATA_MODEL
 - `inventory_cost_history`
 
 No parallel `warehouses` entity is permitted.
+
+### Physical foundation implemented by migration 0005
+
+- Four tables only: locations, balances, movement headers, and movement lines.
+- Locations and movements require tenant-safe branch ownership; company-level
+  warehouses are not represented.
+- Approved types are `main`, `sales_floor`, `cafeteria`, `event_storage`,
+  `damaged`, `returns`, `transit`, and `virtual`.
+- A partial unique index permits at most one active default per branch, but 0005
+  creates no default data.
+- Balances use variant identity, store on-hand/reserved/in-transit and average
+  cost, and do not store available quantity.
+- Posted/reversed line quantities are positive with source/destination direction.
+- UOM references the implemented global `unit_of_measure_code`.
+- All cross-company inventory references are rejected by physical foreign keys.
+- Immutability remains an application-service responsibility; no trigger or
+  posting behavior is included in 0005.
 
 ## Movement model and kardex
 

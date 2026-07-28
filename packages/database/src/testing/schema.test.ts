@@ -11,6 +11,10 @@ import {
   companies,
   devices,
   idempotencyKeys,
+  inventoryBalances,
+  inventoryLocations,
+  inventoryMovementLines,
+  inventoryMovements,
   productBarcodes,
   productCategories,
   productOptionDefinitions,
@@ -56,6 +60,10 @@ const tableNames = [
   productVariants,
   productVariantOptionValues,
   productBarcodes,
+  inventoryLocations,
+  inventoryBalances,
+  inventoryMovements,
+  inventoryMovementLines,
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
@@ -86,6 +94,10 @@ describe('database foundation schema', () => {
       'product_variants',
       'product_variant_option_values',
       'product_barcodes',
+      'inventory_locations',
+      'inventory_balances',
+      'inventory_movements',
+      'inventory_movement_lines',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
   });
@@ -253,5 +265,54 @@ describe('database foundation schema', () => {
     expect(
       getTableConfig(unitsOfMeasure).columns.find((item) => item.name === 'code')?.primary,
     ).toBe(true);
+  });
+
+  it('defines the inventory physical foundation with tenant-safe constraints', () => {
+    const locations = getTableConfig(inventoryLocations);
+    const balances = getTableConfig(inventoryBalances);
+    const movements = getTableConfig(inventoryMovements);
+    const lines = getTableConfig(inventoryMovementLines);
+
+    expect(locations.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_locations_branch_scope_fk',
+        'inventory_locations_created_by_membership_fk',
+        'inventory_locations_updated_by_membership_fk',
+      ]),
+    );
+    expect(locations.indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'inventory_locations_company_branch_code_active_uq',
+        'inventory_locations_company_branch_default_active_uq',
+      ]),
+    );
+    expect(balances.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_balances_location_scope_fk',
+        'inventory_balances_variant_scope_fk',
+        'inventory_balances_last_movement_scope_fk',
+      ]),
+    );
+    expect(movements.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_movements_branch_scope_fk',
+        'inventory_movements_reversal_of_scope_fk',
+        'inventory_movements_reversed_by_scope_fk',
+      ]),
+    );
+    expect(lines.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_movement_lines_movement_scope_fk',
+        'inventory_movement_lines_variant_scope_fk',
+        'inventory_movement_lines_source_scope_fk',
+        'inventory_movement_lines_destination_scope_fk',
+        'inventory_movement_lines_unit_of_measure_code_units_of_measure_code_fk',
+      ]),
+    );
+    expect(balances.columns.find((item) => item.name === 'quantity_available')).toBeUndefined();
+    expect(balances.columns.find((item) => item.name === 'quantity_on_hand')?.dataType).toBe(
+      'string',
+    );
+    expect(lines.columns.find((item) => item.name === 'quantity')?.dataType).toBe('string');
   });
 });
