@@ -34,6 +34,8 @@ interface MovementRow {
   posted_at: Date | string | null;
   cancelled_at: Date | string | null;
   reversed_at: Date | string | null;
+  reversal_of_movement_id: string | null;
+  reversed_by_movement_id: string | null;
   created_at: Date | string;
   updated_at: Date | string;
   line_count: string;
@@ -63,7 +65,8 @@ interface IdempotencyRow {
 
 const MOVEMENT_COLUMNS = `m.id,m.company_id,m.branch_id,m.movement_number,m.movement_type,m.status,
  m.reason_code,m.reference_type,m.reference_id,m.source_document_number,m.notes,m.version::text,
- m.occurred_at,m.posted_at,m.cancelled_at,m.reversed_at,m.created_at,m.updated_at,
+ m.occurred_at,m.posted_at,m.cancelled_at,m.reversed_at,m.reversal_of_movement_id,
+ m.reversed_by_movement_id,m.created_at,m.updated_at,
  (select count(*)::text from inventory_movement_lines l
   where l.company_id=m.company_id and l.inventory_movement_id=m.id) line_count`;
 const LINE_COLUMNS = `id,inventory_movement_id,line_number,product_variant_id,
@@ -91,6 +94,8 @@ function movement(row: MovementRow): DraftMovement {
     postedAt: row.posted_at === null ? null : new Date(row.posted_at),
     cancelledAt: row.cancelled_at === null ? null : new Date(row.cancelled_at),
     reversedAt: row.reversed_at === null ? null : new Date(row.reversed_at),
+    reversalOfMovementId: row.reversal_of_movement_id,
+    reversedByMovementId: row.reversed_by_movement_id,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
     lineCount: Number(row.line_count),

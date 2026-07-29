@@ -20,6 +20,8 @@ import { InventoryDraftRepository } from './inventory-drafts.repository.js';
 import { InventoryDraftService } from './inventory-drafts.service.js';
 import { InventoryPostingRepository } from './inventory-posting.repository.js';
 import { InventoryPostingService } from './inventory-posting.service.js';
+import { InventoryReversalRepository } from './inventory-reversal.repository.js';
+import { InventoryReversalService } from './inventory-reversal.service.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
@@ -36,6 +38,7 @@ integration('PostgreSQL inventory E064-E068', () => {
   let movements: InventoryMovementReadService;
   let drafts: InventoryDraftService;
   let posting: InventoryPostingService;
+  let reversals: InventoryReversalService;
 
   const companyId = randomUUID();
   const otherCompanyId = randomUUID();
@@ -116,6 +119,7 @@ integration('PostgreSQL inventory E064-E068', () => {
     movements = new InventoryMovementReadService(new InventoryMovementReadRepository(database));
     drafts = new InventoryDraftService(new InventoryDraftRepository(database));
     posting = new InventoryPostingService(new InventoryPostingRepository(database));
+    reversals = new InventoryReversalService(new InventoryReversalRepository(database));
   });
 
   afterAll(async () => {
@@ -712,5 +716,214 @@ integration('PostgreSQL inventory E064-E068', () => {
       [companyId, insufficientId],
     );
     expect(failedEffects.rows[0]).toEqual({ audits: '0', events: '0' });
+  });
+
+  it('reverses a posted opening balance atomically with exact replay and immutable costs', async () => {
+    const location = (
+      await locations.create(context, 'reversal-location', {
+        branchId,
+        code: 'REVERSAL',
+        name: 'Reversal verification',
+        locationType: 'main',
+      })
+    ).value;
+    const created = await drafts.create(context, [branchId], 'reversal-opening', {
+      branchId,
+      movementType: 'opening_balance',
+    });
+    const originalId = String(created.value.id);
+    await drafts.addLine(
+      context,
+      [branchId],
+      originalId,
+      1n,
+      'reversal-opening-line',
+      {
+        productVariantId: variantId,
+        destinationLocationId: location.id,
+        quantity: '3',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    await posting.submit(context, [branchId], originalId, 2n, 'reversal-submit');
+    await posting.post(context, [branchId], originalId, 3n, 'reversal-post');
+
+    const reversed = await reversals.reverse(
+      context,
+      [branchId],
+      originalId,
+      4n,
+      'reversal-command',
+      { reasonCode: 'ENTRY_ERROR', note: 'Correct operator entry.' },
+    );
+    const replay = await reversals.reverse(
+      context,
+      [branchId],
+      originalId,
+      4n,
+      'reversal-command',
+      { reasonCode: 'ENTRY_ERROR', note: 'Correct operator entry.' },
+    );
+    expect(reversed.replayed).toBe(false);
+    expect(replay).toEqual({ value: reversed.value, replayed: true });
+    expect(reversed.value).toMatchObject({
+      original_movement_id: originalId,
+      original_status: 'reversed',
+      original_version: 5,
+      reversal_status: 'posted',
+      reversal_version: 1,
+      affected_balance_count: 1,
+    });
+    const reversalId = String(reversed.value.reversal_movement_id);
+    const evidence = await database.pool.query<{
+      original_status: string;
+      original_version: string;
+      reversed_by_movement_id: string;
+      reversal_status: string;
+      reversal_version: string;
+      reversal_of_movement_id: string;
+      quantity_on_hand: string;
+      quantity_reserved: string;
+      quantity_in_transit: string;
+      average_unit_cost: string;
+      currency_code: string | null;
+      line_count: string;
+      cost_count: string;
+      audit_count: string;
+      event_count: string;
+    }>(
+      `select o.status original_status,o.version::text original_version,
+       o.reversed_by_movement_id,r.status reversal_status,r.version::text reversal_version,
+       r.reversal_of_movement_id,b.quantity_on_hand::text,b.quantity_reserved::text,
+       b.quantity_in_transit::text,b.average_unit_cost::text,b.currency_code,
+       (select count(*)::text from inventory_movement_lines where company_id=$1
+         and inventory_movement_id=$3) line_count,
+       (select count(*)::text from inventory_movement_lines where company_id=$1
+         and inventory_movement_id=$3
+         and (unit_cost is not null or extended_cost is not null or currency_code is not null))
+         cost_count,
+       (select count(*)::text from audit_log where company_id=$1
+         and action in ('inventory_movement.reversal_created','inventory_movement.reversed')
+         and metadata->>'original_movement_id'=$2::text) audit_count,
+       (select count(*)::text from outbox_events where company_id=$1
+         and (payload->>'original_movement_id'=$2::text
+           or payload->>'reversal_movement_id'=$3::text)) event_count
+       from inventory_movements o
+       join inventory_movements r on r.company_id=o.company_id and r.id=$3::uuid
+       join inventory_balances b on b.company_id=o.company_id
+         and b.inventory_location_id=$4 and b.product_variant_id=$5
+       where o.company_id=$1::uuid and o.id=$2::uuid`,
+      [companyId, originalId, reversalId, location.id, variantId],
+    );
+    expect(evidence.rows[0]).toEqual({
+      original_status: 'reversed',
+      original_version: '5',
+      reversed_by_movement_id: reversalId,
+      reversal_status: 'posted',
+      reversal_version: '1',
+      reversal_of_movement_id: originalId,
+      quantity_on_hand: '0.000000',
+      quantity_reserved: '0.000000',
+      quantity_in_transit: '0.000000',
+      average_unit_cost: '0.0000',
+      currency_code: null,
+      line_count: '1',
+      cost_count: '0',
+      audit_count: '2',
+      event_count: '3',
+    });
+    await expect(
+      reversals.reverse(context, [branchId], originalId, 5n, 'second-reversal', {
+        reasonCode: 'AGAIN',
+        note: null,
+      }),
+    ).rejects.toMatchObject({ code: 'movement_already_reversed' });
+  });
+
+  it('protects reserved stock and permits at most one concurrent reversal', async () => {
+    const location = (
+      await locations.create(context, 'reversal-reserved-location', {
+        branchId,
+        code: 'REVRES',
+        name: 'Reserved reversal',
+        locationType: 'main',
+      })
+    ).value;
+    const created = await drafts.create(context, [branchId], 'reversal-reserved', {
+      branchId,
+      movementType: 'opening_balance',
+    });
+    const originalId = String(created.value.id);
+    await drafts.addLine(
+      context,
+      [branchId],
+      originalId,
+      1n,
+      'reversal-reserved-line',
+      {
+        productVariantId: variantId,
+        destinationLocationId: location.id,
+        quantity: '5',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    await posting.submit(context, [branchId], originalId, 2n, 'reversal-reserved-submit');
+    await posting.post(context, [branchId], originalId, 3n, 'reversal-reserved-post');
+    await database.pool.query(
+      `update inventory_balances set quantity_reserved=1
+       where company_id=$1 and inventory_location_id=$2 and product_variant_id=$3`,
+      [companyId, location.id, variantId],
+    );
+    await expect(
+      reversals.reverse(context, [branchId], originalId, 4n, 'reserved-failure', {
+        reasonCode: 'ENTRY_ERROR',
+        note: null,
+      }),
+    ).rejects.toMatchObject({ code: 'insufficient_inventory' });
+    const unchanged = await database.pool.query<{
+      status: string;
+      version: string;
+      reversals: string;
+      successful_audits: string;
+    }>(
+      `select m.status,m.version::text,
+       (select count(*)::text from inventory_movements r
+         where r.company_id=m.company_id and r.reversal_of_movement_id=m.id) reversals,
+       (select count(*)::text from audit_log a where a.company_id=m.company_id
+         and a.metadata->>'original_movement_id'=m.id::text
+         and a.action like 'inventory_movement.revers%') successful_audits
+       from inventory_movements m where m.company_id=$1 and m.id=$2`,
+      [companyId, originalId],
+    );
+    expect(unchanged.rows[0]).toEqual({
+      status: 'posted',
+      version: '4',
+      reversals: '0',
+      successful_audits: '0',
+    });
+    await database.pool.query(
+      `update inventory_balances set quantity_reserved=0
+       where company_id=$1 and inventory_location_id=$2 and product_variant_id=$3`,
+      [companyId, location.id, variantId],
+    );
+    const outcomes = await Promise.allSettled([
+      reversals.reverse(context, [branchId], originalId, 4n, 'race-a', {
+        reasonCode: 'ENTRY_ERROR',
+        note: null,
+      }),
+      reversals.reverse(context, [branchId], originalId, 4n, 'race-b', {
+        reasonCode: 'ENTRY_ERROR',
+        note: null,
+      }),
+    ]);
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    const rejected = outcomes.find(({ status }) => status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: { code: 'movement_already_reversed' },
+    });
   });
 });

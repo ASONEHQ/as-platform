@@ -28,6 +28,9 @@ import { InventoryDraftService } from '../modules/inventory/inventory-drafts.ser
 import { InventoryPostingRepository } from '../modules/inventory/inventory-posting.repository.js';
 import { registerInventoryPostingRoutes } from '../modules/inventory/inventory-posting.routes.js';
 import { InventoryPostingService } from '../modules/inventory/inventory-posting.service.js';
+import { InventoryReversalRepository } from '../modules/inventory/inventory-reversal.repository.js';
+import { registerInventoryReversalRoutes } from '../modules/inventory/inventory-reversal.routes.js';
+import { InventoryReversalService } from '../modules/inventory/inventory-reversal.service.js';
 import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
 import {
   InventoryBalanceReadService,
@@ -134,6 +137,13 @@ export async function registerPlugins(
         authentication,
         new InventoryPostingService(
           new InventoryPostingRepository(options.infrastructure.database),
+        ),
+      );
+      registerInventoryReversalRoutes(
+        app,
+        authentication,
+        new InventoryReversalService(
+          new InventoryReversalRepository(options.infrastructure.database),
         ),
       );
     }

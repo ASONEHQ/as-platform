@@ -1,4 +1,4 @@
-export type DraftMovementType = 'opening_balance' | 'adjustment';
+export type DraftMovementType = 'opening_balance' | 'adjustment' | 'reversal';
 
 export interface DraftMovement {
   id: string;
@@ -17,6 +17,8 @@ export interface DraftMovement {
   postedAt: Date | null;
   cancelledAt: Date | null;
   reversedAt: Date | null;
+  reversalOfMovementId: string | null;
+  reversedByMovementId: string | null;
   createdAt: Date;
   updatedAt: Date;
   lineCount: number;
@@ -54,6 +56,7 @@ export class InventoryDraftError extends Error {
       | 'inventory_balance_not_found'
       | 'inventory_movement_line_not_found'
       | 'inventory_movement_not_found'
+      | 'inventory_movement_not_reversible'
       | 'insufficient_inventory'
       | 'movement_has_no_lines'
       | 'movement_already_cancelled'

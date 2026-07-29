@@ -27,6 +27,7 @@ export const infrastructureErrorCodes = [
   'inventory_location_not_found',
   'inventory_location_inactive',
   'inventory_movement_not_found',
+  'inventory_movement_not_reversible',
   'inventory_movement_line_not_found',
   'invalid_movement_state',
   'movement_already_posted',
