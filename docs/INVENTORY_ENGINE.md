@@ -38,7 +38,7 @@ company -> branch -> inventory_location -> product_variant
 - Immutable movement headers and lines.
 - Manual receipts, sales consumption, operational consumption, waste, returns, adjustments, reversals, and count adjustments.
 - Idempotent reservations with configurable expiration.
-- Approved transfers with partial receipt and documented discrepancies.
+- Approved quantity-only transfers with one complete shipment and receipt.
 - Immediate counts through E070 and a persistent count workflow through E115–E123.
 - Weighted-average, last-purchase, and standard cost concepts in company currency.
 - Audit, transactional outbox, realtime contracts, checkpoints, and offline-command reconciliation.
@@ -138,9 +138,10 @@ Every adjustment produces a movement. V1 starts with strict permissions and mand
 - V1 transfers require approval.
 - Source and destination belong to the same company.
 - Destination cannot change after shipment.
-- Partial receipt is allowed.
-- Remaining quantity may close only as a documented rejection or discrepancy.
-- `received + rejected <= shipped`.
+- V1 shipment and receipt are complete and happen once.
+- Partial receipt, remaining-quantity disposition, and discrepancies are
+  physically forward-compatible but contractually deferred.
+- V1 completion produces `received = shipped = requested` and `rejected = 0`.
 - Each stock-affecting transition creates ledger effects, audit evidence, and outbox events.
 
 ### Reservations
@@ -410,16 +411,15 @@ stateDiagram-v2
     requested --> cancelled
     approved --> shipped
     approved --> cancelled
-    shipped --> partially_received
     shipped --> received
-    partially_received --> partially_received
-    partially_received --> received
-    partially_received --> remainder_rejected
     received --> [*]
     rejected --> [*]
     cancelled --> [*]
-    remainder_rejected --> [*]
 ```
+
+The physical `partially_received` and `remainder_rejected` states remain
+forward-compatible but dormant. V1 accepts one complete receipt and never
+transitions into them.
 
 ### Reservation
 
@@ -466,9 +466,36 @@ Recipes with yield, substitutions, production, or process waste remain outside V
 
 ## Transfers
 
-Shipment decreases source on-hand and increases destination in-transit. Receipt decreases in-transit and increases destination on-hand. Rejected remainder creates a documented compensating disposition. Destination identity freezes at shipment.
+E108–E114 are the only reserved V1 transfer routes. E109 creates the complete
+aggregate directly in `requested`; there is no equivalent `draft`, `submitted`,
+update, or submit route. E111 approves or rejects. E112 ships only `approved`,
+E113 receives only `shipped`, and E114 cancels only `requested` or `approved`.
+Received, rejected, and cancelled transfers are terminal.
 
-Every transition validates `base_version`, permission, tenant, branch, location status, line totals, and idempotency.
+E109 validates and freezes an explicitly selected active `transit` location in
+the destination branch. Shipment posts a
+`transfer_shipment` movement from source to transit, decreases source on-hand,
+and increases destination-scoped in-transit. Receipt posts a distinct
+`transfer_receipt` movement from transit to destination, decreases in-transit,
+and increases destination on-hand.
+Quantities remain positive and direction remains explicit. No stock remains
+available at source after shipment and none becomes destination on-hand before
+receipt.
+
+V1 ships and receives all approved quantities once. Partial receipt, multiple
+deliveries, discrepancy/remainder disposition, over-receipt, substitution,
+post-shipment cancellation, and transfer reversal are deferred. The physical
+columns and states that can support a later contract do not authorize those
+behaviors.
+
+Every transition validates strong `If-Match` where applicable, the operation
+permission, tenant, required endpoint-branch grants, active locations, line
+totals, and idempotency. Creation, approval, shipment, and cancellation require
+both endpoint branches; receipt requires destination access; reads require at
+least one endpoint branch without exposing hidden endpoint data. Aggregate and
+balance locks are deterministic, so double shipment/receipt and concurrent
+cancel/ship produce one winner and a safe `version_conflict` or
+`transfer_invalid_transition` loser.
 
 ## Reservations
 
@@ -484,7 +511,10 @@ E070 remains available for authorized immediate single-scope counts.
 
 Quantities use `numeric(19,6)`. Money and costs use `numeric(19,4)` following ADR-0001. Weighted-average calculations retain exact decimal intermediates and round only at the documented storage or commercial boundary.
 
-Transfers retain source cost. Negative-value tricks cannot correct quantity; corrections create explicit cost-history and movement evidence.
+Transfer V1 is quantity-only: it does not copy or recalculate line cost,
+average cost, currency, landed cost, or accounting evidence. Source-cost
+preservation and transfer valuation remain deferred to a separate approved
+contract. Negative-value tricks cannot correct quantity.
 
 ## Permissions
 
@@ -493,10 +523,10 @@ Transfers retain source cost. Negative-value tricks cannot correct quantity; cor
 | `inventory.read` | Read authorized locations, balances, movements, and cost-redacted kardex |
 | `inventory.update` | Update approved non-quantity inventory metadata; never balances |
 | `inventory.adjust` | Create manual receipts and adjustments |
-| `inventory.transfer` | Request and administer transfers |
+| `inventory.transfer` | Request, ship, and cancel transfers with required endpoint-branch access |
 | `inventory.receive` | Receive shipped transfers |
 | `inventory.count` | Conduct counts |
-| `inventory.approve` | Approve controlled transfers/counts/adjustments |
+| `inventory.approve` | Approve or reject controlled transfers/counts/adjustments |
 | `inventory.cost.read` | Read costs and valuation |
 | `inventory_location.manage` | Create and manage locations |
 | `inventory.reverse` | Create compensating reversals |
@@ -678,7 +708,7 @@ none of those effects.
 | 3 — Locations and balance reads | Block 2 published | Locations, stock policies, empty balance projection, read endpoints, branch authorization | E064–E067 compatible; no direct balance mutation; scope tests pass |
 | 4 — Base ledger | Blocks 2–3 published; idempotency contract ready | Movements/lines, receipts, adjustment, reversal, balance projection, audit/outbox, kardex | Real PostgreSQL proves rebuild, negative rejection, concurrency, rollback, and safe events |
 | 5 — Reservations | Ledger published; expiration policy accepted | Create, confirm, release, expire services; no worker initially | Concurrent overselling tests and idempotent terminal outcomes pass |
-| 6 — Transfers | Reservations/ledger stable; approval policy accepted | Request, approval, shipment, transit, partial receipt, discrepancy | State, quantity, concurrency, and cross-branch tests pass |
+| 6 — Transfers | Reservations/ledger stable; approval policy accepted | Request, approval/rejection, full shipment, transit, full receipt, pre-shipment cancellation | State, quantity, concurrency, and cross-branch tests pass |
 | 7 — Counts | Lock duration and approval policy accepted | Immediate compatibility plus persistent counts and domain locks | Apply-once, conflict, expiration, rollback, and audit tests pass |
 | 8 — Kits and costing | Catalog/ledger stable; cost policy accepted | Fixed BOM explosion, weighted average, last and standard cost history | Golden decimal, component concurrency, and cost authorization tests pass |
 | 9 — Recovery and realtime | Event schemas accepted; retention decided | Checkpoints, changes, publisher/consumer integration | Gap, replay, dedupe, authorization, and backlog tests pass |

@@ -298,7 +298,8 @@ new_average =
 
 - Zero stock retains the last known average.
 - Negative stock is prohibited.
-- Transfers preserve source cost through transit and receipt.
+- Transfer V1 is quantity-only. Source-cost preservation, transfer valuation,
+  currency handling, and accounting effects require a later approved contract.
 - Returns use original cost when available, otherwise documented current moving
   average policy.
 - FIFO remains a future compatible extension.
@@ -306,20 +307,41 @@ new_average =
 
 ## Transfers
 
-The transfer document produces paired ledger movements:
+The transfer document produces paired ledger movements. The existing physical
+and endpoint contracts prevail: there is no `draft` or `submitted` state and no
+public update/submit route.
 
 ```text
-requested -> approved -> shipped -> partially_received -> received
+create -> requested -> approved -> shipped -> received
 requested|approved -> cancelled
 requested -> rejected
-partially_received -> remainder_rejected
 ```
 
-Request has no stock effect. Approval freezes quantities and endpoints. Shipment
-moves source stock to transit. One or more receipts move transit to destination.
-Any remainder requires explicit return, damage, or adjustment disposition.
-Same-location transfer is invalid; same-branch and cross-branch operations share
-one workflow. Transition command IDs prevent double shipment or receipt.
+E109 creates a complete, nonempty request. Request and approval have no stock
+effect; approval freezes quantities and endpoints. E112 ships every approved
+line once, removes source on-hand, and increases `quantity_in_transit` at the
+validated active transit location selected in the destination branch.
+E113 receives every
+shipped line once, decreases that transit projection, and increases destination
+on-hand. The transfer owns distinct posted `transfer_shipment` and
+`transfer_receipt` movements linked by
+`reference_type=inventory_transfer`, `reference_id`, and the header movement
+IDs.
+
+V1 produces neither `partially_received` nor `remainder_rejected`, although the
+physical schema preserves those states for a future approved discrepancy
+workflow. There are no split deliveries, over-receipts, substitutions, or
+line-level rejection in V1. `received`, `rejected`, and `cancelled` are
+terminal. A shipped transfer cannot be cancelled or edited; later correction
+requires a future explicit compensating transfer workflow.
+
+Same-location transfer is invalid; same-branch and cross-branch operations
+share one workflow. Creation, approval, shipment, and pre-shipment cancellation
+require authorization for both endpoint branches; receipt requires destination
+access. Every mutation claims idempotency, locks the aggregate, validates its
+strong ETag where applicable, increments version exactly once, and commits
+movement, balances, transfer, audit, outbox, and stored response atomically.
+Balance locks follow company, branch, location, and variant order.
 
 ## Reservations
 
@@ -418,9 +440,9 @@ expired-active reservations, outbox lag, and checkpoint lag.
 | `inventory.count` | Seeded | E070, E115-E120, E123 |
 | `inventory.reverse` | Seeded | E071 |
 | `inventory.update` | Documented, not seeded | E133 metadata |
-| `inventory.transfer` | Documented, not seeded | E109, E112, E114 |
+| `inventory.transfer` | Documented, not seeded | E109, E112, E114; both endpoint branches |
 | `inventory.receive` | Documented, not seeded | E113 |
-| `inventory.approve` | Documented, not seeded | E111 and count approval |
+| `inventory.approve` | Documented, not seeded | E111 approve/reject and count approval |
 | `inventory.reservation.manage` | Documented, not seeded | E125-E128 |
 | `inventory.reconcile` | Missing; add before service | Findings and controlled repair |
 | `inventory.override_negative` | Not approved | No V1 override |
@@ -439,9 +461,10 @@ transactional outbox. General events never contain costs.
 | `inventory.movement_reversed` | Reversal/original IDs, reason, resulting versions |
 | `inventory.transfer.created` | Endpoints, status, line count, version |
 | `inventory.transfer.approved` | Decision, status, version |
+| `inventory.transfer.rejected` | Safe rejection reason, terminal status, version |
 | `inventory.transfer.shipped` | Safe quantities, movement, version |
-| `inventory.transfer.received` | Partial/final summary, movement, version |
-| `inventory.transfer.cancelled` | Reason/disposition, status, version |
+| `inventory.transfer.received` | Full received summary, movement, version |
+| `inventory.transfer.cancelled` | Pre-shipment reason, status, version |
 | `inventory.reservation.created` | Owner, location, expiry, lines, version |
 | `inventory.reservation.confirmed` | Movement, terminal time, version |
 | `inventory.reservation.released` | Terminal status/reason/time/version |
@@ -618,7 +641,7 @@ skipped, and omitted tests.
 | 3.2B | Transfers/lines and reservations/lines | State/quantity checks, tenant FKs, migration audit |
 | 3.3A | Location services, balance/movement reads and drafts | E064-E068, isolation, cost redaction |
 | 3.3B | Posting, adjustment, receipt, consumption, reversal | Real concurrency, rebuild, rollback, idempotency |
-| 3.3C | Transfer workflow | E108-E114, partial receipt, transit, retries |
+| 3.3C | Transfer workflow | E108-E114, full shipment/receipt, transit, retries |
 | 3.3D | Reservations and reconciliation detector | E124-E128, oversell prevention, drift detection |
 | 3.3E | Immediate/durable counts | E070/E115-E123, apply-once and scope locks |
 | 3.4 | Recovery, events, load, rebuild/restore runbooks | Zero skipped DB tests and measured evidence |

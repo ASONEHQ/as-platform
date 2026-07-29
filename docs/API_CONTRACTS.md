@@ -567,12 +567,12 @@ Common rules:
 | E106 | `GET /products/{product_id}/components` | `catalog.read`; company | Returns BOM version and exact quantity strings |
 | E107 | `PUT /products/{product_id}/components` | `product.manage`; company | `If-Match`; atomic replacement; cycle validation |
 | E108 | `GET /inventory/transfers` | `inventory.read`; authorized branches | Cursor and allowlisted filters |
-| E109 | `POST /inventory/transfers` | `inventory.transfer`; source/destination scope | Idempotent requested aggregate; no stock effect |
+| E109 | `POST /inventory/transfers` | `inventory.transfer`; authorized source and destination | Idempotent complete requested aggregate; no stock effect |
 | E110 | `GET /inventory/transfers/{transfer_id}` | `inventory.read`; transfer scope | Row ETag; lines and history |
-| E111 | `POST /inventory/transfers/{transfer_id}/approvals` | `inventory.approve`; transfer scope | Idempotent transition with base version |
-| E112 | `POST /inventory/transfers/{transfer_id}/shipments` | `inventory.transfer`; source scope | Idempotent source-to-transit movement |
-| E113 | `POST /inventory/transfers/{transfer_id}/receipts` | `inventory.receive`; destination scope | Idempotent partial receipt |
-| E114 | `POST /inventory/transfers/{transfer_id}/cancellations` | `inventory.transfer`; transfer scope | Base version; documented remainder disposition |
+| E111 | `POST /inventory/transfers/{transfer_id}/approvals` | `inventory.approve`; authorized source and destination | Idempotent approve/reject decision with `If-Match` |
+| E112 | `POST /inventory/transfers/{transfer_id}/shipments` | `inventory.transfer`; authorized source and destination | Idempotent full source-to-transit movement with `If-Match` |
+| E113 | `POST /inventory/transfers/{transfer_id}/receipts` | `inventory.receive`; destination scope | Idempotent single full transit-to-destination receipt with `If-Match` |
+| E114 | `POST /inventory/transfers/{transfer_id}/cancellations` | `inventory.transfer`; authorized source and destination | Idempotent pre-shipment cancellation with `If-Match` |
 | E115 | `GET /inventory/counts` | `inventory.read`; authorized branches | Cursor and count filters |
 | E116 | `POST /inventory/counts` | `inventory.count`; active location | Idempotent draft with bounded scope |
 | E117 | `GET /inventory/counts/{count_id}` | `inventory.read`; count scope | Row ETag |
@@ -598,7 +598,162 @@ Common rules:
 | E137 | `PUT /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; no behavior frozen |
 | E138 | `DELETE /users/{user_id}/inventory-location-access/{location_id}` | Reserved future administration extension | Not V1; logical revocation later |
 
-#### 19.1.1 Canonical inventory contract overlay
+#### 19.1.1 Canonical transfer contract — E108–E114
+
+The physical transfer aggregate and the reserved endpoint IDs already establish
+one workflow. V1 does not introduce `draft` or `submitted`, does not reserve an
+update route, and does not rename `requested` to an equivalent state. E109
+creates the complete header and nonempty line set directly in `requested`.
+Corrections before approval cancel the request and create a new transfer; they
+do not rewrite an existing request.
+
+```mermaid
+stateDiagram-v2
+    [*] --> requested: E109 create
+    requested --> approved: E111 approve
+    requested --> rejected: E111 reject
+    requested --> cancelled: E114 cancel
+    approved --> shipped: E112 ship
+    approved --> cancelled: E114 cancel
+    shipped --> received: E113 full receipt
+```
+
+`received`, `rejected`, and `cancelled` are terminal. V1 never produces
+`partially_received` or `remainder_rejected`; those physically supported states
+remain dormant until a separate discrepancy and partial-receipt contract is
+approved. A shipped transfer cannot be cancelled or edited. After shipment,
+correction requires a future explicit compensating transfer workflow, not
+history mutation or E071.
+
+##### Scope and permissions
+
+Company scope comes exclusively from the authenticated session. Source,
+destination, transit location, transfer, movement, and variants must belong to
+that company. Cross-company or inaccessible IDs use the non-enumerating
+not-found response.
+
+| Operation | Permission | Required branch access |
+| --- | --- | --- |
+| E108/E110 read | `inventory.read` | At least one endpoint branch; returned data remains limited to authorized endpoints |
+| E109 create | `inventory.transfer` | Source and destination |
+| E111 approve/reject | `inventory.approve` | Source and destination |
+| E112 ship | `inventory.transfer` | Source and destination because both source and destination-scoped transit balances change |
+| E113 receive | `inventory.receive` | Destination |
+| E114 cancel | `inventory.transfer` | Source and destination |
+
+These established permissions remain canonical. No
+`inventory.transfer.create|update|submit|ship|cancel` aliases are introduced.
+Explicit deny precedes allow, and an empty branch grant never grants all
+branches.
+
+##### Resource, requests, and responses
+
+Transfer IDs are UUIDv7. The server owns `company_id`, transfer number, status,
+version, actors, timestamps, and movement links. Transfer numbers are opaque
+and non-sequential.
+
+E109 accepts a strict body containing
+`source_branch_id`, `destination_branch_id`, `source_location_id`,
+`destination_location_id`, `transit_location_id`, optional bounded `notes`, and
+a nonempty `lines` array. The requested transit location must be an active
+location of type `transit` in the destination branch and must
+differ from both endpoints. Every line contains `product_variant_id`, a
+positive exact `quantity` decimal string, `unit_of_measure_code`, and optional
+bounded `notes`. Duplicate variants, identical endpoints, inactive locations
+or variants, incompatible UOM, excessive precision, and unknown fields are
+rejected. Same-branch and cross-branch transfers share this contract.
+
+E111 accepts a strict `decision` of `approve` or `reject`; rejection requires a
+bounded nonempty `reason_code`, while approval may include a bounded note. E112
+and E113 accept only an optional bounded note because V1 always ships and
+receives the complete approved quantities. E114 requires `reason_code` and may
+include a bounded note. Clients never submit shipped, received, rejected, cost,
+movement, balance, actor, transit-location, or version fields in bodies.
+
+E108 uses a stable opaque cursor and allowlisted filters for endpoint branch,
+status, requested time, and variant. E110 returns header, ordered lines,
+lifecycle evidence, and movement IDs visible under current authorization. Both
+reads return `200`; E110 includes the strong row ETag. E109 returns `201`; E111
+through E114 return `200`. Every mutation returns the concise aggregate state
+and new version; stock-affecting commands additionally return the posted
+movement ID/number and affected balance versions.
+
+##### Concurrency, idempotency, and ETags
+
+E109, E111, E112, E113, and E114 require `Idempotency-Key`. E111–E114 also
+require the current strong `If-Match`; each successful transition increments
+the transfer version exactly once and returns its new ETag. The request
+fingerprint contains company, operation, transfer where applicable, expected
+version, and normalized strict body. Exact replay returns the original status,
+body, and ETag without another movement, balance update, audit, or outbox row.
+Conflicting reuse returns `idempotency_conflict`; stale versions return
+`version_conflict`.
+
+Each transition locks the transfer before validating state. Stock-affecting
+commands then lock affected balances in canonical
+`company,branch,location,variant` order. Concurrent ship, receive, cancel, or
+approval attempts therefore have at most one winner. A loser observes the
+committed version/state and receives `version_conflict` or
+`transfer_invalid_transition`; it never repeats stock effects.
+
+##### Transit and generated movements
+
+E109 validates and stores the requested active `transit` location in the
+destination branch. Shipment is forbidden unless that frozen
+location remains valid. E112 atomically posts one
+`transfer_shipment` movement, sets `shipment_movement_id`, changes the transfer
+to `shipped`, subtracts each positive `base_quantity` from source
+`quantity_on_hand`, and adds it to `quantity_in_transit` on the
+destination-scoped transit balance. Source availability after the change must
+remain at least its reserved quantity.
+
+E113 atomically posts one `transfer_receipt` movement, sets
+`receipt_movement_id`, changes the transfer to `received`, removes the exact
+shipped quantity from the transit balance, and adds it to destination
+`quantity_on_hand`. Nothing becomes destination on-hand before E113. Movement
+lines retain positive quantity/base quantity and UOM: shipment direction is
+source location to transit location; receipt direction is transit location to
+destination location. Both movements use
+`reference_type=inventory_transfer`, the transfer ID as `reference_id`, UUIDv7,
+canonical IMV numbers, and immutable ordered lines.
+
+The line evidence becomes
+`shipped_quantity=requested_quantity` after E112 and
+`received_quantity=shipped_quantity`, `rejected_quantity=0` after E113.
+Quantity-only V1 leaves line cost, balance average cost, currency conversion,
+landed cost, journals, and financial valuation untouched.
+
+##### Errors, audit, and events
+
+Canonical safe errors are `resource_not_found`,
+`transfer_invalid_transition`, `transfer_quantity_exceeded`,
+`insufficient_inventory`, `inventory_balance_not_found`,
+`invalid_movement_line`, `numeric_overflow`, `version_conflict`,
+`idempotency_conflict`, `permission_denied`, and `validation_error`.
+`transfer_not_*`, `transfer_already_*`, `reserved_inventory_conflict`,
+`etag_mismatch`, `branch_access_denied`, and
+`cross_tenant_resource_not_found` are not aliases; their conditions map to the
+canonical codes above. No response exposes hidden existence, SQL, constraint
+names, lock details, or hashes.
+
+The same transaction writes one canonical audit action:
+`inventory_transfer.created`, `inventory_transfer.approved`,
+`inventory_transfer.rejected`, `inventory_transfer.shipped`,
+`inventory_transfer.received`, or `inventory_transfer.cancelled`. Evidence
+includes company, relevant branches, actor, transfer ID/number, previous/new
+status, version, request/correlation IDs, bounded reason/note, movement ID when
+present, and exact quantity summaries.
+
+Outbox facts are `inventory.transfer.created`,
+`inventory.transfer.approved`, `inventory.transfer.rejected`,
+`inventory.transfer.shipped`, `inventory.transfer.received`, and
+`inventory.transfer.cancelled`. Shipment and receipt also emit
+`inventory.movement.created` and one `inventory.stock.changed` per changed
+source, transit, or destination balance. Events describe only committed facts,
+carry schema version 1, exact decimal strings and aggregate versions, and
+contain no costs or unrestricted notes.
+
+#### 19.1.2 Canonical inventory contract overlay
 
 The following rules are normative for E064-E072 and E108-E135:
 

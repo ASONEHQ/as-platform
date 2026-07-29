@@ -361,16 +361,34 @@ TASK 09.4 reserves the following additional events. They are contractual proposa
 | `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | company/branch/balance/location/variant IDs; previous/delta/new on-hand, reserved and derived available decimal strings; balance version; movement ID/number; occurred_at; correlation_id; `P-INV`; no costs | one event per affected balance after posting / `INV` | V / CP |
 | `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | company/branch, movement ID/number/type/posted status, reason/reference, posted_at, actor, correlation ID, line count; `P-INV`; no costs | one event per posted movement / `INV` | V / CP |
 | `inventory.transfer.created` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination locations, status, line count, version; `P-INV` | committed request / transfer detail | V / CP |
-| `inventory.transfer.approved` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe decision reason, version, approved_at; `P-INV` | committed approval / transfer detail | V / CP |
-| `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, shipped quantity summaries as decimal strings, movement ID, version, shipped_at; `P-INV` | committed shipment / transfer detail and `INV` | V / CP |
-| `inventory.transfer.received` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, partial/final status, received/rejected decimal summaries, movement ID, version, received_at; `P-INV` | committed receipt / transfer detail and `INV` | V / CP |
-| `inventory.transfer.cancelled` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe reason, remaining disposition, version, cancelled_at; `P-INV` | committed cancellation / transfer detail | V / CP |
+| `inventory.transfer.approved` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination branches, status, version, approved_at, actor, correlation ID; `P-INV` | committed approval / transfer detail | V / CP |
+| `inventory.transfer.rejected` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination branches, terminal status, bounded reason code, version, rejected_at, actor, correlation ID; `P-INV` | committed rejection / transfer detail | V / CP |
+| `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, exact shipped quantity summaries, shipment movement ID/number, version, shipped_at, actor, correlation ID; `P-INV`; no costs | committed full shipment / transfer detail and `INV` | V / CP |
+| `inventory.transfer.received` | inventory / `inventory_transfer` | authorized destination branch / `inventory.read` | transfer ID, final received status, exact received summaries, receipt movement ID/number, version, received_at, actor, correlation ID; `P-INV`; no costs | committed full receipt / transfer detail and `INV` | V / CP |
+| `inventory.transfer.cancelled` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, terminal status, bounded reason code, version, cancelled_at, actor, correlation ID; `P-INV` | committed pre-shipment cancellation / transfer detail | V / CP |
 | `inventory.reservation.created` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, source type/ID, status, location, expires_at, line count, version; `P-INV` | committed reservation / reservation detail and `INV` | V / CP |
 | `inventory.reservation.confirmed` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, status, source movement ID, confirmed_at, version; `P-INV` | committed confirmation / reservation detail and `INV` | V / CP |
 | `inventory.reservation.released` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, terminal status, safe reason, released/expired_at, version; `P-INV` | committed release, cancellation, or expiration / reservation detail and `INV` | V / CP |
 | `inventory.count.completed` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID/type, location, status, safe variance summary, movement IDs, version, applied_at; `P-INV` | committed count application / count detail and `INV` | V / CP |
 | `inventory.low_stock.detected` | inventory projection / `inventory_stock_policy` | branch/location / `inventory.read` | location/variant IDs, threshold and available decimal strings, severity, balance version, detected_at; costs and `P-INV` | threshold crossing / balances and policies | C / CP |
 | `product_variant.updated` | catalog / `product_variant` | company/authorized branch visibility / `catalog.read` | product/variant IDs, changed fields, status, version; `P-CAT` | variant create/update/retire / `CAT` | V / CP |
+
+Transfer V1 emits no `updated` or `submitted` fact because it has no matching
+resource state or command. It also emits no partial-receipt or
+remainder-disposition fact. E109 emits `inventory.transfer.created`; E111 emits
+exactly one approved or rejected fact; E112 emits the shipped fact, one
+`inventory.movement.created` for `transfer_shipment`, and one
+`inventory.stock.changed` per changed source/transit balance; E113 emits the
+received fact, one movement-created fact for `transfer_receipt`, and one
+stock-changed fact per changed transit/destination balance. E114 emits only the
+cancelled fact because cancellation is allowed only before shipment.
+
+All facts are schema version 1 and are inserted with aggregate state, audit, and
+idempotency result in the owning transaction. Exact replay publishes nothing
+new. Company and branch values come from trusted state; consumers must possess
+`inventory.read` for the event's authorized branch intersection. Transfer
+events contain exact decimal strings and no line costs, average cost, currency,
+unbounded note, idempotency key, or request hash.
 
 All inventory decimals are exact strings. Consumers deduplicate by `event_id`; no global order is guaranteed across aggregates or locations. Versioned consumers detect gaps and recover through authoritative REST detail or checkpoint routes. Payloads omit costs without `inventory.cost.read`, unrestricted notes, credentials, hardware secrets, and balances outside current authorization.
 
