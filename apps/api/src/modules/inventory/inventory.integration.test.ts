@@ -16,6 +16,8 @@ import {
   InventoryLocationService,
   InventoryMovementReadService,
 } from './inventory.service.js';
+import { InventoryDraftRepository } from './inventory-drafts.repository.js';
+import { InventoryDraftService } from './inventory-drafts.service.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
@@ -30,6 +32,7 @@ integration('PostgreSQL inventory E064-E068', () => {
   let locations: InventoryLocationService;
   let balances: InventoryBalanceReadService;
   let movements: InventoryMovementReadService;
+  let drafts: InventoryDraftService;
 
   const companyId = randomUUID();
   const otherCompanyId = randomUUID();
@@ -108,6 +111,7 @@ integration('PostgreSQL inventory E064-E068', () => {
     locations = new InventoryLocationService(new InventoryLocationRepository(database));
     balances = new InventoryBalanceReadService(new InventoryBalanceReadRepository(database));
     movements = new InventoryMovementReadService(new InventoryMovementReadRepository(database));
+    drafts = new InventoryDraftService(new InventoryDraftRepository(database));
   });
 
   afterAll(async () => {
@@ -370,5 +374,157 @@ integration('PostgreSQL inventory E064-E068', () => {
     ]);
     expect(results.filter((entry) => entry.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((entry) => entry.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('authors draft headers with canonical numbers, exact replay, tenant isolation, audit, and no outbox', async () => {
+    const first = await drafts.create(context, [branchId], 'draft-create', {
+      branchId,
+      movementType: 'adjustment',
+      reasonCode: 'COUNT',
+    });
+    const replay = await drafts.create(context, [branchId], 'draft-create', {
+      branchId,
+      movementType: 'adjustment',
+      reasonCode: 'COUNT',
+    });
+    expect(first.replayed).toBe(false);
+    expect(replay).toEqual({ value: first.value, replayed: true });
+    expect(first.value.movement_number).toMatch(/^IMV-[0-9a-f]{32}$/u);
+    expect(first.value.movement_number).toBe(`IMV-${String(first.value.id).replaceAll('-', '')}`);
+    await expect(drafts.get(companyId, [], String(first.value.id))).rejects.toMatchObject({
+      code: 'inventory_movement_not_found',
+    });
+    await expect(
+      drafts.create(context, [branchId], 'draft-create', {
+        branchId,
+        movementType: 'opening_balance',
+      }),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+    const effects = await database.pool.query<{ audits: string; events: string }>(
+      `select
+       (select count(*)::text from audit_log where company_id=$1 and entity_id=$2) audits,
+       (select count(*)::text from outbox_events where company_id=$1 and aggregate_id=$2) events`,
+      [companyId, first.value.id],
+    );
+    expect(effects.rows[0]).toEqual({ audits: '1', events: '0' });
+  });
+
+  it('adds, edits, lists and deletes lines with parent ETags and no balance mutation', async () => {
+    const location = defined(
+      (await locations.list(companyId, [branchId], { limit: 20 })).items.find(
+        (item) => item.status === 'active' && item.allowsReceiving,
+      ),
+      'Expected an active location.',
+    );
+    const movement = await drafts.create(context, [branchId], 'line-draft', {
+      branchId,
+      movementType: 'opening_balance',
+    });
+    const movementId = String(movement.value.id);
+    const added = await drafts.addLine(
+      context,
+      [branchId],
+      movementId,
+      1n,
+      'line-create',
+      {
+        productVariantId: variantId,
+        destinationLocationId: location.id,
+        quantity: '2',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    const replay = await drafts.addLine(
+      context,
+      [branchId],
+      movementId,
+      1n,
+      'line-create',
+      {
+        productVariantId: variantId,
+        destinationLocationId: location.id,
+        quantity: '2',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    expect(replay).toEqual({ value: added.value, replayed: true });
+    expect(added.value).toMatchObject({ version: 2 });
+    const lineId = String((added.value.line as Readonly<Record<string, unknown>>).id);
+    await expect(
+      drafts.addLine(
+        context,
+        [branchId],
+        movementId,
+        2n,
+        'line-duplicate',
+        {
+          productVariantId: variantId,
+          destinationLocationId: location.id,
+          quantity: '3',
+          unitOfMeasureCode: 'unit',
+        },
+        false,
+      ),
+    ).rejects.toMatchObject({ code: 'duplicate_movement_line' });
+    const patched = await drafts.patchLine(
+      context,
+      [branchId],
+      movementId,
+      lineId,
+      2n,
+      { quantity: '3', reasonCode: 'RECOUNT' },
+      false,
+    );
+    expect(patched).toMatchObject({ version: 3n });
+    expect(
+      (await drafts.listLines(companyId, [branchId], movementId, false, { limit: 10 })).items,
+    ).toEqual([expect.objectContaining({ id: lineId, quantity: '3.000000' })]);
+    await expect(
+      drafts.patch(context, [branchId], movementId, 3n, { movementType: 'adjustment' }),
+    ).rejects.toMatchObject({ code: 'invalid_movement_state' });
+    const balancesBefore = await database.pool.query<{ value: string }>(
+      `select coalesce(sum(quantity_on_hand),0)::text value from inventory_balances where company_id=$1`,
+      [companyId],
+    );
+    const deleted = await drafts.deleteLine(context, [branchId], movementId, lineId, 3n);
+    expect(deleted).toEqual({ movementId, deletedLineId: lineId, version: 4n });
+    const balancesAfter = await database.pool.query<{ value: string }>(
+      `select coalesce(sum(quantity_on_hand),0)::text value from inventory_balances where company_id=$1`,
+      [companyId],
+    );
+    expect(balancesAfter.rows).toEqual(balancesBefore.rows);
+  });
+
+  it('cancels drafts exactly once and preserves terminal idempotent replay', async () => {
+    const created = await drafts.create(context, [branchId], 'cancel-draft', {
+      branchId,
+      movementType: 'adjustment',
+    });
+    const id = String(created.value.id);
+    const cancelled = await drafts.cancel(
+      context,
+      [branchId],
+      id,
+      1n,
+      'cancel-command',
+      'ABANDONED',
+      'Operator abandoned the draft.',
+    );
+    const replay = await drafts.cancel(
+      context,
+      [branchId],
+      id,
+      1n,
+      'cancel-command',
+      'ABANDONED',
+      'Operator abandoned the draft.',
+    );
+    expect(cancelled.value).toMatchObject({ status: 'cancelled', version: 2 });
+    expect(replay).toEqual({ value: cancelled.value, replayed: true });
+    await expect(
+      drafts.cancel(context, [branchId], id, 2n, 'new-cancel-command', 'AGAIN'),
+    ).rejects.toMatchObject({ code: 'movement_already_cancelled' });
   });
 });

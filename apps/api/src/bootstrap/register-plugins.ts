@@ -22,6 +22,9 @@ import {
   InventoryLocationRepository,
   InventoryMovementReadRepository,
 } from '../modules/inventory/inventory.repository.js';
+import { InventoryDraftRepository } from '../modules/inventory/inventory-drafts.repository.js';
+import { registerInventoryDraftRoutes } from '../modules/inventory/inventory-drafts.routes.js';
+import { InventoryDraftService } from '../modules/inventory/inventory-drafts.service.js';
 import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
 import {
   InventoryBalanceReadService,
@@ -117,6 +120,11 @@ export async function registerPlugins(
         new InventoryMovementReadService(
           new InventoryMovementReadRepository(options.infrastructure.database),
         ),
+      );
+      registerInventoryDraftRoutes(
+        app,
+        authentication,
+        new InventoryDraftService(new InventoryDraftRepository(options.infrastructure.database)),
       );
     }
   }
