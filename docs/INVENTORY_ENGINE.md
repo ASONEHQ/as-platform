@@ -2,7 +2,14 @@
 
 ## Status
 
-This document is the approved architecture and contract foundation for TASK 09.4. Block 2.2 implements the catalog foundation. Block 3.2A adds the physical `inventory_locations`, `inventory_balances`, `inventory_movements`, and `inventory_movement_lines` tables through migration `0005_inventory_operations_foundation`. Block 3.2B adds the physical transfer and reservation aggregates through migration `0006_inventory_transfers_and_reservations`. HTTP endpoints, orchestration, posting and balance-mutation services, producers, consumers, workers, and hardware integrations do not yet exist.
+This document is the approved architecture and contract foundation for TASK
+09.4. Block 2.2 implements the catalog foundation. Blocks 3.2A–3.2B add the
+physical inventory, transfer, and reservation tables through migrations
+`0005_inventory_operations_foundation` and
+`0006_inventory_transfers_and_reservations`. E064–E068 and the E145–E152 draft
+application layer exist. Posting, balance mutation, transfer/reservation
+orchestration, producers, consumers, workers, and hardware integrations do not
+yet exist.
 
 The detailed TASK 09.4 Block 3.1 physical and operational design is documented
 in [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md).
@@ -368,6 +375,31 @@ no company, branch, date, type, accounting, fiscal, or legal-folio semantics.
 Generation needs no sequence, folio table, `MAX()+1`, or allocation lock, and
 exact idempotent replay returns the original pair.
 
+Submission and quantity-only posting are reserved as E153–E154. E153 freezes a
+nonempty `draft` as `pending` under `inventory.adjust`; E154 posts only
+`pending` manual `opening_balance` and `adjustment` movements under the stronger
+existing `inventory.approve` permission. Both require `Idempotency-Key` and the
+parent strong `If-Match`, increment the aggregate version once, and replay the
+original response and ETag without another effect. No direct draft-to-post
+transition or preview route is approved.
+
+E154 aggregates exact `base_quantity` deltas by balance key, locks keys in
+company/branch/location/variant order, creates missing inbound balances safely,
+and prohibits missing or insufficient outbound balances. It changes only
+`quantity_on_hand`; reserved and in-transit remain unchanged and available is
+derived. V1 provides no negative-stock override.
+
+Posting is explicitly quantity-only until a separate valuation reconciliation
+is accepted. Existing average cost is retained; new inbound balances use the
+physical zero-cost/null-currency default; draft line cost fields remain null.
+This permits safe quantity authority without silently inventing opening-balance
+or adjustment valuation.
+
+E154 reuses the documented `inventory.approve` permission already reserved for
+controlled inventory approvals. It is not yet seeded, so its technical seed and
+role assignment are an explicit implementation prerequisite. No new
+`inventory.post` permission is approved by this documentation block.
+
 ### Transfer
 
 ```mermaid
@@ -499,6 +531,10 @@ Reserved domain codes:
 - `transfer_quantity_exceeded`
 - `idempotency_conflict`
 - `inventory_unit_locked`
+- `movement_has_no_lines`
+- `inventory_balance_not_found`
+- `invalid_movement_line`
+- `numeric_overflow`
 
 Unexpected PostgreSQL errors remain sanitized. These codes are documented contracts only; `@asone/errors` is unchanged in this block.
 

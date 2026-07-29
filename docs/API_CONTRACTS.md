@@ -860,7 +860,210 @@ E064–E072, E108–E144, and E129 retain their existing contracts and IDs. No
 posting route, generic movement DELETE, balance mutation, schema change, or
 migration is approved by E145–E152.
 
-The **56 proposed E097–E152 routes** are not included in the implementation-ready total below.
+### 19.4 Proposed inventory movement submission and posting — E153–E154
+
+These two endpoints are **Proposed, not Implemented**. They extend, but do not
+alter, E145–E152. No preview route, generic status PATCH, reversal route, or
+direct balance endpoint is approved.
+
+| ID | Proposed method and route; purpose | Permission / scope | Inputs | Success / stable errors | Idempotency, concurrency, effects |
+| --- | --- | --- | --- | --- | --- |
+| E153 | `POST /inventory/movements/{movement_id}/submit`; freeze a complete draft | `inventory.adjust`; movement branch | No body | `200 submission result`; Common+V+IC and movement/line errors | Strong `If-Match` and `Idempotency-Key`; `draft -> pending`; version +1; audit only |
+| E154 | `POST /inventory/movements/{movement_id}/post`; atomically post a pending movement | `inventory.approve`; movement branch | No body | `200 posting result`; Common+V+IC, `insufficient_inventory`, balance/movement errors | Strong `If-Match` and `Idempotency-Key`; quantity-only ledger/projection, audit, outbox |
+
+#### Lifecycle and approval
+
+E153 accepts only a `draft` movement with at least one line. It repeats final
+structural validation, changes status to `pending`, and increments the movement
+version exactly once. It performs no balance mutation, valuation, line edit, or
+public event. The body is absent: submission reason, approval note,
+`requested_by`, and `requested_at` are not added. The authenticated actor and
+audit timestamp are the authoritative submission evidence.
+
+E154 accepts only `pending`. A draft never posts directly. Successful posting
+sets `status=posted`, server-owned `posted_at` and `posted_by`, and increments
+the movement version exactly once. `draft` is editable; `pending` is immutable
+except E148 cancellation; `posted` is immutable and correctable only through a
+future reversal movement; `cancelled` and `reversed` are terminal for direct
+commands.
+
+The public generic flow accepts only `opening_balance` and `adjustment`.
+Receipt, issue/consumption, return, transfer shipment/receipt, sale, sale
+return, reservation consumption, and reversal remain owned by typed workflows.
+Those workflows may later reuse the same internal posting engine within their
+own transaction, but they cannot call E154 with a workflow-owned type.
+
+The current approval boundary is permission based. The same actor may author,
+submit, and post only when that actor independently holds both
+`inventory.adjust` and `inventory.approve`. Four-eyes and value-based approval
+are deferred until a company policy and valuation basis are approved.
+`inventory.approve` is already documented for controlled inventory approvals
+but is not yet in the technical permission seed; seeding and intentional role
+assignment are prerequisites to implementing E154. It is not automatically
+granted to ordinary cashiers. No `inventory.post` permission is added.
+
+#### Submit and posting responses
+
+Both strict response data objects set `additionalProperties: false`.
+E153 requires exactly string UUID `movement_id`, canonical string
+`movement_number`, enum `status=pending`, and positive integer `version`. E154
+requires those same fields with `status=posted`, plus UTC `posted_at` and
+nonnegative integer `affected_balance_count`. All fields are required and no
+nullable or additional field is accepted.
+
+E153 returns:
+
+```json
+{"movement_id":"019c12e4-7a91-7e52-b84a-b41592784f31","movement_number":"IMV-019c12e47a917e52b84ab41592784f31","status":"pending","version":4}
+```
+
+E154 returns:
+
+```json
+{"movement_id":"019c12e4-7a91-7e52-b84a-b41592784f31","movement_number":"IMV-019c12e47a917e52b84ab41592784f31","status":"posted","version":5,"posted_at":"2026-07-29T18:00:00.000Z","affected_balance_count":2}
+```
+
+Outbox IDs, internal correlation storage, created balance IDs, balance
+snapshots, costs, and event IDs are not exposed. Detailed authoritative state
+remains available through E067, E068, E072, E129 when implemented, and E146.
+
+#### Quantity-only posting semantics
+
+Posting uses persisted positive `base_quantity` as the authoritative stock
+quantity. It revalidates positive `quantity`/`base_quantity`, base UOM
+consistency, active tenant-owned variants, active branch-owned locations,
+direction flags, movement type, and `numeric(19,6)` range. HTTP decimals remain
+non-scientific strings; calculations use exact decimal arithmetic and never
+binary floating point or implicit rounding.
+
+- `opening_balance`: destination required, source forbidden; add base quantity
+  to destination `quantity_on_hand`.
+- `adjustment` in: destination required, source forbidden; add base quantity to
+  destination `quantity_on_hand`.
+- `adjustment` out: source required, destination forbidden; subtract base
+  quantity from source `quantity_on_hand`.
+
+Generic posting never changes `quantity_reserved` or `quantity_in_transit`.
+Available quantity is derived as
+`quantity_on_hand - quantity_reserved`; it is not stored. Multiple lines are
+defensively aggregated by
+`(company_id,branch_id,inventory_location_id,product_variant_id)` before
+availability validation and updates, even though the draft layer rejects
+equivalent duplicate direction tuples.
+
+Inbound posting atomically creates a missing balance through the existing
+tenant-scoped unique key and applies the aggregate delta. A concurrent creator
+converges on that single row; unsafe select-then-insert allocation is
+prohibited. Outbound posting requires an existing balance. V1 forbids negative
+stock and exposes no override: total outbound demand is validated against
+`quantity_on_hand` after locking, failure returns `409
+insufficient_inventory`, and no line, balance, movement, audit, outbox, or
+idempotency result partially commits.
+
+This contract deliberately posts **quantities only**. Draft costs are not
+captured by E145–E152, and the physical schema has no approved opening-balance
+valuation source. E154 therefore leaves an existing `average_unit_cost`
+unchanged; a new inbound balance starts at the schema-safe zero cost with null
+currency; movement-line `unit_cost`, `extended_cost`, and `currency_code`
+remain null. Zero-cost opening balances are allowed and explicitly mean
+“valuation not established,” not a fiscal valuation. Weighted-average,
+last-purchase, transfer-cost preservation, and later cost correction require a
+dedicated valuation reconciliation contract before implementation.
+
+#### Transaction and locking
+
+Every E154 writer uses this deadlock-resistant order:
+
+1. Begin a PostgreSQL transaction and acquire tenant/actor/operation
+   idempotency ownership.
+2. Lock the tenant- and branch-authorized movement row.
+3. Validate status and strong `If-Match` before any balance effect.
+4. Load lines in `(line_number,id)` order, validate them, and aggregate deltas.
+5. Sort complete balance keys by
+   `(company_id,branch_id,inventory_location_id,product_variant_id)`.
+6. Lock existing rows in that order; safely create missing inbound rows through
+   the unique key, then obtain their locks in the same canonical order.
+7. Validate all aggregate outbound availability and numeric results.
+8. Update each balance once, increment its version once, and set
+   `last_movement_id`.
+9. Mark the movement posted and increment its version once.
+10. Insert audit and outbox rows, persist the idempotent response, and commit.
+
+No network call occurs in the transaction. Expected serialization/deadlock
+failures may receive only a bounded whole-command retry under the same
+idempotency key. Business conflicts are never automatically retried.
+
+#### Idempotency, ETags, audit, and events
+
+E153 and E154 keys are scoped by authenticated company, actor, and operation.
+The canonical request hash includes path movement identity and expected
+version. Exact replay returns the original status, body, and strong quoted
+ETag, with no new version, balance mutation, audit, or outbox row. Reuse with a
+different hash returns `409 idempotency_conflict`. A stale ETag returns `409
+version_conflict` before any effect.
+
+E153 writes one `inventory_movement.submitted` audit action atomically with the
+state transition and completed idempotency outcome. E154 writes one
+`inventory_movement.posted` action in the posting transaction. Evidence
+includes company, branch, actor, movement ID and number, previous/new status,
+sorted affected balance keys and exact quantity deltas, request/correlation
+IDs, and bounded sanitized metadata. It excludes raw payloads, unrestricted
+notes, idempotency hashes, secrets, and costs.
+
+E153 emits no public event. E154 inserts schema-version-1
+`inventory.movement.created` with aggregate type/ID
+`inventory_movement/{movement_id}` and one schema-version-1
+`inventory.stock.changed` per affected balance with aggregate type/ID
+`inventory_balance/{balance_id}`. Events share company, branch, movement,
+correlation, and posting time. Event IDs are generated once inside the posting
+transaction, persisted in the outbox, never exposed by E154, and consumers
+deduplicate by `event_id`.
+
+The logical publisher ordering/partition key is
+`company_id:aggregate_type:aggregate_id`, derived from existing outbox fields;
+it is not a new database column. Movement and balance events therefore order
+independently by their own aggregate version without claiming global order.
+
+`inventory.movement.created` contains company/branch, movement ID/number/type,
+posted status/time, actor, reason/reference, line count, and correlation ID.
+Each `inventory.stock.changed` contains company/branch, balance/location/variant
+IDs, previous/delta/new on-hand, reserved and derived available quantities,
+balance version, movement ID/number, occurred time, and correlation ID. Exact
+decimals are strings and general stock events contain no cost fields.
+
+#### Stable errors and reversal boundary
+
+| Error | HTTP | Meaning |
+| --- | ---: | --- |
+| `inventory_movement_not_found` | 404 | Movement absent or hidden by company/branch scope |
+| `movement_has_no_lines` | 409 | Submit/post target has no lines |
+| `inventory_balance_not_found` | 409 | Required outbound balance does not exist |
+| `insufficient_inventory` | 409 | Aggregate outbound quantity exceeds on hand |
+| `invalid_movement_state` | 409 | Transition is not legal from current status |
+| `movement_already_posted` | 409 | New post command targets a posted movement |
+| `movement_already_cancelled` | 409 | Command targets a cancelled movement |
+| `movement_already_reversed` | 409 | Command targets a reversed movement |
+| `invalid_movement_line` | 422 | Persisted line fails final structural validation |
+| `invalid_inventory_location` | 422 | Location is inactive, incompatible, or outside scope |
+| `invalid_movement_direction` | 422 | Aggregated line direction is invalid |
+| `invalid_movement_type` | 422 | Type is not public-postable |
+| `numeric_overflow` | 422 | Exact result exceeds approved numeric precision |
+
+`validation_error` is `400`; `permission_denied` is `403`; `version_conflict`,
+`idempotency_conflict`, and the existing `inventory_balance_conflict` are
+`409`. Safe envelopes never disclose SQL, constraint names, lock details,
+cross-company keys, or stack traces.
+
+Posted movements cannot be edited, cancelled, or deleted. BLOCK 3.3C.3 will
+define a distinct linked reversal movement that applies inverse deltas,
+preserves the original ledger, and emits its own audit/events. No reversal ID
+is reserved here.
+
+E064–E072, E108–E144, E145–E152, and E129 retain their existing contracts and
+IDs. E129 remains Proposed / Not Implemented. E153–E154 approve no schema
+change, migration, posting implementation, balance mutation, or event producer.
+
+The **58 proposed E097–E154 routes** are not included in the implementation-ready total below.
 
 ## 20. Endpoint and permission summary matrix
 

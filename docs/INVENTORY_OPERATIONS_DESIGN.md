@@ -464,9 +464,11 @@ Consumers recover gaps through E072/E095 and checkpoints.
 | Kardex/cost/policy | E129-E133 | Stable cursors, cost permission, policy ETag |
 | Receipt/consumption | E134-E135 | Idempotent, reason required, strict stock policy |
 | Editable movement drafts | E145-E152 | Header/detail/cancel and line CRUD; parent ETag; no posting |
+| Movement submit/post | E153-E154 | Freeze draft, then atomic quantity-only posting; no preview or reversal |
 
-No posting ID is reserved for generic movement drafts. Typed commands preserve
-authorization and invariants. E136-E138 remain non-V1.
+E153-E154 now reserve generic submit/post; they remain proposed and
+unimplemented. Typed commands preserve authorization and invariants. E136-E138
+remain non-V1.
 Collections use stable opaque cursors and allowlisted filters. Mutations use
 strict schemas, audit, applicable idempotency and required ETag/base version.
 An outbox fact is required only when the canonical event catalogue defines one;
@@ -509,6 +511,63 @@ mutation, or E129.
 The complete strict schemas, errors, replay behavior, direction rules, and
 response shapes are authoritative in
 [API_CONTRACTS.md](API_CONTRACTS.md#193-proposed-editable-inventory-movement-drafts--e145e152).
+
+### Canonical generic posting contract
+
+E153 and E154 reserve the minimal generic lifecycle without altering the draft
+contract:
+
+```text
+E153: nonempty draft --inventory.adjust--> pending
+E154: pending --inventory.approve--> posted
+```
+
+Both commands require tenant/actor/operation-scoped idempotency and the current
+strong movement ETag. Submission performs final line validation, increments
+the movement version, and writes `inventory_movement.submitted` audit evidence;
+it changes no balance, cost, line, or public event. Posting increments movement
+version once, sets server-owned posting actor/time, writes
+`inventory_movement.posted`, and atomically stores its outbox and idempotency
+outcome. Exact replay duplicates none of those effects.
+
+The public endpoint allowlist is `opening_balance,adjustment`. Typed receipt,
+consumption, sale, return, transfer, reservation, and reversal workflows remain
+outside E154 but may later invoke the same internal engine inside their owning
+transaction.
+
+Posting folds positive exact `base_quantity` values into aggregate deltas keyed
+by `(company_id,branch_id,inventory_location_id,product_variant_id)`. Opening
+balance and adjustment-in increase destination on-hand; adjustment-out
+decreases source on-hand. Reserved and in-transit do not change, and available
+remains derived. Missing inbound rows are created safely under the existing
+unique key; missing outbound rows and aggregate insufficiency fail the entire
+transaction. No negative-stock override exists.
+
+The canonical lock order is idempotency ownership, movement, stable lines,
+sorted balance keys, existing balance rows, and safely created inbound rows.
+All writers sort by company, branch, location, and variant. After complete
+validation, every affected balance is updated once, then movement, audit,
+outbox, and idempotency result commit together.
+
+This slice is quantity-only. Because drafts cannot capture cost and the
+physical model has no approved opening-valuation source, posting retains
+existing average cost, initializes a new inbound balance with zero cost/null
+currency, and leaves line valuation fields null. Weighted average, purchase
+cost, transfer cost, and valuation correction require a dedicated contract.
+Zero-cost opening stock means valuation is not established.
+
+E154 emits `inventory.movement.created` once per posted movement and
+`inventory.stock.changed` once per affected balance. Stock events contain exact
+previous/delta/new on-hand, reserved and derived available quantities, balance
+version, movement identity, correlation, and no costs. Event IDs are durable
+outbox identities created once in the posting transaction; they are not API
+response fields.
+
+The posting permission is the already documented `inventory.approve`, which is
+also reserved by E111 and E121-E122 but is not yet present in the technical
+permission seed. Implementing E154 therefore requires seeding and assigning
+that permission in a later code block. No `inventory.post` permission is
+invented, and ordinary cashiers receive no implicit grant.
 
 ## Error catalog
 

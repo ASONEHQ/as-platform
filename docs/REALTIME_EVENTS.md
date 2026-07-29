@@ -324,16 +324,30 @@ For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `
 
 Editable movement draft operations E145–E152 emit no public realtime event.
 `inventory.movement.created` is a posted-movement fact, not a draft-header fact.
+
+E153 submission also emits no public event. E154 quantity-only posting emits
+exactly one schema-version-1 `inventory.movement.created` for the posted
+movement and one schema-version-1 `inventory.stock.changed` per affected
+balance. All rows are inserted in the posting transaction, share the movement
+correlation ID and posting time, and are published only after commit. Exact
+idempotent replay inserts no additional outbox rows.
 Draft header/line creation, edits, deletion, and cancellation are audited but
-remain absent from the public outbox catalogue. Posting later owns
+remain absent from the public outbox catalogue. The proposed E154 posting
+transaction owns
 `inventory.movement.created` and `inventory.stock.changed`.
+
+For both event types, the logical publisher partition key is derived as
+`company_id:aggregate_type:aggregate_id`. This adds no outbox column:
+`inventory_movement/{movement_id}` and
+`inventory_balance/{balance_id}` use the existing aggregate fields and their
+own contiguous aggregate versions. No global or cross-balance order is implied.
 
 TASK 09.4 reserves the following additional events. They are contractual proposals, not implemented producers. `inventory.stock.changed` is the single canonical stock-change fact.
 
 | Event type | Producer / aggregate | Scope / minimum permission | Minimum safe `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
-| `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | branch/location/`product_variant_id`; on-hand, reserved, available and in-transit decimal strings; reason code; balance version; source movement ID; occurred_at; correlation_id; `P-INV`; no costs | posted balance effect / `INV` | V / CP |
-| `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | movement ID/type/status, reason code, reference type/ID, occurred_at, affected line count; authorized positive decimal strings and explicit directions; `P-INV` | posted movement / `INV` | V / CP |
+| `inventory.stock.changed` | inventory / `inventory_balance` | branch/location / `inventory.read` | company/branch/balance/location/variant IDs; previous/delta/new on-hand, reserved and derived available decimal strings; balance version; movement ID/number; occurred_at; correlation_id; `P-INV`; no costs | one event per affected balance after posting / `INV` | V / CP |
+| `inventory.movement.created` | inventory / `inventory_movement` | branch/location / `inventory.read` | company/branch, movement ID/number/type/posted status, reason/reference, posted_at, actor, correlation ID, line count; `P-INV`; no costs | one event per posted movement / `INV` | V / CP |
 | `inventory.transfer.created` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, source/destination locations, status, line count, version; `P-INV` | committed request / transfer detail | V / CP |
 | `inventory.transfer.approved` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, safe decision reason, version, approved_at; `P-INV` | committed approval / transfer detail | V / CP |
 | `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, shipped quantity summaries as decimal strings, movement ID, version, shipped_at; `P-INV` | committed shipment / transfer detail and `INV` | V / CP |
