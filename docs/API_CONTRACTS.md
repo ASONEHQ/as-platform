@@ -388,7 +388,7 @@ SKU, barcode, unit of measure, quantity scale, standard cost, and currency are a
 | E068 | `GET /inventory/movements`; posted ledger history | `inventory.read`; branch | `S`; cursor, limit, branch/location/`product_variant_id`/type/status/reference, occurred_from/to | `200 movements`; Common | Status vocabulary is `draft,pending,posted,cancelled,reversed`; stable `(occurred_at,id)`; — / — |
 | E069 | `POST /inventory/adjustments`; create and post adjustment | `inventory.adjust`; branch/location | `C`; body client movement UUID*, location*, `product_variant_id*`, `direction*`=`adjustment_in|adjustment_out`, positive `quantity*`, reason_code*, note, `expected_version*`, occurred_at, offline metadata | `201` posted movement plus balance; `insufficient_inventory`, `negative_inventory_not_allowed`, `inventory_balance_conflict`, IC | Atomic ledger+balance+audit+outbox; `inventory.adjusted` / `inventory.stock.changed` |
 | E070 | `POST /inventory/counts`; apply authorized immediate physical count | `inventory.count`; branch/location | `C`; body client command ID*, location*, `product_variant_id*`, nonnegative `counted_quantity*`, `expected_version*`, reason/note, occurred_at | `201` posted adjustment movement and balance; `insufficient_inventory`, `inventory_balance_conflict`, IC | Response records calculated direction and positive delta; persistent count workflow remains E115-E123; `inventory.count_applied` / `inventory.stock.changed` |
-| E071 | `POST /inventory/movements/{movement_id}/reversals`; compensate posted movement | `inventory.reverse`; original scope | `C`; body client UUID*, reason_code*, note, expected balance version*, occurred_at | `201` posted reversal movement and balance; `movement_already_reversed`, `insufficient_inventory`, `inventory_balance_conflict`, IC | Never edits original; `inventory.movement_reversed` / `inventory.stock.changed` |
+| E071 | `POST /inventory/movements/{movement_id}/reversals`; fully compensate eligible posted manual movement | `inventory.reverse`; original branch | `C+O`; body `reason_code*`, note | `201` linked posted reversal result; `movement_already_reversed`, `inventory_movement_not_reversible`, `insufficient_inventory`, IC | `Idempotency-Key` plus original strong `If-Match`; creates inverse movement and atomically marks original reversed; movement-created/reversed and stock-changed events |
 | E072 | `GET /inventory/changes`; incremental balances/movements | `inventory.read`; branch | `R`; `since_checkpoint*`, limit, branch/location filters | `200` ordered changes/tombstones and next checkpoint; invalid checkpoint/scope | Recovery/read model only; — / — |
 
 Inventory balances have no POST/PATCH endpoint. Every accepted mutation creates an immutable movement, and the initial policy rejects a resulting negative on-hand balance.
@@ -1062,6 +1062,131 @@ is reserved here.
 E064–E072, E108–E144, E145–E152, and E129 retain their existing contracts and
 IDs. E129 remains Proposed / Not Implemented. E153–E154 approve no schema
 change, migration, posting implementation, balance mutation, or event producer.
+
+### 19.5 Canonical inventory movement reversal — E071
+
+E071 remains the single public reversal command:
+`POST /inventory/movements/{movement_id}/reversals`. No E155, singular
+`/reverse` alias, generic status endpoint, editable reversal draft, or partial
+reversal endpoint is reserved. This section reconciles E071 without
+renumbering or altering E064–E072 or E145–E154.
+
+#### Eligibility and lifecycle
+
+The generic command reverses only a `posted` `opening_balance` or `adjustment`
+created through the manual movement flow. Receipt, issue/consumption, return,
+sale, sale return, transfer shipment/receipt, reservation consumption, count
+application, and prior reversal movements remain owned by their typed
+workflows. A reversal cannot itself be reversed through E071.
+
+E071 is an immediate atomic command. It creates and posts a distinct
+`movement_type=reversal` movement with immutable inverse lines, applies their
+quantity effects, and transitions the original `posted -> reversed`. Original
+lines and posting evidence remain unchanged. Exactly one full reversal is
+permitted; partial reversal is outside V1.
+
+The reversal sets `reversal_of_movement_id` to the original. The original sets
+`reversed_by_movement_id`, `reversed_at`, and `reversed_by`, and increments its
+version once. The reversal is created directly in `posted` with a server-owned
+UUIDv7 ID, canonical `IMV-<uuid-without-hyphens>` number, `posted_at`,
+`posted_by`, and version `1`. Existing tenant-scoped foreign keys and the
+partial unique index enforce the relationship and one-reversal rule.
+
+#### Request and response
+
+E071 requires `inventory.reverse`, `Idempotency-Key`, and the strong
+`If-Match` ETag of the original. Neither `inventory.adjust` nor
+`inventory.approve` substitutes for the dedicated permission. Its strict body
+has `additionalProperties: false`:
+
+```json
+{"reason_code":"ENTRY_ERROR","note":"Optional bounded operator explanation."}
+```
+
+`reason_code` is trimmed, non-empty, and at most 64 characters. `note` is
+optional, nullable, and at most 1000 characters. IDs, numbers, branch, type,
+state, lines, quantities, costs, actor, timestamps, links, and versions are
+server-owned.
+
+Success is `201`; the standard `ETag` header contains the new original version:
+
+```json
+{
+  "original_movement_id": "019c12e4-7a91-7e52-b84a-b41592784f31",
+  "original_status": "reversed",
+  "original_version": 6,
+  "reversal_movement_id": "019c12f0-427c-78a1-8173-eeb6db45f411",
+  "reversal_movement_number": "IMV-019c12f0427c78a18173eeb6db45f411",
+  "reversal_status": "posted",
+  "reversal_version": 1,
+  "reversed_at": "2026-07-29T20:00:00.000Z",
+  "affected_balance_count": 2
+}
+```
+
+All fields are required, the data object has `additionalProperties: false`,
+and no cost or internal event field is exposed.
+
+#### Inverse quantities and valuation
+
+Generated lines preserve original `(line_number,id)` order by assigning
+contiguous reversal line numbers in that order. Variant, positive `quantity`,
+positive authoritative `base_quantity`, UOM, and branch remain identical.
+Source and destination are exchanged: destination-only becomes source-only,
+and source-only becomes destination-only. The schema has no original-line FK;
+movement-level linkage and stable generated order are canonical, and metadata
+is not a substitute relationship.
+
+Inverse deltas are aggregated by company, branch, location, and variant before
+validation. Reversing an outbound effect is inbound and may safely create a
+missing balance. Reversing an inbound effect is outbound and requires an
+existing balance with sufficient unreserved availability:
+`quantity_on_hand - quantity_reserved >= inverse outbound quantity`. Failure
+returns `409 insufficient_inventory` with no partial effect.
+
+Reversal remains quantity-only. Line costs remain null, average cost and
+currency remain unchanged, new inbound balances use schema defaults, and
+events contain no costs. It is not a financial or valuation reversal.
+
+#### Transaction, concurrency, and idempotency
+
+The transaction acquires idempotency ownership; locks and validates the
+tenant/branch original, ETag, eligibility, and absence of a prior reversal;
+loads lines in stable order; derives and aggregates inverse deltas; sorts
+balance keys by company, branch, location, and variant; locks existing
+balances; safely creates missing inbound balances; validates outbound
+availability; updates each balance once; creates the posted reversal and
+lines; marks the original reversed; writes audits and outbox; persists the
+response; and commits.
+
+Two different keys racing for one original produce at most one reversal; the
+loser receives `movement_already_reversed`. Exact replay returns the original
+`201`, body, and original ETag without new effects. The request hash includes
+movement ID, original ETag, and normalized body. Conflicting key reuse returns
+`idempotency_conflict`; a stale ETag returns `version_conflict` before effects.
+
+#### Audit, events, and errors
+
+The transaction writes `inventory_movement.reversal_created` for the
+compensation and `inventory_movement.reversed` for the original. Bounded
+evidence includes tenant, branch, actor, both movement IDs/numbers, reason,
+note, status transition, sorted balance keys, exact inverse deltas, request ID,
+and correlation ID; it excludes idempotency values and costs.
+
+It inserts one `inventory.movement.created` for the posted reversal, one
+already-approved `inventory.movement_reversed` for the original, and one
+`inventory.stock.changed` per affected balance, all schema version 1. The
+created event identifies `movement_type=reversal` and
+`original_movement_id`. Replay creates no additional rows.
+
+E071 reuses `inventory_movement_not_found`, `invalid_movement_state`,
+`inventory_movement_not_reversible`, `movement_already_reversed`,
+`movement_has_no_lines`, `insufficient_inventory`,
+`inventory_balance_not_found`, `invalid_movement_line`, `version_conflict`,
+`idempotency_conflict`, `numeric_overflow`, `permission_denied`, and
+`validation_error`. A known relationship uniqueness race maps to
+`movement_already_reversed`; SQL, constraint names, hidden-company keys, and
+lock details are never exposed.
 
 The **58 proposed E097–E154 routes** are not included in the implementation-ready total below.
 

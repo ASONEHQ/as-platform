@@ -364,7 +364,8 @@ creation therefore serialize on the authoritative balance rows.
 ## Reversals
 
 - Only posted movements may be reversed.
-- A new reversal mirrors every original quantity and cost effect.
+- A new generic reversal mirrors every original quantity effect. Cost reversal
+  remains deferred until a valuation-reconciliation contract is approved.
 - The original lines remain unchanged and its header becomes `reversed`.
 - One full reversal is allowed per original.
 - Partial reversal is outside initial scope; returns and transfer discrepancies
@@ -624,6 +625,38 @@ skipped, and omitted tests.
 
 Migrations are additive after 0004, generated once, manually audited, and tested
 from an empty PostgreSQL 17 database. Historical migrations remain untouched.
+
+## E071 reversal reconciliation
+
+E071 is the only generic reversal contract and retains
+`POST /inventory/movements/{movement_id}/reversals`. It is an immediate,
+idempotent, full quantity compensation under `inventory.reverse`, not an
+editable draft or a generic status mutation. The original must be a posted
+manual `opening_balance` or `adjustment`; workflow-owned movement types and
+reversals are ineligible.
+
+The compensating movement is created directly as `posted` with
+`movement_type=reversal`, positive quantities, inverted source/destination,
+and `reversal_of_movement_id`. In the same transaction the original becomes
+`reversed`, increments once, and stores `reversed_by_movement_id`,
+`reversed_at`, and `reversed_by`. The physical foreign keys and partial unique
+index already support both links and exactly one full reversal, so no schema
+change or migration is required.
+
+The command consumes the original strong ETag and a strict body containing
+required `reason_code` and optional bounded `note`. The server owns all inverse
+lines and effects. Exact replay returns the stored result and original ETag;
+different keys racing are serialized by the original row and relationship
+uniqueness. The balance phase aggregates and locks in E154 order. Outbound
+inverse effects require sufficient unreserved availability; inbound inverse
+effects may create a missing balance safely.
+
+Reversal remains quantity-only and cannot modify cost. It records
+`inventory_movement.reversal_created` and `inventory_movement.reversed`
+audits, then emits `inventory.movement.created`,
+`inventory.movement_reversed`, and the affected
+`inventory.stock.changed` facts atomically. E064–E072 and E145–E154 retain
+their IDs and existing non-reversal behavior; E129 remains proposed.
 
 ## Risks
 

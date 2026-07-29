@@ -620,6 +620,43 @@ No NFC/RFID table belongs in the first inventory migration.
 
 No PostgreSQL atomicity claim may rely only on mocks.
 
+## Canonical quantity-only reversal
+
+E071 remains `POST /inventory/movements/{movement_id}/reversals`; no new
+endpoint ID or alias is introduced. It requires `inventory.reverse`, the
+original movement's strong ETag, an idempotency key, and a bounded non-empty
+`reason_code`. The command accepts no client-authored lines, quantities,
+locations, costs, linkage, state, or timestamps.
+
+Only manually posted `opening_balance` and `adjustment` movements are eligible.
+Typed receipt, issue, return, sale, transfer, reservation, count, and prior
+reversal effects remain owned by their workflows. E071 immediately creates a
+distinct posted reversal, mirrors every original positive quantity while
+exchanging source and destination, applies all inverse balance deltas, and
+then marks the original `reversed` in one transaction. There is no editable
+reversal draft and no partial reversal.
+
+The reversal points to its original through `reversal_of_movement_id`; the
+original points back through `reversed_by_movement_id` and records
+`reversed_at` and `reversed_by`. The existing partial unique index limits an
+original to one successful full reversal. Original lines remain immutable.
+Because no line-level relationship column exists, stable generated line order
+is the canonical correspondence; metadata must not emulate a foreign key.
+
+Inverse deltas use exact `base_quantity`, aggregate by the physical balance
+key, and reuse the E154 lock order. Reversal of an original inbound effect is
+outbound and requires enough unreserved stock. Reversal of an original
+outbound effect is inbound and may safely create a missing balance. Any
+conflict rolls back the inverse movement, original transition, balances,
+audits, events, and successful idempotency outcome.
+
+This is a quantity correction only. It never creates line cost, changes
+average cost or currency, or claims to reverse accounting value. Successful
+reversal writes audits for both linked aggregates and emits
+`inventory.movement.created`, the approved `inventory.movement_reversed`, and
+one `inventory.stock.changed` per affected balance. Exact replay duplicates
+none of those effects.
+
 ## Risks and remaining decisions
 
 1. `CORE_DATA_MODEL.md` originally referenced products directly; implementation must migrate the design to variants before catalog/inventory code exists.

@@ -331,6 +331,18 @@ movement and one schema-version-1 `inventory.stock.changed` per affected
 balance. All rows are inserted in the posting transaction, share the movement
 correlation ID and posting time, and are published only after commit. Exact
 idempotent replay inserts no additional outbox rows.
+
+E071 quantity-only reversal emits three complementary schema-version-1 facts
+in its transaction: one `inventory.movement.created` for the posted
+compensating movement, one already-approved `inventory.movement_reversed` for
+the original transition, and one `inventory.stock.changed` for each affected
+balance. The created movement identifies `movement_type=reversal` and
+`original_movement_id`. The reversed fact identifies both movement IDs and
+numbers, the original's new version, reversal version, bounded reason,
+`reversed_at`, actor, and correlation ID. Stock facts use exact inverse
+quantity strings. No event includes costs, unrestricted notes, idempotency
+material, or hidden balance keys. Exact replay inserts no additional events.
+
 Draft header/line creation, edits, deletion, and cancellation are audited but
 remain absent from the public outbox catalogue. The proposed E154 posting
 transaction owns
