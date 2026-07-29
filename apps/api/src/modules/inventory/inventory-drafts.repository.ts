@@ -523,6 +523,7 @@ export class InventoryDraftRepository {
     requestHash: string,
     status: number,
     execute: () => Promise<T>,
+    resourceType = 'inventory_movement',
   ): Promise<{ value: T; replayed: boolean }> {
     const scopedOperation = `${operation}:${context.actorId}`;
     await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [
@@ -559,8 +560,8 @@ export class InventoryDraftRepository {
     const resourceId = typeof value.id === 'string' ? value.id : null;
     await client.query(
       `update idempotency_keys set response_status=$2,response_body=$3::jsonb,
-       resource_type='inventory_movement',resource_id=$4,completed_at=$5 where id=$1`,
-      [id, status, JSON.stringify(value), resourceId, context.timestamp],
+       resource_type=$6,resource_id=$4,completed_at=$5 where id=$1`,
+      [id, status, JSON.stringify(value), resourceId, context.timestamp, resourceType],
     );
     return { value, replayed: false };
   }
