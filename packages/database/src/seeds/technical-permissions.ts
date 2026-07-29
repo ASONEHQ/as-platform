@@ -42,6 +42,7 @@ export const technicalPermissionCodes = [
   'inventory.cost.read',
   'inventory_location.manage',
   'inventory.adjust',
+  'inventory.approve',
   'inventory.count',
   'inventory.reverse',
   'sale.read',

@@ -18,6 +18,8 @@ import {
 } from './inventory.service.js';
 import { InventoryDraftRepository } from './inventory-drafts.repository.js';
 import { InventoryDraftService } from './inventory-drafts.service.js';
+import { InventoryPostingRepository } from './inventory-posting.repository.js';
+import { InventoryPostingService } from './inventory-posting.service.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
@@ -33,6 +35,7 @@ integration('PostgreSQL inventory E064-E068', () => {
   let balances: InventoryBalanceReadService;
   let movements: InventoryMovementReadService;
   let drafts: InventoryDraftService;
+  let posting: InventoryPostingService;
 
   const companyId = randomUUID();
   const otherCompanyId = randomUUID();
@@ -112,6 +115,7 @@ integration('PostgreSQL inventory E064-E068', () => {
     balances = new InventoryBalanceReadService(new InventoryBalanceReadRepository(database));
     movements = new InventoryMovementReadService(new InventoryMovementReadRepository(database));
     drafts = new InventoryDraftService(new InventoryDraftRepository(database));
+    posting = new InventoryPostingService(new InventoryPostingRepository(database));
   });
 
   afterAll(async () => {
@@ -526,5 +530,187 @@ integration('PostgreSQL inventory E064-E068', () => {
     await expect(
       drafts.cancel(context, [branchId], id, 2n, 'new-cancel-command', 'AGAIN'),
     ).rejects.toMatchObject({ code: 'movement_already_cancelled' });
+  });
+
+  it('submits and posts an opening balance atomically with exact replay and events', async () => {
+    const location = (
+      await locations.create(context, 'posting-location', {
+        branchId,
+        code: 'POSTING',
+        name: 'Posting verification',
+        locationType: 'main',
+      })
+    ).value;
+    const created = await drafts.create(context, [branchId], 'posting-opening', {
+      branchId,
+      movementType: 'opening_balance',
+    });
+    const id = String(created.value.id);
+    await drafts.addLine(
+      context,
+      [branchId],
+      id,
+      1n,
+      'posting-opening-line',
+      {
+        productVariantId: variantId,
+        destinationLocationId: location.id,
+        quantity: '7',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    const submitted = await posting.submit(context, [branchId], id, 2n, 'submit-opening');
+    const submitReplay = await posting.submit(context, [branchId], id, 2n, 'submit-opening');
+    expect(submitted.value).toMatchObject({ status: 'pending', version: 3 });
+    expect(submitReplay).toEqual({ value: submitted.value, replayed: true });
+    const posted = await posting.post(context, [branchId], id, 3n, 'post-opening');
+    const replay = await posting.post(context, [branchId], id, 3n, 'post-opening');
+    expect(posted.value).toMatchObject({
+      status: 'posted',
+      version: 4,
+      affected_balance_count: 1,
+    });
+    expect(replay).toEqual({ value: posted.value, replayed: true });
+    const effects = await database.pool.query<{
+      quantity_on_hand: string;
+      quantity_reserved: string;
+      quantity_in_transit: string;
+      average_unit_cost: string;
+      currency_code: string | null;
+      audits: string;
+      events: string;
+      line_costs: string;
+    }>(
+      `select b.quantity_on_hand::text,b.quantity_reserved::text,
+       b.quantity_in_transit::text,b.average_unit_cost::text,b.currency_code,
+       (select count(*)::text from audit_log where company_id=$1 and entity_id=$3
+         and action in ('inventory_movement.submitted','inventory_movement.posted')) audits,
+       (select count(*)::text from outbox_events where company_id=$1
+         and payload->>'movement_id'=$3::text) events,
+       (select count(*)::text from inventory_movement_lines where company_id=$1
+         and inventory_movement_id=$3
+         and (unit_cost is not null or extended_cost is not null or currency_code is not null)) line_costs
+       from inventory_balances b where b.company_id=$1
+         and b.inventory_location_id=$2 and b.product_variant_id=$4`,
+      [companyId, location.id, id, variantId],
+    );
+    expect(effects.rows[0]).toEqual({
+      quantity_on_hand: '7.000000',
+      quantity_reserved: '0.000000',
+      quantity_in_transit: '0.000000',
+      average_unit_cost: '0.0000',
+      currency_code: null,
+      audits: '2',
+      events: '2',
+      line_costs: '0',
+    });
+  });
+
+  it('rejects empty, stale, cross-branch, and conflicting submit commands without effects', async () => {
+    const created = await drafts.create(context, [branchId], 'submit-rejections', {
+      branchId,
+      movementType: 'adjustment',
+    });
+    const id = String(created.value.id);
+    await expect(posting.submit(context, [branchId], id, 1n, 'submit-empty')).rejects.toMatchObject(
+      { code: 'movement_has_no_lines' },
+    );
+    await expect(posting.submit(context, [], id, 1n, 'submit-hidden')).rejects.toMatchObject({
+      code: 'inventory_movement_not_found',
+    });
+    await expect(
+      posting.submit(context, [branchId], id, 99n, 'submit-stale'),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const effects = await database.pool.query<{ count: string }>(
+      `select count(*)::text count from audit_log
+       where company_id=$1 and entity_id=$2 and action='inventory_movement.submitted'`,
+      [companyId, id],
+    );
+    expect(effects.rows[0]?.count).toBe('0');
+  });
+
+  it('aggregates outbound demand, prevents negative stock, and serializes posters', async () => {
+    const location = defined(
+      (await locations.list(companyId, [branchId], { limit: 20 })).items.find(
+        (item) => item.status === 'active' && item.allowsIssuing,
+      ),
+      'Expected an issuing location.',
+    );
+    await database.pool.query(
+      `insert into inventory_balances
+       (id,company_id,branch_id,inventory_location_id,product_variant_id,quantity_on_hand)
+       values($1,$2,$3,$4,$5,10)
+       on conflict(company_id,inventory_location_id,product_variant_id)
+       do update set quantity_on_hand=10,quantity_reserved=0`,
+      [randomUUID(), companyId, branchId, location.id, variantId],
+    );
+    const created = await drafts.create(context, [branchId], 'posting-outbound', {
+      branchId,
+      movementType: 'adjustment',
+    });
+    const id = String(created.value.id);
+    await drafts.addLine(
+      context,
+      [branchId],
+      id,
+      1n,
+      'posting-outbound-line',
+      {
+        productVariantId: variantId,
+        sourceLocationId: location.id,
+        quantity: '4',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    await posting.submit(context, [branchId], id, 2n, 'submit-outbound');
+    const outcomes = await Promise.allSettled([
+      posting.post(context, [branchId], id, 3n, 'post-outbound-a'),
+      posting.post(context, [branchId], id, 3n, 'post-outbound-b'),
+    ]);
+    expect(outcomes.filter((value) => value.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((value) => value.status === 'rejected')).toHaveLength(1);
+    const balance = await database.pool.query<{ quantity: string }>(
+      `select quantity_on_hand::text quantity from inventory_balances
+       where company_id=$1 and inventory_location_id=$2 and product_variant_id=$3`,
+      [companyId, location.id, variantId],
+    );
+    expect(balance.rows[0]?.quantity).toBe('6.000000');
+
+    const insufficient = await drafts.create(context, [branchId], 'posting-insufficient', {
+      branchId,
+      movementType: 'adjustment',
+    });
+    const insufficientId = String(insufficient.value.id);
+    await drafts.addLine(
+      context,
+      [branchId],
+      insufficientId,
+      1n,
+      'posting-insufficient-line',
+      {
+        productVariantId: variantId,
+        sourceLocationId: location.id,
+        quantity: '7',
+        unitOfMeasureCode: 'unit',
+      },
+      false,
+    );
+    await posting.submit(context, [branchId], insufficientId, 2n, 'submit-insufficient');
+    await expect(
+      posting.post(context, [branchId], insufficientId, 3n, 'post-insufficient'),
+    ).rejects.toMatchObject({ code: 'insufficient_inventory' });
+    const unchanged = await drafts.get(companyId, [branchId], insufficientId);
+    expect(unchanged).toMatchObject({ status: 'pending', version: 3n });
+    const failedEffects = await database.pool.query<{ audits: string; events: string }>(
+      `select
+       (select count(*)::text from audit_log where company_id=$1 and entity_id=$2
+         and action='inventory_movement.posted') audits,
+       (select count(*)::text from outbox_events where company_id=$1
+         and payload->>'movement_id'=$2::text) events`,
+      [companyId, insufficientId],
+    );
+    expect(failedEffects.rows[0]).toEqual({ audits: '0', events: '0' });
   });
 });

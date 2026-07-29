@@ -50,12 +50,17 @@ export class InventoryDraftError extends Error {
       | 'invalid_movement_direction'
       | 'invalid_movement_state'
       | 'invalid_movement_type'
+      | 'invalid_movement_line'
+      | 'inventory_balance_not_found'
       | 'inventory_movement_line_not_found'
       | 'inventory_movement_not_found'
+      | 'insufficient_inventory'
+      | 'movement_has_no_lines'
       | 'movement_already_cancelled'
       | 'movement_already_posted'
       | 'movement_already_reversed'
       | 'product_variant_not_found'
+      | 'numeric_overflow'
       | 'unit_of_measure_not_found'
       | 'version_conflict',
     message: string,

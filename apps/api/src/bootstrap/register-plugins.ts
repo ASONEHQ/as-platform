@@ -25,6 +25,9 @@ import {
 import { InventoryDraftRepository } from '../modules/inventory/inventory-drafts.repository.js';
 import { registerInventoryDraftRoutes } from '../modules/inventory/inventory-drafts.routes.js';
 import { InventoryDraftService } from '../modules/inventory/inventory-drafts.service.js';
+import { InventoryPostingRepository } from '../modules/inventory/inventory-posting.repository.js';
+import { registerInventoryPostingRoutes } from '../modules/inventory/inventory-posting.routes.js';
+import { InventoryPostingService } from '../modules/inventory/inventory-posting.service.js';
 import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
 import {
   InventoryBalanceReadService,
@@ -125,6 +128,13 @@ export async function registerPlugins(
         app,
         authentication,
         new InventoryDraftService(new InventoryDraftRepository(options.infrastructure.database)),
+      );
+      registerInventoryPostingRoutes(
+        app,
+        authentication,
+        new InventoryPostingService(
+          new InventoryPostingRepository(options.infrastructure.database),
+        ),
       );
     }
   }

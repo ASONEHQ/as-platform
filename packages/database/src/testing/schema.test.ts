@@ -185,9 +185,10 @@ describe('database foundation schema', () => {
   });
 
   it('contains exactly the 53 approved permission definitions', () => {
-    expect(technicalPermissionCodes).toHaveLength(53);
-    expect(new Set(technicalPermissionCodes).size).toBe(53);
+    expect(technicalPermissionCodes).toHaveLength(54);
+    expect(new Set(technicalPermissionCodes).size).toBe(54);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
+    expect(technicalPermissionCodes).toContain('inventory.approve');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {

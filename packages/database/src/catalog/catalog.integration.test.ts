@@ -89,7 +89,7 @@ integration('catalog PostgreSQL foundation', () => {
     const permissionCount = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from permissions',
     );
-    expect(permissionCount.rows[0]?.count).toBe('53');
+    expect(permissionCount.rows[0]?.count).toBe('54');
   });
 
   it('rejects cross-company category, product, option, variant, and barcode references', async () => {
