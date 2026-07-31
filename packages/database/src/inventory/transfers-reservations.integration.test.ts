@@ -39,11 +39,11 @@ integration('inventory transfers and reservations physical foundation', () => {
 
   afterAll(async () => client.close());
 
-  it('applies all seven migrations and creates exactly four new tables', async () => {
+  it('applies all eight migrations and preserves the four workflow tables', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('7');
+    expect(journal.rows[0]?.count).toBe('8');
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public'

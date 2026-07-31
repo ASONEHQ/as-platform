@@ -76,6 +76,17 @@ export const inventoryReservationStatuses = [
 
 export const inventoryReservationOwnerTypes = ['pos_cart', 'event', 'booking', 'order'] as const;
 
+export const inventoryCountStatuses = [
+  'draft',
+  'counting',
+  'submitted',
+  'approved',
+  'applied',
+  'cancelled',
+] as const;
+
+export const inventoryCountScopeTypes = ['all_balanced_variants', 'explicit_variants'] as const;
+
 export const inventoryQuantityPrecision = 19;
 export const inventoryQuantityScale = 6;
 export const inventoryCostPrecision = 19;
@@ -208,6 +219,11 @@ export const inventoryMovements = pgTable(
   },
   (table) => [
     unique('inventory_movements_company_id_id_uq').on(table.companyId, table.id),
+    unique('inventory_movements_company_branch_id_id_uq').on(
+      table.companyId,
+      table.branchId,
+      table.id,
+    ),
     unique('inventory_movements_company_number_uq').on(table.companyId, table.movementNumber),
     uniqueIndex('inventory_movements_reversal_of_posted_uq')
       .on(table.companyId, table.reversalOfMovementId)
@@ -1016,6 +1032,262 @@ export const inventoryReservationLines = pgTable(
   ],
 );
 
+export const inventoryCounts = pgTable(
+  'inventory_counts',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id').notNull(),
+    inventoryLocationId: uuid('inventory_location_id').notNull(),
+    countNumber: varchar('count_number', { length: 36 }).notNull(),
+    status: text('status').notNull().default('draft'),
+    scopeType: text('scope_type').notNull(),
+    scopeDefinition: jsonb('scope_definition').$type<Readonly<Record<string, unknown>>>().notNull(),
+    baselineAt: timestamp('baseline_at', { withTimezone: true, mode: 'date' }),
+    lockAcquiredAt: timestamp('lock_acquired_at', { withTimezone: true, mode: 'date' }),
+    lockExpiresAt: timestamp('lock_expires_at', { withTimezone: true, mode: 'date' }),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    startedBy: uuid('started_by'),
+    submittedAt: timestamp('submitted_at', { withTimezone: true, mode: 'date' }),
+    submittedBy: uuid('submitted_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true, mode: 'date' }),
+    approvedBy: uuid('approved_by'),
+    appliedAt: timestamp('applied_at', { withTimezone: true, mode: 'date' }),
+    appliedBy: uuid('applied_by'),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true, mode: 'date' }),
+    cancelledBy: uuid('cancelled_by'),
+    applicationMovementId: uuid('application_movement_id'),
+    reasonCode: varchar('reason_code', { length: 64 }).notNull(),
+    note: varchar('note', { length: 2000 }),
+    metadata: jsonb('metadata').$type<Readonly<Record<string, unknown>>>(),
+    version: bigint('version', { mode: 'bigint' })
+      .notNull()
+      .default(sql`1`),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    unique('inventory_counts_company_id_id_uq').on(table.companyId, table.id),
+    unique('inventory_counts_company_branch_id_id_uq').on(
+      table.companyId,
+      table.branchId,
+      table.id,
+    ),
+    unique('inventory_counts_company_number_uq').on(table.companyId, table.countNumber),
+    uniqueIndex('inventory_counts_active_location_uq')
+      .on(table.companyId, table.inventoryLocationId)
+      .where(sql`${table.status} in ('counting','submitted','approved')`),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'inventory_counts_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.inventoryLocationId],
+      foreignColumns: [
+        inventoryLocations.companyId,
+        inventoryLocations.branchId,
+        inventoryLocations.id,
+      ],
+      name: 'inventory_counts_location_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.applicationMovementId],
+      foreignColumns: [
+        inventoryMovements.companyId,
+        inventoryMovements.branchId,
+        inventoryMovements.id,
+      ],
+      name: 'inventory_counts_application_movement_scope_fk',
+    }).onDelete('restrict'),
+    ...(
+      [
+        [table.startedBy, 'started_by'],
+        [table.submittedBy, 'submitted_by'],
+        [table.approvedBy, 'approved_by'],
+        [table.appliedBy, 'applied_by'],
+        [table.cancelledBy, 'cancelled_by'],
+      ] as const
+    ).map(([actor, name]) =>
+      foreignKey({
+        columns: [table.companyId, actor],
+        foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+        name: `inventory_counts_${name}_membership_fk`,
+      }).onDelete('restrict'),
+    ),
+    index('inventory_counts_company_status_idx').on(table.companyId, table.status),
+    index('inventory_counts_branch_status_idx').on(table.companyId, table.branchId, table.status),
+    index('inventory_counts_location_status_idx').on(
+      table.companyId,
+      table.inventoryLocationId,
+      table.status,
+    ),
+    index('inventory_counts_lock_expiry_idx')
+      .on(table.lockExpiresAt, table.id)
+      .where(sql`${table.status} in ('counting','submitted','approved')`),
+    index('inventory_counts_created_idx').on(table.companyId, table.createdAt, table.id),
+    check('inventory_counts_number_ck', sql`${table.countNumber} ~ '^CNT-[0-9a-f]{32}$'`),
+    check(
+      'inventory_counts_status_ck',
+      sql`${table.status} in ('draft','counting','submitted','approved','applied','cancelled')`,
+    ),
+    check(
+      'inventory_counts_scope_type_ck',
+      sql`${table.scopeType} in ('all_balanced_variants','explicit_variants')`,
+    ),
+    check(
+      'inventory_counts_scope_definition_ck',
+      sql`jsonb_typeof(${table.scopeDefinition}) = 'object'`,
+    ),
+    check('inventory_counts_reason_code_ck', sql`length(btrim(${table.reasonCode})) > 0`),
+    check(
+      'inventory_counts_metadata_ck',
+      sql`${table.metadata} is null or jsonb_typeof(${table.metadata}) = 'object'`,
+    ),
+    check('inventory_counts_version_ck', sql`${table.version} >= 1`),
+    check(
+      'inventory_counts_actor_timestamp_pairs_ck',
+      sql`(${table.startedAt} is null) = (${table.startedBy} is null)
+        and (${table.submittedAt} is null) = (${table.submittedBy} is null)
+        and (${table.approvedAt} is null) = (${table.approvedBy} is null)
+        and (${table.appliedAt} is null) = (${table.appliedBy} is null)
+        and (${table.cancelledAt} is null) = (${table.cancelledBy} is null)`,
+    ),
+    check(
+      'inventory_counts_lock_pair_ck',
+      sql`(${table.lockAcquiredAt} is null) = (${table.lockExpiresAt} is null)
+        and (${table.lockExpiresAt} is null or ${table.lockExpiresAt} > ${table.lockAcquiredAt})`,
+    ),
+    check(
+      'inventory_counts_lifecycle_ck',
+      sql`(${table.status} = 'draft'
+          and ${table.baselineAt} is null and ${table.lockAcquiredAt} is null
+          and ${table.startedAt} is null and ${table.submittedAt} is null
+          and ${table.approvedAt} is null and ${table.appliedAt} is null
+          and ${table.cancelledAt} is null and ${table.applicationMovementId} is null)
+        or (${table.status} = 'counting'
+          and ${table.baselineAt} is not null and ${table.lockAcquiredAt} is not null
+          and ${table.startedAt} is not null and ${table.submittedAt} is null
+          and ${table.approvedAt} is null and ${table.appliedAt} is null
+          and ${table.cancelledAt} is null and ${table.applicationMovementId} is null)
+        or (${table.status} = 'submitted'
+          and ${table.baselineAt} is not null and ${table.lockAcquiredAt} is not null
+          and ${table.startedAt} is not null and ${table.submittedAt} is not null
+          and ${table.approvedAt} is null and ${table.appliedAt} is null
+          and ${table.cancelledAt} is null and ${table.applicationMovementId} is null)
+        or (${table.status} = 'approved'
+          and ${table.baselineAt} is not null and ${table.lockAcquiredAt} is not null
+          and ${table.startedAt} is not null and ${table.submittedAt} is not null
+          and ${table.approvedAt} is not null and ${table.appliedAt} is null
+          and ${table.cancelledAt} is null and ${table.applicationMovementId} is null)
+        or (${table.status} = 'applied'
+          and ${table.baselineAt} is not null and ${table.lockAcquiredAt} is not null
+          and ${table.startedAt} is not null and ${table.submittedAt} is not null
+          and ${table.approvedAt} is not null and ${table.appliedAt} is not null
+          and ${table.cancelledAt} is null)
+        or (${table.status} = 'cancelled'
+          and ${table.approvedAt} is null and ${table.appliedAt} is null
+          and ${table.cancelledAt} is not null and ${table.applicationMovementId} is null)`,
+    ),
+    check(
+      'inventory_counts_application_movement_ck',
+      sql`${table.applicationMovementId} is null or ${table.status} = 'applied'`,
+    ),
+  ],
+);
+
+export const inventoryCountLines = pgTable(
+  'inventory_count_lines',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id').notNull(),
+    inventoryCountId: uuid('inventory_count_id').notNull(),
+    productVariantId: uuid('product_variant_id').notNull(),
+    unitOfMeasureCode: text('unit_of_measure_code')
+      .notNull()
+      .references(() => unitsOfMeasure.code, { onDelete: 'restrict' }),
+    expectedQuantity: numeric('expected_quantity', {
+      precision: inventoryQuantityPrecision,
+      scale: inventoryQuantityScale,
+    }).notNull(),
+    countedQuantity: numeric('counted_quantity', {
+      precision: inventoryQuantityPrecision,
+      scale: inventoryQuantityScale,
+    }),
+    baselineBalanceVersion: bigint('baseline_balance_version', { mode: 'bigint' }).notNull(),
+    baselineLastMovementId: uuid('baseline_last_movement_id'),
+    firstCountedAt: timestamp('first_counted_at', { withTimezone: true, mode: 'date' }),
+    lastCountedAt: timestamp('last_counted_at', { withTimezone: true, mode: 'date' }),
+    countedBy: uuid('counted_by'),
+    version: bigint('version', { mode: 'bigint' })
+      .notNull()
+      .default(sql`1`),
+    metadata: jsonb('metadata').$type<Readonly<Record<string, unknown>>>(),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    unique('inventory_count_lines_company_count_variant_uq').on(
+      table.companyId,
+      table.inventoryCountId,
+      table.productVariantId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.inventoryCountId],
+      foreignColumns: [inventoryCounts.companyId, inventoryCounts.branchId, inventoryCounts.id],
+      name: 'inventory_count_lines_count_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.productVariantId],
+      foreignColumns: [productVariants.companyId, productVariants.id],
+      name: 'inventory_count_lines_variant_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.baselineLastMovementId],
+      foreignColumns: [
+        inventoryMovements.companyId,
+        inventoryMovements.branchId,
+        inventoryMovements.id,
+      ],
+      name: 'inventory_count_lines_baseline_movement_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.countedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'inventory_count_lines_counted_by_membership_fk',
+    }).onDelete('restrict'),
+    index('inventory_count_lines_count_idx').on(table.companyId, table.inventoryCountId),
+    index('inventory_count_lines_variant_idx').on(table.companyId, table.productVariantId),
+    index('inventory_count_lines_incomplete_idx')
+      .on(table.companyId, table.inventoryCountId)
+      .where(sql`${table.countedQuantity} is null`),
+    index('inventory_count_lines_baseline_movement_idx').on(
+      table.companyId,
+      table.baselineLastMovementId,
+    ),
+    check('inventory_count_lines_expected_ck', sql`${table.expectedQuantity} >= 0`),
+    check(
+      'inventory_count_lines_counted_ck',
+      sql`${table.countedQuantity} is null or ${table.countedQuantity} >= 0`,
+    ),
+    check('inventory_count_lines_baseline_version_ck', sql`${table.baselineBalanceVersion} >= 1`),
+    check('inventory_count_lines_version_ck', sql`${table.version} >= 1`),
+    check(
+      'inventory_count_lines_metadata_ck',
+      sql`${table.metadata} is null or jsonb_typeof(${table.metadata}) = 'object'`,
+    ),
+    check(
+      'inventory_count_lines_counting_evidence_ck',
+      sql`(${table.countedQuantity} is null
+          and ${table.firstCountedAt} is null and ${table.lastCountedAt} is null and ${table.countedBy} is null)
+        or (${table.countedQuantity} is not null
+          and ${table.firstCountedAt} is not null and ${table.lastCountedAt} is not null and ${table.countedBy} is not null
+          and ${table.lastCountedAt} >= ${table.firstCountedAt})`,
+    ),
+  ],
+);
+
 export type InventoryLocation = typeof inventoryLocations.$inferSelect;
 export type NewInventoryLocation = typeof inventoryLocations.$inferInsert;
 export type InventoryBalance = typeof inventoryBalances.$inferSelect;
@@ -1032,3 +1304,7 @@ export type InventoryReservation = typeof inventoryReservations.$inferSelect;
 export type NewInventoryReservation = typeof inventoryReservations.$inferInsert;
 export type InventoryReservationLine = typeof inventoryReservationLines.$inferSelect;
 export type NewInventoryReservationLine = typeof inventoryReservationLines.$inferInsert;
+export type InventoryCount = typeof inventoryCounts.$inferSelect;
+export type NewInventoryCount = typeof inventoryCounts.$inferInsert;
+export type InventoryCountLine = typeof inventoryCountLines.$inferSelect;
+export type NewInventoryCountLine = typeof inventoryCountLines.$inferInsert;

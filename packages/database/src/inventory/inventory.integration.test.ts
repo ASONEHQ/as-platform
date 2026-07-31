@@ -38,7 +38,7 @@ integration('inventory physical foundation', () => {
     await client.close();
   });
 
-  it('applies all seven migrations and creates the eight inventory foundation tables', async () => {
+  it('applies all eight migrations and creates the inventory foundation tables', async () => {
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public' and table_name like 'inventory_%'
@@ -46,6 +46,8 @@ integration('inventory physical foundation', () => {
     );
     expect(tables.rows.map((row) => row.table_name)).toEqual([
       'inventory_balances',
+      'inventory_count_lines',
+      'inventory_counts',
       'inventory_locations',
       'inventory_movement_lines',
       'inventory_movements',
@@ -57,7 +59,7 @@ integration('inventory physical foundation', () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('7');
+    expect(journal.rows[0]?.count).toBe('8');
   });
 
   it('enforces location scope, lifecycle, types, codes, and one active default', async () => {

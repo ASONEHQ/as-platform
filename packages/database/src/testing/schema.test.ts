@@ -12,6 +12,8 @@ import {
   devices,
   idempotencyKeys,
   inventoryBalances,
+  inventoryCountLines,
+  inventoryCounts,
   inventoryLocations,
   inventoryMovementLines,
   inventoryMovements,
@@ -72,6 +74,8 @@ const tableNames = [
   inventoryTransferLines,
   inventoryReservations,
   inventoryReservationLines,
+  inventoryCounts,
+  inventoryCountLines,
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
@@ -110,6 +114,8 @@ describe('database foundation schema', () => {
       'inventory_transfer_lines',
       'inventory_reservations',
       'inventory_reservation_lines',
+      'inventory_counts',
+      'inventory_count_lines',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
   });
@@ -371,5 +377,50 @@ describe('database foundation schema', () => {
       ...reservationLines.columns.filter((item) => item.name.endsWith('_quantity')),
     ])
       expect(column.dataType).toBe('string');
+  });
+
+  it('defines the durable count physical foundation and domain lock', () => {
+    const counts = getTableConfig(inventoryCounts);
+    const lines = getTableConfig(inventoryCountLines);
+
+    expect(counts.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_counts_branch_scope_fk',
+        'inventory_counts_location_scope_fk',
+        'inventory_counts_application_movement_scope_fk',
+        'inventory_counts_started_by_membership_fk',
+        'inventory_counts_submitted_by_membership_fk',
+        'inventory_counts_approved_by_membership_fk',
+        'inventory_counts_applied_by_membership_fk',
+        'inventory_counts_cancelled_by_membership_fk',
+      ]),
+    );
+    expect(counts.indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'inventory_counts_active_location_uq',
+        'inventory_counts_lock_expiry_idx',
+        'inventory_counts_location_status_idx',
+      ]),
+    );
+    expect(lines.foreignKeys.map((item) => item.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_count_lines_count_scope_fk',
+        'inventory_count_lines_variant_scope_fk',
+        'inventory_count_lines_baseline_movement_scope_fk',
+        'inventory_count_lines_counted_by_membership_fk',
+        'inventory_count_lines_unit_of_measure_code_units_of_measure_code_fk',
+      ]),
+    );
+    expect(lines.indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'inventory_count_lines_incomplete_idx',
+        'inventory_count_lines_baseline_movement_idx',
+      ]),
+    );
+    expect(lines.columns.find((item) => item.name === 'difference_quantity')).toBeUndefined();
+    expect(lines.columns.find((item) => item.name === 'expected_quantity')?.dataType).toBe(
+      'string',
+    );
+    expect(lines.columns.find((item) => item.name === 'counted_quantity')?.dataType).toBe('string');
   });
 });
