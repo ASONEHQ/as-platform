@@ -181,8 +181,16 @@ A cash register, channel, kiosk, event operation, or snacks operation may later 
 - E070 remains the compatible immediate count/adjustment contract.
 - E115–E123 define the future persistent workflow.
 - A count never holds a PostgreSQL transaction open while humans count.
-- An expiring domain lock protects only the selected location/product scope.
-- Applying a count creates adjustment movements and is idempotent.
+- Durable V1 counts own one location and freeze either all existing
+  inventory-tracked balances or an explicit nonempty variant set at start.
+- Expected quantities, balance versions, and last movement IDs form the
+  snapshot; normal operations continue, but drift blocks approval/application.
+- An expiring domain lock stored on the count header and protected by a partial
+  unique location index prevents overlapping active counts.
+- Applying a count creates at most one posted adjustment movement and is
+  idempotent; zero total discrepancy applies without an empty movement.
+- E070 uses `inventory.count_applied`; durable E122 uses
+  `inventory.count.completed`, never both.
 
 ## Terminology
 
@@ -445,8 +453,11 @@ active -> cancelled
 ```text
 draft -> counting -> submitted -> approved -> applied
 draft|counting|submitted -> cancelled
-submitted -> rejected -> counting
 ```
+
+V1 does not persist `rejected`. Reopening a submitted count is deferred until a
+separate contract defines who may reopen it and how its evidence is retained.
+`applied` and `cancelled` are terminal.
 
 ## Strict invariants
 

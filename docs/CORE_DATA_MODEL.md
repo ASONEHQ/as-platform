@@ -851,6 +851,15 @@ company -> branch -> inventory_location -> product_variant
 | `product_variant_identifiers` | Future NFC/RFID extension | Provider-neutral catalog identifier beyond V1 barcodes |
 | `inventory_item_identifiers` | Future serialization/assets extension | Identifier for one physical unit; outside V1 |
 
+The approved logical count aggregate is single-location and tenant safe.
+`inventory_counts` owns immutable scope, lifecycle/actor evidence, baseline and
+expiring domain-lock timestamps, an optional applied movement reference, and an
+optimistic version. `inventory_count_lines` owns one frozen variant snapshot per
+count with expected quantity, baseline balance version/last movement, nullable
+counted quantity, UOM, counter evidence, and version. Difference and summary
+counts are derived rather than stored. The physical schema and additive
+`0007_inventory_counts_foundation` migration are deferred to block 3.3G.2.
+
 The reconciled mandatory rules are:
 
 - Every simple inventory product has an explicit default variant.

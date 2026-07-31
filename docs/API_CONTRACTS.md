@@ -387,7 +387,7 @@ SKU, barcode, unit of measure, quantity scale, standard cost, and currency are a
 | E067 | `GET /inventory/balances`; current projections | `inventory.read`; branch | `S`; cursor, limit, branch_id*, location_id, `product_variant_id`, changed_after | `200 balances` with variant identity, exact quantities, version, checkpoint/freshness; Common | Balance is read-only projection; — / — |
 | E068 | `GET /inventory/movements`; posted ledger history | `inventory.read`; branch | `S`; cursor, limit, branch/location/`product_variant_id`/type/status/reference, occurred_from/to | `200 movements`; Common | Status vocabulary is `draft,pending,posted,cancelled,reversed`; stable `(occurred_at,id)`; — / — |
 | E069 | `POST /inventory/adjustments`; create and post adjustment | `inventory.adjust`; branch/location | `C`; body client movement UUID*, location*, `product_variant_id*`, `direction*`=`adjustment_in|adjustment_out`, positive `quantity*`, reason_code*, note, `expected_version*`, occurred_at, offline metadata | `201` posted movement plus balance; `insufficient_inventory`, `negative_inventory_not_allowed`, `inventory_balance_conflict`, IC | Atomic ledger+balance+audit+outbox; `inventory.adjusted` / `inventory.stock.changed` |
-| E070 | `POST /inventory/counts`; apply authorized immediate physical count | `inventory.count`; branch/location | `C`; body client command ID*, location*, `product_variant_id*`, nonnegative `counted_quantity*`, `expected_version*`, reason/note, occurred_at | `201` posted adjustment movement and balance; `insufficient_inventory`, `inventory_balance_conflict`, IC | Response records calculated direction and positive delta; persistent count workflow remains E115-E123; `inventory.count_applied` / `inventory.stock.changed` |
+| E070 | `POST /inventory/counts`; apply authorized immediate physical count | `inventory.count`; branch/location | `C+O`; strict body branch/location/`product_variant_id`, nonnegative `counted_quantity`, `reason_code`, note, occurred_at | `201` accepted result, nullable posted adjustment movement, balance and strong ETag; `insufficient_inventory`, `inventory_balance_conflict`, IC | `Idempotency-Key` plus balance `If-Match`; zero delta creates no movement; persistent workflow remains E115-E123; `inventory.count_applied` / `inventory.stock.changed` |
 | E071 | `POST /inventory/movements/{movement_id}/reversals`; fully compensate eligible posted manual movement | `inventory.reverse`; original branch | `C+O`; body `reason_code*`, note | `201` linked posted reversal result; `movement_already_reversed`, `inventory_movement_not_reversible`, `insufficient_inventory`, IC | `Idempotency-Key` plus original strong `If-Match`; creates inverse movement and atomically marks original reversed; movement-created/reversed and stock-changed events |
 | E072 | `GET /inventory/changes`; incremental balances/movements | `inventory.read`; branch | `R`; `since_checkpoint*`, limit, branch/location filters | `200` ordered changes/tombstones and next checkpoint; invalid checkpoint/scope | Recovery/read model only; — / — |
 
@@ -582,6 +582,47 @@ Common rules:
 | E121 | `POST /inventory/counts/{count_id}/approvals` | `inventory.approve`; count scope | Idempotent approve/reject |
 | E122 | `POST /inventory/counts/{count_id}/applications` | `inventory.approve`; count scope | Apply once; adjustment and controls atomically |
 | E123 | `POST /inventory/counts/{count_id}/cancellations` | `inventory.count`; count scope | Idempotent cancellation and lock release |
+
+### 20.1 Immediate and durable count contract
+
+E070 is an immediate atomic command and creates no `inventory_counts` row. Its
+strict body is `branch_id`, `location_id`, `product_variant_id`, nonnegative
+exact-decimal `counted_quantity`, `reason_code`, optional bounded `note`, and
+optional `occurred_at`. `Idempotency-Key` and the target balance strong
+`If-Match` are required; a payload `company_id` or balance version is rejected.
+The authenticated company, authorized branch, location, actor, request ID, and
+correlation ID are server-derived.
+
+E070 locks the balance, computes `delta = counted_quantity - quantity_on_hand`,
+and delegates a nonzero delta to the quantity-only Posting Engine as one posted
+`adjustment` movement with reference type `inventory_count_immediate`. Positive
+deltas are inbound and negative deltas are outbound. A zero delta records audit,
+outbox, and the idempotency response but creates no movement and does not change
+the balance version. A negative delta must leave `quantity_on_hand >=
+quantity_reserved`; otherwise the entire command fails. The `201` response
+contains the counted, previous, and resulting exact quantities, signed delta,
+nullable movement identity, resulting balance version, and strong balance ETag.
+
+E115-E123 operate on a durable single-location count:
+
+| ID | Frozen V1 contract |
+| --- | --- |
+| E115 | Cursor list ordered by `(created_at,id)`; allowlisted `branch_id`, `location_id`, `status`, `created_from`, and `created_to` filters. |
+| E116 | Strict body `branch_id`, `location_id`, `scope`, `reason_code`, optional `note` and object `metadata`; `scope` is either `all_inventory_variants` or `explicit_variants` with a nonempty unique `product_variant_ids` array. Creates only a version-1 `draft`; `201`, `Idempotency-Key`. |
+| E117 | Returns header, scope, lifecycle evidence, derived line/discrepancy summaries, and lines when requested by the documented include; strong count ETag. |
+| E118 | Empty strict body; `draft -> counting`; requires `Idempotency-Key` and strong `If-Match`; acquires the location lock and atomically materializes the baseline lines. |
+| E119 | Strict body `counted_quantity`, `unit_of_measure_code`, optional object `metadata`; `counting` only; strong `If-Match`; explicit zero is valid and missing remains uncounted. The successful write increments the parent count version once. |
+| E120 | Empty strict body; `counting -> submitted`; every materialized line must be counted; requires idempotency and `If-Match`; no stock effect. |
+| E121 | Empty strict body; `submitted -> approved`; `inventory.approve`, idempotency, and `If-Match`; no reject action exists in V1. |
+| E122 | Empty strict body; `approved -> applied`; `inventory.approve`, idempotency, and `If-Match`; validates lock and drift, posts at most one adjustment movement, releases the lock, and commits all effects atomically. |
+| E123 | Strict body `reason_code` and optional bounded `note`; `draft`, `counting`, or `submitted` only; idempotency and `If-Match`; releases any lock and creates no movement. |
+
+All count mutation schemas use `additionalProperties: false`. Count quantities
+are canonical non-scientific decimal strings compatible with the variant UOM
+and quantity scale. Cross-company resources and unauthorized branches are
+hidden as `resource_not_found`. Exact idempotent replay returns the original
+status, body, identifiers, versions, and ETag without new effects.
+
 | E124 | `GET /inventory/reservations` | `inventory.read`; authorized branches | Cursor and reservation filters |
 | E125 | `POST /inventory/reservations` | `inventory.reservation.manage`; internal owner capability later | Idempotent; increases reserved |
 | E126 | `GET /inventory/reservations/{reservation_id}` | `inventory.read`; reservation scope | Row ETag |

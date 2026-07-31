@@ -371,7 +371,12 @@ TASK 09.4 reserves the following additional events. They are contractual proposa
 | `inventory.reservation.released` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, released status, safe reason code, ordered location IDs/count, released_at, version; `P-INV` | committed E128 release / reservation detail and `INV` | V / CP |
 | `inventory.reservation.expired` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, expired status, safe reason code, ordered location IDs/count, expired_at, version; `P-INV` | committed E128 or command-time expiry / reservation detail and `INV` | V / CP |
 | `inventory.reservation.cancelled` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, cancelled status, safe reason code, ordered location IDs/count, cancelled_at, version; `P-INV` | committed E128 cancellation / reservation detail and `INV` | V / CP |
+| `inventory.count.created` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID/number, location, scope type, draft status, version, created_at; `P-INV` | committed E116 / count detail | V / CP |
+| `inventory.count.started` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID, location, counting status, baseline_at, line count, lock expiry, version; `P-INV` | committed E118 / count detail | V / CP |
+| `inventory.count.submitted` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID, submitted status, safe discrepancy summary, submitted_at, version; `P-INV` | committed E120 / count detail | V / CP |
+| `inventory.count.approved` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID, approved status, safe discrepancy summary, approved_at, version; `P-INV` | committed E121 / count detail | V / CP |
 | `inventory.count.completed` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID/type, location, status, safe variance summary, movement IDs, version, applied_at; `P-INV` | committed count application / count detail and `INV` | V / CP |
+| `inventory.count.cancelled` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID, cancelled status, bounded reason code, cancelled_at, version; `P-INV` | committed E123 / count detail | V / CP |
 | `inventory.low_stock.detected` | inventory projection / `inventory_stock_policy` | branch/location / `inventory.read` | location/variant IDs, threshold and available decimal strings, severity, balance version, detected_at; costs and `P-INV` | threshold crossing / balances and policies | C / CP |
 | `product_variant.updated` | catalog / `product_variant` | company/authorized branch visibility / `catalog.read` | product/variant IDs, changed fields, status, version; `P-CAT` | variant create/update/retire / `CAT` | V / CP |
 
@@ -401,6 +406,15 @@ E128 emits exactly one of `inventory.reservation.released`,
 stock-change event per changed balance. Reservation summaries use ordered
 `location_ids` and `location_count`; they never imply that a multi-line
 reservation has one location. Exact replay emits no additional fact.
+
+Durable count events follow committed lifecycle changes only. E116, E118,
+E120, E121, E122, and E123 emit their corresponding single count fact. E119
+line recording is audit-only to avoid broadcasting human counting progress.
+E122 emits `inventory.count.completed`, plus `inventory.movement.created` when
+any nonzero discrepancy creates a movement and `inventory.stock.changed` once
+per changed balance. The compatibility event `inventory.count_applied` is
+reserved exclusively for immediate E070; durable E122 never dual-publishes it.
+Exact replay emits no additional outbox row.
 
 All inventory decimals are exact strings. Consumers deduplicate by `event_id`; no global order is guaranteed across aggregates or locations. Versioned consumers detect gaps and recover through authoritative REST detail or checkpoint routes. Payloads omit costs without `inventory.cost.read`, unrestricted notes, credentials, hardware secrets, and balances outside current authorization.
 

@@ -460,8 +460,8 @@ expired-active reservations, outbox lag, and checkpoint lag.
 | `inventory.update` | Documented, not seeded | E133 metadata |
 | `inventory.transfer` | Documented, not seeded | E109, E112, E114; both endpoint branches |
 | `inventory.receive` | Documented, not seeded | E113 |
-| `inventory.approve` | Documented, not seeded | E111 approve/reject and count approval |
-| `inventory.reservation.manage` | Documented, not seeded | E125-E128 |
+| `inventory.approve` | Seeded | E111 approve/reject, E121-E122, and E154 |
+| `inventory.reservation.manage` | Seeded | E125-E128 |
 | `inventory.reconcile` | Missing; add before service | Findings and controlled repair |
 | `inventory.override_negative` | Not approved | No V1 override |
 
@@ -607,11 +607,9 @@ version, movement identity, correlation, and no costs. Event IDs are durable
 outbox identities created once in the posting transaction; they are not API
 response fields.
 
-The posting permission is the already documented `inventory.approve`, which is
-also reserved by E111 and E121-E122 but is not yet present in the technical
-permission seed. Implementing E154 therefore requires seeding and assigning
-that permission in a later code block. No `inventory.post` permission is
-invented, and ordinary cashiers receive no implicit grant.
+The posting permission is the seeded `inventory.approve`, which is also used by
+E111 and E121-E122. No `inventory.post` permission is invented, and ordinary
+cashiers receive no implicit grant.
 
 ## Error catalog
 
@@ -640,6 +638,173 @@ The earlier aliases `insufficient_stock`, `inventory_version_conflict`,
 inventory operations and are not active canonical errors. Unknown PostgreSQL
 errors stay sanitized.
 
+## Immediate and durable count decision
+
+### Reconciliation outcome
+
+E070 and E115-E123 intentionally share `/inventory/counts` but are different
+commands. E070 is the existing immediate one-variant count and has no durable
+count aggregate. E116 creates a durable count session. Their strict schemas,
+headers, response shapes, and lifecycle distinguish them; no alias or endpoint
+renumbering is introduced.
+
+E070 requires `inventory.count`, `Idempotency-Key`, and the target balance
+strong ETag. It locks one balance and calculates an exact signed delta from the
+absolute counted quantity. A nonzero result reuses the Posting Engine to create
+and post one `adjustment` movement with `inventory_count_immediate` reference.
+A zero result creates no empty ledger fact: audit, outbox, and the idempotency
+result record that the count was accepted. The command never consumes reserved
+stock, never leaves on hand below reserved, and rolls back as one unit.
+
+### Durable V1 scope and lifecycle
+
+A durable count owns exactly one active `inventory_location`. Its scope is
+immutable after creation and is one of:
+
+- `all_inventory_variants`: every active inventory-tracked variant with a
+  balance at the location when E118 starts, including zero balances;
+- `explicit_variants`: a nonempty unique set selected at E116 and validated as
+  active, inventory-tracked variants of the company.
+
+Services, virtual kits, non-inventory variants, and retired variants are
+excluded. A variant physically found but absent from the frozen scope cannot be
+added through E119; the count must be cancelled and recreated with explicit
+scope. New catalog variants or balances created after start do not enter the
+snapshot. V1 deliberately rejects ambiguous dynamic and category scopes.
+
+```text
+draft -> counting -> submitted -> approved -> applied
+draft|counting|submitted -> cancelled
+```
+
+`draft` and `counting` are editable only through their defined commands;
+`submitted` is approvable; `approved` is applicable; `applied` and `cancelled`
+are terminal. `rejected` and reopening are outside V1. Approval by the counter
+is allowed when the actor independently holds `inventory.approve`.
+
+### Snapshot and movement policy
+
+E118 atomically acquires the domain lock, sets `baseline_at`, and materializes
+one line per scoped variant. Each line stores exact `expected_quantity`, the
+baseline balance version, nullable baseline last movement ID, UOM code, and
+nullable `counted_quantity`. `difference_quantity` is derived as counted minus
+expected and is not persisted. Explicit zero differs from an uncounted null.
+Header line and discrepancy counts are derived by queries and are not stored.
+
+Normal inventory operation continues while humans count; no PostgreSQL
+transaction or row lock remains open. E121 and E122 compare every baseline
+version and last movement identity with the current balance. Any relevant drift
+returns `inventory_reconciliation_required`; V1 has no silent rebase. A new
+count is required after the conflicting operation. This favors correctness over
+an implicit historical adjustment whose physical meaning cannot be proven.
+
+### Durable domain lock
+
+The minimal domain lock is represented by the active count header, not Redis,
+advisory locks, or a third table. The lock key is `(company_id,
+inventory_location_id)` and a partial unique index covers statuses `counting`,
+`submitted`, and `approved`. `lock_acquired_at` and `lock_expires_at` are
+persisted. Any successful E119-E121 command renews expiry within a bounded
+server policy; clients cannot choose it.
+
+An expired lock never authorizes another count implicitly. A subsequent E118
+may take over only by atomically cancelling the abandoned, non-applied owner
+with a system audit fact, then acquiring the unique scope. No worker is required
+for correctness. Expiry or ownership failure returns `count_lock_expired`;
+collision with a valid owner returns `inventory_count_in_progress`. Apply locks
+the count and all affected balances in canonical `(location_id,variant_id)`
+order, so concurrent approval/application cannot create duplicate effects.
+
+### Physical model for 3.3G.2
+
+`inventory_counts` will persist:
+
+- UUIDv7 `id`; server-owned immutable `count_number` equal to `CNT-` plus the
+  lowercase UUID without hyphens, matching `^CNT-[0-9a-f]{32}$`;
+- tenant-safe `company_id`, `branch_id`, and `inventory_location_id`;
+- `status`, `scope_type`, immutable JSON scope, reason code, bounded note, and
+  object metadata;
+- nullable baseline, lock, lifecycle timestamps and corresponding membership
+  actors for start, submit, approve, apply, and cancel;
+- nullable tenant-safe `application_movement_id`;
+- integer `version >= 1`, `created_at`, and `updated_at`.
+
+It will not persist derived line/discrepancy counts. Lifecycle CHECKs require
+timestamps/actors only for reached states, require an application movement only
+for `applied`, and prohibit it otherwise.
+
+`inventory_count_lines` will persist UUIDv7 `id`, tenant-safe count and variant
+references, UOM code, exact `expected_quantity`, nullable exact
+`counted_quantity`, baseline balance version, nullable baseline last movement
+ID, first/last-counted timestamps, last counter membership, integer version,
+object metadata, and timestamps. `(company_id,count_id,product_variant_id)` is
+unique. Expected quantity and baseline evidence are immutable after start;
+counted quantity may be replaced while counting. Difference is derived.
+
+### Submit, approve, apply, and cancel
+
+E120 refuses null counted quantities with `count_has_incomplete_lines`. E121
+rechecks drift and exposes exact discrepancy summaries before changing status.
+E122 serializes on the count row, validates a live domain lock and unchanged
+baseline, locks balances deterministically, and derives deltas against the
+unchanged expected quantities. Zero-delta lines produce no movement line.
+
+One or more nonzero deltas produce exactly one posted `adjustment` movement
+referenced to the count, with positive movement-line quantities and direction
+encoded by source/destination location as required by the Posting Engine.
+Application may not leave on hand negative or below reserved. Count state,
+movement/lines, balances, application movement link, audit, outbox, stock
+events, idempotency result, and lock release commit together. A wholly
+zero-difference application creates no movement but still atomically marks the
+count applied. Partial application and cost mutation are prohibited.
+
+E123 allows cancellation only from draft, counting, or submitted. It records a
+bounded reason, releases any lock, increments the version once, and creates no
+movement. Approved counts require application or a future privileged recovery
+contract.
+
+### Permissions, concurrency, errors, and evidence
+
+E115/E117 use `inventory.read`; E116/E118-E120/E123 use `inventory.count`;
+E121/E122 use the already seeded `inventory.approve`. No new permission is
+needed and `inventory.reconcile` remains reserved for the separate 3.3I
+detector. Every mutation is tenant/actor/operation-scoped idempotent except the
+E119 replacement, whose parent strong ETag provides command concurrency.
+
+Canonical count errors are `resource_not_found`,
+`inventory_count_in_progress`, `inventory_reconciliation_required`,
+`inventory_balance_conflict`, `insufficient_inventory`,
+`invalid_movement_line`, `version_conflict`, `idempotency_conflict`,
+`permission_denied`, and `validation_error`. 3.3H may add
+`count_not_editable`, `count_has_incomplete_lines`, `count_not_approvable`,
+`count_not_applicable`, `count_lock_expired`, and `count_already_applied` only
+when implementing their frozen mappings.
+
+Audit actions are `inventory_count.created`, `inventory_count.started`,
+`inventory_count.line_recorded`, `inventory_count.submitted`,
+`inventory_count.approved`, `inventory_count.applied`, and
+`inventory_count.cancelled`. Safe evidence includes count/company/branch/
+location IDs, status, actor, bounded discrepancy summary, movement ID,
+request/correlation IDs, and version; notes, idempotency keys, request hashes,
+and costs are excluded from public events.
+
+Durable commands emit `inventory.count.created`, `inventory.count.started`,
+`inventory.count.submitted`, `inventory.count.approved`,
+`inventory.count.completed`, or `inventory.count.cancelled` after commit.
+E122 additionally emits `inventory.movement.created` when a movement exists and
+one `inventory.stock.changed` per changed balance. The compatibility event
+`inventory.count_applied` is exclusive to E070; E122 emits only
+`inventory.count.completed`, preventing duplicate semantic count events.
+
+### Delivery split
+
+Block 3.3G.1 is this contract reconciliation and changes documentation only.
+Block 3.3G.2 will add exactly `inventory_counts`, `inventory_count_lines`, their
+schema exports, constraints/indexes, and migration
+`0007_inventory_counts_foundation`, followed by fresh-chain and PostgreSQL
+concurrency verification. Block 3.3H will implement E115-E123. No schema or
+migration is created while reviewing 3.3G.1.
+
 ## Test matrix
 
 | Layer | Required coverage |
@@ -665,8 +830,9 @@ skipped, and omitted tests.
 | 3.3D.1 | Transfer contract reconciliation | Implemented under commit history; E108-E114 frozen |
 | 3.3D.2 | Transfer engine implementation | Implemented under commit history; full V1 shipment/receipt |
 | 3.3E | Reservation contract reconciliation | E124-E128, ownership, expiry, multi-location payloads, locking |
-| 3.3F | Future reservation engine implementation | E124-E128, oversell prevention, PostgreSQL concurrency evidence |
-| 3.3G | Future immediate/durable count foundation and contract | E070/E115-E123, scope, snapshots, expiring locks, migration design |
+| 3.3F | Reservation engine implementation | E124-E128, oversell prevention, PostgreSQL concurrency evidence |
+| 3.3G.1 | Count contract reconciliation | E070/E115-E123, scope, snapshots, expiring locks, migration design |
+| 3.3G.2 | Future count physical foundation | Two count tables, migration 0007, fresh-chain and concurrency evidence |
 | 3.3H | Future durable count engine | E115-E123, apply-once and scope-lock behavior |
 | 3.3I | Future reconciliation detector contract | Findings, approval, repair, rebuild; separate from reservations |
 | 3.4 | Recovery, events, load, rebuild/restore runbooks | Zero skipped DB tests and measured evidence |
