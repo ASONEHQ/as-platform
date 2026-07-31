@@ -62,7 +62,9 @@ Detailed sales and inventory behavior requires separate approval before implemen
 
 - AS CEO dashboards and cross-branch reporting.
 - AS Snacks operational workflows.
-- Advanced observability, anomaly detection, and reconciliation.
+- Persistent inventory reconciliation findings, read-only drift detection, and
+  later separately approved repair/rebuild operations.
+- Advanced observability and anomaly detection.
 - Read-optimized analytics introduced only when PostgreSQL is insufficient.
 
 ## Phase 6 — Scale and selective extraction

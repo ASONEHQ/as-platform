@@ -1821,6 +1821,27 @@ No new sale, payment, movement, audit fact, or outbox event is created.
 {"data":[{"change_id":"018f0000-0000-7000-8000-000000000220","domain":"catalog","change_type":"upsert","resource_type":"product","resource_id":"018f0000-0000-7000-8000-000000000042","resource_version":9,"occurred_at":"2026-07-22T17:05:00.000Z"}],"meta":{"request_id":"018f0000-0000-7000-8000-000000000221","correlation_id":"018f0000-0000-7000-8000-000000000222","page":{"next_cursor":"opaque-recovery-checkpoint","has_more":false,"limit":100}}}
 ```
 
+## 22.1 Inventory reconciliation detector boundary
+
+TASK 09.4 Block 3.3I.1 reserves no endpoint IDs and implements no HTTP surface.
+No approved route range follows E154. A later contract block must reserve IDs
+before exposing scan execution, finding list/detail, acknowledgement,
+dismissal, repair preview/application or projection rebuild.
+
+The detector is read-only and tenant-scoped. `inventory.reconcile` is the
+proposed permission for manual scans, full finding evidence and every future
+finding-management or repair command, but it is not seeded by this contract.
+Sanitized aggregate indicators may later use `inventory.read` without granting
+scan or repair authority.
+
+Applicable existing errors are `inventory_reconciliation_required`,
+`inventory_balance_conflict`, `resource_not_found`, `permission_denied`,
+`validation_error`, `version_conflict`, and `idempotency_conflict`. Candidate
+scan/finding/repair errors are not frozen. Detection emits no
+`inventory.stock.changed` event and performs no repair. The logical algorithms,
+persistent finding model, deduplication and snapshot rules are defined in
+[INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
+
 ## 23. Security, audit, and event requirements
 
 - Validate headers, paths, queries, and bodies before invoking a use case; reject unknown command fields.

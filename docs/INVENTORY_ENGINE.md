@@ -639,6 +639,26 @@ The proposed event inventory is defined in [REALTIME_EVENTS.md](REALTIME_EVENTS.
 - Realtime clients stop applying a gapped aggregate stream and recover authorized state through REST.
 - Audit and outbox retention must cover the supported offline replay window.
 
+### Reconciliation detector boundary
+
+Block 3.3I.1 defines a read-only, tenant-scoped detector. Posted movement lines
+are folded with exact arithmetic to reconstruct on hand; active reservation
+remainders reconstruct reserved quantity; implemented shipped transfers and
+their movements reconstruct in-transit quantity. The results are compared with
+`inventory_balances`, `last_movement_id`, workflow relationships and, only when
+retention proves completeness, audit/outbox evidence.
+
+Enterprise operation requires persistent findings with stable fingerprints,
+`info|warning|critical` severity and
+`open|acknowledged|resolved|dismissed` lifecycle. This is a logical decision
+only. No finding table, permission, endpoint, detector, event, worker, repair or
+rebuild is implemented by 3.3I.1. Full rules and delivery boundaries are in
+[INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
+
+Detection never edits the immutable ledger or silently changes a projection.
+Repair/rebuild contracts, operational runbooks, scheduling, monitoring and
+disaster recovery remain later work.
+
 ## Future NFC/RFID extension
 
 ### Catalog identifiers

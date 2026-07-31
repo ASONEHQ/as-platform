@@ -805,6 +805,218 @@ schema exports, constraints/indexes, and migration
 concurrency verification. Block 3.3H will implement E115-E123. No schema or
 migration is created while reviewing 3.3G.1.
 
+## Inventory reconciliation detector contract
+
+Block 3.3I defines detection only. It does not mutate a balance, create a
+movement, repair a workflow, rebuild a projection, publish a realtime event,
+or reserve an HTTP endpoint. The detector compares a bounded, tenant-scoped
+snapshot with independently reconstructed expectations and reports safe
+findings. PostgreSQL remains the source of truth.
+
+### Authority and reconstructible projections
+
+| Concern | Authority | Reconstructed expectation |
+| --- | --- | --- |
+| On hand | Posted movement headers and immutable movement lines | Exact signed fold of `base_quantity` by company, branch, location, and variant |
+| Reserved | Nonterminal reservation lines | `reserved_quantity - consumed_quantity - released_quantity` for `active` reservations |
+| In transit | Shipped transfer workflow plus its posted shipment/receipt movements | Shipped base quantity not yet received, represented in the approved destination transit location |
+| Balance version | Successful projection writes | Monotonic evidence used for concurrency; it is not a substitute for ledger reconstruction |
+| Last movement | Latest posted movement with an effect on the balance | Canonically ordered by `posted_at`, then movement UUID and line order |
+| Counts | Count workflow and referenced adjustment movement | Applied discrepancies must be explained by at most one linked posted adjustment |
+
+The on-hand fold includes every posted effect. An original movement later marked
+`reversed` remains part of history; its distinct posted compensating reversal
+neutralizes it. Excluding the original would double-reverse the result. Source
+locations contribute negative `base_quantity`, destination locations contribute
+positive `base_quantity`, and all arithmetic uses exact `numeric(19,6)` values.
+Invalid or ambiguous lines are findings and are not silently omitted from a
+claimed clean result.
+
+Reserved reconstruction includes only `active` reservations. Confirmed,
+released, expired, and cancelled reservations contribute zero. Each active line
+contributes its exact remaining quantity. Negative remainder, consumed or
+released quantity above reserved, terminal remainder, wrong branch/location,
+or incompatible owner/lifecycle evidence is a workflow-integrity finding.
+
+In-transit reconstruction supports the implemented full-shipment V1 workflow.
+`shipped` contributes the complete shipped quantity at the validated transit
+location in the destination branch. `received`, `requested`, `approved`,
+`rejected`, and `cancelled` contribute zero. Physical future states for partial
+receipt are not interpreted until their application contract exists. Shipment
+or receipt quantities, movements, branches, locations, and balance evidence must
+agree; over-receipt or negative transit is critical.
+
+`last_movement_id` identifies the latest posted movement that actually changed
+the balance. Ordering is `(posted_at, movement_id, line_number)`; physical row
+order is irrelevant. The detector reports a missing reference, cross-tenant or
+cross-branch reference, a movement with no effect on that key, a stale
+reference, NULL despite activity, or a value despite no activity. Detection
+never rewrites this field.
+
+### V1 detection matrix
+
+| Class | Finding | Demonstrable with current schema | Default severity |
+| --- | --- | --- | --- |
+| Projection | `balance_on_hand_drift` | Yes: ledger fold differs from balance | critical |
+| Projection | `balance_reserved_drift` | Yes: active reservation remainder differs | critical |
+| Projection | `balance_in_transit_drift` | Yes for implemented full-shipment V1 | critical |
+| Projection | `last_movement_mismatch` | Yes from ordered posted effects | warning |
+| Projection | `missing_balance` | Yes when ledger/workflow activity has no balance | critical |
+| Projection | `orphan_balance` | Yes when all quantities are zero and no ledger/workflow reference exists | info |
+| Ledger | `invalid_posted_movement` | Yes for physical direction, quantity, state, tenant and relationship invariants | critical |
+| Workflow | `invalid_reversal_relationship` | Yes for header links, type, state and uniqueness; line pairing is positional because no line FK exists | critical |
+| Workflow | `transfer_movement_mismatch` | Yes for implemented shipment/receipt lifecycle | critical |
+| Workflow | `reservation_movement_mismatch` | Yes for confirmed issue and active/terminal reserved evidence | critical |
+| Workflow | `count_application_mismatch` | Yes for applied state, discrepancy, reference, movement type and uniqueness | critical |
+| Evidence | `missing_outbox_event` | Conditional; reliable only while the relevant retention window is guaranteed | warning |
+| Evidence | `missing_audit_record` | Conditional; reliable only while the relevant retention window is guaranteed | warning |
+| Unknown | `unsupported_or_unknown` | Used when the detector cannot prove a canonical interpretation | warning |
+
+The detector can also report incompatible terminal timestamps/actors, duplicate
+typed workflow movements, impossible quantity totals, wrong company/branch
+relationships, and an applied count linked to a non-count adjustment. Database
+constraints prevent many new invalid rows but do not prove historical
+projection equivalence.
+
+The current schema cannot prove why a row was absent before retention began,
+whether an audit/outbox record was archived legitimately, historical publisher
+delivery, business intent beyond stored reason/reference fields, partial future
+transfer semantics, or cost/accounting correctness. Those cases must not be
+presented as confirmed drift.
+
+### Workflow invariants
+
+- A reversed original has one `reversed_by_movement_id`; the compensating posted
+  reversal points back through `reversal_of_movement_id`, uses the correct type,
+  and is unique. Both remain in the ledger fold.
+- A shipped transfer has its posted shipment movement with matching transfer,
+  company, endpoint branches, locations and exact line quantities. A received
+  transfer additionally has exactly one compatible posted receipt movement and
+  no remaining V1 transit quantity.
+- A confirmed reservation has exactly one posted issue movement identified by
+  `reference_type=inventory_reservation` and its ID. Active reservations have no
+  confirmation issue; terminal reservations retain no reserved remainder.
+- An applied count with nonzero frozen discrepancies has exactly one posted
+  `adjustment` referenced by `inventory_count` and stored in
+  `application_movement_id`. A zero-difference applied count may have no
+  movement. No count may apply twice.
+
+### Persistent finding model
+
+Enterprise operation requires persistent findings rather than an ephemeral-only
+report. Persistence enables acknowledgement, deduplication, remediation review,
+history and SLA measurement. Block 3.3I approves the logical model only; a
+future physical block must add it through an additive migration.
+
+| Field | Contract |
+| --- | --- |
+| Identity | UUIDv7 `finding_id`; immutable normalized fingerprint |
+| Scope | Required `company_id`; optional branch, location and variant IDs; aggregate type and ID |
+| Classification | Stable `finding_type`, `severity`, `status`, and explicit `detector_version` |
+| Time | `first_detected_at`, `last_detected_at`, `detected_at` snapshot evidence, optional acknowledged/resolved/dismissed timestamps |
+| Actors | Optional acknowledged/resolved/dismissed actor; never derived from client tenant input |
+| Evidence | Bounded expected/actual summaries, safe evidence and sanitized object metadata |
+| Tracking | `occurrence_count`, correlation ID, snapshot/watermark, optimistic version |
+
+Finding states are `open`, `acknowledged`, `resolved`, and `dismissed`.
+Detection creates `open`. Acknowledgement accepts operational ownership but does
+not correct data. Resolution requires a later scan proving equivalence or an
+approved repair/rebuild result. Dismissal requires a bounded reason and
+`inventory.reconcile`; it is not data repair. Recurrence of the same active
+identity updates `last_detected_at` and occurrence count. A resolved or dismissed
+identity that reappears becomes `open` as a new revision while preserving its
+history.
+
+The normalized identity material is:
+
+```text
+company_id
++ finding_type
++ aggregate_type
++ aggregate_id
++ normalized branch/location/variant scope
++ detector_version
+```
+
+Its SHA-256 fingerprint, not free text, provides deduplication. Evidence changes
+update the current revision without changing identity. Findings absent from a
+complete compatible scan may be auto-resolved only when the scan covered the
+same scope, detector version and watermark semantics; partial scans never resolve
+findings outside their proven coverage.
+
+Canonical severities are `info`, `warning`, and `critical`. Critical projection,
+corrupt-ledger, double-application, reserved/oversell and transit findings may
+cause affected commands to return `inventory_reconciliation_required` after an
+implementation block defines the exact guard scope. Warning alone does not
+block. Info never blocks.
+
+### Scan consistency, scope and concurrency
+
+Every scan requires one authenticated company. Optional narrower filters are
+branch, location, product variant, or one aggregate. There is no cross-tenant
+scan and no client-selected expansion of branch access. Company-wide work is
+chunked; it is not one long transaction.
+
+V1 scans use short `REPEATABLE READ` read-only transactions per location or
+bounded chunk. Each chunk records `snapshot_at`, detector version and a stable
+watermark based on committed occurrence/posting time plus UUID tie-breaker.
+Operations committed after the watermark belong to a later scan. The detector
+does not take balance write locks or hold database transactions across network
+responses.
+
+Posting, receipt, confirmation and count application may continue while a scan
+runs. Snapshot isolation prevents mixing pre- and post-command state inside one
+chunk. Two detectors may scan the same scope; fingerprint uniqueness and an
+atomic upsert deduplicate findings. A global advisory lock is not correctness
+authority. Future repair must revalidate the finding and current versions under
+its own transaction rather than trust stale scan evidence.
+
+### Authorization, errors and evidence boundaries
+
+`inventory.reconcile` does not currently exist. A future physical/endpoint block
+must seed it explicitly and assign it only to controlled operational roles.
+Manual scans, full finding detail, acknowledgement, dismissal and every repair
+require it. Sanitized aggregate indicators may later be shown under
+`inventory.read`, but ordinary POS operators receive no new authority.
+
+No endpoint IDs are reserved because no approved range follows E154. Endpoint
+reservation is a separate contract block. Likely future capabilities are scan,
+finding list/detail, acknowledge/dismiss, repair preview/application and
+projection rebuild, but none is an API contract yet.
+
+Existing applicable errors remain `inventory_reconciliation_required`,
+`inventory_balance_conflict`, `resource_not_found`, `permission_denied`,
+`validation_error`, `version_conflict`, and `idempotency_conflict`. Candidate
+scan/finding/repair errors remain unfrozen until their endpoint block. No error
+is added to `@asone/errors` here.
+
+Audit/outbox absence checks are optional until retention and archival policy is
+accepted. Pending unpublished outbox rows are not missing. Archived evidence is
+not missing. A scan execution may later audit safe start/completion summaries;
+finding acknowledgement/dismissal and repair are auditable commands. Detection
+never emits `inventory.stock.changed`. Reconciliation realtime events remain
+unapproved until the persistent physical and endpoint contracts exist, so
+`REALTIME_EVENTS.md` is unchanged.
+
+### Repair, rebuild and delivery boundaries
+
+Detection identifies and classifies only. Repair is a later approved command
+that may create a compensating movement, rebuild a projection component,
+restore `last_movement_id`, or re-emit a demonstrably missing outbox fact. Rebuild
+folds authoritative sources into a validated shadow result before controlled
+replacement. Neither may edit/delete posted movements, rewrite history, mutate
+balances silently, or bypass audit, idempotency and authorization.
+
+The delivery split is:
+
+| Block | Scope |
+| --- | --- |
+| 3.3I.1 | This detector contract and logical persistent finding model |
+| 3.3I.2 | Findings physical foundation, permission seed and additive migration |
+| 3.3I.3 | Read-only detector implementation, chunking, deduplication and PostgreSQL evidence |
+| 3.3I.4 | Repair/rebuild contract, approvals and endpoint reservation; no implementation implied |
+| 3.4 | Runbooks, scheduling/workers, monitoring, SLAs, load/partitioning, backup/restore and disaster recovery |
+
 ## Test matrix
 
 | Layer | Required coverage |
@@ -834,7 +1046,10 @@ skipped, and omitted tests.
 | 3.3G.1 | Count contract reconciliation | E070/E115-E123, scope, snapshots, expiring locks, migration design |
 | 3.3G.2 | Future count physical foundation | Two count tables, migration 0007, fresh-chain and concurrency evidence |
 | 3.3H | Future durable count engine | E115-E123, apply-once and scope-lock behavior |
-| 3.3I | Future reconciliation detector contract | Findings, approval, repair, rebuild; separate from reservations |
+| 3.3I.1 | Reconciliation detector contract | Ledger/projection algorithms, persistent finding model and execution boundaries |
+| 3.3I.2 | Future findings physical foundation | Finding table, indexes, permission seed and additive migration |
+| 3.3I.3 | Future detector implementation | Read-only chunked scans, deduplication and PostgreSQL evidence |
+| 3.3I.4 | Future repair/rebuild contract | Approval, endpoint reservation and recovery boundaries |
 | 3.4 | Recovery, events, load, rebuild/restore runbooks | Zero skipped DB tests and measured evidence |
 
 Migrations are additive after 0004, generated once, manually audited, and tested
@@ -895,8 +1110,9 @@ their IDs and existing non-reversal behavior; E129 remains proposed.
 - Manual receipt valuation when source cost is unavailable.
 - Transit discrepancy SLA and allowed final dispositions.
 - Cost-policy administration permission and effective setting.
-- Reconciliation finding schema, schedule, severity, retention, approval model,
-  repair policy, and operational owner; these belong to future Block 3.3I.
+- Finding retention, operational ownership, repair approvals and scheduling
+  remain open after the 3.3I.1 logical detector contract. Physical persistence,
+  implementation and repair remain separate blocks.
 - Load-based partition and archival thresholds.
 
 ## Explicit non-goals

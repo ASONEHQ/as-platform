@@ -881,6 +881,26 @@ The original `categories`, product-level inventory fields, and three-table inven
 
 ## 20. Future extension points
 
+### Inventory reconciliation findings
+
+TASK 09.4 Block 3.3I.1 approves a logical persistent finding aggregate for
+future inventory reconciliation. It is not included in the implemented entity
+count and has no physical table yet. A finding is company-owned and may narrow
+to branch, location, variant and aggregate. It records a stable fingerprint,
+detector version, type, `info|warning|critical` severity,
+`open|acknowledged|resolved|dismissed` status, first/last detection timestamps,
+occurrence count, bounded expected/actual summaries, safe evidence, actors and
+optimistic version.
+
+The authoritative reconstruction sources are immutable posted movement lines
+for on hand, active reservation remainder for reserved quantity, and the
+implemented shipped-transfer workflow plus its posted movements for in-transit
+quantity. Findings identify disagreement; they do not authorize direct balance
+mutation or ledger edits. A later additive migration is required before
+persistence. Repair, projection rebuild, retention and operational execution
+remain separately approved work. See
+[INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
+
 - Rewards and memberships may reference `companies`, `branches`, `users` or future customers, `sales`, and immutable ledger identifiers.
 - Events may reference branches, products, sales, payments, refunds, files, and access credentials while owning capacity/reservation data.
 - Promotions may contribute immutable evaluation snapshots to sale items without rewriting completed sales.
