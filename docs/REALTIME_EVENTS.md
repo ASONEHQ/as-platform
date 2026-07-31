@@ -366,9 +366,11 @@ TASK 09.4 reserves the following additional events. They are contractual proposa
 | `inventory.transfer.shipped` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, status, exact shipped quantity summaries, shipment movement ID/number, version, shipped_at, actor, correlation ID; `P-INV`; no costs | committed full shipment / transfer detail and `INV` | V / CP |
 | `inventory.transfer.received` | inventory / `inventory_transfer` | authorized destination branch / `inventory.read` | transfer ID, final received status, exact received summaries, receipt movement ID/number, version, received_at, actor, correlation ID; `P-INV`; no costs | committed full receipt / transfer detail and `INV` | V / CP |
 | `inventory.transfer.cancelled` | inventory / `inventory_transfer` | authorized source/destination branches / `inventory.read` | transfer ID, terminal status, bounded reason code, version, cancelled_at, actor, correlation ID; `P-INV` | committed pre-shipment cancellation / transfer detail | V / CP |
-| `inventory.reservation.created` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, source type/ID, status, location, expires_at, line count, version; `P-INV` | committed reservation / reservation detail and `INV` | V / CP |
-| `inventory.reservation.confirmed` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, status, source movement ID, confirmed_at, version; `P-INV` | committed confirmation / reservation detail and `INV` | V / CP |
-| `inventory.reservation.released` | inventory / `inventory_reservation` | reservation branch/location / `inventory.read` | reservation ID, terminal status, safe reason, released/expired_at, version; `P-INV` | committed release, cancellation, or expiration / reservation detail and `INV` | V / CP |
+| `inventory.reservation.created` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, owner type/ID, active status, ordered location IDs/count, expires_at, line count, version; `P-INV`; no singular location claim | committed E125 creation / reservation detail and `INV` | V / CP |
+| `inventory.reservation.confirmed` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, confirmed status, issue movement ID/number, ordered location IDs/count, confirmed_at, version; `P-INV` | committed E127 full confirmation / reservation detail and `INV` | V / CP |
+| `inventory.reservation.released` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, released status, safe reason code, ordered location IDs/count, released_at, version; `P-INV` | committed E128 release / reservation detail and `INV` | V / CP |
+| `inventory.reservation.expired` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, expired status, safe reason code, ordered location IDs/count, expired_at, version; `P-INV` | committed E128 or command-time expiry / reservation detail and `INV` | V / CP |
+| `inventory.reservation.cancelled` | inventory / `inventory_reservation` | reservation branch and authorized line locations / `inventory.read` | reservation ID, cancelled status, safe reason code, ordered location IDs/count, cancelled_at, version; `P-INV` | committed E128 cancellation / reservation detail and `INV` | V / CP |
 | `inventory.count.completed` | inventory / `inventory_count` | count branch/location / `inventory.read` | count ID/type, location, status, safe variance summary, movement IDs, version, applied_at; `P-INV` | committed count application / count detail and `INV` | V / CP |
 | `inventory.low_stock.detected` | inventory projection / `inventory_stock_policy` | branch/location / `inventory.read` | location/variant IDs, threshold and available decimal strings, severity, balance version, detected_at; costs and `P-INV` | threshold crossing / balances and policies | C / CP |
 | `product_variant.updated` | catalog / `product_variant` | company/authorized branch visibility / `catalog.read` | product/variant IDs, changed fields, status, version; `P-CAT` | variant create/update/retire / `CAT` | V / CP |
@@ -389,6 +391,16 @@ new. Company and branch values come from trusted state; consumers must possess
 `inventory.read` for the event's authorized branch intersection. Transfer
 events contain exact decimal strings and no line costs, average cost, currency,
 unbounded note, idempotency key, or request hash.
+
+Reservation events follow the same atomicity and replay rules. E125 emits one
+`inventory.reservation.created` summary and one `inventory.stock.changed` per
+changed balance. E127 emits one `inventory.reservation.confirmed`, one
+`inventory.movement.created`, and one stock-change event per changed balance.
+E128 emits exactly one of `inventory.reservation.released`,
+`inventory.reservation.expired`, or `inventory.reservation.cancelled`, plus one
+stock-change event per changed balance. Reservation summaries use ordered
+`location_ids` and `location_count`; they never imply that a multi-line
+reservation has one location. Exact replay emits no additional fact.
 
 All inventory decimals are exact strings. Consumers deduplicate by `event_id`; no global order is guaranteed across aggregates or locations. Versioned consumers detect gaps and recover through authoritative REST detail or checkpoint routes. Payloads omit costs without `inventory.cost.read`, unrestricted notes, credentials, hardware secrets, and balances outside current authorization.
 

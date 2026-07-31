@@ -583,10 +583,10 @@ Common rules:
 | E122 | `POST /inventory/counts/{count_id}/applications` | `inventory.approve`; count scope | Apply once; adjustment and controls atomically |
 | E123 | `POST /inventory/counts/{count_id}/cancellations` | `inventory.count`; count scope | Idempotent cancellation and lock release |
 | E124 | `GET /inventory/reservations` | `inventory.read`; authorized branches | Cursor and reservation filters |
-| E125 | `POST /inventory/reservations` | `inventory.reservation.manage` or internal sale capability | Idempotent; increases reserved |
+| E125 | `POST /inventory/reservations` | `inventory.reservation.manage`; internal owner capability later | Idempotent; increases reserved |
 | E126 | `GET /inventory/reservations/{reservation_id}` | `inventory.read`; reservation scope | Row ETag |
-| E127 | `POST /inventory/reservations/{reservation_id}/confirmations` | Owning command capability | Idempotent; decreases reserved and on hand |
-| E128 | `POST /inventory/reservations/{reservation_id}/releases` | Managing or owning capability | Idempotent release/cancel/expire |
+| E127 | `POST /inventory/reservations/{reservation_id}/confirmations` | `inventory.reservation.manage`; trusted internal owner capability later | Idempotent full confirmation; decreases reserved and on hand |
+| E128 | `POST /inventory/reservations/{reservation_id}/releases` | `inventory.reservation.manage`; trusted internal owner capability later | Idempotent release/cancel/expire |
 | E129 | `GET /inventory/kardex` | `inventory.read`; authorized locations | Stable line cursor; cost redaction |
 | E130 | `GET /inventory/costs` | `inventory.cost.read`; authorized locations | Current exact costs |
 | E131 | `GET /inventory/cost-history` | `inventory.cost.read`; authorized locations | Stable cursor and source movement |
@@ -753,7 +753,216 @@ source, transit, or destination balance. Events describe only committed facts,
 carry schema version 1, exact decimal strings and aggregate versions, and
 contain no costs or unrestricted notes.
 
-#### 19.1.2 Canonical inventory contract overlay
+#### 19.1.2 Canonical reservation contract — E124–E128
+
+The reservation contract was previously planned under Block 3.3D. Published
+Blocks 3.3D.1 and 3.3D.2 now permanently identify transfer reconciliation and
+implementation. Block 3.3E freezes this contract; future Block 3.3F implements
+it. No alias, update, delete, partial-confirmation, partial-release, dedicated
+expire, dedicated cancel, or reconciliation route is reserved.
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: E125 create
+    active --> confirmed: E127 confirm all lines
+    active --> released: E128 release
+    active --> expired: E128 expire or atomic expiry discovery
+    active --> cancelled: E128 cancel
+```
+
+`confirmed`, `released`, `expired`, and `cancelled` are mutually exclusive
+terminal states. A terminal reservation cannot transition again. The initial
+version is 1; each first successful terminal transition increments it exactly
+once. Exact idempotency replay changes neither state nor version.
+
+##### Ownership, scope, and permissions
+
+Company scope comes only from the authenticated context. A reservation belongs
+to one authorized branch and may contain lines for multiple active, issuing
+locations in that branch. Every location, variant, balance, movement, and line
+must match the reservation company and branch. Hidden or cross-tenant resources
+use `resource_not_found` without revealing existence.
+
+`owner_type` is one of `pos_cart`, `event`, `booking`, or `order`; `owner_id` is
+an opaque, nonblank identifier owned by that domain. It identifies the business
+aggregate, not the authenticated user or device, and never grants access by
+itself. The pair is immutable after creation.
+
+| Operation | Permission and scope |
+| --- | --- |
+| E124/E126 | `inventory.read`; only authorized branches and locations |
+| E125 | `inventory.reservation.manage`; reservation branch and all line locations |
+| E127 | `inventory.reservation.manage`; reservation branch and all line locations |
+| E128 | `inventory.reservation.manage`; reservation branch and all line locations |
+
+Future owner modules may invoke the same internal command service only through
+a trusted capability bound to the exact `owner_type` and `owner_id`. That is an
+internal authorization boundary, not a public permission or request field.
+Until such modules exist, public E127 and E128 require
+`inventory.reservation.manage`; no caller can claim owning capability by
+submitting owner metadata. The implementation block must add
+`inventory.reservation.manage` to the technical permission seed. Explicit deny
+precedes allow, and no count, approval, or reconciliation permission is implied.
+
+##### E124 list and E126 detail
+
+E124 accepts only `cursor`, `limit`, `branch_id`, `status`, `owner_type`,
+`owner_id`, `location_id`, `product_variant_id`, `expires_before`,
+`created_from`, and `created_to`. Timestamps are RFC 3339 UTC instants. Results
+use a stable opaque `(created_at,id)` cursor ordered newest first. The response
+contains reservation ID/number, branch ID, owner, status, optional `expires_at`,
+version, `created_at`, `updated_at`, `line_count`, `location_count`, and ordered
+distinct `location_ids`. It never represents a multi-location reservation with
+one singular location.
+
+E126 returns the same header identity plus all ordered lines, lifecycle actors
+and timestamps, optional terminal reason evidence, and the confirmation
+movement ID when one exists. Each line contains line ID/number, location ID,
+variant ID, exact `quantity`, `consumed_quantity`, `released_quantity`,
+remaining quantity, and `unit_of_measure_code`. Exact decimals are strings.
+Company internals, unrestricted audit data, idempotency material, costs, hashes,
+or hidden locations are omitted. E124 and E126 return `200`; E126 returns the
+strong ETag `"<version>"`.
+
+The current schema does not denormalize terminal reason or confirmation
+movement ID on the reservation header. V1 obtains the bounded reason from audit
+evidence and the movement through
+`reference_type=inventory_reservation, reference_id=<reservation_id>`. These
+are response projections, not authorization to add a schema column.
+
+##### E125 creation
+
+E125 requires `Idempotency-Key` and a strict body:
+
+```json
+{
+  "branch_id": "019c2000-0000-7000-8000-000000000001",
+  "owner_type": "pos_cart",
+  "owner_id": "cart_01JXYZ",
+  "expires_at": "2026-07-31T20:15:00.000Z",
+  "lines": [
+    {
+      "location_id": "019c2000-0000-7000-8000-000000000002",
+      "product_variant_id": "019c2000-0000-7000-8000-000000000003",
+      "quantity": "2.000000",
+      "unit_of_measure_code": "unit"
+    }
+  ]
+}
+```
+
+`expires_at` is optional and, when present, must be a future UTC instant.
+`lines` is nonempty. Quantity is a positive exact decimal string compatible
+with the variant scale and UOM. V1 supports no UOM conversion: canonical
+`base_quantity` equals normalized `quantity` and is server-owned. Unknown
+fields, duplicate `(location_id,product_variant_id)` pairs, inactive or
+non-issuing locations, inactive variants, mismatched UOM, and excessive scale
+are rejected.
+
+The command locks or safely creates every balance in canonical
+`company,branch,location,variant` order, verifies
+`quantity_available >= requested base quantity` for every aggregate balance,
+creates the active header and ordered lines, and increases
+`quantity_reserved`. It changes neither `quantity_on_hand` nor
+`quantity_in_transit`. It returns `201`, ETag `"1"`, and the strict E126 detail.
+
+##### E127 full confirmation
+
+E127 requires `Idempotency-Key`, the current strong `If-Match`, and a strict
+empty JSON body. V1 confirms every remaining line once; it accepts no line,
+quantity, owner, status, branch, movement, or version override.
+
+The transaction claims idempotency, locks the reservation, validates version,
+active state and `expires_at > transaction_timestamp()` when expiry exists,
+then locks all balances in canonical order. It verifies sufficient reserved and
+on-hand quantities, creates and posts one server-generated `issue` movement and
+ordered lines with `reference_type=inventory_reservation`, decreases reserved
+and on-hand by each full base quantity, marks every line consumed, changes the
+header to `confirmed`, records actor/time, increments version once, and commits
+audit, outbox, stock events, movement event, and stored response atomically.
+`quantity_in_transit` is unchanged and no cost behavior is introduced.
+
+The existing physical `issue` movement type is canonical; no adjustment or
+transfer movement type is reused and no migration is required. E127 returns
+`200`, the new ETag, the strict reservation detail, movement ID/number, and
+affected balance versions.
+
+##### E128 release, expiry, and cancellation
+
+E128 requires `Idempotency-Key`, current strong `If-Match`, and this strict
+discriminated body:
+
+```json
+{
+  "action": "release",
+  "reason_code": "owner_abandoned",
+  "note": "Optional bounded operational note"
+}
+```
+
+`action` is exactly `release`, `expire`, or `cancel`. `reason_code` is required,
+bounded and nonblank; `note` is optional and bounded. `expire` is valid only
+when `expires_at` exists and is not later than the transaction timestamp.
+All actions require an active reservation, lock it before balances, decrease
+each remaining reserved quantity without changing on-hand or in-transit, mark
+remaining line quantity released, set the matching terminal status/actor/time,
+increment version once, and atomically store audit, outbox and idempotency.
+E128 returns `200`, the new ETag, and the strict detail.
+
+There is initially no scheduler. E127 or E128 that first observes
+`expires_at <= transaction_timestamp()` may win an atomic expiry transition
+under the authenticated actor; E127 then returns `reservation_expired` with the
+committed expired representation metadata. A future worker must use this same
+service and an approved technical actor. Competing confirm/release/expire/cancel
+commands lock the same row, so exactly one terminal transition wins.
+
+##### Idempotency, concurrency, and errors
+
+The idempotency scope contains company, operation, reservation when applicable,
+authenticated actor/capability, expected version, and canonical strict body.
+The stored status, response body, headers and ETag are committed in the same
+transaction as the domain effect. Exact replay returns them unchanged and
+duplicates no balance update, movement, audit, or event. Reuse with different
+canonical content returns `idempotency_conflict`.
+
+Reservation commands reuse the posting engine's deterministic balance order;
+they introduce no second locking algorithm. Aggregate quantities are folded by
+balance key before locking, preventing duplicate-line or multi-line
+under-validation. Reservation versus reservation, shipment, posting, reversal,
+confirmation, release, and expiry therefore serialize on the same authoritative
+rows. Reserved, on-hand, and derived available quantity may never become
+negative; a command may not reserve more than available, confirm more than
+reserved, release more than remaining, or consume/release twice.
+
+Canonical safe errors are `resource_not_found` (404), `permission_denied` (403),
+`validation_error` (400), `insufficient_inventory` (409),
+`inventory_balance_conflict` (409), `reservation_expired` (409),
+`reservation_already_completed` (409), `version_conflict` (409), and
+`idempotency_conflict` (409). Ownership mismatch maps to `permission_denied`
+when the resource is already visible and otherwise to tenant-safe
+`resource_not_found`. `inventory_reconciliation_required` is not part of the
+ordinary E124-E128 path; a proven drift finding belongs to future Block 3.3I.
+
+##### Audit and events
+
+The same mutation transaction records exactly one reservation audit action:
+`inventory_reservation.created`, `inventory_reservation.confirmed`,
+`inventory_reservation.released`, `inventory_reservation.expired`, or
+`inventory_reservation.cancelled`. Safe evidence contains reservation, company,
+branch, owner, previous/new status, movement when present, bounded reason,
+actor, request/correlation IDs, and version; it excludes full owner payloads,
+secrets, hashes, and unrestricted notes.
+
+Outbox facts use the corresponding dotted names:
+`inventory.reservation.created`, `inventory.reservation.confirmed`,
+`inventory.reservation.released`, `inventory.reservation.expired`, and
+`inventory.reservation.cancelled`. Every changed balance also emits one
+`inventory.stock.changed`; confirmation additionally emits one
+`inventory.movement.created`. The reservation event is one aggregate summary
+with `location_ids` and `location_count`, while stock events remain one per
+balance. Exact replay emits nothing new.
+
+#### 19.1.3 Canonical inventory contract overlay
 
 The following rules are normative for E064-E072 and E108-E135:
 

@@ -146,11 +146,21 @@ Every adjustment produces a movement. V1 starts with strict permissions and mand
 
 ### Reservations
 
-- Active reservations increase reserved quantity.
-- Confirmation decreases reserved and on-hand quantities atomically.
-- Confirmation, release, expiration, and cancellation are idempotent.
-- Expiration is configurable; the initial POS fallback is 15 minutes.
-- A future idempotent worker expires reservations; the first ledger slice does not implement that worker.
+- Block 3.3E freezes E124-E128; future Block 3.3F implements them. The old plan
+  assigning reservations to 3.3D is superseded because published Blocks 3.3D.1
+  and 3.3D.2 are the transfer contract and engine.
+- A reservation is company/branch-owned and contains one or more lines across
+  active issuing locations in that branch. No singular header location exists.
+- `owner_type` is `pos_cart`, `event`, `booking`, or `order`; `owner_id` is the
+  opaque owning aggregate, never a user/device grant.
+- Active reservations increase reserved quantity without changing on-hand or
+  in-transit quantity.
+- Full confirmation decreases reserved and on-hand quantities atomically and
+  creates one posted `issue` movement referenced to the reservation.
+- Release, expiration, and cancellation decrease reserved only. Every terminal
+  transition is mutually exclusive, idempotent, versioned and audited.
+- `expires_at` is optional. An expired reservation cannot confirm; command-time
+  expiry uses the same atomic service. No expiration worker is implemented yet.
 
 ### Default location
 
@@ -499,7 +509,26 @@ cancel/ship produce one winner and a safe `version_conflict` or
 
 ## Reservations
 
-Reservations own lines for concrete variants and locations. Kit reservations are exploded before balance locks. Expiration is a domain command, not a direct status update. A future worker claims expired reservations safely and executes the same idempotent release service used by HTTP or recovery flows.
+Reservations own lines for concrete variants and locations. Kit reservations
+are exploded before balance locks. E125 creates an `active` aggregate and
+increases reserved quantity. E127 fully confirms it, posts an `issue` movement,
+and decreases reserved and on-hand. E128 uses the explicit action
+`release|expire|cancel`; all three actions decrease reserved only. E127 and E128
+require the strong current ETag. Every mutation stores its idempotency outcome,
+audit, outbox, and balance effects in one transaction.
+
+Expiration is a domain command, not a direct status update. With no worker in
+V1, a command that observes an elapsed optional `expires_at` may atomically
+expire under the authenticated actor. A future worker must call the same
+service using an approved technical actor. The current schema supports V1:
+terminal reasons are audit evidence and confirmation movement identity is
+projected from its typed movement reference, so no reservation migration is
+approved.
+
+Owner metadata is immutable identification, not authorization. Public commands
+require `inventory.reservation.manage`; a future owning module may call the
+internal service only with a trusted capability bound to the exact owner pair.
+Clients cannot assert that capability in request data.
 
 ## Counts
 
@@ -531,6 +560,11 @@ contract. Negative-value tricks cannot correct quantity.
 | `inventory_location.manage` | Create and manage locations |
 | `inventory.reverse` | Create compensating reversals |
 | `inventory.reservation.manage` | Manage non-automatic reservations |
+
+`inventory.reservation.manage` is contractually approved but not yet seeded;
+Block 3.3F must add it. It is the public mutation permission for E125, E127 and
+E128. `inventory.read` governs E124 and E126. Count, approval and reconciliation
+permissions grant no reservation capability.
 
 Explicit deny precedes allow. Sales invoke an internal inventory capability inside the authorized sale transaction; cashiers do not need `inventory.adjust`.
 

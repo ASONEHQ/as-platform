@@ -345,16 +345,34 @@ Balance locks follow company, branch, location, and variant order.
 
 ## Reservations
 
-Reservations are approved for schema Block 3.2B and service Block 3.3D, after the
-posting engine proves concurrency safety.
+Reservations were previously planned for service Block 3.3D. Blocks 3.3D.1 and
+3.3D.2 were instead published as transfer contract reconciliation and transfer
+engine implementation. That history is not rewritten. Block 3.3E now freezes
+the E124-E128 reservation contract, and future Block 3.3F implements it.
 
-- Owner types initially include POS cart, event, booking, and order.
-- Lines target concrete location/variant pairs.
-- Active reservations increase reserved only.
-- Release, expiry, and cancellation decrease reserved.
-- Consumption decreases reserved and on-hand atomically.
-- Every terminal command is idempotent.
-- No scheduler is included initially; a later worker invokes the same service.
+- The initial state is `active`; `confirmed`, `released`, `expired`, and
+  `cancelled` are mutually exclusive terminal states.
+- Owner types are `pos_cart`, `event`, `booking`, and `order`. `owner_id` is the
+  opaque identifier in that owning domain; it is not a user or device grant.
+- A reservation belongs to one company and branch but may contain multiple
+  concrete location/variant lines within that branch.
+- Creation increases `quantity_reserved`; it changes neither on-hand nor
+  in-transit quantity.
+- Release, expiry, and cancellation decrease reserved only.
+- Full confirmation decreases reserved and on-hand atomically and creates a
+  posted `issue` movement with `reference_type=inventory_reservation` and the
+  reservation ID as `reference_id`. No partial confirmation is approved.
+- E125, E127, and E128 are idempotent. E127 and E128 also require the current
+  strong ETag and increment the aggregate version exactly once.
+- `expires_at` is optional UTC `timestamptz`. An active reservation with
+  `expires_at <= transaction_timestamp()` cannot confirm. A command that first
+  discovers expiry may atomically expire it under that authenticated actor.
+- No scheduler is included initially. A future worker must invoke the same
+  command service and requires an approved technical-actor representation.
+- The current tables need no reservation migration for V1. Terminal reasons
+  remain bounded command/audit evidence, and the confirmation movement is
+  recovered through its typed reference; adding denormalized reason or movement
+  columns is not authorized by this contract.
 
 ## Posting algorithm and concurrency
 
@@ -465,9 +483,11 @@ transactional outbox. General events never contain costs.
 | `inventory.transfer.shipped` | Safe quantities, movement, version |
 | `inventory.transfer.received` | Full received summary, movement, version |
 | `inventory.transfer.cancelled` | Pre-shipment reason, status, version |
-| `inventory.reservation.created` | Owner, location, expiry, lines, version |
+| `inventory.reservation.created` | Owner, location IDs/count, expiry, lines, version |
 | `inventory.reservation.confirmed` | Movement, terminal time, version |
-| `inventory.reservation.released` | Terminal status/reason/time/version |
+| `inventory.reservation.released` | Released status/reason/time/version |
+| `inventory.reservation.expired` | Expired status/reason/time/version |
+| `inventory.reservation.cancelled` | Cancelled status/reason/time/version |
 | `inventory.count.completed` | Scope, variance summary, movements, version |
 
 Compatibility events `inventory.adjusted` and `inventory.count_applied` remain
@@ -641,9 +661,14 @@ skipped, and omitted tests.
 | 3.2B | Transfers/lines and reservations/lines | State/quantity checks, tenant FKs, migration audit |
 | 3.3A | Location services, balance/movement reads and drafts | E064-E068, isolation, cost redaction |
 | 3.3B | Posting, adjustment, receipt, consumption, reversal | Real concurrency, rebuild, rollback, idempotency |
-| 3.3C | Transfer workflow | E108-E114, full shipment/receipt, transit, retries |
-| 3.3D | Reservations and reconciliation detector | E124-E128, oversell prevention, drift detection |
-| 3.3E | Immediate/durable counts | E070/E115-E123, apply-once and scope locks |
+| 3.3C | Previously planned transfer workflow | Superseded by the published 3.3D.1/3.3D.2 sequence |
+| 3.3D.1 | Transfer contract reconciliation | Implemented under commit history; E108-E114 frozen |
+| 3.3D.2 | Transfer engine implementation | Implemented under commit history; full V1 shipment/receipt |
+| 3.3E | Reservation contract reconciliation | E124-E128, ownership, expiry, multi-location payloads, locking |
+| 3.3F | Future reservation engine implementation | E124-E128, oversell prevention, PostgreSQL concurrency evidence |
+| 3.3G | Future immediate/durable count foundation and contract | E070/E115-E123, scope, snapshots, expiring locks, migration design |
+| 3.3H | Future durable count engine | E115-E123, apply-once and scope-lock behavior |
+| 3.3I | Future reconciliation detector contract | Findings, approval, repair, rebuild; separate from reservations |
 | 3.4 | Recovery, events, load, rebuild/restore runbooks | Zero skipped DB tests and measured evidence |
 
 Migrations are additive after 0004, generated once, manually audited, and tested
@@ -698,12 +723,14 @@ their IDs and existing non-reversal behavior; E129 remains proposed.
 
 - Approval thresholds and requester/approver separation.
 - Default location per future register, channel, event, and cafeteria operation.
-- Reservation duration overrides and maximum offline age.
+- Reservation duration overrides, maximum offline age, and approved technical
+  actor for a future expiration worker.
 - Count lock duration and abandoned-count escalation.
 - Manual receipt valuation when source cost is unavailable.
 - Transit discrepancy SLA and allowed final dispositions.
 - Cost-policy administration permission and effective setting.
-- Reconciliation schedule, severity, retention, and operational owner.
+- Reconciliation finding schema, schedule, severity, retention, approval model,
+  repair policy, and operational owner; these belong to future Block 3.3I.
 - Load-based partition and archival thresholds.
 
 ## Explicit non-goals

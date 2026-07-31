@@ -83,13 +83,15 @@ integration('catalog PostgreSQL foundation', () => {
       },
     ]);
     const permissions = await client.pool.query<{ count: string }>(
-      `select count(*)::text as count from permissions where code = 'inventory.cost.read'`,
+      `select count(*)::text as count
+       from permissions
+       where code in ('inventory.cost.read', 'inventory.reservation.manage')`,
     );
-    expect(permissions.rows[0]?.count).toBe('1');
+    expect(permissions.rows[0]?.count).toBe('2');
     const permissionCount = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from permissions',
     );
-    expect(permissionCount.rows[0]?.count).toBe('54');
+    expect(permissionCount.rows[0]?.count).toBe('55');
   });
 
   it('rejects cross-company category, product, option, variant, and barcode references', async () => {
