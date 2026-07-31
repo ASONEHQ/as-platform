@@ -37,6 +37,9 @@ import { InventoryTransferService } from '../modules/inventory/inventory-transfe
 import { InventoryReservationRepository } from '../modules/inventory/reservation.repository.js';
 import { registerInventoryReservationRoutes } from '../modules/inventory/reservation.routes.js';
 import { InventoryReservationService } from '../modules/inventory/reservation.service.js';
+import { InventoryCountRepository } from '../modules/inventory/inventory-counts.repository.js';
+import { registerInventoryCountRoutes } from '../modules/inventory/inventory-counts.routes.js';
+import { InventoryCountService } from '../modules/inventory/inventory-counts.service.js';
 import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
 import {
   InventoryBalanceReadService,
@@ -165,6 +168,11 @@ export async function registerPlugins(
         new InventoryReservationService(
           new InventoryReservationRepository(options.infrastructure.database),
         ),
+      );
+      registerInventoryCountRoutes(
+        app,
+        authentication,
+        new InventoryCountService(new InventoryCountRepository(options.infrastructure.database)),
       );
     }
   }
