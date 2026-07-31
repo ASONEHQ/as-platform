@@ -87,6 +87,32 @@ export const inventoryCountStatuses = [
 
 export const inventoryCountScopeTypes = ['all_balanced_variants', 'explicit_variants'] as const;
 
+export const inventoryReconciliationFindingTypes = [
+  'balance_on_hand_drift',
+  'balance_reserved_drift',
+  'balance_in_transit_drift',
+  'last_movement_mismatch',
+  'missing_balance',
+  'orphan_balance',
+  'invalid_posted_movement',
+  'invalid_reversal_relationship',
+  'transfer_movement_mismatch',
+  'reservation_movement_mismatch',
+  'count_application_mismatch',
+  'missing_outbox_event',
+  'missing_audit_record',
+  'unsupported_or_unknown',
+] as const;
+
+export const inventoryReconciliationFindingSeverities = ['info', 'warning', 'critical'] as const;
+
+export const inventoryReconciliationFindingStatuses = [
+  'open',
+  'acknowledged',
+  'resolved',
+  'dismissed',
+] as const;
+
 export const inventoryQuantityPrecision = 19;
 export const inventoryQuantityScale = 6;
 export const inventoryCostPrecision = 19;
@@ -1288,8 +1314,221 @@ export const inventoryCountLines = pgTable(
   ],
 );
 
+export const inventoryReconciliationFindings = pgTable(
+  'inventory_reconciliation_findings',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id'),
+    inventoryLocationId: uuid('inventory_location_id'),
+    productVariantId: uuid('product_variant_id'),
+    aggregateType: varchar('aggregate_type', { length: 64 }).notNull(),
+    aggregateId: varchar('aggregate_id', { length: 128 }).notNull(),
+    findingType: varchar('finding_type', { length: 64 }).notNull(),
+    severity: varchar('severity', { length: 16 }).notNull(),
+    status: varchar('status', { length: 16 }).notNull().default('open'),
+    identityKey: varchar('identity_key', { length: 512 }).notNull(),
+    fingerprintSha256: char('fingerprint_sha256', { length: 64 }).notNull(),
+    detectorVersion: varchar('detector_version', { length: 64 }).notNull(),
+    correlationId: uuid('correlation_id'),
+    snapshotAt: timestamp('snapshot_at', { withTimezone: true, mode: 'date' }).notNull(),
+    firstDetectedAt: timestamp('first_detected_at', { withTimezone: true, mode: 'date' }).notNull(),
+    lastDetectedAt: timestamp('last_detected_at', { withTimezone: true, mode: 'date' }).notNull(),
+    occurrenceCount: bigint('occurrence_count', { mode: 'bigint' })
+      .notNull()
+      .default(sql`1`),
+    expectedSummary: jsonb('expected_summary').$type<Readonly<Record<string, unknown>>>().notNull(),
+    actualSummary: jsonb('actual_summary').$type<Readonly<Record<string, unknown>>>().notNull(),
+    evidence: jsonb('evidence').$type<Readonly<Record<string, unknown>>>().notNull(),
+    metadata: jsonb('metadata').$type<Readonly<Record<string, unknown>>>(),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true, mode: 'date' }),
+    acknowledgedBy: uuid('acknowledged_by'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, mode: 'date' }),
+    resolvedBy: uuid('resolved_by'),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true, mode: 'date' }),
+    dismissedBy: uuid('dismissed_by'),
+    resolutionReasonCode: varchar('resolution_reason_code', { length: 64 }),
+    resolutionNote: varchar('resolution_note', { length: 1000 }),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+    version: bigint('version', { mode: 'bigint' })
+      .notNull()
+      .default(sql`1`),
+  },
+  (table) => [
+    unique('inventory_reconciliation_findings_company_id_id_uq').on(table.companyId, table.id),
+    uniqueIndex('inventory_reconciliation_findings_active_identity_uq')
+      .on(table.companyId, table.identityKey)
+      .where(sql`${table.status} in ('open','acknowledged')`),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'inventory_reconciliation_findings_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.inventoryLocationId],
+      foreignColumns: [inventoryLocations.companyId, inventoryLocations.id],
+      name: 'inventory_reconciliation_findings_location_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.inventoryLocationId],
+      foreignColumns: [
+        inventoryLocations.companyId,
+        inventoryLocations.branchId,
+        inventoryLocations.id,
+      ],
+      name: 'inventory_reconciliation_findings_branch_location_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.productVariantId],
+      foreignColumns: [productVariants.companyId, productVariants.id],
+      name: 'inventory_reconciliation_findings_variant_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.acknowledgedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'inventory_reconciliation_findings_acknowledged_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.resolvedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'inventory_reconciliation_findings_resolved_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.dismissedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'inventory_reconciliation_findings_dismissed_by_membership_fk',
+    }).onDelete('restrict'),
+    index('inventory_reconciliation_findings_company_status_severity_idx').on(
+      table.companyId,
+      table.status,
+      table.severity,
+    ),
+    index('inventory_reconciliation_findings_company_type_status_idx').on(
+      table.companyId,
+      table.findingType,
+      table.status,
+    ),
+    index('inventory_reconciliation_findings_company_branch_status_idx').on(
+      table.companyId,
+      table.branchId,
+      table.status,
+    ),
+    index('inventory_reconciliation_findings_company_location_status_idx').on(
+      table.companyId,
+      table.inventoryLocationId,
+      table.status,
+    ),
+    index('inventory_reconciliation_findings_company_variant_status_idx').on(
+      table.companyId,
+      table.productVariantId,
+      table.status,
+    ),
+    index('inventory_reconciliation_findings_company_aggregate_idx').on(
+      table.companyId,
+      table.aggregateType,
+      table.aggregateId,
+    ),
+    index('inventory_reconciliation_findings_last_detected_idx').on(table.lastDetectedAt),
+    index('inventory_reconciliation_findings_snapshot_idx').on(table.snapshotAt),
+    index('inventory_reconciliation_findings_detector_version_idx').on(table.detectorVersion),
+    index('inventory_reconciliation_findings_open_critical_idx')
+      .on(table.companyId, table.lastDetectedAt)
+      .where(sql`${table.status} in ('open','acknowledged') and ${table.severity} = 'critical'`),
+    check(
+      'inventory_reconciliation_findings_aggregate_type_ck',
+      sql`length(btrim(${table.aggregateType})) > 0 and ${table.aggregateType} = lower(btrim(${table.aggregateType}))`,
+    ),
+    check(
+      'inventory_reconciliation_findings_aggregate_id_ck',
+      sql`length(btrim(${table.aggregateId})) > 0`,
+    ),
+    check(
+      'inventory_reconciliation_findings_type_ck',
+      sql`${table.findingType} in ('balance_on_hand_drift','balance_reserved_drift','balance_in_transit_drift','last_movement_mismatch','missing_balance','orphan_balance','invalid_posted_movement','invalid_reversal_relationship','transfer_movement_mismatch','reservation_movement_mismatch','count_application_mismatch','missing_outbox_event','missing_audit_record','unsupported_or_unknown')`,
+    ),
+    check(
+      'inventory_reconciliation_findings_severity_ck',
+      sql`${table.severity} in ('info','warning','critical')`,
+    ),
+    check(
+      'inventory_reconciliation_findings_status_ck',
+      sql`${table.status} in ('open','acknowledged','resolved','dismissed')`,
+    ),
+    check(
+      'inventory_reconciliation_findings_identity_key_ck',
+      sql`length(btrim(${table.identityKey})) > 0 and ${table.identityKey} = lower(btrim(${table.identityKey}))`,
+    ),
+    check(
+      'inventory_reconciliation_findings_fingerprint_ck',
+      sql`${table.fingerprintSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'inventory_reconciliation_findings_detector_version_ck',
+      sql`length(btrim(${table.detectorVersion})) > 0`,
+    ),
+    check(
+      'inventory_reconciliation_findings_detection_time_ck',
+      sql`${table.firstDetectedAt} <= ${table.lastDetectedAt} and ${table.snapshotAt} <= ${table.lastDetectedAt}`,
+    ),
+    check(
+      'inventory_reconciliation_findings_occurrence_count_ck',
+      sql`${table.occurrenceCount} >= 1`,
+    ),
+    check('inventory_reconciliation_findings_version_ck', sql`${table.version} >= 1`),
+    check(
+      'inventory_reconciliation_findings_updated_at_ck',
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      'inventory_reconciliation_findings_expected_summary_ck',
+      sql`jsonb_typeof(${table.expectedSummary}) = 'object' and octet_length(${table.expectedSummary}::text) <= 8192`,
+    ),
+    check(
+      'inventory_reconciliation_findings_actual_summary_ck',
+      sql`jsonb_typeof(${table.actualSummary}) = 'object' and octet_length(${table.actualSummary}::text) <= 8192`,
+    ),
+    check(
+      'inventory_reconciliation_findings_evidence_ck',
+      sql`jsonb_typeof(${table.evidence}) = 'object' and octet_length(${table.evidence}::text) <= 8192`,
+    ),
+    check(
+      'inventory_reconciliation_findings_metadata_ck',
+      sql`${table.metadata} is null or (jsonb_typeof(${table.metadata}) = 'object' and octet_length(${table.metadata}::text) <= 8192)`,
+    ),
+    check(
+      'inventory_reconciliation_findings_lifecycle_ck',
+      sql`(
+        ${table.status} = 'open'
+        and ${table.acknowledgedAt} is null and ${table.acknowledgedBy} is null
+        and ${table.resolvedAt} is null and ${table.resolvedBy} is null
+        and ${table.dismissedAt} is null and ${table.dismissedBy} is null
+        and ${table.resolutionReasonCode} is null and ${table.resolutionNote} is null
+      ) or (
+        ${table.status} = 'acknowledged'
+        and ${table.acknowledgedAt} is not null and ${table.acknowledgedBy} is not null
+        and ${table.resolvedAt} is null and ${table.resolvedBy} is null
+        and ${table.dismissedAt} is null and ${table.dismissedBy} is null
+        and ${table.resolutionReasonCode} is null and ${table.resolutionNote} is null
+      ) or (
+        ${table.status} = 'resolved'
+        and ${table.resolvedAt} is not null and ${table.resolvedBy} is not null
+        and ${table.dismissedAt} is null and ${table.dismissedBy} is null
+      ) or (
+        ${table.status} = 'dismissed'
+        and ${table.dismissedAt} is not null and ${table.dismissedBy} is not null
+        and ${table.resolvedAt} is null and ${table.resolvedBy} is null
+        and ${table.resolutionReasonCode} is not null
+        and length(btrim(${table.resolutionReasonCode})) > 0
+      )`,
+    ),
+  ],
+);
+
 export type InventoryLocation = typeof inventoryLocations.$inferSelect;
 export type NewInventoryLocation = typeof inventoryLocations.$inferInsert;
+export type InventoryReconciliationFinding = typeof inventoryReconciliationFindings.$inferSelect;
+export type NewInventoryReconciliationFinding = typeof inventoryReconciliationFindings.$inferInsert;
 export type InventoryBalance = typeof inventoryBalances.$inferSelect;
 export type NewInventoryBalance = typeof inventoryBalances.$inferInsert;
 export type InventoryMovement = typeof inventoryMovements.$inferSelect;

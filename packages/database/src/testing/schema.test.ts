@@ -17,6 +17,10 @@ import {
   inventoryLocations,
   inventoryMovementLines,
   inventoryMovements,
+  inventoryReconciliationFindings,
+  inventoryReconciliationFindingSeverities,
+  inventoryReconciliationFindingStatuses,
+  inventoryReconciliationFindingTypes,
   inventoryReservationLines,
   inventoryReservations,
   inventoryTransferLines,
@@ -70,6 +74,7 @@ const tableNames = [
   inventoryBalances,
   inventoryMovements,
   inventoryMovementLines,
+  inventoryReconciliationFindings,
   inventoryTransfers,
   inventoryTransferLines,
   inventoryReservations,
@@ -110,6 +115,7 @@ describe('database foundation schema', () => {
       'inventory_balances',
       'inventory_movements',
       'inventory_movement_lines',
+      'inventory_reconciliation_findings',
       'inventory_transfers',
       'inventory_transfer_lines',
       'inventory_reservations',
@@ -377,6 +383,61 @@ describe('database foundation schema', () => {
       ...reservationLines.columns.filter((item) => item.name.endsWith('_quantity')),
     ])
       expect(column.dataType).toBe('string');
+  });
+
+  it('defines the reconciliation finding lifecycle and tenant-safe physical foundation', () => {
+    const findings = getTableConfig(inventoryReconciliationFindings);
+
+    expect(inventoryReconciliationFindingTypes).toHaveLength(14);
+    expect(inventoryReconciliationFindingSeverities).toEqual(['info', 'warning', 'critical']);
+    expect(inventoryReconciliationFindingStatuses).toEqual([
+      'open',
+      'acknowledged',
+      'resolved',
+      'dismissed',
+    ]);
+    expect(findings.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        'identity_key',
+        'fingerprint_sha256',
+        'detector_version',
+        'expected_summary',
+        'actual_summary',
+        'evidence',
+        'occurrence_count',
+        'version',
+      ]),
+    );
+    expect(findings.foreignKeys.map((foreignKey) => foreignKey.getName())).toEqual(
+      expect.arrayContaining([
+        'inventory_reconciliation_findings_branch_scope_fk',
+        'inventory_reconciliation_findings_location_scope_fk',
+        'inventory_reconciliation_findings_branch_location_scope_fk',
+        'inventory_reconciliation_findings_variant_scope_fk',
+        'inventory_reconciliation_findings_acknowledged_by_membership_fk',
+        'inventory_reconciliation_findings_resolved_by_membership_fk',
+        'inventory_reconciliation_findings_dismissed_by_membership_fk',
+      ]),
+    );
+    expect(findings.indexes.map((index) => index.config.name)).toEqual(
+      expect.arrayContaining([
+        'inventory_reconciliation_findings_active_identity_uq',
+        'inventory_reconciliation_findings_company_status_severity_idx',
+        'inventory_reconciliation_findings_company_type_status_idx',
+        'inventory_reconciliation_findings_open_critical_idx',
+      ]),
+    );
+    expect(findings.checks.map((check) => check.name)).toEqual(
+      expect.arrayContaining([
+        'inventory_reconciliation_findings_type_ck',
+        'inventory_reconciliation_findings_severity_ck',
+        'inventory_reconciliation_findings_status_ck',
+        'inventory_reconciliation_findings_fingerprint_ck',
+        'inventory_reconciliation_findings_lifecycle_ck',
+        'inventory_reconciliation_findings_expected_summary_ck',
+      ]),
+    );
+    for (const column of findings.columns) expect(column.dataType).not.toBe('number');
   });
 
   it('defines the durable count physical foundation and domain lock', () => {
