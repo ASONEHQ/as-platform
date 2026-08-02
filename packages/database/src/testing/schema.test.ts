@@ -196,12 +196,13 @@ describe('database foundation schema', () => {
     expect(outboxColumns).not.toContain('deleted_at');
   });
 
-  it('contains exactly the 55 approved permission definitions', () => {
-    expect(technicalPermissionCodes).toHaveLength(55);
-    expect(new Set(technicalPermissionCodes).size).toBe(55);
+  it('contains exactly the 56 approved permission definitions', () => {
+    expect(technicalPermissionCodes).toHaveLength(56);
+    expect(new Set(technicalPermissionCodes).size).toBe(56);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');
+    expect(technicalPermissionCodes).toContain('inventory.reconcile');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {

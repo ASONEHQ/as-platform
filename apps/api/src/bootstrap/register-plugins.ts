@@ -31,6 +31,9 @@ import { InventoryPostingService } from '../modules/inventory/inventory-posting.
 import { InventoryReversalRepository } from '../modules/inventory/inventory-reversal.repository.js';
 import { registerInventoryReversalRoutes } from '../modules/inventory/inventory-reversal.routes.js';
 import { InventoryReversalService } from '../modules/inventory/inventory-reversal.service.js';
+import { registerInventoryReconciliationRoutes } from '../modules/inventory/inventory-reconciliation.routes.js';
+import { InventoryRepairRepository } from '../modules/inventory/inventory-repair.repository.js';
+import { InventoryRepairService } from '../modules/inventory/inventory-repair.service.js';
 import { InventoryTransferRepository } from '../modules/inventory/inventory-transfers.repository.js';
 import { registerInventoryTransferRoutes } from '../modules/inventory/inventory-transfers.routes.js';
 import { InventoryTransferService } from '../modules/inventory/inventory-transfers.service.js';
@@ -173,6 +176,11 @@ export async function registerPlugins(
         app,
         authentication,
         new InventoryCountService(new InventoryCountRepository(options.infrastructure.database)),
+      );
+      registerInventoryReconciliationRoutes(
+        app,
+        authentication,
+        new InventoryRepairService(new InventoryRepairRepository(options.infrastructure.database)),
       );
     }
   }

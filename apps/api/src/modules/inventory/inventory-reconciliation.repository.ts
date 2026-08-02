@@ -28,7 +28,11 @@ interface CandidateRow {
   readonly evidence: Readonly<Record<string, unknown>>;
 }
 
-interface ChunkInput {
+export interface ReconciliationSqlClient {
+  query(sql: string, values?: readonly unknown[]): Promise<unknown>;
+}
+
+export interface ChunkInput {
   readonly companyId: string;
   readonly scope: ReconciliationScope;
   readonly snapshotAt: Date;
@@ -97,7 +101,7 @@ const CANDIDATE_SQL = `with movement_effects as (
          expected_summary,actual_summary,evidence
   from projection p cross join lateral (
     values
-      ('missing_balance','critical',jsonb_build_object('exists',true),jsonb_build_object('exists',false),jsonb_build_object('balanceKey',p.location_id::text||':'||p.product_variant_id::text),p.balance_id is null and (p.expected_on_hand::numeric<>0 or p.expected_reserved::numeric<>0 or p.expected_transit::numeric<>0)),
+      ('missing_balance','critical',jsonb_build_object('exists',true,'quantityOnHand',p.expected_on_hand,'quantityReserved',p.expected_reserved,'quantityInTransit',p.expected_transit,'lastMovementId',p.expected_last),jsonb_build_object('exists',false),jsonb_build_object('balanceKey',p.location_id::text||':'||p.product_variant_id::text),p.balance_id is null and (p.expected_on_hand::numeric<>0 or p.expected_reserved::numeric<>0 or p.expected_transit::numeric<>0)),
       ('orphan_balance','info',jsonb_build_object('activity',false),jsonb_build_object('exists',true),jsonb_build_object('balanceId',p.balance_id),p.balance_id is not null and p.actual_on_hand::numeric=0 and p.actual_reserved::numeric=0 and p.actual_transit::numeric=0 and p.expected_on_hand::numeric=0 and p.expected_reserved::numeric=0 and p.expected_transit::numeric=0 and p.expected_last is null),
       ('balance_on_hand_drift','critical',jsonb_build_object('quantity',p.expected_on_hand),jsonb_build_object('quantity',p.actual_on_hand),jsonb_build_object('balanceId',p.balance_id),p.balance_id is not null and p.expected_on_hand::numeric<>p.actual_on_hand::numeric),
       ('balance_reserved_drift','critical',jsonb_build_object('quantity',p.expected_reserved),jsonb_build_object('quantity',p.actual_reserved),jsonb_build_object('balanceId',p.balance_id),p.balance_id is not null and p.expected_reserved::numeric<>p.actual_reserved::numeric),
@@ -180,44 +184,56 @@ export class InventoryReconciliationRepository {
     const connection = await this.database.pool.connect();
     try {
       await connection.query('begin isolation level repeatable read read only');
-      const rows = result<CandidateRow>(
-        await connection.query(CANDIDATE_SQL, [
-          input.companyId,
-          input.scope.branchId ?? null,
-          input.scope.inventoryLocationId ?? null,
-          input.scope.productVariantId ?? null,
-          input.cursor,
-          input.snapshotAt,
-          input.scope.aggregateType ?? null,
-          input.scope.aggregateId ?? null,
-          input.limit + 1,
-        ]),
-      ).rows;
+      const value = await this.readCandidateChunkInTransaction(connection, input);
       await connection.query('commit');
-      const page = rows.slice(0, input.limit);
-      return {
-        items: page.map((row) => ({
-          sortKey: row.sort_key,
-          findingType: row.finding_type,
-          severity: row.severity,
-          branchId: row.branch_id,
-          inventoryLocationId: row.inventory_location_id,
-          productVariantId: row.product_variant_id,
-          aggregateType: row.aggregate_type,
-          aggregateId: row.aggregate_id,
-          expectedSummary: row.expected_summary,
-          actualSummary: row.actual_summary,
-          evidence: row.evidence,
-        })),
-        nextCursor: rows.length > input.limit ? (page.at(-1)?.sort_key ?? null) : null,
-        checkedCount: page.length,
-      };
+      return value;
     } catch (error) {
       await connection.query('rollback');
       throw error;
     } finally {
       connection.release();
     }
+  }
+
+  public async readCandidateChunkInTransaction(
+    connection: ReconciliationSqlClient,
+    input: ChunkInput,
+  ): Promise<{
+    readonly items: readonly ReconciliationCandidate[];
+    readonly nextCursor: string | null;
+    readonly checkedCount: number;
+  }> {
+    const rows = result<CandidateRow>(
+      await connection.query(CANDIDATE_SQL, [
+        input.companyId,
+        input.scope.branchId ?? null,
+        input.scope.inventoryLocationId ?? null,
+        input.scope.productVariantId ?? null,
+        input.cursor,
+        input.snapshotAt,
+        input.scope.aggregateType ?? null,
+        input.scope.aggregateId ?? null,
+        input.limit + 1,
+      ]),
+    ).rows;
+    const page = rows.slice(0, input.limit);
+    return {
+      items: page.map((row) => ({
+        sortKey: row.sort_key,
+        findingType: row.finding_type,
+        severity: row.severity,
+        branchId: row.branch_id,
+        inventoryLocationId: row.inventory_location_id,
+        productVariantId: row.product_variant_id,
+        aggregateType: row.aggregate_type,
+        aggregateId: row.aggregate_id,
+        expectedSummary: row.expected_summary,
+        actualSummary: row.actual_summary,
+        evidence: row.evidence,
+      })),
+      nextCursor: rows.length > input.limit ? (page.at(-1)?.sort_key ?? null) : null,
+      checkedCount: page.length,
+    };
   }
 
   public async persistFinding(input: PersistInput): Promise<FindingPersistenceResult> {
