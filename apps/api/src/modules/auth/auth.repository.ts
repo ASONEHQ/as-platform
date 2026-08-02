@@ -9,6 +9,8 @@ import type {
   AuthUser,
   RefreshLookup,
   SessionCreation,
+  LoginChallenge,
+  LoginChallengeCreation,
 } from './auth.types.js';
 
 function first<T>(rows: readonly T[]): T | undefined {
@@ -137,6 +139,9 @@ export class PostgresAuthRepository implements AuthRepository {
       ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
       permissions: permissions.rows.map((row) => row.code),
       permittedBranchIds,
+      companyWideAccess: companyWide.rowCount === 1,
+      tokenGeneration: 0,
+      transportMode: 'bearer',
     };
   }
 
@@ -146,7 +151,7 @@ export class PostgresAuthRepository implements AuthRepository {
     try {
       await client.query('begin');
       await client.query(
-        `insert into sessions (id, company_id, user_id, membership_id, branch_id, device_id, token_hash, status, expires_at, token_family_id, token_generation) values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,0)`,
+        `insert into sessions (id, company_id, user_id, membership_id, branch_id, device_id, token_hash, status, transport_mode, expires_at, token_family_id, token_generation) values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,0)`,
         [
           id,
           input.companyId,
@@ -155,6 +160,7 @@ export class PostgresAuthRepository implements AuthRepository {
           input.branchId ?? null,
           input.deviceId ?? null,
           input.tokenHash,
+          input.transportMode,
           input.expiresAt,
           input.tokenFamilyId,
         ],
@@ -180,8 +186,11 @@ export class PostgresAuthRepository implements AuthRepository {
       expires_at: Date;
       token_status: string;
       session_status: string;
+      transport_mode: 'browser' | 'bearer';
+      token_generation: number;
     }>(
-      `select t.session_id, t.generation, t.expires_at, t.status token_status, s.status session_status
+      `select t.session_id, t.generation, t.expires_at, t.status token_status, s.status session_status,
+              s.transport_mode, s.token_generation
        from session_refresh_tokens t join sessions s on s.id = t.session_id where t.token_hash = $1`,
       [tokenHash],
     );
@@ -310,10 +319,14 @@ export class PostgresAuthRepository implements AuthRepository {
     actorId: string;
     action: string;
     entityId?: string | undefined;
+    requestId?: string | undefined;
+    correlationId?: string | undefined;
     metadata?: Readonly<Record<string, unknown>> | undefined;
   }): Promise<void> {
     await this.database.pool.query(
-      `insert into audit_log (id,company_id,branch_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values ($1,$2,$3,'user',$4,$5,'session',$6,$7::jsonb)`,
+      `insert into audit_log
+       (id,company_id,branch_id,actor_type,actor_id,action,entity_type,entity_id,request_id,correlation_id,metadata)
+       values ($1,$2,$3,'user',$4,$5,'session',$6,$7,$8,$9::jsonb)`,
       [
         randomUUID(),
         input.companyId,
@@ -321,6 +334,8 @@ export class PostgresAuthRepository implements AuthRepository {
         input.actorId,
         input.action,
         input.entityId ?? null,
+        input.requestId ?? null,
+        input.correlationId ?? null,
         JSON.stringify(input.metadata ?? {}),
       ],
     );
@@ -338,8 +353,10 @@ export class PostgresAuthRepository implements AuthRepository {
       branch_id: string | null;
       device_id: string | null;
       expires_at: Date;
+      transport_mode: 'browser' | 'bearer';
+      token_generation: number;
     }>(
-      `select id,user_id,membership_id,company_id,branch_id,device_id,expires_at from sessions where id=$1 ${activeOnly ? "and status='active' and expires_at>now()" : ''}`,
+      `select id,user_id,membership_id,company_id,branch_id,device_id,expires_at,transport_mode,token_generation from sessions where id=$1 ${activeOnly ? "and status='active' and expires_at>now()" : ''}`,
       [sessionId],
     );
     const row = first(result.rows);
@@ -351,6 +368,257 @@ export class PostgresAuthRepository implements AuthRepository {
       branchId: row.branch_id ?? undefined,
       deviceId: row.device_id ?? undefined,
     });
-    return resolved === null ? null : { ...resolved, sessionId: row.id, expiresAt: row.expires_at };
+    return resolved === null
+      ? null
+      : {
+          ...resolved,
+          sessionId: row.id,
+          expiresAt: row.expires_at,
+          transportMode: row.transport_mode,
+          tokenGeneration: row.token_generation,
+        };
+  }
+
+  public async createLoginChallenge(input: LoginChallengeCreation): Promise<void> {
+    await this.database.pool.query(
+      `insert into auth_login_challenges
+       (id,user_id,token_hash,status,eligible_company_ids,device_id,client_type,expires_at,request_id,correlation_id)
+       values ($1,$2,$3,'pending',$4::uuid[],$5,$6,$7,$8,$9)`,
+      [
+        randomUUID(),
+        input.userId,
+        input.tokenHash,
+        input.eligibleCompanyIds,
+        input.deviceId ?? null,
+        input.clientType,
+        input.expiresAt,
+        input.requestId ?? null,
+        input.correlationId ?? null,
+      ],
+    );
+  }
+
+  public async findLoginChallengeForUpdate(tokenHash: string): Promise<LoginChallenge | null> {
+    const result = await this.database.pool.query<{
+      id: string;
+      user_id: string;
+      eligible_company_ids: string[];
+      client_type: 'browser' | 'mobile' | 'pos';
+      device_id: string | null;
+      expires_at: Date;
+      status: string;
+      attempt_count: number;
+      max_attempts: number;
+    }>(
+      `select id,user_id,eligible_company_ids,client_type,device_id,expires_at,status,attempt_count,max_attempts
+       from auth_login_challenges where token_hash=$1`,
+      [tokenHash],
+    );
+    const row = first(result.rows);
+    return row === undefined
+      ? null
+      : {
+          id: row.id,
+          userId: row.user_id,
+          eligibleCompanyIds: row.eligible_company_ids,
+          clientType: row.client_type,
+          ...(row.device_id === null ? {} : { deviceId: row.device_id }),
+          expiresAt: row.expires_at,
+          status: row.status,
+          attemptCount: row.attempt_count,
+          maxAttempts: row.max_attempts,
+        };
+  }
+
+  public async incrementChallengeAttempt(id: string, invalidate: boolean): Promise<void> {
+    await this.database.pool.query(
+      `update auth_login_challenges set attempt_count=least(attempt_count+1,max_attempts),
+       status=case when $2 then 'invalidated' else status end,
+       invalidated_at=case when $2 then now() else invalidated_at end,updated_at=now(),version=version+1
+       where id=$1 and status='pending'`,
+      [id, invalidate],
+    );
+  }
+
+  public async consumeLoginChallenge(input: {
+    challengeId: string;
+    companyId: string;
+    session: SessionCreation;
+  }): Promise<{ readonly sessionId: string } | 'already_used'> {
+    const client = await this.database.pool.connect();
+    try {
+      await client.query('begin');
+      const locked = await client.query<{ status: string }>(
+        `select ch.status from auth_login_challenges ch
+         where ch.id=$1 and ch.status='pending' and ch.expires_at>now()
+           and ch.attempt_count<ch.max_attempts and $2=any(ch.eligible_company_ids)
+           and exists (
+             select 1 from company_memberships m
+             join companies c on c.id=m.company_id
+             join users u on u.id=m.user_id
+             where m.id=$3 and m.user_id=ch.user_id and m.company_id=$2
+               and m.status='active' and c.status='active' and u.status='active'
+           )
+         for update`,
+        [input.challengeId, input.companyId, input.session.membershipId],
+      );
+      if (locked.rows[0]?.status !== 'pending') {
+        await client.query('rollback');
+        return 'already_used';
+      }
+      const id = randomUUID();
+      await client.query(
+        `insert into sessions
+         (id,company_id,user_id,membership_id,branch_id,device_id,token_hash,status,transport_mode,expires_at,token_family_id,token_generation)
+         values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,0)`,
+        [
+          id,
+          input.session.companyId,
+          input.session.userId,
+          input.session.membershipId,
+          input.session.branchId ?? null,
+          input.session.deviceId ?? null,
+          input.session.tokenHash,
+          input.session.transportMode,
+          input.session.expiresAt,
+          input.session.tokenFamilyId,
+        ],
+      );
+      await client.query(
+        `insert into session_refresh_tokens (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,0,'active',$4)`,
+        [randomUUID(), id, input.session.tokenHash, input.session.expiresAt],
+      );
+      await client.query(
+        `update auth_login_challenges set status='consumed',selected_company_id=$2,consumed_at=now(),
+         updated_at=now(),version=version+1 where id=$1`,
+        [input.challengeId, input.companyId],
+      );
+      await client.query('commit');
+      return { sessionId: id };
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async replaceCompanySession(input: {
+    currentSessionId: string;
+    replacement: SessionCreation;
+  }): Promise<string> {
+    const client = await this.database.pool.connect();
+    try {
+      await client.query('begin');
+      const current = await client.query<{
+        status: string;
+        user_id: string;
+        transport_mode: 'browser' | 'bearer';
+      }>('select status,user_id,transport_mode from sessions where id=$1 for update', [
+        input.currentSessionId,
+      ]);
+      const currentSession = current.rows[0];
+      if (
+        currentSession?.status !== 'active' ||
+        currentSession.user_id !== input.replacement.userId ||
+        currentSession.transport_mode !== input.replacement.transportMode
+      )
+        throw new Error('inactive or incompatible session');
+      const id = randomUUID();
+      await client.query(
+        `insert into sessions
+         (id,company_id,user_id,membership_id,branch_id,device_id,token_hash,status,transport_mode,expires_at,token_family_id,token_generation)
+         values ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,0)`,
+        [
+          id,
+          input.replacement.companyId,
+          input.replacement.userId,
+          input.replacement.membershipId,
+          input.replacement.branchId ?? null,
+          input.replacement.deviceId ?? null,
+          input.replacement.tokenHash,
+          input.replacement.transportMode,
+          input.replacement.expiresAt,
+          input.replacement.tokenFamilyId,
+        ],
+      );
+      await client.query(
+        `insert into session_refresh_tokens (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,0,'active',$4)`,
+        [randomUUID(), id, input.replacement.tokenHash, input.replacement.expiresAt],
+      );
+      await client.query(
+        `update sessions set status='revoked',revoked_at=now(),revocation_reason='company_switch',updated_at=now()
+         where id=$1`,
+        [input.currentSessionId],
+      );
+      await client.query(
+        `update session_refresh_tokens set status='revoked'
+         where session_id=$1 and status='active'`,
+        [input.currentSessionId],
+      );
+      await client.query('commit');
+      return id;
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async switchBranchSession(input: {
+    sessionId: string;
+    branchId?: string | undefined;
+    nextHash: string;
+    nextGeneration: number;
+    expiresAt: Date;
+  }): Promise<'rotated' | 'invalid'> {
+    const client = await this.database.pool.connect();
+    try {
+      await client.query('begin');
+      const session = await client.query<{ status: string; token_generation: number }>(
+        'select status,token_generation from sessions where id=$1 for update',
+        [input.sessionId],
+      );
+      if (
+        session.rows[0]?.status !== 'active' ||
+        session.rows[0].token_generation + 1 !== input.nextGeneration
+      ) {
+        await client.query('rollback');
+        return 'invalid';
+      }
+      const current = await client.query<{ id: string; status: string }>(
+        `select id,status from session_refresh_tokens
+         where session_id=$1 and status='active' order by generation desc limit 1 for update`,
+        [input.sessionId],
+      );
+      if (current.rows[0]?.status !== 'active') {
+        await client.query('rollback');
+        return 'invalid';
+      }
+      await client.query(
+        `update session_refresh_tokens set status='rotated',rotated_at=now() where id=$1`,
+        [current.rows[0].id],
+      );
+      await client.query(
+        `insert into session_refresh_tokens (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,$4,'active',$5)`,
+        [randomUUID(), input.sessionId, input.nextHash, input.nextGeneration, input.expiresAt],
+      );
+      await client.query(
+        `update sessions set branch_id=$2,token_hash=$3,token_generation=$4,last_used_at=now(),updated_at=now()
+         where id=$1 and status='active'`,
+        [input.sessionId, input.branchId ?? null, input.nextHash, input.nextGeneration],
+      );
+      await client.query('commit');
+      return 'rotated';
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }

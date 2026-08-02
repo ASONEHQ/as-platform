@@ -37,8 +37,28 @@ export async function registerSecurity(app: FastifyInstance, config: ApiConfig):
     ...(config.openapiUiEnabled ? {} : { contentSecurityPolicy: false }),
   });
   await app.register(cors, {
-    credentials: false,
+    credentials: true,
     methods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'X-ASONE-Client',
+      'X-CSRF-Token',
+      'X-Request-ID',
+      'X-Correlation-ID',
+      'Idempotency-Key',
+      'If-Match',
+    ],
+    exposedHeaders: [
+      'ETag',
+      'X-Request-ID',
+      'X-Correlation-ID',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'Retry-After',
+    ],
+    maxAge: 600,
     origin(origin, callback) {
       if (origin === undefined || config.corsAllowedOrigins.includes(origin)) {
         callback(null, true);

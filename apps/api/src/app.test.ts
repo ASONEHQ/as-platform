@@ -6,7 +6,13 @@ import { loadApiConfig, type ApiConfig } from '@asone/config';
 
 import { buildApp } from './app.js';
 import type { InfrastructureDependencies, ReadinessResult } from './infrastructure/dependencies.js';
-import type { AuthRepository } from './modules/auth/auth.types.js';
+import { hashPassword } from './modules/auth/auth.passwords.js';
+import type {
+  AuthContext,
+  AuthRepository,
+  RefreshLookup,
+  SessionCreation,
+} from './modules/auth/auth.types.js';
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
@@ -67,18 +73,103 @@ async function appWithAuth(): Promise<FastifyInstance> {
   return app;
 }
 
+async function appWithLoginAuth(): Promise<FastifyInstance> {
+  const userId = '00000000-0000-4000-8000-000000000001';
+  const companyId = '00000000-0000-4000-8000-000000000002';
+  const membershipId = '00000000-0000-4000-8000-000000000003';
+  const sessionId = '00000000-0000-4000-8000-000000000004';
+  const passwordHash = await hashPassword('Correct-password-1!');
+  const refresh = new Map<string, RefreshLookup>();
+  let session: AuthContext | null = null;
+  const repository: AuthRepository = {
+    ...emptyAuthRepository,
+    findUserByNormalizedEmail: () =>
+      Promise.resolve({
+        id: userId,
+        email: 'browser@example.test',
+        displayName: 'Browser',
+        passwordHash,
+        status: 'active',
+      }),
+    listActiveMemberships: () =>
+      Promise.resolve([{ id: membershipId, companyId, companyName: 'Test', status: 'active' }]),
+    resolveContext: () =>
+      Promise.resolve({
+        userId,
+        membershipId,
+        companyId,
+        permissions: [],
+        permittedBranchIds: [],
+        companyWideAccess: true,
+        transportMode: 'bearer',
+        tokenGeneration: 0,
+      }),
+    createSession: (input: SessionCreation) => {
+      session = {
+        sessionId,
+        userId,
+        membershipId,
+        companyId,
+        expiresAt: input.expiresAt,
+        permissions: [],
+        permittedBranchIds: [],
+        companyWideAccess: true,
+        transportMode: input.transportMode,
+        tokenGeneration: input.tokenGeneration,
+      };
+      refresh.set(input.tokenHash, {
+        context: session,
+        generation: 0,
+        refreshExpiresAt: input.expiresAt,
+        status: 'active',
+        tokenStatus: 'active',
+      });
+      return Promise.resolve(sessionId);
+    },
+    findRefreshToken: (hash) => Promise.resolve(refresh.get(hash) ?? null),
+    rotateRefreshToken: (input) => {
+      const previous = refresh.get(input.previousHash);
+      if (previous?.tokenStatus !== 'active') return Promise.resolve('invalid');
+      refresh.set(input.previousHash, { ...previous, tokenStatus: 'rotated' });
+      refresh.set(input.nextHash, {
+        ...previous,
+        context: { ...previous.context, tokenGeneration: input.nextGeneration },
+        generation: input.nextGeneration,
+        tokenStatus: 'active',
+      });
+      return Promise.resolve('rotated');
+    },
+    findSession: () => Promise.resolve(session),
+    revokeSession: () => {
+      session = null;
+      return Promise.resolve(true);
+    },
+  };
+  const app = await buildApp({
+    config: loadApiConfig({ ...environment, CORS_ALLOWED_ORIGINS: 'https://app.test.asone.mx' }),
+    infrastructure: infrastructure({ postgres: 'unavailable', redis: 'unavailable' }),
+    logger: pino({ level: 'silent' }),
+    authRepository: repository,
+  });
+  apps.push(app);
+  return app;
+}
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map(async (app) => app.close()));
 });
 
 describe('API foundation', () => {
-  it('registers only the seven approved authentication endpoints', async () => {
+  it('registers only the ten approved authentication endpoints', async () => {
     const app = await appWithAuth();
     for (const [method, url] of [
       ['POST', '/api/v1/auth/login'],
       ['POST', '/api/v1/auth/refresh'],
       ['POST', '/api/v1/auth/logout'],
       ['POST', '/api/v1/auth/logout-all'],
+      ['POST', '/api/v1/auth/company-selections'],
+      ['POST', '/api/v1/auth/company-switches'],
+      ['POST', '/api/v1/auth/branch-switches'],
       ['GET', '/api/v1/auth/session'],
       ['GET', '/api/v1/auth/me'],
       ['GET', '/api/v1/auth/permissions'],
@@ -100,6 +191,82 @@ describe('API foundation', () => {
     expect(response.body).not.toContain('Never-log-this-password');
     expect(response.body).not.toContain('password_hash');
     expect(response.body).not.toContain('refresh_token');
+  });
+
+  it('keeps browser refresh credentials HttpOnly and bearer credentials explicit', async () => {
+    const app = await appWithLoginAuth();
+    const browser = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { origin: 'https://app.test.asone.mx' },
+      payload: {
+        identifier: 'browser@example.test',
+        password: 'Correct-password-1!',
+        client_type: 'browser',
+        transport_mode: 'browser',
+      },
+    });
+    expect(browser.statusCode).toBe(200);
+    expect(browser.headers['set-cookie']).toContain('asone_refresh_local=');
+    expect(browser.headers['set-cookie']).toContain('HttpOnly');
+    expect(browser.headers['set-cookie']).toContain('SameSite=Strict');
+    expect(browser.headers['cache-control']).toContain('no-store');
+    expect(browser.body).not.toContain('refresh_token');
+    expect(browser.json()).toMatchObject({
+      data: { result: 'authenticated', session: { transport_mode: 'browser' } },
+    });
+    const browserBody = browser.json<{ data: { csrf_token: string } }>();
+    const setCookie = browser.headers['set-cookie'];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(';')[0];
+    if (cookie === undefined) throw new Error('browser cookie missing');
+    const missingCsrf = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/refresh',
+      headers: { origin: 'https://app.test.asone.mx', cookie },
+      payload: {},
+    });
+    expect(missingCsrf.statusCode).toBe(403);
+    const wrongOrigin = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/refresh',
+      headers: {
+        origin: 'https://evil.example',
+        cookie,
+        'x-csrf-token': browserBody.data.csrf_token,
+      },
+      payload: {},
+    });
+    expect(wrongOrigin.statusCode).toBe(403);
+    const refreshed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/refresh',
+      headers: {
+        origin: 'https://app.test.asone.mx',
+        cookie,
+        'x-csrf-token': browserBody.data.csrf_token,
+      },
+      payload: {},
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.body).not.toContain('refresh_token');
+    expect(refreshed.headers['set-cookie']).toContain('HttpOnly');
+
+    const bearer = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: {
+        identifier: 'browser@example.test',
+        password: 'Correct-password-1!',
+        client_type: 'mobile',
+        transport_mode: 'bearer',
+      },
+    });
+    expect(bearer.statusCode).toBe(200);
+    expect(bearer.headers['set-cookie']).toBeUndefined();
+    expect(bearer.json()).toMatchObject({
+      data: { result: 'authenticated', session: { transport_mode: 'bearer' } },
+    });
+    expect(bearer.body).toContain('refresh_token');
   });
   it('serves the versioned API envelope without business routes', async () => {
     const app = await appFor();

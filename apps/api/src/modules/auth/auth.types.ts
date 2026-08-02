@@ -21,6 +21,9 @@ export interface AuthContext {
   readonly branchId?: string | undefined;
   readonly deviceId?: string | undefined;
   readonly expiresAt: Date;
+  readonly transportMode?: TransportMode | undefined;
+  readonly tokenGeneration?: number | undefined;
+  readonly companyWideAccess?: boolean | undefined;
   readonly permissions: readonly string[];
   readonly permittedBranchIds: readonly string[];
 }
@@ -31,12 +34,42 @@ export interface LoginInput {
   readonly companyId?: string | undefined;
   readonly branchId?: string | undefined;
   readonly deviceId?: string | undefined;
+  readonly clientType?: ClientType | undefined;
+  readonly transportMode?: TransportMode | undefined;
+}
+
+export type ClientType = 'browser' | 'mobile' | 'pos';
+export type TransportMode = 'browser' | 'bearer';
+
+export interface LoginChallenge {
+  readonly id: string;
+  readonly userId: string;
+  readonly eligibleCompanyIds: readonly string[];
+  readonly clientType: ClientType;
+  readonly deviceId?: string | undefined;
+  readonly expiresAt: Date;
+  readonly status: string;
+  readonly attemptCount: number;
+  readonly maxAttempts: number;
+}
+
+export interface LoginChallengeCreation {
+  readonly userId: string;
+  readonly tokenHash: string;
+  readonly eligibleCompanyIds: readonly string[];
+  readonly clientType: ClientType;
+  readonly deviceId?: string | undefined;
+  readonly expiresAt: Date;
+  readonly requestId?: string | undefined;
+  readonly correlationId?: string | undefined;
 }
 
 export interface SessionCreation extends Omit<
   AuthContext,
   'sessionId' | 'permissions' | 'permittedBranchIds'
 > {
+  readonly transportMode: TransportMode;
+  readonly tokenGeneration: number;
   readonly tokenFamilyId: string;
   readonly tokenHash: string;
 }
@@ -78,6 +111,27 @@ export interface AuthRepository {
     actorId: string;
     action: string;
     entityId?: string | undefined;
+    requestId?: string | undefined;
+    correlationId?: string | undefined;
     metadata?: Readonly<Record<string, unknown>> | undefined;
   }): Promise<void>;
+  createLoginChallenge?(input: LoginChallengeCreation): Promise<void>;
+  findLoginChallengeForUpdate?(tokenHash: string): Promise<LoginChallenge | null>;
+  incrementChallengeAttempt?(id: string, invalidate: boolean): Promise<void>;
+  consumeLoginChallenge?(input: {
+    challengeId: string;
+    companyId: string;
+    session: SessionCreation;
+  }): Promise<{ readonly sessionId: string } | 'already_used'>;
+  replaceCompanySession?(input: {
+    currentSessionId: string;
+    replacement: SessionCreation;
+  }): Promise<string>;
+  switchBranchSession?(input: {
+    sessionId: string;
+    branchId?: string | undefined;
+    nextHash: string;
+    nextGeneration: number;
+    expiresAt: Date;
+  }): Promise<'rotated' | 'invalid'>;
 }

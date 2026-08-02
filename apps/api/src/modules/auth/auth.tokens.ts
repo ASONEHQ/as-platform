@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { jwtVerify, SignJWT } from 'jose';
 
@@ -59,5 +59,21 @@ export class AuthTokens {
 
   public hashRefreshToken(token: string): string {
     return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
+  public createChallengeToken(): string {
+    return randomBytes(32).toString('base64url');
+  }
+
+  public csrfToken(sessionId: string, generation: number): string {
+    return createHmac('sha256', this.#secret)
+      .update(`${sessionId}:${String(generation)}`, 'utf8')
+      .digest('base64url');
+  }
+
+  public verifyCsrfToken(token: string, sessionId: string, generation: number): boolean {
+    const expected = Buffer.from(this.csrfToken(sessionId, generation));
+    const actual = Buffer.from(token);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 }

@@ -7,8 +7,11 @@ import { AuthService } from './auth.service.js';
 import { AuthTokens } from './auth.tokens.js';
 import type {
   AuthContext,
+  AuthMembership,
   AuthRepository,
   AuthUser,
+  LoginChallenge,
+  LoginChallengeCreation,
   RefreshLookup,
   SessionCreation,
 } from './auth.types.js';
@@ -29,11 +32,15 @@ class FakeRepository implements AuthRepository {
     status: 'active',
   };
   public membershipStatus = 'active';
+  public memberships: readonly AuthMembership[] = [
+    { id: membershipId, companyId, companyName: 'Test', status: 'active' },
+  ];
   public contextAllowed = true;
   public audits: string[] = [];
   public revoked = false;
   readonly #refresh = new Map<string, RefreshLookup>();
   readonly #sessions = new Map<string, AuthContext>();
+  readonly #challenges = new Map<string, LoginChallenge>();
 
   public findUserByNormalizedEmail(): Promise<AuthUser | null> {
     return Promise.resolve(this.user);
@@ -41,11 +48,7 @@ class FakeRepository implements AuthRepository {
   public listActiveMemberships(): Promise<
     readonly { id: string; companyId: string; companyName: string; status: string }[]
   > {
-    return Promise.resolve(
-      this.membershipStatus === 'active'
-        ? [{ id: membershipId, companyId, companyName: 'Test', status: 'active' }]
-        : [],
-    );
+    return Promise.resolve(this.membershipStatus === 'active' ? this.memberships : []);
   }
   public resolveContext(input: {
     userId: string;
@@ -60,6 +63,7 @@ class FakeRepository implements AuthRepository {
       ...input,
       permissions: ['company.read'],
       permittedBranchIds: [branchId],
+      companyWideAccess: false,
     });
   }
   public createSession(input: SessionCreation): Promise<string> {
@@ -74,6 +78,9 @@ class FakeRepository implements AuthRepository {
       expiresAt: input.expiresAt,
       permissions: ['company.read'],
       permittedBranchIds: [branchId],
+      companyWideAccess: input.companyWideAccess ?? false,
+      transportMode: input.transportMode,
+      tokenGeneration: input.tokenGeneration,
     };
     this.#sessions.set(sessionId, context);
     this.#refresh.set(input.tokenHash, {
@@ -126,6 +133,42 @@ class FakeRepository implements AuthRepository {
   public audit(input: { action: string }): Promise<void> {
     this.audits.push(input.action);
     return Promise.resolve();
+  }
+  public createLoginChallenge(input: LoginChallengeCreation): Promise<void> {
+    this.#challenges.set(input.tokenHash, {
+      id: randomUUID(),
+      userId: input.userId,
+      eligibleCompanyIds: input.eligibleCompanyIds,
+      clientType: input.clientType,
+      ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
+      expiresAt: input.expiresAt,
+      status: 'pending',
+      attemptCount: 0,
+      maxAttempts: 5,
+    });
+    return Promise.resolve();
+  }
+  public findLoginChallengeForUpdate(hash: string): Promise<LoginChallenge | null> {
+    return Promise.resolve(this.#challenges.get(hash) ?? null);
+  }
+  public incrementChallengeAttempt(id: string, invalidate: boolean): Promise<void> {
+    for (const [hash, challenge] of this.#challenges)
+      if (challenge.id === id)
+        this.#challenges.set(hash, {
+          ...challenge,
+          attemptCount: challenge.attemptCount + 1,
+          status: invalidate ? 'invalidated' : challenge.status,
+        });
+    return Promise.resolve();
+  }
+  public consumeLoginChallenge(input: {
+    challengeId: string;
+    session: SessionCreation;
+  }): Promise<{ readonly sessionId: string } | 'already_used'> {
+    const entry = [...this.#challenges.entries()].find(([, item]) => item.id === input.challengeId);
+    if (entry?.[1].status !== 'pending') return Promise.resolve('already_used');
+    this.#challenges.set(entry[0], { ...entry[1], status: 'consumed' });
+    return this.createSession(input.session).then((sessionId) => ({ sessionId }));
   }
 }
 
@@ -198,7 +241,7 @@ describe('authentication foundation', () => {
         identifier: 'operator@example.test',
         password: 'Correct-password-1!',
       }),
-    ).rejects.toMatchObject({ code: 'company_scope_mismatch' });
+    ).rejects.toMatchObject({ code: 'invalid_credentials' });
   });
 
   it('establishes a tenant and branch validated session', async () => {
@@ -214,6 +257,71 @@ describe('authentication foundation', () => {
     await expect(service.authenticate(result.accessToken)).resolves.toMatchObject({
       sessionId: result.context.sessionId,
     });
+  });
+
+  it('creates and consumes a one-use browser company-selection challenge', async () => {
+    const repository = new FakeRepository();
+    const otherCompanyId = randomUUID();
+    repository.memberships = [
+      ...repository.memberships,
+      { id: randomUUID(), companyId: otherCompanyId, companyName: 'Other', status: 'active' },
+    ];
+    const { service } = fixture(repository);
+    const challenge = await service.beginLogin({
+      identifier: 'operator@example.test',
+      password: 'Correct-password-1!',
+      clientType: 'browser',
+      transportMode: 'browser',
+    });
+    expect(challenge).toMatchObject({ outcome: 'company_selection_required' });
+    if (!('outcome' in challenge)) throw new Error('expected challenge');
+    await expect(
+      service.completeCompanySelection({
+        challengeToken: challenge.challengeToken,
+        companyId,
+        browserOriginApproved: false,
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
+    const selected = await service.completeCompanySelection({
+      challengeToken: challenge.challengeToken,
+      companyId,
+      branchId,
+      browserOriginApproved: true,
+    });
+    expect(selected.context).toMatchObject({ companyId, branchId, transportMode: 'browser' });
+    expect(service.csrfToken(selected.context)).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    await expect(
+      service.completeCompanySelection({
+        challengeToken: challenge.challengeToken,
+        companyId,
+        browserOriginApproved: true,
+      }),
+    ).rejects.toMatchObject({ code: 'login_challenge_already_used' });
+  });
+
+  it('binds browser refresh to its generation CSRF token and stored mode', async () => {
+    const { service } = fixture();
+    const login = await service.beginLogin({
+      identifier: 'operator@example.test',
+      password: 'Correct-password-1!',
+      companyId,
+      clientType: 'browser',
+      transportMode: 'browser',
+    });
+    if ('outcome' in login) throw new Error('unexpected challenge');
+    await expect(service.refresh(login.refreshToken, 'bearer')).rejects.toMatchObject({
+      code: 'validation_error',
+    });
+    await expect(service.refresh(login.refreshToken, 'browser')).rejects.toMatchObject({
+      code: 'validation_error',
+    });
+    const refreshed = await service.refresh(
+      login.refreshToken,
+      'browser',
+      service.csrfToken(login.context),
+    );
+    expect(refreshed.context.tokenGeneration).toBe(1);
+    expect(service.csrfToken(refreshed.context)).not.toBe(service.csrfToken(login.context));
   });
 
   it('rejects an unauthorized branch or revoked device context', async () => {
@@ -248,10 +356,10 @@ describe('authentication foundation', () => {
     const rotated = await service.refresh(login.refreshToken);
     expect(rotated.refreshToken).not.toBe(login.refreshToken);
     await expect(service.refresh(login.refreshToken)).rejects.toMatchObject({
-      code: 'session_expired',
+      code: 'refresh_token_reused',
     });
     expect(repository.revoked).toBe(true);
-    expect(repository.audits).toContain('auth.refresh.reuse_detected');
+    expect(repository.audits).toContain('auth.refresh_reuse_detected');
   });
 
   it('revokes logout and logout-all sessions', async () => {
