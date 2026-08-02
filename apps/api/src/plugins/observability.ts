@@ -1,12 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 
+import {
+  createOperationalMetrics,
+  type OperationalMetrics,
+} from '../operations/operational-metrics.js';
+
 export interface Observability {
   readonly registry: Registry;
   readonly requests: Counter<'method' | 'route' | 'status'>;
   readonly duration: Histogram<'method' | 'route' | 'status'>;
   readonly errors: Counter<'code'>;
   readonly readiness: Gauge<'service'>;
+  readonly operations: OperationalMetrics;
 }
 
 export function createObservability(): Observability {
@@ -36,8 +42,9 @@ export function createObservability(): Observability {
     labelNames: ['service'] as const,
     registers: [registry],
   });
+  const operations = createOperationalMetrics(registry);
 
-  return Object.freeze({ registry, requests, duration, errors, readiness });
+  return Object.freeze({ registry, requests, duration, errors, readiness, operations });
 }
 
 export function registerObservability(

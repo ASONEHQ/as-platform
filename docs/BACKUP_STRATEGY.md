@@ -94,3 +94,11 @@ Restore validation includes:
 - Restore targets and temporary exports are destroyed after validation using
   approved provider controls.
 - No operator manually deletes the last known good recovery point.
+
+## Safe metadata verification
+
+`backup-verify --manifest <path>` validates a local version-1 manifest, a
+non-empty referenced file, SHA-256 checksum, creation time, declared type and
+optional encryption/retention metadata. It never creates, uploads, restores or
+deletes backups and does not access remote storage. Provider-side backup jobs
+and retention enforcement remain manual infrastructure responsibilities.

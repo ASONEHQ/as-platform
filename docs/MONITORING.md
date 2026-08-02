@@ -152,3 +152,15 @@ Before production or a major recovery change, prove that health checks fail
 safely, dashboards receive release-correlated data, each SEV-1/2 alert reaches
 the current on-call owner, runbook links resolve, secrets remain redacted, and
 backup/restore metrics match independently recorded exercise evidence.
+
+## Implemented operational instrumentation
+
+The internal module defines bounded-label Prometheus instruments for check
+duration/status, outbox backlog/age, reconciliation findings, expired count
+locks, PostgreSQL pool use/wait, and shadow comparison duration/mismatches.
+Company, branch, resource and request identifiers are prohibited as labels.
+
+Validated `OPS_*` configuration centralizes outbox-age, pool-saturation,
+timeout and shadow-chunk thresholds. The module does not deliver external
+alerts. RabbitMQ and object storage remain `unknown/not_configured` until real
+clients exist.

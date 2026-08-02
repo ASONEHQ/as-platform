@@ -101,8 +101,8 @@ Detailed sales and inventory behavior requires separate approval before implemen
    [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md),
    [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md), and
    [MONITORING.md](MONITORING.md).
-5. **3.4B — Recovery automation (future, separately approved):** implement only
-   the workers, commands, schedules and provider configuration required by the
-   accepted 3.4A contract. Full/shadow rebuild and outbox recovery remain
-   unavailable until this gate is approved and tested.
+5. **3.4B — Operational automation foundation:** implement internal read-only
+   checks, readiness, scoped shadow comparison, backup-manifest verification,
+   restore guards and stable commands. Public endpoints, scheduled workers,
+   repair, destructive restore and provider deployment remain unavailable.
 

@@ -101,3 +101,11 @@ approval and the same validation used for failover.
 Production readiness requires demonstrated T0/T1 objectives. Missed objectives
 must be reported as reliability risk; targets are not weakened merely to record
 a successful exercise.
+
+## Restore validation automation boundary
+
+The internal harness validates preconditions only. It rejects protected or
+non-allowlisted database names, production mode, source/target equality and
+missing `--dry-run --confirm`. It performs no restore or deletion. Actual
+isolated restore, PITR, promotion and failback remain controlled manual
+procedures requiring the roles and evidence defined above.

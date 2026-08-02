@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "test": "vitest run --exclude '**/*.integration.test.ts'",
     "test:watch": "vitest",
+    "ops": "tsx src/operations/cli.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

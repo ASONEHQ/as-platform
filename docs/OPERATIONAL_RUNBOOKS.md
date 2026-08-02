@@ -173,3 +173,16 @@ A recovery or maintenance action is accepted only when:
 Runbooks are exercised quarterly by tabletop review and at least twice yearly by
 technical recovery rehearsal. Any failed objective creates a tracked corrective
 action with owner and due date.
+
+## Internal diagnostic commands
+
+Run `pnpm --filter @asone/api ops -- <command>`. Available commands are
+`check`, `readiness`, `outbox`, `inventory`, `shadow-rebuild`,
+`backup-verify`, and `restore-validate`. They support `--json`; database checks
+also honor the validated timeout and scoped shadow comparison requires
+`--company-id`.
+
+Exit codes are: `0` success, `1` degraded/findings, `2` invalid input, `3`
+dependency unavailable, `4` safety rejection, and `5` sanitized internal
+failure. Unknown flags are rejected. No command consumes outbox records,
+repairs inventory, changes findings, restores data, or schedules work.
