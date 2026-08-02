@@ -973,16 +973,17 @@ its own transaction rather than trust stale scan evidence.
 
 ### Authorization, errors and evidence boundaries
 
-`inventory.reconcile` does not currently exist. A future physical/endpoint block
-must seed it explicitly and assign it only to controlled operational roles.
+`inventory.reconcile` does not currently exist. Block 3.3I.4.1 reserves it and
+the future application block must seed it explicitly and assign it only to
+controlled operational roles.
 Manual scans, full finding detail, acknowledgement, dismissal and every repair
 require it. Sanitized aggregate indicators may later be shown under
 `inventory.read`, but ordinary POS operators receive no new authority.
 
-No endpoint IDs are reserved because no approved range follows E154. Endpoint
-reservation is a separate contract block. Likely future capabilities are scan,
-finding list/detail, acknowledge/dismiss, repair preview/application and
-projection rebuild, but none is an API contract yet.
+This detector-only block reserved no endpoint IDs. Block 3.3I.4.1 subsequently
+reserves E155-E160 for finding list/detail, acknowledge/dismiss, and repair
+preview/application. It deliberately excludes public scan and projection
+rebuild.
 
 Existing applicable errors remain `inventory_reconciliation_required`,
 `inventory_balance_conflict`, `resource_not_found`, `permission_denied`,
@@ -1129,20 +1130,20 @@ versions, and any compensating movement ID; it contains no secrets.
 No new realtime event is approved. Quantity rebuilds reuse
 `inventory.stock.changed`; owning compensation reuses
 `inventory.movement.created` and its stock events; last-movement-only repair
-emits none. Candidate repair-specific errors remain unfrozen until endpoint
-reservation. Existing not-found, permission, validation, version,
-idempotency, reconciliation-required and balance-conflict errors apply.
+emits none. Block 3.3I.4.1 reserves four safe 409 repair errors without adding
+them to `@asone/errors`. Existing not-found, permission, validation, version,
+idempotency, reconciliation-required and balance-conflict errors also apply.
 
-No approved route range follows E154. List/detail, acknowledge, dismiss,
-preview, apply and rebuild require a separate endpoint-reservation block. The
-current finding schema already supports lifecycle actors, reason, bounded
-evidence and optimistic versioning; repair details belong in `audit_log`, so no
-migration 0009 is required.
+Block 3.3I.4.1 reserves E155-E160 for list/detail, acknowledge, dismiss, preview
+and apply. No scan, global rebuild, bulk, reopen, delete or recovery route is
+reserved. The current finding schema already supports lifecycle actors, reason,
+bounded evidence and optimistic versioning; repair details belong in
+`audit_log`, so no migration 0009 is required.
 
 Scheduling, workers, CLI/runbooks, full/shadow rebuild, operational outbox
 replay, retention, archival, metrics, alerts, backup/restore, disaster recovery,
 partitioning and operational approvals belong to Block 3.4. The safe sequence
-is 3.3I.4 contract, separate endpoint/permission reservation, 3.3I.5 bounded
+is 3.3I.4 contract, 3.3I.4.1 endpoint/permission reservation, 3.3I.5 bounded
 application layer, then 3.4 operational recovery.
 
 The delivery split is:
@@ -1152,7 +1153,8 @@ The delivery split is:
 | 3.3I.1 | This detector contract and logical persistent finding model |
 | 3.3I.2 | Findings physical foundation and additive migration; permission remains deferred |
 | 3.3I.3 | Read-only detector implementation, chunking, deduplication and PostgreSQL evidence |
-| 3.3I.4 | Repair/rebuild contract, approvals and endpoint reservation; no implementation implied |
+| 3.3I.4 | Repair/rebuild semantics and approvals; no implementation implied |
+| 3.3I.4.1 | E155-E160 and `inventory.reconcile` reservation; documentation only |
 | 3.4 | Runbooks, scheduling/workers, monitoring, SLAs, load/partitioning, backup/restore and disaster recovery |
 
 ## Test matrix
@@ -1185,9 +1187,10 @@ skipped, and omitted tests.
 | 3.3G.2 | Future count physical foundation | Two count tables, migration 0007, fresh-chain and concurrency evidence |
 | 3.3H | Future durable count engine | E115-E123, apply-once and scope-lock behavior |
 | 3.3I.1 | Reconciliation detector contract | Ledger/projection algorithms, persistent finding model and execution boundaries |
-| 3.3I.2 | Future findings physical foundation | Finding table, indexes, permission seed and additive migration |
-| 3.3I.3 | Future detector implementation | Read-only chunked scans, deduplication and PostgreSQL evidence |
-| 3.3I.4 | Future repair/rebuild contract | Approval, endpoint reservation and recovery boundaries |
+| 3.3I.2 | Findings physical foundation | Finding table, indexes and additive migration; permission deferred |
+| 3.3I.3 | Detector implementation | Read-only chunked scans, deduplication and PostgreSQL evidence |
+| 3.3I.4 | Repair/rebuild contract | Strategy, approval and recovery boundaries |
+| 3.3I.4.1 | API/permission reservation | E155-E160, schemas, errors and permission boundary |
 | 3.4 | Recovery, events, load, rebuild/restore runbooks | Zero skipped DB tests and measured evidence |
 
 Migrations are additive after 0004, generated once, manually audited, and tested

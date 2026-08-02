@@ -571,11 +571,17 @@ contract. Negative-value tricks cannot correct quantity.
 | `inventory_location.manage` | Create and manage locations |
 | `inventory.reverse` | Create compensating reversals |
 | `inventory.reservation.manage` | Manage non-automatic reservations |
+| `inventory.reconcile` | Reserved for E155-E159 finding evidence, lifecycle and repair preview; not yet seeded |
 
 `inventory.reservation.manage` is contractually approved but not yet seeded;
 Block 3.3F must add it. It is the public mutation permission for E125, E127 and
 E128. `inventory.read` governs E124 and E126. Count, approval and reconciliation
 permissions grant no reservation capability.
+
+E160 repair apply requires both `inventory.reconcile` and
+`inventory.approve`. `inventory.read` alone cannot access reconciliation
+evidence, and ordinary POS roles receive no automatic reconciliation authority.
+E155-E160 are documentation-only reservations until Block 3.3I.5.
 
 Explicit deny precedes allow. Sales invoke an internal inventory capability inside the authorized sale transaction; cashiers do not need `inventory.adjust`.
 

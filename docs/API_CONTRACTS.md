@@ -1824,9 +1824,10 @@ No new sale, payment, movement, audit fact, or outbox event is created.
 ## 22.1 Inventory reconciliation detector boundary
 
 TASK 09.4 Block 3.3I.1 reserves no endpoint IDs and implements no HTTP surface.
-No approved route range follows E154. A later contract block must reserve IDs
-before exposing scan execution, finding list/detail, acknowledgement,
-dismissal, repair preview/application or projection rebuild.
+At that detector-contract stage no approved range followed E154. Block
+3.3I.4.1 now reserves E155-E160 for finding list/detail, acknowledgement,
+dismissal and repair preview/application; it still reserves no scan or global
+projection-rebuild route.
 
 The detector is read-only and tenant-scoped. `inventory.reconcile` is the
 proposed permission for manual scans, full finding evidence and every future
@@ -1844,10 +1845,10 @@ persistent finding model, deduplication and snapshot rules are defined in
 
 ### 22.2 Inventory repair contract boundary
 
-Block 3.3I.4 approves semantics but reserves no route. No approved endpoint ID
-exists after E154, so scan, finding list/detail, acknowledge, dismiss, repair
-preview/application and projection rebuild remain unavailable over HTTP until a
-separate endpoint-reservation contract assigns stable IDs.
+Block 3.3I.4 approves semantics but itself reserves no route. Block 3.3I.4.1
+below subsequently assigns E155-E160. The public surface remains unavailable
+until its future application block; scan and global projection rebuild remain
+unreserved.
 
 Future repair application must require `inventory.reconcile`, the existing
 `inventory.approve`, `Idempotency-Key`, the finding's strong `If-Match`, its
@@ -1861,6 +1862,173 @@ strategy, or directly write a balance. Projection repair, finding resolution,
 audit, existing outbox events and idempotency result must commit atomically.
 Details are frozen in
 [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-repair-contract).
+
+### 22.3 Reserved reconciliation API — E155–E160
+
+E155–E160 are the first continuous IDs after E154. They reserve the minimum V1
+surface for persisted findings and deterministic projection repair. They do not
+implement routes, renumber any earlier endpoint, create an E155 reversal alias,
+or reserve scans, global rebuild, restore, outbox replay, workers, scheduling,
+bulk actions, reopen, delete, or full recovery.
+
+As with every route in this registry, the displayed paths are mounted below
+`/api/v1`; no unversioned alias is approved.
+
+| ID | Method and route | Permission and scope | Request | Success | Concurrency and effects |
+| --- | --- | --- | --- | --- | --- |
+| E155 | `GET /inventory/reconciliation/findings` | `inventory.reconcile`; authenticated company and authorized branch scope | Allowlisted filters and cursor | `200` sanitized finding summaries | Read-only; stable descending cursor |
+| E156 | `GET /inventory/reconciliation/findings/{finding_id}` | `inventory.reconcile`; finding scope | Path UUID only | `200` sanitized finding detail | Strong finding ETag; read-only |
+| E157 | `POST /inventory/reconciliation/findings/{finding_id}/acknowledgements` | `inventory.reconcile`; finding scope | Strict reason body | `200` acknowledged detail | Strong `If-Match`; `Idempotency-Key`; audit; version +1 |
+| E158 | `POST /inventory/reconciliation/findings/{finding_id}/dismissals` | `inventory.reconcile`; finding scope | Strict reason body | `200` dismissed detail | Strong `If-Match`; `Idempotency-Key`; audit; version +1 |
+| E159 | `POST /inventory/reconciliation/findings/{finding_id}/repair-previews` | `inventory.reconcile`; finding scope | Strict strategy/fingerprint body | `200` ephemeral preview | Validates ETag/fingerprint; no idempotency key, persistence, audit or mutation |
+| E160 | `POST /inventory/reconciliation/findings/{finding_id}/repairs` | Both `inventory.reconcile` and `inventory.approve`; finding and affected balance scope | Strict repair command | `200` repair result | Strong `If-Match`; `Idempotency-Key`; atomic projection/finding/audit/outbox; version +1 |
+
+The implementation block must add `inventory.reconcile` to the technical
+permission seed and permission tests. It must not assign it automatically to
+cashiers or other ordinary POS roles. `inventory.read` alone never exposes
+finding evidence. E160 requires both permissions independently; explicit deny
+of either permission wins.
+
+#### Finding list and detail
+
+E155 accepts only `status`, `severity`, `finding_type`, `branch_id`,
+`inventory_location_id`, `product_variant_id`, `aggregate_type`, `aggregate_id`,
+`detected_from`, `detected_to`, `cursor`, and `limit`. UUID, enum and UTC range
+validation is strict; unknown query fields and invalid ranges return
+`validation_error`. There is no free-text search. The default limit is 50 and
+the maximum is 100.
+
+The stable order is `last_detected_at DESC, finding_id DESC`. Its opaque cursor
+encodes both values and the normalized filter identity. Changing filters while
+reusing a cursor is invalid. The common page metadata returns `next_cursor`,
+`has_more`, and `limit`.
+
+List items expose `finding_id`, type, severity, status, safe scope and aggregate
+identity, bounded expected/actual summaries, detector version, snapshot,
+first/last detection times, occurrence count, and version. They omit internal
+identity keys, raw SQL, internal metadata and full evidence. Fingerprint is
+omitted from the list.
+
+E156 additionally exposes sanitized evidence, `fingerprint`, lifecycle actors
+and timestamps, `resolution_reason_code`, safe resolution note, and the strong
+ETag `"<version>"`. It never exposes internal identity material, SQL, stack
+data, credentials or sensitive metadata. A cross-tenant or out-of-scope ID is
+`resource_not_found`; a known in-scope finding without the permission is
+`permission_denied` without returning evidence.
+
+#### Acknowledge and dismiss commands
+
+E157 accepts only:
+
+```json
+{"reason_code":"investigation_started","note":"Optional bounded operational note."}
+```
+
+`reason_code` is a normalized nonblank string up to 64 characters and `note` is
+optional, trimmed, and at most 1000 characters. E157 permits only
+`open -> acknowledged`; it changes no balance or movement and does not resolve
+the finding. Because the physical lifecycle keeps resolution fields null while
+acknowledged, E157 stores its reason and note in audit evidence rather than
+`resolution_reason_code`. Exact replay returns the original body and ETag.
+
+E158 uses the same strict body and permits `open|acknowledged -> dismissed`.
+Resolved or already dismissed revisions return
+`reconciliation_finding_already_resolved`; no reopen is implied. Dismissal is an
+operational disposition, not proof of repaired data. E158 stores the bounded
+reason/note in the finding's existing resolution fields and audit. Both commands increment
+the finding version exactly once, commit their lifecycle update, audit and
+idempotency response atomically, and emit no realtime event.
+
+#### Repair preview
+
+E159 accepts only:
+
+```json
+{
+  "strategy":"rebuild_on_hand_projection",
+  "expected_fingerprint":"64-lowercase-hex"
+}
+```
+
+It requires a current strong `If-Match` but no `Idempotency-Key` because it is
+strictly read-only. The finding must be `open` or `acknowledged`; the requested
+strategy must be approved for its type. The server revalidates current evidence
+and returns `repairable`, strategy, safe expected/actual values and exact deltas,
+proposed mutations, affected balance IDs, any owning-workflow movement summary,
+existing events expected from apply, warnings, `snapshot_at`,
+`preview_expires_at`, and `preview_fingerprint`.
+
+The preview fingerprint is SHA-256 over canonical tenant, finding, finding
+version/fingerprint, strategy, reconstructed evidence, affected aggregate
+versions, snapshot and expiry. It is concurrency evidence, not authorization.
+The preview is not stored or audited. E160 recomputes it and never trusts values
+supplied by the client.
+
+#### Repair apply
+
+E160 accepts only:
+
+```json
+{
+  "strategy":"rebuild_on_hand_projection",
+  "expected_fingerprint":"64-lowercase-hex",
+  "preview_fingerprint":"64-lowercase-hex",
+  "preview_expires_at":"2026-08-01T20:15:00.000Z",
+  "reason_code":"projection_drift_verified",
+  "note":"Optional bounded operational note."
+}
+```
+
+Public strategy names are frozen as:
+
+- `rebuild_on_hand_projection` for `balance_on_hand_drift`;
+- `rebuild_reserved_projection` for `balance_reserved_drift`;
+- `rebuild_in_transit_projection` for `balance_in_transit_drift`;
+- `restore_last_movement` for `last_movement_mismatch`;
+- `create_missing_balance` for `missing_balance`.
+
+No generic compensating-movement strategy exists on E160. Compensation remains
+owned by the workflow that can prove the incorrect real operation.
+
+The finding must be `open` or `acknowledged`. E160 returns `finding_id`,
+`previous_status`, `new_status="resolved"`, strategy,
+`affected_balance_count`, nullable `movement_id`, `repaired_at`, and version,
+with the new strong ETag. Deterministic projection strategies return a null
+movement ID.
+
+The idempotency scope is authenticated company, operation, finding ID and key.
+The request hash covers finding ID, `If-Match`, strict body, expected evidence
+fingerprint and strategy. Exact replay returns the same HTTP status, body and
+ETag without duplicate effects; changed content returns
+`idempotency_conflict`. Finding, workflow, balances, ledger evidence, preview
+fingerprint and expiry are revalidated under the 3.3I.4 lock order before any
+mutation.
+
+#### Errors, audit and events
+
+E155–E160 reuse the common errors plus
+`inventory_reconciliation_required` and `inventory_balance_conflict`. These
+additional contract codes are reserved but are not yet added to
+`@asone/errors`:
+
+| Code | HTTP | Safe meaning |
+| --- | --- | --- |
+| `reconciliation_repair_not_allowed` | 409 | Finding type/state or requested strategy has no approved V1 repair |
+| `reconciliation_finding_stale` | 409 | Current evidence/fingerprint differs from the reviewed finding or preview |
+| `reconciliation_finding_already_resolved` | 409 | Finding revision is already resolved or dismissed for the requested command |
+| `reconciliation_preview_expired` | 409 | Preview expiry elapsed before apply |
+
+E157, E158 and E160 audit the canonical actions frozen in 3.3I.4 with actor,
+reason, safe summaries, affected IDs, request/correlation IDs and previous/new
+states and versions. E159 is not audited. No new reconciliation event is
+reserved. E160 reuses `inventory.stock.changed` for quantity changes;
+`restore_last_movement` emits no public event. A future owning workflow may emit
+its existing `inventory.movement.created`, but E160 itself creates no generic
+movement.
+
+The existing findings lifecycle, audit log and idempotency record support this
+surface. Preview remains ephemeral and repair detail remains audit evidence, so
+no preview table, repair table, schema change or migration 0009 is approved.
 
 ## 23. Security, audit, and event requirements
 

@@ -86,11 +86,12 @@ Detailed sales and inventory behavior requires separate approval before implemen
 
 ## Inventory recovery delivery gates
 
-1. **3.3I.4 — Repair contract:** freeze repair strategies, finding eligibility,
-   preview, approval, locking, idempotency, audit and event reuse without
-   implementation.
-2. **Endpoint and permission reservation:** assign post-E154 IDs and seed
-   `inventory.reconcile`; no public surface precedes this gate.
+1. **3.3I.4 — Repair contract (complete):** repair strategies, finding
+   eligibility, preview, approval, locking, idempotency, audit and event reuse
+   are frozen without implementation.
+2. **3.3I.4.1 — API and permission reservation (current):** reserve E155-E160
+   and `inventory.reconcile`. The future implementation seeds the permission;
+   no public route exists in this block.
 3. **3.3I.5 — Bounded repair application:** implement finding management and
    proven projection repairs with PostgreSQL concurrency evidence.
 4. **3.4 — Operational recovery:** add scheduled execution, workers, CLI and
