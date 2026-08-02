@@ -648,16 +648,23 @@ their movements reconstruct in-transit quantity. The results are compared with
 `inventory_balances`, `last_movement_id`, workflow relationships and, only when
 retention proves completeness, audit/outbox evidence.
 
-Enterprise operation requires persistent findings with stable fingerprints,
+Enterprise operation uses persistent findings with stable fingerprints,
 `info|warning|critical` severity and
-`open|acknowledged|resolved|dismissed` lifecycle. This is a logical decision
-only. No finding table, permission, endpoint, detector, event, worker, repair or
-rebuild is implemented by 3.3I.1. Full rules and delivery boundaries are in
+`open|acknowledged|resolved|dismissed` lifecycle. The finding table and
+read-only detector are implemented; no endpoint, worker, repair or rebuild is
+implemented. Full rules and delivery boundaries are in
 [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
 
 Detection never edits the immutable ledger or silently changes a projection.
-Repair/rebuild contracts, operational runbooks, scheduling, monitoring and
-disaster recovery remain later work.
+Block 3.3I.4 freezes repair/rebuild semantics: valid projection drift may be
+rebuilt from authoritative sources, `last_movement_id` may be restored, and a
+missing balance may be reconstructed. Invalid ledger/workflow history is never
+generically repaired; it requires its owning workflow or remains under review.
+Every future apply requires preview, `inventory.reconcile` plus
+`inventory.approve`, a strong finding ETag, idempotency, reason, revalidation,
+audit and atomic effects. No endpoint, permission seed, event, migration or
+implementation is added by this contract. Operational runbooks, scheduling,
+monitoring, full rebuild and disaster recovery remain Block 3.4 work.
 
 ## Future NFC/RFID extension
 

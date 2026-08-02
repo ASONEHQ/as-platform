@@ -63,7 +63,9 @@ Detailed sales and inventory behavior requires separate approval before implemen
 - AS CEO dashboards and cross-branch reporting.
 - AS Snacks operational workflows.
 - Persistent inventory reconciliation findings, read-only drift detection, and
-  later separately approved repair/rebuild operations.
+  contractually defined repair/rebuild semantics. The physical finding model
+  and detector are complete; endpoint reservation, bounded repair application
+  and operational recovery remain separately gated.
 - Advanced observability and anomaly detection.
 - Read-optimized analytics introduced only when PostgreSQL is insufficient.
 
@@ -81,4 +83,17 @@ Detailed sales and inventory behavior requires separate approval before implemen
 - Auditability, observability, backup, and recovery validation.
 - API compatibility and migration safety.
 - Performance measurement against explicit service objectives.
+
+## Inventory recovery delivery gates
+
+1. **3.3I.4 — Repair contract:** freeze repair strategies, finding eligibility,
+   preview, approval, locking, idempotency, audit and event reuse without
+   implementation.
+2. **Endpoint and permission reservation:** assign post-E154 IDs and seed
+   `inventory.reconcile`; no public surface precedes this gate.
+3. **3.3I.5 — Bounded repair application:** implement finding management and
+   proven projection repairs with PostgreSQL concurrency evidence.
+4. **3.4 — Operational recovery:** add scheduled execution, workers, CLI and
+   runbooks, full/shadow rebuild, outbox replay, retention, monitoring,
+   alerting, backup/restore and disaster-recovery exercises.
 

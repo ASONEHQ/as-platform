@@ -901,6 +901,26 @@ persistence. Repair, projection rebuild, retention and operational execution
 remain separately approved work. See
 [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
 
+#### Repair and rebuild semantics
+
+The physical finding aggregate and read-only detector are now implemented.
+Block 3.3I.4 adds no entity. The existing finding lifecycle and `audit_log`
+provide sufficient durable evidence for future repair, so repair metadata is not
+added to the core model and migration 0009 is not required.
+
+Projection repair may reconstruct on-hand from the immutable posted ledger,
+reserved from active reservation remainder, in-transit from valid shipped
+transfer evidence, and `last_movement_id` from the latest demonstrable posted
+effect. A missing balance may be inserted from those same authorities. Repair
+never edits posted movements, deletes a balance, invents valuation, fabricates
+historical audit, or mutates an ambiguous workflow. Incorrect real ledger
+effects require a compensating movement through the owning workflow.
+
+Successful repair atomically updates the projection when applicable, resolves
+the finding with actor and reason, writes audit and existing outbox facts, and
+stores the idempotency result. The complete contract is in
+[INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-repair-contract).
+
 - Rewards and memberships may reference `companies`, `branches`, `users` or future customers, `sales`, and immutable ledger identifiers.
 - Events may reference branches, products, sales, payments, refunds, files, and access credentials while owning capacity/reservation data.
 - Promotions may contribute immutable evaluation snapshots to sale items without rewriting completed sales.

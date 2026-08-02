@@ -1007,12 +1007,150 @@ folds authoritative sources into a validated shadow result before controlled
 replacement. Neither may edit/delete posted movements, rewrite history, mutate
 balances silently, or bypass audit, idempotency and authorization.
 
+### Inventory repair contract
+
+Block 3.3I.4 freezes repair semantics without approving an HTTP surface or an
+implementation. The detector remains read-only. A repair is a short,
+tenant-scoped command against one current finding; a rebuild is the controlled
+reconstruction of a projection from authoritative sources. Neither operation
+may edit a posted movement, delete ledger history, fabricate evidence, or hide
+an invalid workflow with an unrelated adjustment.
+
+The canonical strategies are:
+
+| Strategy | Intended use | Quantity/event effect |
+| --- | --- | --- |
+| Compensating movement | An owning workflow proves that a real ledger effect was wrong | Use that workflow's posting/reversal contract and existing events |
+| Rebuild on hand | Valid ledger fold differs from `quantity_on_hand` | Update the projection and `last_movement_id`; emit `inventory.stock.changed` |
+| Rebuild reserved | Active reservation remainder differs from `quantity_reserved` | Update reserved only; emit `inventory.stock.changed` |
+| Rebuild in transit | Valid shipped-transfer evidence differs from `quantity_in_transit` | Update in transit only; emit `inventory.stock.changed` |
+| Restore last movement | Quantities agree and the latest posted effect is demonstrable | Update only `last_movement_id` and version; no public event |
+| Controlled outbox re-emission | Absence is proven inside an approved retention window with deterministic identity | Deferred to 3.4; never create a second logical event |
+| No automatic repair | Evidence is ambiguous, authority is invalid, or policy is absent | Acknowledge, dismiss, or use a separately approved owning workflow |
+
+#### Finding repair matrix
+
+`inventory.reconcile` is required for finding management and preview. Applying
+any repair additionally requires the existing `inventory.approve` permission.
+Ordinary POS roles receive neither authority. Preview and explicit approval are
+required even when one actor holds both permissions; four-eyes is future work.
+
+`R` means `inventory.reconcile`; `A` means the additional
+`inventory.approve`. `Required` preview and approval apply to every mutation.
+Every accepted mutation writes repair audit in the same transaction. “Existing”
+outbox means reuse the canonical stock/movement event, not a new repair event.
+
+| Finding | Repair / strategy | Permission | Preview / approval | Balance / movement / outbox | Blocking | Expected result | Reject when |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `balance_on_hand_drift` | Yes; rebuild on hand | R+A | Required / required | On-hand + last movement / none / existing stock | Critical | Exact ledger fold; finding resolved; audit | Stale finding, invalid ledger/workflow, invariant failure |
+| `balance_reserved_drift` | Yes; rebuild reserved | R+A | Required / required | Reserved only / none / existing stock | Critical | Exact active remainder; finding resolved; audit | Stale finding, corrupt reservation, negative availability |
+| `balance_in_transit_drift` | Yes in V1; rebuild in transit | R+A | Required / required | In-transit only / none / existing stock | Critical | Exact shipped remainder; finding resolved; audit | Stale finding, invalid location/transfer/receipt evidence |
+| `last_movement_mismatch` | Yes; restore reference | R+A | Required / required | Version/reference only / none / none | Warning | Demonstrable latest posted effect; finding resolved; audit | Ambiguous, missing, cross-tenant or stale effect |
+| `missing_balance` | Yes; create rebuilt balance | R+A | Required / required | Insert projection / none / existing stock | Critical | Exact three quantities/reference; finding resolved; audit | Invalid authority, unsupported valuation, concurrent conflict |
+| `orphan_balance` | No automatic repair | R | Review / no apply | None / none / none | Info | Remains open, acknowledged or dismissed with audit | Any mutation or deletion is requested |
+| `invalid_posted_movement` | No generic repair; owner compensation only | R+A through owner | Required by owner / required | Owner-defined / compensating / existing | Critical | Owner contract produces immutable correction and audit | Generic repair, ambiguous intent, invalid compensation |
+| `invalid_reversal_relationship` | No automatic repair | R | Review / no apply | None / none / none | Critical | Intervention remains traceable | Any historical link rewrite is requested |
+| `transfer_movement_mismatch` | No generic repair; transfer-owned recovery | R+A through owner | Required by owner / required | Owner-defined / possible compensation / existing | Critical | Only an approved transfer correction may resolve | Projection rebuild while workflow evidence is corrupt |
+| `reservation_movement_mismatch` | No generic repair; reservation-owned recovery | R+A through owner | Required by owner / required | Owner-defined / possible compensation / existing | Critical | Only an approved reservation correction may resolve | Projection rebuild while workflow evidence is corrupt |
+| `count_application_mismatch` | No generic repair; count-owned recovery | R+A through owner | Required by owner / required | Owner-defined / possible compensation / existing | Critical | Only an approved count correction may resolve | Generic repair or second application is requested |
+| `missing_outbox_event` | Not V1; controlled re-emission in 3.4 | R+A | Required / required | None / none / deterministic outbox | Warning | One logical event and repair audit | Retention, identity or absence cannot be proven |
+| `missing_audit_record` | No repair | R | Review / no apply | None / none / none | Warning | New investigation audit only | Fabrication of original actor/request is requested |
+| `unsupported_or_unknown` | No repair | R | Review / no apply | None / none / none | Warning | Remains open, acknowledged or dismissed | Any automatic mutation is requested |
+
+#### Projection repair rules
+
+On-hand repair recomputes the exact ledger fold and validates every contributing
+movement. It locks the finding and target balance, compares stored evidence with
+current values, and rejects stale drift. If valid, it updates
+`quantity_on_hand`, the demonstrable `last_movement_id`, `updated_at`, and
+`version` exactly once. A wrong real operation is corrected by its owning
+workflow, not by inventing an adjustment to match a corrupt projection.
+
+Reserved repair locks affected balances in canonical order, reconstructs exact
+active reservation remainder, and preserves on-hand, in-transit, cost and
+currency. It rejects corrupt reservation evidence and any result violating V1
+availability. In-transit repair validates the destination transit location,
+shipment and receipt evidence, preserves on-hand and cost, and rejects a corrupt
+transfer workflow.
+
+Restoring `last_movement_id` is allowed only when the balance exists, quantities
+agree, and tenant-safe posted effects prove one latest movement. It increments
+the balance version once and emits no stock event. A missing balance may be
+inserted only after reconstructing all quantity components and the latest
+movement in the same transaction. Existing unique keys make a concurrent normal
+writer win or produce a safe retry/conflict. Quantity-only V1 never invents
+valuation. Orphan balances are retained and never physically deleted.
+
+#### Lifecycle, preview, approval and concurrency
+
+Only `open` or `acknowledged` findings may be repaired. `dismissed` requires a
+future explicit reopen contract; `resolved` is terminal for that revision.
+Apply requires the finding's strong `If-Match`, expected fingerprint, bounded
+reason and `Idempotency-Key`. It revalidates fingerprint, detector version,
+evidence and affected versions. Changed evidence returns a stale/version
+conflict and performs no mutation.
+
+Preview is mandatory and read-only. It shows the finding, strategy, exact
+expected/actual values and deltas, affected balances, any owning-workflow
+movement, existing events, risks, `snapshot_at`, and short expiry. It is not
+persisted in V1 and grants no apply authority. Apply recomputes rather than
+trusting preview data. One actor may preview and apply only when independently
+authorized with both permissions.
+
+The canonical lock/commit order is:
+
+1. idempotency record;
+2. finding;
+3. owning aggregate/workflow;
+4. balances ordered by company, branch, location, and variant;
+5. ledger/reference revalidation;
+6. projection or owning-workflow mutation;
+7. finding resolution;
+8. audit;
+9. existing outbox events;
+10. idempotency result;
+11. commit.
+
+No global lock or long transaction is allowed. Exact replay returns the stored
+response without another mutation. Payload mismatch returns
+`idempotency_conflict`. Failure rolls back finding, projection, ledger, audit,
+outbox and idempotency effects together.
+
+Successful apply changes the finding to `resolved`, records actor, timestamp,
+reason and one version increment, and preserves original evidence. Canonical
+audit actions are `inventory_reconciliation.finding_acknowledged`,
+`inventory_reconciliation.finding_dismissed`,
+`inventory_reconciliation.repair_applied`, and
+`inventory_reconciliation.projection_rebuilt`. Preview is not audited in V1.
+Audit metadata is bounded and includes finding/strategy, safe expected/actual
+summaries, affected IDs, request/correlation IDs, previous/new states and
+versions, and any compensating movement ID; it contains no secrets.
+
+No new realtime event is approved. Quantity rebuilds reuse
+`inventory.stock.changed`; owning compensation reuses
+`inventory.movement.created` and its stock events; last-movement-only repair
+emits none. Candidate repair-specific errors remain unfrozen until endpoint
+reservation. Existing not-found, permission, validation, version,
+idempotency, reconciliation-required and balance-conflict errors apply.
+
+No approved route range follows E154. List/detail, acknowledge, dismiss,
+preview, apply and rebuild require a separate endpoint-reservation block. The
+current finding schema already supports lifecycle actors, reason, bounded
+evidence and optimistic versioning; repair details belong in `audit_log`, so no
+migration 0009 is required.
+
+Scheduling, workers, CLI/runbooks, full/shadow rebuild, operational outbox
+replay, retention, archival, metrics, alerts, backup/restore, disaster recovery,
+partitioning and operational approvals belong to Block 3.4. The safe sequence
+is 3.3I.4 contract, separate endpoint/permission reservation, 3.3I.5 bounded
+application layer, then 3.4 operational recovery.
+
 The delivery split is:
 
 | Block | Scope |
 | --- | --- |
 | 3.3I.1 | This detector contract and logical persistent finding model |
-| 3.3I.2 | Findings physical foundation, permission seed and additive migration |
+| 3.3I.2 | Findings physical foundation and additive migration; permission remains deferred |
 | 3.3I.3 | Read-only detector implementation, chunking, deduplication and PostgreSQL evidence |
 | 3.3I.4 | Repair/rebuild contract, approvals and endpoint reservation; no implementation implied |
 | 3.4 | Runbooks, scheduling/workers, monitoring, SLAs, load/partitioning, backup/restore and disaster recovery |

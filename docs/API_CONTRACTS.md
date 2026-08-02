@@ -1842,6 +1842,26 @@ scan/finding/repair errors are not frozen. Detection emits no
 persistent finding model, deduplication and snapshot rules are defined in
 [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-reconciliation-detector-contract).
 
+### 22.2 Inventory repair contract boundary
+
+Block 3.3I.4 approves semantics but reserves no route. No approved endpoint ID
+exists after E154, so scan, finding list/detail, acknowledge, dismiss, repair
+preview/application and projection rebuild remain unavailable over HTTP until a
+separate endpoint-reservation contract assigns stable IDs.
+
+Future repair application must require `inventory.reconcile`, the existing
+`inventory.approve`, `Idempotency-Key`, the finding's strong `If-Match`, its
+expected fingerprint and a bounded reason. Preview is mandatory and read-only;
+apply always revalidates current evidence and versions. Exact replay returns the
+stored result, payload mismatch returns `idempotency_conflict`, and stale
+evidence returns `version_conflict` until repair-specific errors are approved.
+
+No client may select `company_id`, expand branch scope, choose an unapproved
+strategy, or directly write a balance. Projection repair, finding resolution,
+audit, existing outbox events and idempotency result must commit atomically.
+Details are frozen in
+[INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-repair-contract).
+
 ## 23. Security, audit, and event requirements
 
 - Validate headers, paths, queries, and bodies before invoking a use case; reject unknown command fields.
