@@ -27,6 +27,7 @@ export const sessions = pgTable(
     deviceId: uuid('device_id'),
     tokenHash: text('token_hash').notNull(),
     status: text('status').notNull().default('active'),
+    transportMode: text('transport_mode').notNull().default('bearer'),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
     revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
     tokenFamilyId: uuid('token_family_id').notNull(),
@@ -71,6 +72,7 @@ export const sessions = pgTable(
     index('sessions_expires_at_idx').on(table.expiresAt),
     check('sessions_token_hash_length_ck', sql`length(btrim(${table.tokenHash})) >= 32`),
     check('sessions_status_ck', sql`${table.status} in ('active', 'expired', 'revoked')`),
+    check('sessions_transport_mode_ck', sql`${table.transportMode} in ('browser', 'bearer')`),
     check('sessions_expiry_ck', sql`${table.expiresAt} > ${table.createdAt}`),
     check('sessions_token_generation_ck', sql`${table.tokenGeneration} >= 0`),
     check(

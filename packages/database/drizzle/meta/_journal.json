@@ -71,6 +71,13 @@
       "when": 1785655503326,
       "tag": "0009_auth_login_challenges",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785659959470,
+      "tag": "0010_auth_session_transport_mode",
+      "breakpoints": true
     }
   ]
 }

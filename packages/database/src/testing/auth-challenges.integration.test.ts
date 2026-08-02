@@ -26,7 +26,7 @@ integration('PostgreSQL auth login challenge foundation', () => {
 
   afterAll(async () => client.close());
 
-  it('applies 0000-0009 and creates exactly the one expected new table', async () => {
+  it('applies 0000-0010 and retains the login challenge table', async () => {
     const table = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema = 'public' and table_name = 'auth_login_challenges'`,
@@ -35,7 +35,7 @@ integration('PostgreSQL auth login challenge foundation', () => {
     const migrations = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(migrations.rows[0]?.count).toBe('10');
+    expect(migrations.rows[0]?.count).toBe('11');
   });
 
   it('persists a valid pending challenge without plaintext token or floating columns', async () => {

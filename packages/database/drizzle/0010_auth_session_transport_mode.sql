@@ -1,0 +1,2 @@
+ALTER TABLE "sessions" ADD COLUMN "transport_mode" text DEFAULT 'bearer' NOT NULL;--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_transport_mode_ck" CHECK ("sessions"."transport_mode" in ('browser', 'bearer'));

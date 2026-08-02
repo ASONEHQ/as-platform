@@ -86,13 +86,28 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  it('records exactly ten historical migrations ending in auth challenges', () => {
+  it('records exactly eleven migrations ending in session transport mode', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(10);
-    expect(journal.entries.map((entry) => entry.idx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(journal.entries.at(-1)?.tag).toBe('0009_auth_login_challenges');
+    expect(journal.entries).toHaveLength(11);
+    expect(journal.entries.map((entry) => entry.idx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(journal.entries.at(-1)?.tag).toBe('0010_auth_session_transport_mode');
+  });
+
+  it('keeps migration 0010 additive and limited to the session transport column', () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, '../../drizzle/0010_auth_session_transport_mode.sql'),
+      'utf8',
+    );
+    expect(migration.match(/add column/giu)).toHaveLength(1);
+    expect(migration.match(/add constraint/giu)).toHaveLength(1);
+    expect(migration).toContain(`ADD COLUMN "transport_mode" text DEFAULT 'bearer' NOT NULL`);
+    expect(migration).toContain(`CHECK ("sessions"."transport_mode" in ('browser', 'bearer'))`);
+    expect(migration).not.toMatch(
+      /\b(drop|truncate|delete|update|create trigger|create function)\b/iu,
+    );
+    expect(migration).not.toContain('session_refresh_tokens');
   });
   it('defines only the approved foundation tables with snake_case names', () => {
     expect(tableNames).toEqual([
@@ -235,14 +250,25 @@ describe('database foundation schema', () => {
   });
 
   it('keeps session tokens hashed and excludes plaintext token columns', () => {
-    const columns = getTableConfig(sessions).columns.map((column) => column.name);
+    const sessionConfig = getTableConfig(sessions);
+    const columns = sessionConfig.columns.map((column) => column.name);
     expect(columns).toContain('token_hash');
+    expect(columns).toContain('transport_mode');
     expect(columns).not.toContain('token');
     expect(columns).not.toContain('refresh_token');
+    const transportMode = sessionConfig.columns.find((column) => column.name === 'transport_mode');
+    expect(transportMode?.getSQLType()).toBe('text');
+    expect(transportMode?.notNull).toBe(true);
+    expect(transportMode?.hasDefault).toBe(true);
+    expect(transportMode?.default).toBe('bearer');
+    expect(sessionConfig.checks.map((constraint) => constraint.name)).toContain(
+      'sessions_transport_mode_ck',
+    );
     const refreshColumns = getTableConfig(sessionRefreshTokens).columns.map(
       (column) => column.name,
     );
     expect(refreshColumns).toContain('token_hash');
+    expect(refreshColumns).not.toContain('transport_mode');
     expect(refreshColumns).not.toContain('token');
     expect(refreshColumns).not.toContain('refresh_token');
   });

@@ -41,11 +41,11 @@ integration('durable inventory count physical foundation', () => {
 
   afterAll(async () => client.close());
 
-  it('applies all nine migrations and creates exactly two count tables', async () => {
+  it('applies all eleven migrations and creates exactly two count tables', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('9');
+    expect(journal.rows[0]?.count).toBe('11');
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public' and table_name like 'inventory_count%'

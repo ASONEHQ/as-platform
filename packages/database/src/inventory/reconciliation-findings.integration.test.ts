@@ -46,11 +46,11 @@ integration('inventory reconciliation findings physical foundation', () => {
     await client.close();
   });
 
-  it('applies nine migrations and exposes exactly the approved table, columns and indexes', async () => {
+  it('applies eleven migrations and exposes exactly the approved table, columns and indexes', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('9');
+    expect(journal.rows[0]?.count).toBe('11');
 
     const columns = await client.pool.query<{ column_name: string; data_type: string }>(
       `select column_name,data_type from information_schema.columns

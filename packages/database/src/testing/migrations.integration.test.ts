@@ -343,6 +343,176 @@ integration('PostgreSQL migrations', () => {
     }
   });
 
+  it('enforces durable session transport without duplicating refresh-token state', async () => {
+    const connection = await client.pool.connect();
+    const companyId = randomUUID();
+    const userId = randomUUID();
+    const membershipId = randomUUID();
+    const defaultSessionId = randomUUID();
+    const bearerSessionId = randomUUID();
+    const browserSessionId = randomUUID();
+    try {
+      await connection.query('begin');
+      await insertCompany(connection, companyId);
+      await connection.query(
+        `insert into users (id,email,normalized_email,display_name,status)
+         values ($1,'transport@example.test','transport@example.test','Transport User','active')`,
+        [userId],
+      );
+      await connection.query(
+        `insert into company_memberships (id,company_id,user_id,status)
+         values ($1,$2,$3,'active')`,
+        [membershipId, companyId, userId],
+      );
+
+      const insertSession = async (id: string, token: string, mode?: string): Promise<void> => {
+        if (mode === undefined) {
+          await connection.query(
+            `insert into sessions
+             (id,company_id,user_id,membership_id,token_hash,status,expires_at,token_family_id)
+             values ($1,$2,$3,$4,$5,'active',now()+interval '1 hour',$6)`,
+            [id, companyId, userId, membershipId, token, randomUUID()],
+          );
+          return;
+        }
+        await connection.query(
+          `insert into sessions
+           (id,company_id,user_id,membership_id,token_hash,status,transport_mode,expires_at,token_family_id)
+           values ($1,$2,$3,$4,$5,'active',$6,now()+interval '1 hour',$7)`,
+          [id, companyId, userId, membershipId, token, mode, randomUUID()],
+        );
+      };
+
+      await insertSession(defaultSessionId, 'c'.repeat(64));
+      await insertSession(bearerSessionId, 'd'.repeat(64), 'bearer');
+      await insertSession(browserSessionId, 'e'.repeat(64), 'browser');
+
+      const modes = await connection.query<{ id: string; transport_mode: string }>(
+        'select id,transport_mode from sessions where id=any($1::uuid[]) order by id',
+        [[defaultSessionId, bearerSessionId, browserSessionId]],
+      );
+      expect(new Map(modes.rows.map((row) => [row.id, row.transport_mode]))).toEqual(
+        new Map([
+          [defaultSessionId, 'bearer'],
+          [bearerSessionId, 'bearer'],
+          [browserSessionId, 'browser'],
+        ]),
+      );
+
+      await expectConstraintViolation(
+        connection,
+        'invalid_transport',
+        `insert into sessions
+         (id,company_id,user_id,membership_id,token_hash,status,transport_mode,expires_at,token_family_id)
+         values ($1,$2,$3,$4,$5,'active','cookie',now()+interval '1 hour',$6)`,
+        [randomUUID(), companyId, userId, membershipId, 'f'.repeat(64), randomUUID()],
+        '23514',
+      );
+      await expectConstraintViolation(
+        connection,
+        'null_transport',
+        `insert into sessions
+         (id,company_id,user_id,membership_id,token_hash,status,transport_mode,expires_at,token_family_id)
+         values ($1,$2,$3,$4,$5,'active',null,now()+interval '1 hour',$6)`,
+        [randomUUID(), companyId, userId, membershipId, '0'.repeat(64), randomUUID()],
+        '23502',
+      );
+
+      await connection.query(
+        `insert into session_refresh_tokens
+         (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,0,'active',now()+interval '1 hour')`,
+        [randomUUID(), browserSessionId, '1'.repeat(64)],
+      );
+      await connection.query(
+        `update session_refresh_tokens set status='rotated',rotated_at=now()
+         where session_id=$1 and generation=0`,
+        [browserSessionId],
+      );
+      await connection.query(
+        `insert into session_refresh_tokens
+         (id,session_id,token_hash,generation,status,expires_at)
+         values ($1,$2,$3,1,'active',now()+interval '1 hour')`,
+        [randomUUID(), browserSessionId, '2'.repeat(64)],
+      );
+      await connection.query(
+        `update sessions set status='revoked',revoked_at=now(),revocation_reason='test'
+         where id=$1`,
+        [browserSessionId],
+      );
+      const relation = await connection.query<{
+        mode: string;
+        session_status: string;
+        token_status: string;
+      }>(
+        `select s.transport_mode mode,s.status session_status,t.status token_status
+         from session_refresh_tokens t join sessions s on s.id=t.session_id
+         where t.session_id=$1 and t.generation=1`,
+        [browserSessionId],
+      );
+      expect(relation.rows[0]).toEqual({
+        mode: 'browser',
+        session_status: 'revoked',
+        token_status: 'active',
+      });
+
+      const refreshColumns = await connection.query<{ column_name: string }>(
+        `select column_name from information_schema.columns
+         where table_schema='public' and table_name='session_refresh_tokens'`,
+      );
+      expect(refreshColumns.rows.map((row) => row.column_name)).not.toContain('transport_mode');
+    } finally {
+      await connection.query('rollback');
+      connection.release();
+    }
+  });
+
+  it('backfills a pre-0010 session to bearer when the additive migration is applied', async () => {
+    const connection = await client.pool.connect();
+    const companyId = randomUUID();
+    const userId = randomUUID();
+    const membershipId = randomUUID();
+    const sessionId = randomUUID();
+    try {
+      await connection.query('begin');
+      await connection.query('alter table sessions drop constraint sessions_transport_mode_ck');
+      await connection.query('alter table sessions drop column transport_mode');
+      await insertCompany(connection, companyId);
+      await connection.query(
+        `insert into users (id,email,normalized_email,display_name,status)
+         values ($1,'historical@example.test','historical@example.test','Historical User','active')`,
+        [userId],
+      );
+      await connection.query(
+        `insert into company_memberships (id,company_id,user_id,status)
+         values ($1,$2,$3,'active')`,
+        [membershipId, companyId, userId],
+      );
+      await connection.query(
+        `insert into sessions
+         (id,company_id,user_id,membership_id,token_hash,status,expires_at,token_family_id)
+         values ($1,$2,$3,$4,$5,'active',now()+interval '1 hour',$6)`,
+        [sessionId, companyId, userId, membershipId, '3'.repeat(64), randomUUID()],
+      );
+
+      await connection.query(
+        `alter table sessions add column transport_mode text default 'bearer' not null`,
+      );
+      await connection.query(
+        `alter table sessions add constraint sessions_transport_mode_ck
+         check (transport_mode in ('browser','bearer'))`,
+      );
+      const result = await connection.query<{ transport_mode: string }>(
+        'select transport_mode from sessions where id=$1',
+        [sessionId],
+      );
+      expect(result.rows[0]?.transport_mode).toBe('bearer');
+    } finally {
+      await connection.query('rollback');
+      connection.release();
+    }
+  });
+
   it('enforces scoped setting structure, lifecycle, and tenant ownership', async () => {
     const connection = await client.pool.connect();
     const firstCompanyId = randomUUID();
