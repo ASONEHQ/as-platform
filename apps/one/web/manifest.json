@@ -1,0 +1,11 @@
+{
+    "name": "AS ONE",
+    "short_name": "AS ONE",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#F4F7FC",
+    "theme_color": "#082B6F",
+    "description": "AS ONE platform web application.",
+    "orientation": "portrait-primary",
+    "prefer_related_applications": false
+}

@@ -6,6 +6,7 @@ coverage
 pnpm-lock.yaml
 work
 outputs
+apps/one/**
 AS POS V1.html
 AGENTS.md
 docs/**
