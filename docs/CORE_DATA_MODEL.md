@@ -1,5 +1,11 @@
 # AS ONE Core Transactional Data Model
 
+> Browser company-selection challenges are an additive authentication concern,
+> not a transactional-core entity. Their approved logical requirements and
+> future migration impact are documented in
+> [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md) and
+> ADR-0007. No challenge table is part of the current published schema.
+
 ## 1. Executive summary
 
 This document is the authoritative logical data model for the first commercial AS ONE core. It converts the useful concepts found in the AS POS V1 prototype into a secure PostgreSQL design for multiple companies, branches, devices, registers, offline terminals, and horizontally scaled API instances.

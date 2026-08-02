@@ -84,6 +84,26 @@ Detailed sales and inventory behavior requires separate approval before implemen
 - API compatibility and migration safety.
 - Performance measurement against explicit service objectives.
 
+## Visible platform entrypoint delivery gates
+
+1. **10.1 — Discovery (complete):** confirm that no production frontend exists
+   and select a read-only AS ONE dashboard as the first visible product.
+2. **10.2 — Browser authentication and context contract (complete):** resolve
+   multi-company bootstrap, company/branch switching, browser refresh cookies,
+   CSRF, CORS, compatibility, and the future additive migration contract. See
+   [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
+3. **10.3 — Web foundation:** create the approved Flutter Web application,
+   design tokens, typed minimal API client, and non-secret environment model.
+4. **10.4 — Login and session UI:** implement credential, company, branch,
+   refresh, expiry, permission, and logout states after the server contract is
+   implemented.
+5. **10.5 — Read-only dashboard:** show real authorized context, catalog, and
+   inventory reads without introducing sales or payment behavior.
+6. **10.6 — Deployment foundation:** add reviewed static/API artifacts, CI,
+   ingress, secrets, observability, and rollback controls.
+7. **10.7 — Secure demo:** publish synthetic demo data only after DNS, TLS,
+   browser security, migrations, backup, and smoke-test gates pass.
+
 ## Inventory recovery delivery gates
 
 1. **3.3I.4 — Repair contract (complete):** repair strategies, finding

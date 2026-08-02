@@ -16,6 +16,7 @@ Every future decision that materially affects architecture, module boundaries, d
 | [ADR-0004](ADR-0004-inventory-ledger.md) | Immutable inventory ledger and rebuildable balances |
 | [ADR-0005](ADR-0005-idempotency-and-outbox.md) | Transactional idempotency, audit, and outbox |
 | [ADR-0006](ADR-0006-tenant-isolation.md) | Authenticated tenant scope and composite isolation |
+| [ADR-0007](ADR-0007-browser-authentication-and-context.md) | Browser refresh transport and company/branch context selection |
 
 ## When to create an ADR
 
@@ -97,4 +98,3 @@ Links to relevant documentation, issues, or evidence.
 - Use PostgreSQL as the transactional source of truth.
 - Use Flutter Web for product applications.
 - Use Cloudflare for edge services and R2 object storage.
-- Define authentication and rotating refresh-token sessions.

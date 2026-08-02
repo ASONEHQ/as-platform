@@ -12,6 +12,11 @@ Use least privilege, deny by default, defense in depth, secure defaults, auditab
 - Detect refresh-token reuse and revoke affected sessions.
 - Protect recovery and enrollment flows against enumeration and abuse.
 - Require stronger authentication for platform and tenant administrators when supported.
+- Browser access tokens remain in memory; rotating refresh tokens use the
+  host-only HttpOnly cookie and CSRF controls defined in
+  [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
+- Mobile and POS refresh credentials remain in platform secure storage and do
+  not depend on browser cookies.
 
 ## Authorization and tenant isolation
 

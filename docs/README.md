@@ -31,6 +31,7 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [DATABASE.md](DATABASE.md) | Data conventions, integrity, migrations, and recovery |
 | [DATABASE_FOUNDATION.md](DATABASE_FOUNDATION.md) | Implemented PostgreSQL schema, migrations, isolation, and lifecycle |
 | [AUTHENTICATION_FOUNDATION.md](AUTHENTICATION_FOUNDATION.md) | Global identity login, contextual sessions, token rotation, RBAC, revocation, and audit |
+| [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md) | Browser login challenge, company/branch context switching, cookies, CSRF, CORS, and compatibility |
 | [ADMINISTRATION_FOUNDATION.md](ADMINISTRATION_FOUNDATION.md) | Multi-tenant companies, memberships, authorization, branch access, devices, audit, and outbox |
 | [SETTINGS_FOUNDATION.md](SETTINGS_FOUNDATION.md) | Typed company and branch settings, effective resolution, concurrency, audit, and outbox |
 | [INVENTORY_ENGINE.md](INVENTORY_ENGINE.md) | Approved inventory architecture, proposed contracts, ledger rules, workflows, and future NFC/RFID extension |

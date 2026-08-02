@@ -6,7 +6,7 @@ TASK 09.1 implements authentication contracts E001–E007: login, refresh, logou
 
 ## Identity and context
 
-`users` remains the global identity. Authentication selects an active `company_memberships` record and may narrow authority to an authorized branch and active device. Client-provided identifiers request a context; they never grant authority. A user with multiple active memberships must select a company. Branch authority comes from active company-wide or branch-scoped roles.
+`users` remains the global identity. Authentication selects an active `company_memberships` record and may narrow authority to an authorized branch and active device. Client-provided identifiers request a context; they never grant authority. A user with multiple active memberships selects a company through the short-lived challenge defined for the future browser-compatible flow; the current implementation still requires `company_id` directly. Branch authority comes from active company-wide or branch-scoped roles.
 
 ## Login flow
 
@@ -60,7 +60,9 @@ Secrets come from environment or a future external secret manager. `.env.example
 ## Remaining risks and decisions
 
 - Select production secret management and asymmetric key rotation before external launch.
-- Approve cookie and CSRF policy if browser refresh moves to HTTP-only cookies.
+- Browser cookie, CSRF, multi-company bootstrap, and context-switching policy is
+  resolved by [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md)
+  and ADR-0007. Its additive challenge schema and routes remain unimplemented.
 - Define credential enrollment, password changes, lockout escalation, recovery, and breach response.
 - Define session and audit retention periods.
 - Add MFA and stronger device attestation only through later approved tasks.

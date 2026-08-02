@@ -247,8 +247,8 @@ Effects use `audit / outbox`; `—` means no domain audit/event beyond security 
 
 | ID | Method and route; purpose | Permission / scope | Inputs | Success / errors | Idempotency, concurrency, effects |
 | --- | --- | --- | --- | --- | --- |
-| E001 | `POST /auth/login`; establish session | Public; requested company/branch only narrows verified membership | `P`; body `identifier*`, `password*`, optional `company_id`, `branch_id`, `device_id` | `200` access/session representation; `invalid_credentials`, scope mismatch, `device_revoked`, rate limit | Not idempotent; credential/session security audit / `auth.session.started` only for authorized security consumers |
-| E002 | `POST /auth/refresh`; rotate refresh token | Valid refresh session and company context | `P`; refresh credential through the approved secure transport; optional `device_id` binding | `200` new access token and rotated refresh result; `session_expired`, reuse detection | Single-use rotation under session version lock; audit rotation/reuse / `auth.session.revoked` on reuse |
+| E001 | `POST /auth/login`; establish session or issue company-selection challenge | Public; requested company/branch only narrows verified membership | `P`; body `identifier*`, `password*`, optional `company_id`, `branch_id`, `device_id`; optional explicit client-transport header | `200` authenticated result or `company_selection_required`; `invalid_credentials`, scope mismatch, `device_revoked`, rate limit | Not idempotent; no normal session for selection outcome; credential/session security audit / `auth.session.started` only for authorized security consumers |
+| E002 | `POST /auth/refresh`; rotate refresh token | Valid refresh session and company context | `P`; exactly one approved transport: browser host-only cookie or native/POS body credential | `200` new access token and rotated refresh result; `session_expired`, reuse detection | Single-use rotation under session version lock; audit rotation/reuse / `auth.session.revoked` on reuse |
 | E003 | `POST /auth/logout`; revoke current session | Current session | `S`; no body unless transport requires refresh-session selector | `204`; session errors remain safe/idempotent | Repeated revoke succeeds; audit / `auth.session.revoked` |
 | E004 | `POST /auth/logout-all`; revoke actor's sessions in current company | Current user/company | `S`; body optional `except_current=false` | `200` `{revoked_count}` | Idempotent result by current state; audit / `auth.user_sessions.revoked` |
 | E005 | `GET /auth/session`; current session metadata | Current session/company | `S`; no params | `200` session ID, expiry, company, permitted branches, device, security flags; Common | Query; — / — |
@@ -261,8 +261,8 @@ Refresh tokens are never returned in URLs, logs, audit payloads, or ordinary JSO
 
 | ID | Method and route; purpose | Permission / scope | Inputs | Success / errors | Idempotency, concurrency, effects |
 | --- | --- | --- | --- | --- | --- |
-| E008 | `GET /context/companies`; companies available to actor | Authenticated memberships | `S`; cursor, limit, status | `200` company summaries; Common | Query; — / — |
-| E009 | `GET /context/branches`; authorized branches in active company | Active company membership | `S`; cursor, limit, status | `200` branch summaries and default marker; Common | Query; — / — |
+| E008 | `GET /context/companies`; companies currently available to an authenticated actor | Authenticated memberships; not pre-session bootstrap | `S`; cursor, limit, status | `200` safe eligible company summaries; Common | Query; current eligibility revalidated / — |
+| E009 | `GET /context/branches`; authorized branches in active company | Active company membership | `S`; cursor, limit, status | `200` branch summaries, default marker, and explicit `company_wide_access`; Common | Query; empty list never implies company-wide access / — |
 | E010 | `GET /companies/{company_id}`; company detail | `company.read`; company | `Q`; path company UUID | `200 company`; Common | ETag; — / — |
 | E011 | `PATCH /companies/{company_id}`; update safe company fields | `company.update`; company | `O`; path; body allowlisted `display_name`, `timezone`, `status` transition | `200 company`; Common+V+OC | Optimistic; `company.updated` / `company.updated` |
 | E012 | `GET /companies/{company_id}/branches`; list branches | `branch.read`; company, filtered by actor branch access unless company-wide | `S`; cursor, limit, status, updated_after | `200` branches; Common | Query; — / — |
@@ -2030,6 +2030,25 @@ The existing findings lifecycle, audit log and idempotency record support this
 surface. Preview remains ephemeral and repair detail remains audit evidence, so
 no preview table, repair table, schema change or migration 0009 is approved.
 
+## 22.4 Browser authentication and context — E161-E163
+
+TASK 10.2 reserves the first continuous IDs after E160. The authoritative
+request, response, browser transport, CSRF, CORS, state-machine, audit, error,
+and compatibility rules are in
+[BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
+
+| ID | Method and route | Scope | Request | Success and effects |
+| --- | --- | --- | --- | --- |
+| E161 | `POST /auth/company-selections` | Valid short-lived login challenge; no normal session | Strict challenge token, company ID, optional branch/device | `200` normal login result; consumes challenge and creates session atomically |
+| E162 | `POST /auth/company-switches` | Current authenticated user; active target membership | Strict company ID and optional branch | `200` replacement credentials; new company session and old-session revocation atomic |
+| E163 | `POST /auth/branch-switches` | Current company membership and server-authorized branch | Strict nullable branch ID | `200` replacement credentials; context revalidation and refresh-generation rotation atomic |
+
+These routes are **Approved contract, not implemented**. No alias, generic
+context PATCH, or client-controlled membership/permission field is approved.
+E161 is auth-rate-limited. E162-E163 use bearer authentication for native/POS
+or cookie plus CSRF controls for browsers. None uses `Idempotency-Key`; their
+single-use challenge or credential generation provides the concurrency guard.
+
 ## 23. Security, audit, and event requirements
 
 - Validate headers, paths, queries, and bodies before invoking a use case; reject unknown command fields.
@@ -2045,20 +2064,20 @@ no preview table, repair table, schema change or migration 0009 is approved.
 
 ## 24. Open decisions
 
-The contract intentionally leaves **12 decisions open**:
+The contract intentionally leaves **11 decisions open**. Browser versus native
+refresh transport is resolved by ADR-0007:
 
-1. Browser versus native refresh-token transport (HTTP-only cookie, protected native storage, or both).
-2. Default/maximum collection page sizes and domain-specific search limits.
-3. Maximum sync batch size, payload size, offline age, replay retention, and sequence-reset recovery.
-4. User enrollment/invitation and initial credential-verification flow.
-5. Operations, if any, allowed without an open cash session.
-6. Effective price precedence among company, branch, channel, and future rule sources.
-7. Tax calculation and fiscal rounding rules beyond the accepted MXN commercial baseline.
-8. Electronic payment provider state mapping, authorization/capture policy, and webhook contracts.
-9. Exact boundary between eligible sale cancellation and required refund.
-10. Refund approval thresholds, separation of duties, and original-branch requirements.
-11. Whether physical inventory counts need their own durable aggregate/table before implementation; the current core records only resulting movements.
-12. Checkpoint retention/expiry, audit/event payload retention, and recovery behavior after a checkpoint is no longer available.
+1. Default/maximum collection page sizes and domain-specific search limits.
+2. Maximum sync batch size, payload size, offline age, replay retention, and sequence-reset recovery.
+3. User enrollment/invitation and initial credential-verification flow.
+4. Operations, if any, allowed without an open cash session.
+5. Effective price precedence among company, branch, channel, and future rule sources.
+6. Tax calculation and fiscal rounding rules beyond the accepted MXN commercial baseline.
+7. Electronic payment provider state mapping, authorization/capture policy, and webhook contracts.
+8. Exact boundary between eligible sale cancellation and required refund.
+9. Refund approval thresholds, separation of duties, and original-branch requirements.
+10. Whether physical inventory counts need their own durable aggregate/table before implementation; the current core records only resulting movements.
+11. Checkpoint retention/expiry, audit/event payload retention, and recovery behavior after a checkpoint is no longer available.
 
 These decisions must be resolved through product policy, provider evidence, operational measurement, or a new ADR. Implementers must not choose silently.
 
@@ -2077,10 +2096,11 @@ Before implementing an endpoint:
 
 ## 26. Contract inventory
 
-- Endpoints: **96**.
+- Original core endpoints: **96**; browser context reservations: **3**
+  (E161-E163).
 - Permission keys: **53**.
 - State machines: **6**.
 - States: **29**.
 - Allowed transitions: **34**.
 - Normative examples: **12**.
-- Open decisions: **12**.
+- Open decisions: **11**.
