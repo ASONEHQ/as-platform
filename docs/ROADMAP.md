@@ -94,7 +94,15 @@ Detailed sales and inventory behavior requires separate approval before implemen
    no public route exists in this block.
 3. **3.3I.5 — Bounded repair application:** implement finding management and
    proven projection repairs with PostgreSQL concurrency evidence.
-4. **3.4 — Operational recovery:** add scheduled execution, workers, CLI and
-   runbooks, full/shadow rebuild, outbox replay, retention, monitoring,
-   alerting, backup/restore and disaster-recovery exercises.
+4. **3.4A — Operational recovery contract and runbooks (current):** freeze
+   recovery objectives, backup/restore policy, shadow-rebuild controls,
+   monitoring, incident roles and validation exercises without executable
+   automation. See [OPERATIONAL_RUNBOOKS.md](OPERATIONAL_RUNBOOKS.md),
+   [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md),
+   [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md), and
+   [MONITORING.md](MONITORING.md).
+5. **3.4B — Recovery automation (future, separately approved):** implement only
+   the workers, commands, schedules and provider configuration required by the
+   accepted 3.4A contract. Full/shadow rebuild and outbox recovery remain
+   unavailable until this gate is approved and tested.
 
