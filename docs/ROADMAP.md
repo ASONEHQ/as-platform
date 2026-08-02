@@ -92,6 +92,9 @@ Detailed sales and inventory behavior requires separate approval before implemen
    multi-company bootstrap, company/branch switching, browser refresh cookies,
    CSRF, CORS, compatibility, and the future additive migration contract. See
    [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
+   **10.2B.1** completes that contract by freezing durable, server-owned
+   `sessions.transport_mode`; implementation requires the reviewed additive
+   migration `0010_auth_session_transport_mode` before TASK 10.2B resumes.
 3. **10.3 — Web foundation:** create the approved Flutter Web application,
    design tokens, typed minimal API client, and non-secret environment model.
 4. **10.4 — Login and session UI:** implement credential, company, branch,

@@ -23,6 +23,26 @@ The current refresh-token family, generation, rotation, reuse detection, and
 revocation model is reusable. Browser transport is not: the refresh token is
 currently returned in JSON and CORS has credentials disabled.
 
+## Durable session transport
+
+Every normal session has one server-owned, durable `transport_mode`:
+`browser` or `bearer`. It is selected and validated only while the server
+creates the authenticated session, persisted on `sessions`, returned in the
+safe session representation, and authoritative for refresh, context switching,
+and logout. It is never inferred from `User-Agent`, headers, or cookie presence
+after creation and cannot be changed within a session family.
+
+`client_type` and `transport_mode` remain distinct. Login challenges retain
+`client_type=browser|mobile|pos`; the closed mapping is `browser -> browser`,
+`mobile -> bearer`, and `pos -> bearer`. Any requested combination outside this
+mapping is `validation_error`. Challenge completion revalidates this mapping
+and persists the same canonical transport on the new session.
+
+`session_refresh_tokens` does not duplicate the mode. Refresh-token lookup must
+resolve the parent session before accepting the credential, and the parent
+`sessions.transport_mode` controls the allowed source. This avoids two
+transport authorities that could diverge.
+
 ## Canonical login flow
 
 ### Single eligible company
@@ -80,8 +100,8 @@ Paths are below `/api/v1`.
 
 | ID | Method and path | Contract |
 | --- | --- | --- |
-| E001 | `POST /auth/login` | Existing strict body. Returns either normal login success or `company_selection_required`; no business permission. Browser transport is explicitly requested by `X-ASONE-Client: browser`; absent means bearer compatibility. |
-| E002 | `POST /auth/refresh` | Accepts exactly one transport: browser cookie or `refresh_token` body. Ambiguous or missing transport is `validation_error`. Rotates once and returns a new access token. |
+| E001 | `POST /auth/login` | Existing strict body. Returns either normal login success or `company_selection_required`; no business permission. `X-ASONE-Client` declares `browser`, `mobile`, or `pos` only during login; absent means bearer compatibility. The server validates and persists the canonical mode. |
+| E002 | `POST /auth/refresh` | Resolves the parent session and accepts exactly the source authorized by its stored mode: browser host-only cookie or bearer/native body credential. Ambiguous, missing, or mismatched transport is `validation_error`. |
 | E003 | `POST /auth/logout` | Revokes current session idempotently; browser requests also clear the refresh cookie. |
 | E004 | `POST /auth/logout-all` | Preserves current-company scope and `except_current`; browser cookie is cleared when current session is revoked. |
 | E005 | `GET /auth/session` | Returns the canonical safe session context and security flags. |
@@ -89,9 +109,9 @@ Paths are below `/api/v1`.
 | E007 | `GET /auth/permissions` | Recalculates effective permissions for current or authorized requested branch. |
 | E008 | `GET /context/companies` | After authentication, lists the actor's currently eligible company memberships; it is not the pre-session bootstrap mechanism. |
 | E009 | `GET /context/branches` | Lists current-company branches the server authorizes and returns `company_wide_access`. |
-| E161 | `POST /auth/company-selections` | Public challenge completion. Strict body `challenge_token`, `company_id`, optional `branch_id` and `device_id`. Returns normal login success; not idempotent, single-use, auth rate-limited. |
-| E162 | `POST /auth/company-switches` | Current session. Strict body `company_id`, optional `branch_id`. Creates a new company-bound session and credentials, then revokes the previous session atomically. No business permission or idempotency key. |
-| E163 | `POST /auth/branch-switches` | Current session. Strict body `branch_id` nullable. Revalidates scope, updates context, advances the refresh generation, and returns replacement credentials atomically. Null is allowed only with company-wide authority. |
+| E161 | `POST /auth/company-selections` | Public challenge completion. Strict body `challenge_token`, `company_id`, optional `branch_id` and `device_id`; no transport override. Returns normal login success using the challenge's validated mapping. |
+| E162 | `POST /auth/company-switches` | Current session. Strict body `company_id`, optional `branch_id`; no transport field. Creates a new session with the current mode and revokes the previous session atomically. |
+| E163 | `POST /auth/branch-switches` | Current session. Strict body `branch_id` nullable; no transport field. Revalidates scope, preserves mode, updates context, advances generation, and returns replacement credentials atomically. |
 
 E161-E163 accept request/correlation IDs, reject unknown fields, and never trust
 payload ownership. E162-E163 are protected by authenticated-session policy,
@@ -102,7 +122,7 @@ CSRF for cookie clients, and dedicated rate limits. No aliases are approved.
 The safe representation contains `session_id`, `user_id`, `membership_id`,
 `company_id`, nullable `branch_id`, nullable `device_id`,
 `permitted_branch_ids`, `company_wide_access`, `status`,
-`refresh_generation`, `issued_at`, `expires_at`, nullable `revoked_at`, and
+`transport_mode`, `refresh_generation`, `issued_at`, `expires_at`, nullable `revoked_at`, and
 nullable `last_used_at`. Access-token generation is represented by the current
 session refresh generation and must be checked against server session state;
 stale access tokens cannot expand authority.
@@ -139,6 +159,14 @@ Mobile and POS continue sending bearer access tokens and opaque refresh tokens
 in the E002 JSON body, stored in platform secure storage. They never depend on
 cookies. `X-ASONE-Client` selects `browser`, `mobile`, or `pos`; transport
 mismatch is rejected rather than silently falling back.
+
+For `browser` sessions, E002 accepts the refresh token only from the canonical
+cookie, rejects body credentials and conflicting sources, requires CSRF, sets
+the replacement cookie, and omits the refresh token from JSON. For `bearer`
+sessions, E002 accepts only the approved body credential, rejects cookie
+authentication, does not require CSRF solely because of transport, and returns
+the rotated refresh token in JSON. Missing required sources are
+`validation_error`; a credential never authorizes its own transport.
 
 ## CSRF and CORS
 
@@ -197,7 +225,10 @@ E003 is idempotent for an authenticated or safely identified current session;
 its public response is `204` whether already revoked or newly revoked. E004
 returns the current-state revoked count and never reveals other users. Raw or
 foreign tokens receive the same safe session error. Browser responses clear
-the cookie even when the server session is already unavailable.
+the cookie even when the server session is already unavailable. Bearer logout
+has no cookie dependency. Logout-all clears the current browser cookie when it
+revokes the current browser session; it does not manufacture cookie behavior
+for bearer sessions.
 
 ## Public errors
 
@@ -265,18 +296,18 @@ and refresh rotation are each single PostgreSQL transactions.
 
 Classification: **B — minimal additive migration required**.
 
-Existing session and refresh tables support normal sessions, context fields,
-generation, rotation, reuse, expiry, and revocation. Cookie transport needs no
-schema. A durable single-use challenge and hashed CSRF secret do.
+Migration `0009` already adds the durable single-use challenge and remains
+unchanged. The future additive migration
+`0010_auth_session_transport_mode` adds `sessions.transport_mode` as `NOT NULL`
+with a `browser|bearer` check and `bearer` default for historical rows. It has
+no destructive operation and does not alter `session_refresh_tokens`.
 
-Future migration `0009` must add `auth_login_challenges` with UUID primary key,
-`user_id`, token hash unique, bounded eligible membership UUID array or child
-rows, optional binding hash, CSRF hash, `expires_at`, attempts/max attempts,
-`consumed_at`, `invalidated_at`, safe invalidation reason, and timestamps.
-Indexes cover token hash, user/expiry, and cleanup. Memberships are revalidated
-at consumption; captured IDs never grant authority. No `company_id` on the
-pre-session header is authoritative. The exact physical design requires a
-separate reviewed implementation block; this task creates no migration.
+The default preserves every historical body-transport client. New session
+creation must always write the validated value explicitly; the default exists
+for safe backfill and compatibility, not client selection. The column is
+immutable within a session family. E162 copies it to the replacement session;
+E163 preserves it on the existing session. This reconciliation documents the
+future migration but does not create it.
 
 ## Frontend contract
 
@@ -300,4 +331,3 @@ one v1 deprecation window, `company_scope_mismatch` from the old multi-company
 login remains accepted by clients, while updated servers return the structured
 selection outcome. E005-E009 additions are response-additive. No existing
 route, permission, tenant rule, refresh rotation, or audit control is removed.
-

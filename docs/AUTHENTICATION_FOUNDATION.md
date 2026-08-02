@@ -32,12 +32,24 @@ Unknown identifiers and incorrect passwords both return `invalid_credentials`. U
 - Access tokens are short-lived and contain no permission list.
 - Refresh tokens are opaque 384-bit random values. The initial cross-client contract transports them in the request body over mandatory production TLS.
 - PostgreSQL stores only SHA-256 refresh-token hashes.
+- Each session will persist a server-owned `transport_mode` (`browser` or
+  `bearer`) under the additive migration approved by TASK 10.2B.1. Historical
+  sessions backfill to `bearer`; new sessions write the validated mode.
+- Login challenge `client_type` remains `browser|mobile|pos`, mapped as
+  `browser -> browser` and `mobile|pos -> bearer`.
 - Tokens are prohibited in URLs, logs, and audit metadata.
 - Asymmetric signing and key rotation remain a production hardening decision behind the isolated token component.
 
 ## Rotation and reuse detection
 
-`sessions` stores the family and current generation. `session_refresh_tokens` retains hashed generations with `active`, `rotated`, `revoked`, or `reused` status. Rotation locks the presented row, marks it rotated, inserts the next hash, and advances the session atomically. Reuse of a rotated hash revokes the session family, marks the reused generation, revokes remaining active hashes, and records safe audit evidence.
+`sessions` stores the family, current generation, and authoritative transport
+mode. `session_refresh_tokens` retains hashed generations with `active`,
+`rotated`, `revoked`, or `reused` status and does not duplicate transport mode;
+lookup resolves the parent session before accepting a source. Rotation locks
+the presented row, marks it rotated, inserts the next hash, and advances the
+session atomically. Reuse of a rotated hash revokes the session family, marks
+the reused generation, revokes remaining active hashes, and records safe audit
+evidence.
 
 ## RBAC, revocation, and audit
 
@@ -60,9 +72,11 @@ Secrets come from environment or a future external secret manager. `.env.example
 ## Remaining risks and decisions
 
 - Select production secret management and asymmetric key rotation before external launch.
-- Browser cookie, CSRF, multi-company bootstrap, and context-switching policy is
-  resolved by [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md)
-  and ADR-0007. Its additive challenge schema and routes remain unimplemented.
+- Browser cookie, CSRF, durable transport mode, multi-company bootstrap, and
+  context-switching policy are resolved by
+  [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md) and
+  ADR-0007. Challenge schema exists in migration `0009`; transport persistence
+  requires the separately implemented future migration `0010`.
 - Define credential enrollment, password changes, lockout escalation, recovery, and breach response.
 - Define session and audit retention periods.
 - Add MFA and stronger device attestation only through later approved tasks.

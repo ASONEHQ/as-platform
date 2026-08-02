@@ -247,15 +247,20 @@ Effects use `audit / outbox`; `—` means no domain audit/event beyond security 
 
 | ID | Method and route; purpose | Permission / scope | Inputs | Success / errors | Idempotency, concurrency, effects |
 | --- | --- | --- | --- | --- | --- |
-| E001 | `POST /auth/login`; establish session or issue company-selection challenge | Public; requested company/branch only narrows verified membership | `P`; body `identifier*`, `password*`, optional `company_id`, `branch_id`, `device_id`; optional explicit client-transport header | `200` authenticated result or `company_selection_required`; `invalid_credentials`, scope mismatch, `device_revoked`, rate limit | Not idempotent; no normal session for selection outcome; credential/session security audit / `auth.session.started` only for authorized security consumers |
-| E002 | `POST /auth/refresh`; rotate refresh token | Valid refresh session and company context | `P`; exactly one approved transport: browser host-only cookie or native/POS body credential | `200` new access token and rotated refresh result; `session_expired`, reuse detection | Single-use rotation under session version lock; audit rotation/reuse / `auth.session.revoked` on reuse |
+| E001 | `POST /auth/login`; establish session or issue company-selection challenge | Public; requested company/branch only narrows verified membership | `P`; body `identifier*`, `password*`, optional `company_id`, `branch_id`, `device_id`; optional `X-ASONE-Client: browser|mobile|pos`, absent means bearer compatibility | `200` authenticated result or `company_selection_required`; response includes safe `transport_mode`; validation and existing safe errors | Server maps `browser -> browser`, `mobile|pos -> bearer` and persists it; no normal session for selection outcome; audit / event as defined |
+| E002 | `POST /auth/refresh`; rotate refresh token | Valid refresh session and company context; stored session transport is authoritative | `P`; browser mode requires only host-only cookie plus CSRF; bearer mode requires only body `refresh_token`; conflicting, missing, or mismatched sources rejected | `200` new access token and rotated result; browser sets cookie and omits refresh token from JSON, bearer returns it in JSON; validation and existing session/reuse errors | Single-use rotation under session version lock; audit rotation/reuse / `auth.session.revoked` on reuse |
 | E003 | `POST /auth/logout`; revoke current session | Current session | `S`; no body unless transport requires refresh-session selector | `204`; session errors remain safe/idempotent | Repeated revoke succeeds; audit / `auth.session.revoked` |
 | E004 | `POST /auth/logout-all`; revoke actor's sessions in current company | Current user/company | `S`; body optional `except_current=false` | `200` `{revoked_count}` | Idempotent result by current state; audit / `auth.user_sessions.revoked` |
-| E005 | `GET /auth/session`; current session metadata | Current session/company | `S`; no params | `200` session ID, expiry, company, permitted branches, device, security flags; Common | Query; — / — |
+| E005 | `GET /auth/session`; current session metadata | Current session/company | `S`; no params | `200` session ID, expiry, company, permitted branches, device, immutable `transport_mode`, security flags; Common | Query; — / — |
 | E006 | `GET /auth/me`; current safe identity/memberships | Current session; results limited to actor | `S`; optional `include=memberships,branches` | `200` user and authorized memberships; Common | Query; — / — |
 | E007 | `GET /auth/permissions`; effective capabilities | Current session/company/optional authorized branch | `S`; query optional `branch_id` | `200` permission keys, branch scope, policy/version marker; scope errors | Query; — / — |
 
-Refresh tokens are never returned in URLs, logs, audit payloads, or ordinary JSON when a secure, same-site, HTTP-only cookie transport is selected. The final browser/native refresh transport remains open; rotation and reuse detection are mandatory in either case. Offline authentication is not part of v1.
+Refresh tokens are never returned in URLs, logs, audit payloads, or ordinary
+JSON for `browser` sessions. `sessions.transport_mode` is the durable authority:
+it is selected only during authenticated session creation, never inferred from
+request characteristics, and never changed inside a session family. Bearer
+clients retain body transport and JSON rotation responses. Offline
+authentication is not part of v1.
 
 ## 11. Company, branch, and context — E008–E019
 
@@ -2039,15 +2044,20 @@ and compatibility rules are in
 
 | ID | Method and route | Scope | Request | Success and effects |
 | --- | --- | --- | --- | --- |
-| E161 | `POST /auth/company-selections` | Valid short-lived login challenge; no normal session | Strict challenge token, company ID, optional branch/device | `200` normal login result; consumes challenge and creates session atomically |
-| E162 | `POST /auth/company-switches` | Current authenticated user; active target membership | Strict company ID and optional branch | `200` replacement credentials; new company session and old-session revocation atomic |
-| E163 | `POST /auth/branch-switches` | Current company membership and server-authorized branch | Strict nullable branch ID | `200` replacement credentials; context revalidation and refresh-generation rotation atomic |
+| E161 | `POST /auth/company-selections` | Valid short-lived login challenge; no normal session | Strict challenge token, company ID, optional branch/device; no transport override | `200` normal login result using the challenge's validated client-to-transport mapping; consumes challenge and creates session atomically |
+| E162 | `POST /auth/company-switches` | Current authenticated user; active target membership | Strict company ID and optional branch; no transport field | `200` replacement credentials; new company session copies current `transport_mode` and old-session revocation is atomic |
+| E163 | `POST /auth/branch-switches` | Current company membership and server-authorized branch | Strict nullable branch ID; no transport field | `200` replacement credentials; context revalidation, preserved `transport_mode`, and refresh-generation rotation atomic |
 
 These routes are **Approved contract, not implemented**. No alias, generic
 context PATCH, or client-controlled membership/permission field is approved.
 E161 is auth-rate-limited. E162-E163 use bearer authentication for native/POS
 or cookie plus CSRF controls for browsers. None uses `Idempotency-Key`; their
 single-use challenge or credential generation provides the concurrency guard.
+
+Invalid or unsupported `transport_mode`, an incompatible `client_type`, a body
+token for a browser session, a cookie token for a bearer session, conflicting
+sources, or a missing required source returns the established safe
+`validation_error`. No new endpoint or public error code is reserved.
 
 ## 23. Security, audit, and event requirements
 

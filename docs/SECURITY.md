@@ -17,6 +17,15 @@ Use least privilege, deny by default, defense in depth, secure defaults, auditab
   [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
 - Mobile and POS refresh credentials remain in platform secure storage and do
   not depend on browser cookies.
+- Persist the server-authorized `browser|bearer` mode on each session. Do not
+  infer it from `User-Agent`, headers, cookie presence, or unsigned client
+  state after session creation.
+- Browser sessions accept refresh credentials only from the canonical cookie,
+  require CSRF, and never expose refresh tokens in JSON. Bearer sessions accept
+  only the approved explicit credential source and never authenticate through
+  ambient cookies.
+- Context switches cannot upgrade or downgrade transport: company replacement
+  copies it and branch switching preserves it.
 
 ## Authorization and tenant isolation
 

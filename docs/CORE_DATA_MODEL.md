@@ -230,18 +230,24 @@ flowchart LR
 | Delete/audit | Revoke only; access changes are security events |
 | Offline | Authorized branch list cached with session; cannot be expanded offline |
 
-#### `refresh_sessions`
+#### `sessions` and `session_refresh_tokens`
 
 **Purpose:** rotating, revocable authentication sessions with tenant context.
 
 | Item | Specification |
 | --- | --- |
-| Key fields | `id uuid*`; `company_id uuid*`; `user_id uuid*`; `device_id uuid`; `token_family_id uuid*`; `token_hash text*`; `issued_at*`; `expires_at*`; `rotated_at`; `revoked_at`; `reuse_detected_at`; `ip_hash text`; `user_agent_hash text`; `version bigint*` |
+| Key fields | Session: `id uuid*`; `company_id uuid*`; `user_id uuid*`; `membership_id uuid*`; `branch_id uuid`; `device_id uuid`; `token_family_id uuid*`; `token_generation integer*`; future `transport_mode text*`; expiry/revocation timestamps. Refresh generation: `session_id uuid*`; `token_hash text*`; `generation integer*`; lifecycle timestamps. |
 | Foreign keys | Company, user, optional composite company device |
-| Unique/checks | Unique active token hash; expiry after issue; hashes only; one current token per family generation |
+| Unique/checks | Unique token hash; one token row per session generation; expiry after issue; hashes only. Future session transport check permits only `browser|bearer`; historical rows default to `bearer`. |
 | Ownership | Company-scoped; branch authority is recomputed rather than trusted from the token |
 | Delete/audit | Revoke/expire, retain security metadata by policy; rotation/reuse audited |
-| Offline | Never stored as a reusable plaintext database record on clients; no offline refresh |
+| Offline | Never stored as a reusable plaintext database record on clients; no offline refresh. Browser plaintext refresh credentials remain only in the host-only HttpOnly cookie. |
+
+The server owns `sessions.transport_mode`; it is immutable within a session
+family. Refresh-token rows deliberately do not duplicate it because every
+credential lookup resolves the parent session. Login challenge `client_type`
+remains `browser|mobile|pos` and maps to `browser|bearer` as defined in
+ADR-0007.
 
 ### 6.3 Devices and cash operation
 
@@ -777,6 +783,8 @@ Backups inherit the strictest data classification, encryption, isolation, and de
 11. `sales`, `sale_items`, `payments`, `refunds`, and `refund_items`.
 12. `audit_logs` and `outbox_events`; in implementation these must exist before any critical feature is considered complete.
 13. Seed only platform permission definitions and safe development fixtures; never production credentials or customer data.
+14. Add `sessions.transport_mode` through future additive migration
+    `0010_auth_session_transport_mode`; preserve migrations `0000`-`0009`.
 
 Migrations must be forward-safe, transactional where PostgreSQL permits, and validated with tenant-isolation and rollback/forward-fix exercises.
 

@@ -23,6 +23,16 @@ also need protection from JavaScript without weakening mobile and POS clients.
 - Require Origin validation and a rotating per-session CSRF header for
   cookie-authenticated mutations.
 - Preserve body-transport refresh tokens for mobile and POS secure storage.
+- Persist a server-owned `transport_mode` (`browser|bearer`) on every normal
+  session. Never infer it from request headers, cookies, or `User-Agent` after
+  session creation.
+- Keep challenge `client_type` distinct: `browser` maps to browser transport;
+  `mobile` and `pos` map to bearer transport. Reject incompatible combinations.
+- Resolve refresh credentials through their parent session and enforce its
+  stored mode; do not duplicate transport mode on refresh-token rows.
+- Preserve transport through context changes: company switching copies it to
+  the replacement session and branch switching retains it. V1 exposes no
+  authenticated transport-switch operation.
 - Represent company-wide authority explicitly; never infer it from an empty
   branch list.
 
@@ -40,17 +50,21 @@ also need protection from JavaScript without weakening mobile and POS clients.
 
 ## Consequences
 
-An additive challenge table and migration are required before implementation.
-The API must support two explicit refresh transports, CSRF validation, and
-credential replacement during context switches. The design preserves current
-bearer clients and tenant isolation while making browser authentication viable.
+Migration `0009` provides the additive challenge table. A second minimal,
+additive migration, `0010_auth_session_transport_mode`, is required before the
+browser engine: add `sessions.transport_mode` as `NOT NULL`, checked to
+`browser|bearer`, with `bearer` as the historical-row default. No refresh-token
+column is required. The API must support two explicit refresh transports, CSRF
+validation, and credential replacement during context switches. Existing
+bearer clients remain compatible; new session creation writes its validated
+mode explicitly.
 
 ## Validation
 
 Test anti-enumeration, challenge expiry/single use/attempt limits, cross-user
 and cross-company denial, atomic context replacement, refresh races and reuse,
-cookie attributes, CSRF and CORS rejection, branch/company-wide cases, and
-bearer compatibility.
+cookie attributes, CSRF and CORS rejection, stored-mode/source mismatch,
+conflicting sources, branch/company-wide cases, and bearer compatibility.
 
 ## References
 
