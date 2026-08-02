@@ -2,6 +2,7 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 import {
+  authLoginChallenges,
   auditLog,
   brands,
   branchSettings,
@@ -45,6 +46,7 @@ import {
 import { technicalPermissionCodes } from '../seeds/technical-permissions.js';
 
 const tableNames = [
+  authLoginChallenges,
   companies,
   branches,
   users,
@@ -84,8 +86,17 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
+  it('records exactly ten historical migrations ending in auth challenges', () => {
+    const journal = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
+    ) as { entries: { idx: number; tag: string }[] };
+    expect(journal.entries).toHaveLength(10);
+    expect(journal.entries.map((entry) => entry.idx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(journal.entries.at(-1)?.tag).toBe('0009_auth_login_challenges');
+  });
   it('defines only the approved foundation tables with snake_case names', () => {
     expect(tableNames).toEqual([
+      'auth_login_challenges',
       'companies',
       'branches',
       'users',
@@ -124,6 +135,55 @@ describe('database foundation schema', () => {
       'inventory_count_lines',
     ]);
     for (const table of tableNames) expect(table).toMatch(/^[a-z][a-z0-9_]*$/u);
+  });
+
+  it('defines the login challenge physical security boundary', () => {
+    const config = getTableConfig(authLoginChallenges);
+    const columns = config.columns.map((column) => column.name);
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        'user_id',
+        'token_hash',
+        'eligible_company_ids',
+        'selected_company_id',
+        'device_id',
+        'client_type',
+        'attempt_count',
+        'max_attempts',
+        'expires_at',
+        'consumed_at',
+        'invalidated_at',
+        'metadata',
+        'version',
+      ]),
+    );
+    expect(columns).not.toContain('token');
+    expect(columns).not.toContain('password');
+    expect(config.uniqueConstraints.map((item) => item.name)).toContain(
+      'auth_login_challenges_token_hash_uq',
+    );
+    expect(config.foreignKeys).toHaveLength(3);
+    expect(config.checks.map((item) => item.name)).toEqual(
+      expect.arrayContaining([
+        'auth_login_challenges_token_hash_ck',
+        'auth_login_challenges_status_ck',
+        'auth_login_challenges_attempts_ck',
+        'auth_login_challenges_expiry_ck',
+        'auth_login_challenges_lifecycle_ck',
+        'auth_login_challenges_metadata_ck',
+      ]),
+    );
+    expect(config.indexes.map((item) => item.config.name)).toEqual(
+      expect.arrayContaining([
+        'auth_login_challenges_user_status_idx',
+        'auth_login_challenges_pending_expiry_idx',
+        'auth_login_challenges_created_at_idx',
+      ]),
+    );
+    for (const column of config.columns) {
+      expect(column.getSQLType()).not.toBe('real');
+      expect(column.getSQLType()).not.toBe('double precision');
+    }
   });
 
   it('uses tenant composite constraints for critical relationships and uniqueness', () => {
@@ -486,3 +546,5 @@ describe('database foundation schema', () => {
     expect(lines.columns.find((item) => item.name === 'counted_quantity')?.dataType).toBe('string');
   });
 });
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';

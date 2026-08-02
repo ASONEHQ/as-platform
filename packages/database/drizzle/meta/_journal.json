@@ -64,6 +64,13 @@
       "when": 1785532066324,
       "tag": "0008_inventory_reconciliation_findings",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785655503326,
+      "tag": "0009_auth_login_challenges",
+      "breakpoints": true
     }
   ]
 }

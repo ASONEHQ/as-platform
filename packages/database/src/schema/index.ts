@@ -1,4 +1,5 @@
 export * from './catalog.js';
+export * from './auth-challenges.js';
 export * from './control.js';
 export * from './devices.js';
 export * from './identity.js';
