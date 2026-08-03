@@ -9,4 +9,5 @@ export type {
   TransactionCallback,
 } from './client.js';
 export * from './schema/index.js';
+export { seedTechnicalPermissions } from './seeds/technical-permissions.js';
 export { withTransaction } from './transaction.js';

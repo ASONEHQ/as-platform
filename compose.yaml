@@ -40,7 +40,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          "if [ -n '$${REDIS_PASSWORD}' ]; then redis-cli --no-auth-warning -a '$${REDIS_PASSWORD}' ping; else redis-cli ping; fi | grep PONG",
+          'if [ -n "$${REDIS_PASSWORD}" ]; then redis-cli --no-auth-warning -a "$${REDIS_PASSWORD}" ping; else redis-cli ping; fi | grep PONG',
         ]
       interval: 5s
       timeout: 3s

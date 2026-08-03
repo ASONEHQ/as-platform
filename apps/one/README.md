@@ -25,8 +25,8 @@ From `apps/one`:
 flutter pub get
 flutter analyze
 flutter test
-flutter build web --release --dart-define=AS_ENV=local --dart-define=AS_API_BASE_URL=http://localhost:3000
-flutter run -d chrome --web-hostname=localhost --web-port=8080 --dart-define=AS_ENV=local --dart-define=AS_API_BASE_URL=http://localhost:3000
+flutter build web --release --dart-define=AS_ENV=local --dart-define=AS_API_BASE_URL=http://127.0.0.1:3000
+flutter run -d chrome --web-hostname=127.0.0.1 --web-port=8080 --dart-define=AS_ENV=local --dart-define=AS_API_BASE_URL=http://127.0.0.1:3000
 ```
 
 The current Windows installation is at `C:\src\flutter\bin\flutter.bat` if a shell has not yet inherited the updated `PATH`.
@@ -86,7 +86,8 @@ The shell uses persistent side navigation on desktop, compact navigation on tabl
 ## Local development notes
 
 - Text logo adapter pending approved brand asset.
-- Use the same hostname label for the Flutter origin and local API (`localhost` with `localhost`) so `SameSite=Strict` behaves consistently. With the command above, set the API's non-secret `CORS_ALLOWED_ORIGINS` to include `http://localhost:8080`; do not hardcode that development origin in production.
+- Use the same hostname label for Flutter and the local API (`127.0.0.1`) so `SameSite=Strict` behaves consistently. The tracked local example allows exactly `http://127.0.0.1:8080`; staging and production must provide their own explicit origin allowlists.
+- Provision the local database-backed owner through `pnpm.cmd --filter @asone/api dev:bootstrap-owner` after setting the ignored `AS_DEV_BOOTSTRAP_PASSWORD`. The local identifier is `ceo@inflapark.local`; no password is stored in this repository.
 - No test credentials are stored in the repository. Use ephemeral local fixtures.
 - Telemetry is provider-neutral and records only safe event names/classifications; identifiers, names and credentials are excluded.
 - The authenticated dashboard remains an honest shell with session, connectivity, context and permission information only.
