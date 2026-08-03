@@ -18,6 +18,7 @@ const integration = databaseUrl === undefined ? describe.skip : describe;
 integration('PostgreSQL browser authentication and context engine', () => {
   let database: DatabaseClient;
   let service: AuthService;
+  let tokens: AuthTokens;
   const userId = randomUUID();
   const companyId = randomUUID();
   const secondCompanyId = randomUUID();
@@ -71,7 +72,7 @@ integration('PostgreSQL browser authentication and context engine', () => {
         secondBranchId,
       ],
     );
-    const tokens = new AuthTokens({
+    tokens = new AuthTokens({
       audience: 'asone-browser-auth-test',
       issuer: 'https://api.test.asone.mx',
       secret: 'test-secret-that-is-at-least-32-characters',
@@ -220,6 +221,102 @@ integration('PostgreSQL browser authentication and context engine', () => {
       [login.context.sessionId],
     );
     expect(session.rows[0]).toMatchObject({ status: 'revoked', token_generation: 1 });
+  });
+
+  it('bootstraps CSRF read-only and lets exactly one refresh rotate the generation', async () => {
+    const login = await service.login({
+      identifier: `auth-${userId}@example.test`,
+      password: 'Correct-password-1!',
+      companyId,
+      branchId,
+      clientType: 'browser',
+      transportMode: 'browser',
+    });
+    const before = await database.pool.query<{
+      generation: number;
+      last_used_at: Date | null;
+      session_generation: number;
+      session_status: string;
+      token_status: string;
+    }>(
+      `select t.generation,t.status token_status,s.token_generation session_generation,
+              s.status session_status,s.last_used_at
+       from session_refresh_tokens t join sessions s on s.id=t.session_id
+       where t.token_hash=$1`,
+      [tokens.hashRefreshToken(login.refreshToken)],
+    );
+    const proofs = await Promise.all([
+      service.bootstrapBrowser(login.refreshToken),
+      service.bootstrapBrowser(login.refreshToken),
+    ]);
+    expect(proofs[0].csrfToken).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u);
+    expect(proofs[1].csrfToken).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u);
+    const unchanged = await database.pool.query<{
+      generation: number;
+      last_used_at: Date | null;
+      session_generation: number;
+      session_status: string;
+      token_status: string;
+    }>(
+      `select t.generation,t.status token_status,s.token_generation session_generation,
+              s.status session_status,s.last_used_at
+       from session_refresh_tokens t join sessions s on s.id=t.session_id
+       where t.token_hash=$1`,
+      [tokens.hashRefreshToken(login.refreshToken)],
+    );
+    expect(unchanged.rows).toEqual(before.rows);
+    const refreshes = await Promise.allSettled([
+      service.refresh(login.refreshToken, 'browser', proofs[0].csrfToken),
+      service.refresh(login.refreshToken, 'browser', proofs[1].csrfToken),
+    ]);
+    expect(refreshes.filter((item) => item.status === 'fulfilled')).toHaveLength(1);
+    expect(refreshes.filter((item) => item.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('rejects expired, revoked, reused, and bearer bootstrap credentials safely', async () => {
+    const create = (mode: 'browser' | 'bearer'): ReturnType<AuthService['login']> =>
+      service.login({
+        identifier: `auth-${userId}@example.test`,
+        password: 'Correct-password-1!',
+        companyId,
+        branchId,
+        clientType: mode === 'browser' ? 'browser' : 'mobile',
+        transportMode: mode,
+      });
+
+    const expired = await create('browser');
+    await database.pool.query(
+      `update session_refresh_tokens
+       set created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour'
+       where session_id=$1`,
+      [expired.context.sessionId],
+    );
+    await expect(service.bootstrapBrowser(expired.refreshToken)).rejects.toMatchObject({
+      code: 'session_expired',
+    });
+
+    const revoked = await create('browser');
+    await database.pool.query(
+      `update sessions set status='revoked',revoked_at=now(),revocation_reason='test' where id=$1`,
+      [revoked.context.sessionId],
+    );
+    await expect(service.bootstrapBrowser(revoked.refreshToken)).rejects.toMatchObject({
+      code: 'session_revoked',
+    });
+
+    const reused = await create('browser');
+    await database.pool.query(
+      `update session_refresh_tokens set status='rotated' where session_id=$1`,
+      [reused.context.sessionId],
+    );
+    await expect(service.bootstrapBrowser(reused.refreshToken)).rejects.toMatchObject({
+      code: 'refresh_token_reused',
+    });
+
+    const bearer = await create('bearer');
+    await expect(service.bootstrapBrowser(bearer.refreshToken)).rejects.toMatchObject({
+      code: 'validation_error',
+    });
   });
 });
 

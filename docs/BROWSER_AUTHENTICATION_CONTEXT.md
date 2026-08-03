@@ -294,8 +294,8 @@ including the current company marker and whether switching is permitted. Safe
 items contain company UUID, display name, `current`, `switch_permitted`, and
 only an optional approved logo/default-branch summary. Inactive memberships
 and companies, cross-company permissions, billing, settings, and hidden
-metadata are excluded. The implementation that returns only the active company
-must be expanded before Flutter exposes E162.
+metadata are excluded. The implementation now provides this complete safe list
+before Flutter exposes E162.
 
 E009 remains the authoritative branch source for the current company. It
 returns only active permitted branch summaries with current/default markers

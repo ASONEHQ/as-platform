@@ -98,6 +98,8 @@ Detailed sales and inventory behavior requires separate approval before implemen
    **10.4A** reserves E164 for secure post-reload CSRF bootstrap and clarifies
    E008 as the complete authenticated company-switch directory; both require
    application implementation before the visible login flow resumes.
+   **10.4A.1** implements E164, the valid `__Host-` cookie attributes, and the
+   authoritative E008/E009 discovery responses without schema changes.
 3. **10.3 — Web foundation:** create the approved Flutter Web application,
    design tokens, typed minimal API client, and non-secret environment model.
 4. **10.4 — Login and session UI:** implement credential, company, branch,

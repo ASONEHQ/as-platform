@@ -73,7 +73,9 @@ async function appWithAuth(): Promise<FastifyInstance> {
   return app;
 }
 
-async function appWithLoginAuth(): Promise<FastifyInstance> {
+async function appWithLoginAuth(
+  overrides: Readonly<Record<string, string>> = {},
+): Promise<FastifyInstance> {
   const userId = '00000000-0000-4000-8000-000000000001';
   const companyId = '00000000-0000-4000-8000-000000000002';
   const membershipId = '00000000-0000-4000-8000-000000000003';
@@ -146,7 +148,11 @@ async function appWithLoginAuth(): Promise<FastifyInstance> {
     },
   };
   const app = await buildApp({
-    config: loadApiConfig({ ...environment, CORS_ALLOWED_ORIGINS: 'https://app.test.asone.mx' }),
+    config: loadApiConfig({
+      ...environment,
+      CORS_ALLOWED_ORIGINS: 'https://app.test.asone.mx',
+      ...overrides,
+    }),
     infrastructure: infrastructure({ postgres: 'unavailable', redis: 'unavailable' }),
     logger: pino({ level: 'silent' }),
     authRepository: repository,
@@ -160,7 +166,7 @@ afterEach(async () => {
 });
 
 describe('API foundation', () => {
-  it('registers only the ten approved authentication endpoints', async () => {
+  it('registers only the eleven approved authentication endpoints', async () => {
     const app = await appWithAuth();
     for (const [method, url] of [
       ['POST', '/api/v1/auth/login'],
@@ -170,6 +176,7 @@ describe('API foundation', () => {
       ['POST', '/api/v1/auth/company-selections'],
       ['POST', '/api/v1/auth/company-switches'],
       ['POST', '/api/v1/auth/branch-switches'],
+      ['POST', '/api/v1/auth/browser-bootstrap'],
       ['GET', '/api/v1/auth/session'],
       ['GET', '/api/v1/auth/me'],
       ['GET', '/api/v1/auth/permissions'],
@@ -210,15 +217,77 @@ describe('API foundation', () => {
     expect(browser.headers['set-cookie']).toContain('asone_refresh_local=');
     expect(browser.headers['set-cookie']).toContain('HttpOnly');
     expect(browser.headers['set-cookie']).toContain('SameSite=Strict');
+    expect(browser.headers['set-cookie']).toContain('Path=/');
     expect(browser.headers['cache-control']).toContain('no-store');
     expect(browser.body).not.toContain('refresh_token');
     expect(browser.json()).toMatchObject({
       data: { result: 'authenticated', session: { transport_mode: 'browser' } },
     });
-    const browserBody = browser.json<{ data: { csrf_token: string } }>();
     const setCookie = browser.headers['set-cookie'];
     const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(';')[0];
     if (cookie === undefined) throw new Error('browser cookie missing');
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: { origin: 'https://app.test.asone.mx', cookie },
+      payload: {},
+    });
+    expect(bootstrap.statusCode).toBe(200);
+    expect(bootstrap.headers['cache-control']).toContain('no-store');
+    expect(bootstrap.headers['set-cookie']).toBeUndefined();
+    expect(bootstrap.json()).toMatchObject({
+      data: { result: 'csrf_ready', transport_mode: 'browser' },
+    });
+    expect(bootstrap.body).not.toContain('access_token');
+    expect(bootstrap.body).not.toContain('refresh_token');
+    expect(bootstrap.body).not.toContain('company_id');
+    const bootstrapCsrf = bootstrap.json<{ data: { csrf_token: string } }>().data.csrf_token;
+    const deniedBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: { origin: 'https://evil.example', cookie },
+      payload: {},
+    });
+    expect(deniedBootstrap.statusCode).toBe(403);
+    expect(deniedBootstrap.headers['set-cookie']).toBeUndefined();
+    const missingOriginBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: { cookie },
+      payload: {},
+    });
+    expect(missingOriginBootstrap.statusCode).toBe(403);
+    const bodyCredentialBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: { origin: 'https://app.test.asone.mx', cookie },
+      payload: { refresh_token: 'not-accepted' },
+    });
+    expect(bodyCredentialBootstrap.statusCode).toBe(400);
+    const bearerHeaderBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: {
+        origin: 'https://app.test.asone.mx',
+        cookie,
+        authorization: 'Bearer not-accepted',
+      },
+      payload: {},
+    });
+    expect(bearerHeaderBootstrap.statusCode).toBe(400);
+    expect(bearerHeaderBootstrap.headers['set-cookie']).toBeUndefined();
+    const malformedBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: {
+        origin: 'https://app.test.asone.mx',
+        cookie: 'asone_refresh_local=malformed',
+      },
+      payload: {},
+    });
+    expect(malformedBootstrap.statusCode).toBe(401);
+    expect(malformedBootstrap.headers['set-cookie']).toContain('Path=/');
+    expect(malformedBootstrap.headers['set-cookie']).toContain('Max-Age=0');
     const missingCsrf = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/refresh',
@@ -232,7 +301,7 @@ describe('API foundation', () => {
       headers: {
         origin: 'https://evil.example',
         cookie,
-        'x-csrf-token': browserBody.data.csrf_token,
+        'x-csrf-token': bootstrapCsrf,
       },
       payload: {},
     });
@@ -243,7 +312,7 @@ describe('API foundation', () => {
       headers: {
         origin: 'https://app.test.asone.mx',
         cookie,
-        'x-csrf-token': browserBody.data.csrf_token,
+        'x-csrf-token': bootstrapCsrf,
       },
       payload: {},
     });
@@ -267,6 +336,38 @@ describe('API foundation', () => {
       data: { result: 'authenticated', session: { transport_mode: 'bearer' } },
     });
     expect(bearer.body).toContain('refresh_token');
+    const bearerToken = bearer.json<{ data: { refresh_token: string } }>().data.refresh_token;
+    const bearerBootstrap = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/browser-bootstrap',
+      headers: {
+        origin: 'https://app.test.asone.mx',
+        cookie: `asone_refresh_local=${bearerToken}`,
+      },
+      payload: {},
+    });
+    expect(bearerBootstrap.statusCode).toBe(400);
+    expect(bearerBootstrap.json()).toMatchObject({ error: { code: 'validation_error' } });
+  });
+
+  it('uses a valid __Host cookie and root path in production', async () => {
+    const app = await appWithLoginAuth({ NODE_ENV: 'production' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { origin: 'https://app.test.asone.mx' },
+      payload: {
+        identifier: 'browser@example.test',
+        password: 'Correct-password-1!',
+        client_type: 'browser',
+        transport_mode: 'browser',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['set-cookie']).toContain('__Host-asone_refresh=');
+    expect(response.headers['set-cookie']).toContain('Secure');
+    expect(response.headers['set-cookie']).toContain('Path=/');
+    expect(response.headers['set-cookie']).not.toContain('Domain=');
   });
   it('serves the versioned API envelope without business routes', async () => {
     const app = await appFor();

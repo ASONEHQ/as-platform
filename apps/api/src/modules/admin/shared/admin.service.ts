@@ -31,6 +31,47 @@ export class AdministrationService {
     return company;
   }
 
+  public contextCompanies(actor: AdminActor): Promise<readonly Record<string, unknown>[]> {
+    return this.repository.query<Record<string, unknown>>(
+      `select c.id company_id,c.display_name,(c.id=$2) current,true switch_permitted
+       from company_memberships m
+       join companies c on c.id=m.company_id
+       where m.user_id=$1 and m.status='active' and c.status='active'
+       order by c.display_name,c.id`,
+      [actor.context.userId, actor.context.companyId],
+    );
+  }
+
+  public contextBranches(actor: AdminActor): Promise<{
+    readonly companyId: string;
+    readonly companyWideAccess: boolean;
+    readonly items: readonly Record<string, unknown>[];
+  }> {
+    return this.repository
+      .query<Record<string, unknown>>(
+        `select b.id branch_id,b.code,b.name,b.timezone,(b.id=$3) current,
+                exists(select 1 from user_branch_access uba
+                  where uba.membership_id=$4 and uba.branch_id=b.id
+                    and uba.status='active' and uba.is_default) is_default
+         from branches b
+         where b.company_id=$1 and b.status='active'
+           and ($5::boolean or b.id=any($2::uuid[]))
+         order by b.code,b.id`,
+        [
+          actor.context.companyId,
+          actor.context.permittedBranchIds,
+          actor.context.branchId ?? null,
+          actor.context.membershipId,
+          actor.context.companyWideAccess ?? false,
+        ],
+      )
+      .then((items) => ({
+        companyId: actor.context.companyId,
+        companyWideAccess: actor.context.companyWideAccess ?? false,
+        items,
+      }));
+  }
+
   public async updateCompany(
     actor: AdminActor,
     values: {

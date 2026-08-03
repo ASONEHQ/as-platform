@@ -37,6 +37,11 @@ export interface ChallengeResult {
   readonly companies: readonly { readonly id: string; readonly name: string }[];
 }
 
+export interface BrowserBootstrapResult {
+  readonly csrfToken: string;
+  readonly csrfExpiresAt: Date;
+}
+
 export type LoginResult = TokenResult | ChallengeResult;
 
 interface RequestEvidence {
@@ -328,7 +333,12 @@ export class AuthService {
     if (
       storedMode === 'browser' &&
       (csrfToken === undefined ||
-        !this.#tokens.verifyCsrfToken(csrfToken, found.context.sessionId, found.generation))
+        !this.#tokens.verifyCsrfToken(
+          csrfToken,
+          found.context.sessionId,
+          found.generation,
+          this.#now(),
+        ))
     )
       throw new AppError({
         code: 'validation_error',
@@ -420,7 +430,12 @@ export class AuthService {
     if (
       (context.transportMode ?? 'bearer') === 'browser' &&
       (token === undefined ||
-        !this.#tokens.verifyCsrfToken(token, context.sessionId, context.tokenGeneration ?? 0))
+        !this.#tokens.verifyCsrfToken(
+          token,
+          context.sessionId,
+          context.tokenGeneration ?? 0,
+          this.#now(),
+        ))
     )
       throw new AppError({
         code: 'validation_error',
@@ -431,8 +446,41 @@ export class AuthService {
 
   public csrfToken(context: AuthContext): string | undefined {
     return (context.transportMode ?? 'bearer') === 'browser'
-      ? this.#tokens.csrfToken(context.sessionId, context.tokenGeneration ?? 0)
+      ? this.#tokens.csrfToken(context.sessionId, context.tokenGeneration ?? 0, this.#now()).token
       : undefined;
+  }
+
+  public async bootstrapBrowser(refreshToken: string): Promise<BrowserBootstrapResult> {
+    const found = await this.#repository.findRefreshToken(
+      this.#tokens.hashRefreshToken(refreshToken),
+    );
+    if (found === null || found.refreshExpiresAt <= this.#now()) throw authError('session_expired');
+    if ((found.context.transportMode ?? 'bearer') !== 'browser')
+      throw new AppError({
+        code: 'validation_error',
+        message: 'Browser bootstrap transport is invalid.',
+        statusCode: 400,
+      });
+    if (found.tokenStatus !== 'active')
+      throw new AppError({
+        code: 'refresh_token_reused',
+        message: 'Refresh token reuse was detected.',
+        statusCode: 401,
+      });
+    if (found.status !== 'active')
+      throw new AppError({
+        code: 'session_revoked',
+        message: 'The session was revoked.',
+        statusCode: 401,
+      });
+    if ((found.context.tokenGeneration ?? 0) !== found.generation)
+      throw new AppError({
+        code: 'refresh_token_reused',
+        message: 'Refresh token generation is stale.',
+        statusCode: 401,
+      });
+    const proof = this.#tokens.csrfToken(found.context.sessionId, found.generation, this.#now());
+    return Object.freeze({ csrfToken: proof.token, csrfExpiresAt: proof.expiresAt });
   }
 
   public async switchCompany(

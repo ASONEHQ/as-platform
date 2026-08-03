@@ -7,6 +7,7 @@ import { requireAuthenticatedUser, requireBranchAccess } from './auth.guards.js'
 import type { AuthService, LoginResult, TokenResult } from './auth.service.js';
 import type { ClientType, TransportMode } from './auth.types.js';
 import {
+  browserBootstrapSchema,
   branchSwitchSchema,
   companySelectionSchema,
   companySwitchSchema,
@@ -45,7 +46,7 @@ function setRefreshCookie(
   const secure = config.nodeEnv === 'production' ? '; Secure' : '';
   reply.header(
     'set-cookie',
-    `${cookieName(config)}=${token}; HttpOnly${secure}; SameSite=Strict; Path=/api/v1/auth; Max-Age=${String(maxAge)}`,
+    `${cookieName(config)}=${token}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${String(maxAge)}`,
   );
 }
 
@@ -53,7 +54,7 @@ function clearRefreshCookie(reply: FastifyReply, config: ApiConfig): void {
   const secure = config.nodeEnv === 'production' ? '; Secure' : '';
   reply.header(
     'set-cookie',
-    `${cookieName(config)}=; HttpOnly${secure}; SameSite=Strict; Path=/api/v1/auth; Max-Age=0`,
+    `${cookieName(config)}=; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=0`,
   );
 }
 
@@ -186,6 +187,63 @@ export function registerAuthRoutes(
       if ('outcome' in result)
         return successResponse(challengeData(result), request.requestContext);
       return successResponse(sendTokens(service, result, reply, config), request.requestContext);
+    },
+  );
+
+  app.post<{ Body: Record<string, never> }>(
+    '/api/v1/auth/browser-bootstrap',
+    {
+      schema: browserBootstrapSchema,
+      config: {
+        rateLimit: {
+          max: config.authLoginRateLimitMax,
+          timeWindow: config.authLoginRateLimitWindowMs,
+        },
+      },
+    },
+    async (request, reply) => {
+      requireApprovedOrigin(request, config);
+      if (request.headers.authorization !== undefined)
+        throw new AppError({
+          code: 'validation_error',
+          message: 'Authorization is not accepted for browser bootstrap.',
+          statusCode: 400,
+        });
+      const cookieToken = parseCookies(request.headers.cookie)[cookieName(config)];
+      if (cookieToken === undefined)
+        throw new AppError({
+          code: 'session_expired',
+          message: 'A browser session is required.',
+          statusCode: 401,
+        });
+      if (!/^[A-Za-z0-9_-]{64}$/u.test(cookieToken)) {
+        clearRefreshCookie(reply, config);
+        throw new AppError({
+          code: 'session_expired',
+          message: 'The browser session is invalid.',
+          statusCode: 401,
+        });
+      }
+      try {
+        const result = await service.bootstrapBrowser(cookieToken);
+        reply.header('cache-control', 'no-store');
+        return successResponse(
+          {
+            result: 'csrf_ready',
+            csrf_token: result.csrfToken,
+            csrf_expires_at: result.csrfExpiresAt.toISOString(),
+            transport_mode: 'browser',
+          },
+          request.requestContext,
+        );
+      } catch (error) {
+        if (
+          error instanceof AppError &&
+          ['session_expired', 'session_revoked', 'refresh_token_reused'].includes(error.code)
+        )
+          clearRefreshCookie(reply, config);
+        throw error;
+      }
     },
   );
 

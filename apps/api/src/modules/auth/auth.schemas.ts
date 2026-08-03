@@ -25,6 +25,39 @@ export const refreshSchema = {
   },
 } as const;
 
+export const browserBootstrapSchema = {
+  body: { type: 'object', additionalProperties: false, maxProperties: 0 },
+  response: {
+    200: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['data', 'meta'],
+      properties: {
+        data: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['result', 'csrf_token', 'csrf_expires_at', 'transport_mode'],
+          properties: {
+            result: { const: 'csrf_ready' },
+            csrf_token: { type: 'string', minLength: 64, maxLength: 1024 },
+            csrf_expires_at: { type: 'string', format: 'date-time' },
+            transport_mode: { const: 'browser' },
+          },
+        },
+        meta: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['request_id', 'correlation_id'],
+          properties: {
+            request_id: { type: 'string' },
+            correlation_id: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 export const companySelectionSchema = {
   body: {
     type: 'object',

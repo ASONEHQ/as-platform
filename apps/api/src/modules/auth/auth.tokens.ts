@@ -11,6 +11,14 @@ interface TokenOptions {
   readonly ttlSeconds: number;
 }
 
+interface CsrfPayload {
+  readonly exp: number;
+  readonly gen: number;
+  readonly iat: number;
+  readonly mode: string;
+  readonly sid: string;
+}
+
 export class AuthTokens {
   readonly #audience: string;
   readonly #issuer: string;
@@ -65,15 +73,58 @@ export class AuthTokens {
     return randomBytes(32).toString('base64url');
   }
 
-  public csrfToken(sessionId: string, generation: number): string {
-    return createHmac('sha256', this.#secret)
-      .update(`${sessionId}:${String(generation)}`, 'utf8')
+  public csrfToken(
+    sessionId: string,
+    generation: number,
+    issuedAt = new Date(),
+    ttlSeconds = 120,
+  ): { readonly expiresAt: Date; readonly token: string } {
+    const issued = Math.floor(issuedAt.getTime() / 1_000);
+    const expiresAt = new Date((issued + ttlSeconds) * 1_000);
+    const encoded = Buffer.from(
+      JSON.stringify({
+        exp: issued + ttlSeconds,
+        gen: generation,
+        iat: issued,
+        mode: 'browser',
+        sid: sessionId,
+      }),
+      'utf8',
+    ).toString('base64url');
+    const signature = createHmac('sha256', this.#secret)
+      .update(encoded, 'utf8')
       .digest('base64url');
+    return { expiresAt, token: `${encoded}.${signature}` };
   }
 
-  public verifyCsrfToken(token: string, sessionId: string, generation: number): boolean {
-    const expected = Buffer.from(this.csrfToken(sessionId, generation));
-    const actual = Buffer.from(token);
-    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  public verifyCsrfToken(
+    token: string,
+    sessionId: string,
+    generation: number,
+    now = new Date(),
+  ): boolean {
+    const [encoded, signature, extra] = token.split('.');
+    if (encoded === undefined || signature === undefined || extra !== undefined) return false;
+    const expected = Buffer.from(
+      createHmac('sha256', this.#secret).update(encoded, 'utf8').digest('base64url'),
+    );
+    const actual = Buffer.from(signature);
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return false;
+    try {
+      const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as CsrfPayload;
+      const current = Math.floor(now.getTime() / 1_000);
+      return (
+        payload.sid === sessionId &&
+        payload.gen === generation &&
+        payload.mode === 'browser' &&
+        Number.isInteger(payload.iat) &&
+        Number.isInteger(payload.exp) &&
+        payload.iat <= current &&
+        payload.exp > current &&
+        payload.exp - payload.iat <= 120
+      );
+    } catch {
+      return false;
+    }
   }
 }

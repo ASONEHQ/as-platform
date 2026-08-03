@@ -203,6 +203,18 @@ beforeAll(async () => {
 });
 
 describe('authentication foundation', () => {
+  it('binds CSRF proofs to session, generation, mode, and a short expiry', () => {
+    const { tokens } = fixture();
+    const issuedAt = new Date('2026-08-02T12:00:00.000Z');
+    const proof = tokens.csrfToken('session-one', 3, issuedAt);
+    expect(tokens.verifyCsrfToken(proof.token, 'session-one', 3, issuedAt)).toBe(true);
+    expect(tokens.verifyCsrfToken(proof.token, 'session-two', 3, issuedAt)).toBe(false);
+    expect(tokens.verifyCsrfToken(proof.token, 'session-one', 4, issuedAt)).toBe(false);
+    expect(
+      tokens.verifyCsrfToken(proof.token, 'session-one', 3, new Date('2026-08-02T12:02:01Z')),
+    ).toBe(false);
+  });
+
   it('hashes and verifies passwords with Argon2id', async () => {
     expect(passwordHash).toContain('$argon2id$');
     await expect(verifyPassword(passwordHash, 'Correct-password-1!')).resolves.toBe(true);
@@ -289,7 +301,7 @@ describe('authentication foundation', () => {
       browserOriginApproved: true,
     });
     expect(selected.context).toMatchObject({ companyId, branchId, transportMode: 'browser' });
-    expect(service.csrfToken(selected.context)).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(service.csrfToken(selected.context)).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u);
     await expect(
       service.completeCompanySelection({
         challengeToken: challenge.challengeToken,
@@ -322,6 +334,29 @@ describe('authentication foundation', () => {
     );
     expect(refreshed.context.tokenGeneration).toBe(1);
     expect(service.csrfToken(refreshed.context)).not.toBe(service.csrfToken(login.context));
+  });
+
+  it('bootstraps a browser CSRF proof without rotating refresh state', async () => {
+    const { service } = fixture();
+    const login = await service.beginLogin({
+      identifier: 'operator@example.test',
+      password: 'Correct-password-1!',
+      companyId,
+      clientType: 'browser',
+      transportMode: 'browser',
+    });
+    if ('outcome' in login) throw new Error('unexpected challenge');
+    const [first, second] = await Promise.all([
+      service.bootstrapBrowser(login.refreshToken),
+      service.bootstrapBrowser(login.refreshToken),
+    ]);
+    expect(first.csrfToken).toBe(second.csrfToken);
+    expect(first.csrfExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    const refreshed = await service.refresh(login.refreshToken, 'browser', first.csrfToken);
+    expect(refreshed.context.tokenGeneration).toBe(1);
+    await expect(
+      service.refresh(refreshed.refreshToken, 'browser', first.csrfToken),
+    ).rejects.toMatchObject({ code: 'validation_error' });
   });
 
   it('rejects an unauthorized branch or revoked device context', async () => {

@@ -2049,9 +2049,8 @@ and compatibility rules are in
 | E163 | `POST /auth/branch-switches` | Current company membership and server-authorized branch | Strict nullable branch ID; no transport field | `200` replacement credentials; context revalidation, preserved `transport_mode`, and refresh-generation rotation atomic |
 | E164 | `POST /auth/browser-bootstrap` | Valid browser refresh cookie; no access token | Empty body; exact approved `Origin`; no bearer credential and no `X-CSRF-Token` | `200` `{result: "csrf_ready", csrf_token, csrf_expires_at, transport_mode: "browser"}`; `Cache-Control: no-store` | Does not rotate, create a session, or issue access/context; validates cookie, active browser session, active generation, and returns a short-lived signed CSRF token for E002 |
 
-E161-E163 are implemented. E164 is **Approved contract, not implemented**. No
-alias, generic context PATCH, or client-controlled membership/permission field
-is approved.
+E161-E164 are implemented. No alias, generic context PATCH, or
+client-controlled membership/permission field is approved.
 E161 is auth-rate-limited. E162-E163 use bearer authentication for native/POS
 or cookie plus CSRF controls for browsers. None uses `Idempotency-Key`; their
 single-use challenge or credential generation provides the concurrency guard.

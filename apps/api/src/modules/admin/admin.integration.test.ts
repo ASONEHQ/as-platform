@@ -108,6 +108,62 @@ integration('PostgreSQL administration foundation', () => {
     expect(await service.listBranches(first.actor)).toHaveLength(1);
   });
 
+  it('discovers only active companies and authoritative branch scope', async () => {
+    const tenant = await tenantFixture(database, 'context');
+    const eligibleCompanyId = randomUUID();
+    const inactiveCompanyId = randomUUID();
+    await database.pool.query(
+      `insert into companies (id,legal_name,display_name,slug,status,timezone,currency_code,locale)
+       values ($1,'Eligible','Eligible',$2,'active','UTC','MXN','es-MX'),
+              ($3,'Inactive','Inactive',$4,'suspended','UTC','MXN','es-MX')`,
+      [
+        eligibleCompanyId,
+        `eligible-${eligibleCompanyId}`,
+        inactiveCompanyId,
+        `inactive-${inactiveCompanyId}`,
+      ],
+    );
+    await database.pool.query(
+      `insert into company_memberships (id,company_id,user_id,status)
+       values ($1,$2,$3,'active'),($4,$5,$3,'active')`,
+      [randomUUID(), eligibleCompanyId, tenant.userId, randomUUID(), inactiveCompanyId],
+    );
+    const companies = await service.contextCompanies(tenant.actor);
+    expect(companies).toEqual([
+      expect.objectContaining({ company_id: tenant.companyId, current: true }),
+      expect.objectContaining({ company_id: eligibleCompanyId, current: false }),
+    ]);
+    expect(companies.every((company) => company.switch_permitted === true)).toBe(true);
+
+    const restricted = await service.contextBranches(tenant.actor);
+    expect(restricted).toMatchObject({
+      companyId: tenant.companyId,
+      companyWideAccess: false,
+      items: [expect.objectContaining({ branch_id: tenant.branchId, current: true })],
+    });
+    const corporate = await service.contextBranches({
+      ...tenant.actor,
+      context: {
+        ...tenant.actor.context,
+        branchId: undefined,
+        companyWideAccess: true,
+        permittedBranchIds: [],
+      },
+    });
+    expect(corporate.companyWideAccess).toBe(true);
+    expect(corporate.items).toHaveLength(1);
+    const empty = await service.contextBranches({
+      ...tenant.actor,
+      context: {
+        ...tenant.actor.context,
+        branchId: undefined,
+        companyWideAccess: false,
+        permittedBranchIds: [],
+      },
+    });
+    expect(empty).toMatchObject({ companyWideAccess: false, items: [] });
+  });
+
   it('creates and reads company memberships with safe role and branch includes', async () => {
     const tenant = await tenantFixture(database, 'members');
     const created = await service.createUser(tenant.actor, {
