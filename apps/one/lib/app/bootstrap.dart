@@ -3,7 +3,11 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../core/config/app_config.dart';
+import '../core/networking/api_client.dart';
+import '../core/networking/http_client_factory.dart';
+import '../core/storage/token_vault.dart';
 import '../core/telemetry/telemetry.dart';
+import '../features/authentication/auth_gateway.dart';
 import '../features/authentication/auth_state.dart';
 import 'app.dart';
 
@@ -19,11 +23,28 @@ void bootstrap() {
     return true;
   };
   telemetry.recordEvent('app.start');
+  final vault = MemoryTokenVault();
+  late final AuthController authController;
+  final api = ApiClient(
+    baseUrl: config.apiBaseUrl,
+    transport: createPlatformHttpClient(),
+    readAccessToken: () => vault.accessToken,
+    createCorrelationId: () =>
+        'one-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+  );
+  final gateway = ApiAuthGateway(
+    client: api,
+    vault: vault,
+    readCsrfToken: () => authController.csrfToken,
+  );
+  authController = AuthController(gateway, vault, telemetry);
+  api.onUnauthorized = authController.refresh;
   runApp(
     AsOneApp(
       config: config,
-      authController: AuthController(const AuthStatus.unauthenticated()),
+      authController: authController,
       telemetry: telemetry,
     ),
   );
+  authController.bootstrapSession();
 }

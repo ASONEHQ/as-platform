@@ -59,6 +59,85 @@ void main() {
       ),
     );
   });
+
+  test(
+    'serializes recovery externally and retries a safe GET only once',
+    () async {
+      var sends = 0;
+      var refreshes = 0;
+      final client = ApiClient(
+        baseUrl: Uri.parse('https://api.test.asone.mx/'),
+        transport: _FakeClient((_) {
+          sends++;
+          return sends == 1
+              ? http.Response(
+                  jsonEncode({
+                    'error': {'code': 'session_expired'},
+                  }),
+                  401,
+                )
+              : http.Response(
+                  jsonEncode({
+                    'data': {'ok': true},
+                  }),
+                  200,
+                );
+        }),
+        readAccessToken: () => 'memory-token',
+        createCorrelationId: () => 'correlation-test',
+      )..onUnauthorized = () async => refreshes++;
+      expect((await client.getJson('safe'))['data'], {'ok': true});
+      expect(sends, 2);
+      expect(refreshes, 1);
+    },
+  );
+
+  test('never automatically retries a non-idempotent request', () async {
+    var sends = 0;
+    var refreshes = 0;
+    final client = ApiClient(
+      baseUrl: Uri.parse('https://api.test.asone.mx/'),
+      transport: _FakeClient((_) {
+        sends++;
+        return http.Response(
+          jsonEncode({
+            'error': {'code': 'session_expired'},
+          }),
+          401,
+        );
+      }),
+      readAccessToken: () => 'memory-token',
+      createCorrelationId: () => 'correlation-test',
+    )..onUnauthorized = () async => refreshes++;
+    await expectLater(
+      client.postJson('mutation'),
+      throwsA(isA<ApiException>()),
+    );
+    expect(sends, 1);
+    expect(refreshes, 0);
+  });
+
+  test(
+    'maps malformed success responses without exposing their body',
+    () async {
+      final client = ApiClient(
+        baseUrl: Uri.parse('https://api.test.asone.mx/'),
+        transport: _FakeClient((_) => http.Response('not-json', 200)),
+        readAccessToken: () => null,
+        createCorrelationId: () => 'correlation-test',
+      );
+      await expectLater(
+        client.getJson('malformed'),
+        throwsA(
+          isA<ApiException>().having(
+            (error) => error.failure.code,
+            'safe code',
+            'malformed_response',
+          ),
+        ),
+      );
+    },
+  );
 }
 
 class _FakeClient extends http.BaseClient {

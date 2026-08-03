@@ -2,15 +2,33 @@ import 'package:flutter/material.dart';
 
 import '../../design_system/components/as_components.dart';
 import '../../design_system/tokens/as_tokens.dart';
+import '../../features/authentication/auth_models.dart';
 
 class AsResponsiveScaffold extends StatelessWidget {
   const AsResponsiveScaffold({
     required this.title,
     required this.child,
+    required this.contextLabel,
+    required this.userLabel,
+    required this.companies,
+    required this.branches,
+    required this.companyWideAccess,
+    required this.onCompanySelected,
+    required this.onBranchSelected,
+    required this.onLogout,
     super.key,
   });
+
   final String title;
   final Widget child;
+  final String contextLabel;
+  final String userLabel;
+  final List<CompanySummary> companies;
+  final List<BranchSummary> branches;
+  final bool companyWideAccess;
+  final ValueChanged<String> onCompanySelected;
+  final ValueChanged<String?> onBranchSelected;
+  final VoidCallback onLogout;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -28,8 +46,8 @@ class AsResponsiveScaffold extends StatelessWidget {
                 children: [
                   Container(
                     height: 72,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AsSpacing.x6,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: tablet ? AsSpacing.x6 : AsSpacing.x3,
                     ),
                     decoration: const BoxDecoration(
                       color: AsColors.surface,
@@ -47,16 +65,63 @@ class AsResponsiveScaffold extends StatelessWidget {
                               icon: const Icon(Icons.menu_rounded),
                             ),
                           ),
-                        Text(
-                          title,
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
+                        if (tablet || constraints.maxWidth >= 520)
+                          Flexible(
+                            child: Text(
+                              title,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
                         const Spacer(),
-                        const AsContextChip(label: 'Seleccionar contexto'),
+                        PopupMenuButton<String?>(
+                          tooltip: 'Cambiar sucursal',
+                          onSelected: onBranchSelected,
+                          itemBuilder: (_) => [
+                            if (companyWideAccess)
+                              const PopupMenuItem<String?>(
+                                value: null,
+                                child: Text('Todas las sucursales'),
+                              ),
+                            ...branches.map(
+                              (branch) => PopupMenuItem<String?>(
+                                value: branch.id,
+                                child: Text(branch.name),
+                              ),
+                            ),
+                          ],
+                          child: AsContextChip(label: contextLabel),
+                        ),
                         const SizedBox(width: AsSpacing.x3),
-                        const Tooltip(
-                          message: 'Control de sesión',
-                          child: CircleAvatar(
+                        PopupMenuButton<String>(
+                          tooltip: 'Cuenta y empresa',
+                          onSelected: (value) => value == '__logout__'
+                              ? onLogout()
+                              : onCompanySelected(value),
+                          itemBuilder: (_) => [
+                            PopupMenuItem<String>(
+                              enabled: false,
+                              child: Text(userLabel),
+                            ),
+                            ...companies
+                                .where(
+                                  (company) =>
+                                      company.switchPermitted &&
+                                      !company.current,
+                                )
+                                .map(
+                                  (company) => PopupMenuItem<String>(
+                                    value: company.id,
+                                    child: Text('Cambiar a ${company.name}'),
+                                  ),
+                                ),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem<String>(
+                              value: '__logout__',
+                              child: Text('Cerrar sesión'),
+                            ),
+                          ],
+                          child: const CircleAvatar(
                             child: Icon(Icons.person_outline_rounded),
                           ),
                         ),
@@ -84,6 +149,7 @@ class AsResponsiveScaffold extends StatelessWidget {
 class _Navigation extends StatelessWidget {
   const _Navigation({this.compact = false});
   final bool compact;
+
   @override
   Widget build(BuildContext context) => Container(
     width: compact ? 88 : 248,
@@ -137,6 +203,7 @@ class _NavItem extends StatelessWidget {
   final String label;
   final bool compact;
   final bool selected;
+
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,

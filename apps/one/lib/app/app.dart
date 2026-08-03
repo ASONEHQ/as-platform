@@ -31,5 +31,23 @@ class _AsOneAppState extends State<AsOneApp> {
     debugShowCheckedModeBanner: false,
     theme: AsTheme.light(),
     routerConfig: router,
+    builder: (context, child) => AuthScope(
+      controller: widget.authController,
+      child: child ?? const SizedBox.shrink(),
+    ),
   );
+}
+
+class AuthScope extends InheritedNotifier<AuthController> {
+  const AuthScope({
+    required AuthController controller,
+    required super.child,
+    super.key,
+  }) : super(notifier: controller);
+
+  static AuthController of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<AuthScope>();
+    assert(scope != null, 'AuthScope is missing.');
+    return scope!.notifier!;
+  }
 }

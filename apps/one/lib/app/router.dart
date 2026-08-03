@@ -1,27 +1,41 @@
 import 'package:go_router/go_router.dart';
 
 import '../core/telemetry/telemetry.dart';
+import '../features/authentication/auth_models.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/authentication/screens.dart';
 import '../features/dashboard/dashboard_screen.dart';
 
-GoRouter createRouter(AuthController auth, Telemetry telemetry) => GoRouter(
-  initialLocation: '/bootstrap',
+GoRouter createRouter(
+  AuthController auth,
+  Telemetry telemetry, {
+  String initialLocation = '/bootstrap',
+}) => GoRouter(
+  initialLocation: initialLocation,
   refreshListenable: auth,
   observers: [TelemetryRouteObserver(telemetry)],
   redirect: (context, state) {
     final route = state.matchedLocation;
-    final status = auth.status;
-    if (route == '/bootstrap') return null;
-    return switch (status.phase) {
+    final phase = auth.phase;
+    return switch (phase) {
+      AuthPhase.bootstrapping => route == '/bootstrap' ? null : '/bootstrap',
       AuthPhase.unauthenticated ||
       AuthPhase.failure => route == '/login' ? null : '/login',
-      AuthPhase.companySelectionRequired => '/select-company',
-      AuthPhase.branchSelectionRequired => '/select-branch',
-      AuthPhase.authenticated ||
-      AuthPhase.refreshing => route == '/login' ? '/dashboard' : null,
+      AuthPhase.companySelectionRequired || AuthPhase.selectingCompany =>
+        auth.hasChallenge || auth.context != null
+            ? '/select-company'
+            : '/login',
+      AuthPhase.branchSelectionRequired || AuthPhase.selectingBranch =>
+        auth.context != null ? '/select-branch' : '/login',
+      AuthPhase.authenticated => route == '/dashboard' ? null : '/dashboard',
+      AuthPhase.refreshing =>
+        auth.context == null
+            ? '/bootstrap'
+            : route == '/dashboard'
+            ? null
+            : '/dashboard',
       AuthPhase.authenticating => '/bootstrap',
-      AuthPhase.expired || AuthPhase.revoked => '/login',
+      AuthPhase.expired || AuthPhase.revoked => '/session-ended',
       AuthPhase.unavailable => '/unavailable',
     };
   },
@@ -38,6 +52,10 @@ GoRouter createRouter(AuthController auth, Telemetry telemetry) => GoRouter(
     ),
     GoRoute(path: '/dashboard', builder: (_, _) => const DashboardScreen()),
     GoRoute(path: '/unavailable', builder: (_, _) => const UnavailableScreen()),
+    GoRoute(
+      path: '/session-ended',
+      builder: (_, _) => const SessionEndedScreen(),
+    ),
   ],
   errorBuilder: (_, _) => const UnavailableScreen(notFound: true),
 );

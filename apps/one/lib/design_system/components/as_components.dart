@@ -42,22 +42,40 @@ class AsTextField extends StatelessWidget {
     required this.label,
     this.controller,
     this.keyboardType,
+    this.autofillHints,
+    this.enabled = true,
+    this.onSubmitted,
     super.key,
   });
   final String label;
   final TextEditingController? controller;
   final TextInputType? keyboardType;
+  final Iterable<String>? autofillHints;
+  final bool enabled;
+  final ValueChanged<String>? onSubmitted;
   @override
   Widget build(BuildContext context) => TextField(
     controller: controller,
     keyboardType: keyboardType,
+    autofillHints: autofillHints,
+    enabled: enabled,
+    onSubmitted: onSubmitted,
     decoration: InputDecoration(labelText: label),
   );
 }
 
 class AsPasswordField extends StatefulWidget {
-  const AsPasswordField({required this.label, super.key});
+  const AsPasswordField({
+    required this.label,
+    this.controller,
+    this.enabled = true,
+    this.onSubmitted,
+    super.key,
+  });
   final String label;
+  final TextEditingController? controller;
+  final bool enabled;
+  final ValueChanged<String>? onSubmitted;
   @override
   State<AsPasswordField> createState() => _AsPasswordFieldState();
 }
@@ -66,7 +84,10 @@ class _AsPasswordFieldState extends State<AsPasswordField> {
   bool hidden = true;
   @override
   Widget build(BuildContext context) => TextField(
+    controller: widget.controller,
     obscureText: hidden,
+    enabled: widget.enabled,
+    onSubmitted: widget.onSubmitted,
     autofillHints: const [AutofillHints.password],
     decoration: InputDecoration(
       labelText: widget.label,
