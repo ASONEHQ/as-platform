@@ -45,8 +45,13 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [BACKEND_FOUNDATION.md](BACKEND_FOUNDATION.md) | Implemented HTTP foundation, lifecycle, security, and operations |
 | [SECURITY.md](SECURITY.md) | Identity, authorization, application, and operational security |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Environments, delivery, observability, rollback, and recovery |
-| [POS_V1_AUDIT.md](POS_V1_AUDIT.md) | Technical and functional audit of the AS POS V1 prototype |
 | [adr/README.md](adr/README.md) | Architecture Decision Record index, process, and accepted decisions |
+
+## Historical and archived documents
+
+| Document | Status |
+| --- | --- |
+| [archive/POS_V1_AUDIT.md](archive/POS_V1_AUDIT.md) | Historical. Superseded by [AS_POS_V1_FOUNDATION.md](AS_POS_V1_FOUNDATION.md); its unique risk catalog is merged there. Retained for provenance only — not an active contract. |
 
 `AGENTS.md` at the repository root is the permanent rulebook for contributors and AI agents. This directory is the detailed engineering knowledge base.
 

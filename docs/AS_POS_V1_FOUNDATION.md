@@ -445,6 +445,51 @@ mode, scanner input, and customer-facing display.
    catalog data is insufficient.
 10. Negative and cross-tenant integration tests for every transactional flow.
 
+## Known prototype risks that must not be migrated
+
+The following risk catalog was identified during the original static analysis
+of `AS POS V1.html` (2026-07-21, same artifact hash as above), archived at
+[`docs/archive/POS_V1_AUDIT.md`](archive/POS_V1_AUDIT.md). Each item is
+classified against the architecture and backend state reconciled in this
+document. A classification of *already mitigated* or *historical prototype
+risk* does not assert that a domain's user-facing workflow is complete; it
+asserts only that the specific risk mechanism is avoided, replaced, or does
+not apply going forward. Status must always be verified against the module
+inventory above and the authoritative backend before a screen is built.
+
+| # | Prototype risk | Classification | Rationale |
+| ---: | --- | --- | --- |
+| 1 | Privileged factory credentials embedded in browser source | Historical prototype risk | Specific to the prototype's client-side activation/distributor mechanism; the current architecture has no equivalent client-embedded credential pattern |
+| 2 | Client-visible license-signing secret makes activation forgeable | Historical prototype risk | Same activation mechanism as #1; not part of the approved architecture |
+| 3 | Passwords and PINs stored and compared in plaintext | Already mitigated | `SECURITY.md` requires memory-hard password hashing and prohibits storing or logging plaintext credentials; user/role authentication is implemented per the module inventory above |
+| 4 | Authentication entirely client-side, bypassable via developer tools | Already mitigated | Authentication is server-issued (bearer/session tokens per `API_CONTRACTS.md`'s `S` header profile), not a mutable browser flag |
+| 5 | Authorization is mutable client state | Already mitigated | `API_CONTRACTS.md`: authority derives exclusively from authenticated server context; client-supplied scope mismatches are rejected |
+| 6 | Tenant ownership absent from the data model | Already mitigated | ADR-0006 (tenant isolation, accepted); enforced on every protected query/mutation per `SECURITY.md` |
+| 7 | Branch scope inconsistent, represented only as display strings | Already mitigated | Same tenant/branch isolation enforcement as #6; branch scope is a first-class authorization dimension in `API_CONTRACTS.md` |
+| 8 | Sensitive user access data persisted unencrypted in `localStorage` | Still relevant during Flutter migration | Client-side storage choices are an active discipline for the Flutter app (token/credential storage), not solely a backend guarantee |
+| 9 | Audit entries client-generated, mutable, and lost on reload | Still relevant during Flutter migration | `SECURITY.md` establishes the audit requirement, but a durable, queryable audit read surface is not confirmed implemented in the module inventory above |
+| 10 | Inline event handlers and unrestricted script execution prevent a strong Content Security Policy | Historical prototype risk | Specific to the single-document HTML/inline-script implementation; does not apply to the Flutter rendering model |
+| 11 | Extensive `innerHTML` composition creates cross-site scripting risk | Historical prototype risk | Same reasoning as #10; Flutter does not render arbitrary HTML the way the prototype did |
+| 12 | Unpinned CDN dependency (`@latest`) | Still relevant during Flutter migration | `SECURITY.md` requires pinning dependencies to reviewed versions; an ongoing discipline for every dependency added, not a one-time fix |
+| 13 | Uploaded base64 content lacks authoritative type, size, malware, and ownership controls | Still relevant during Flutter migration | `SECURITY.md` requires bounding and scanning uploads; branding/file upload contracts are noted above as not yet approved |
+| 14 | Browser print windows interpolate values into HTML without a trusted rendering boundary | Deferred operational concern | Receipt/document generation is not yet implemented; disposition already recorded above as "replace implementation with approved artifacts while preserving output appearance" |
+| 15 | Operational data not durable, lost on reload | Still relevant during Flutter migration | Durable sale/cash/payment persistence remains an open backend gap listed above |
+| 16 | Simulated offline queue is memory-only with no delivery guarantee | Still relevant during Flutter migration | ADR-0003 (offline command sync, accepted) governs this architecturally; offline queue, checkpoints, and reconciliation for POS are listed above as not yet implemented |
+| 17 | Simulated backups provide false assurance | Historical prototype risk | Prototype UI theater; backup/restore is not part of the POS interface scope |
+| 18 | JavaScript floating-point arithmetic unsafe for authoritative currency calculations | Already mitigated | ADR-0001 (money and rounding, accepted); `API_CONTRACTS.md` requires money as decimal strings, never floats, system-wide |
+| 19 | Multi-step sale, cash, stock, and return mutations not transactional | Still relevant during Flutter migration | ADR-0005 (idempotency and outbox, accepted) governs this architecturally, but sale/cash/payment endpoints remain unimplemented per the module inventory above |
+| 20 | Sequential in-memory IDs can collide across terminals and restarts | Already mitigated | ADR-0002 (UUID strategy, accepted); `API_CONTRACTS.md` requires UUID public identifiers system-wide |
+| 21 | No idempotency protection for retries or duplicated offline commands | Still relevant during Flutter migration | Already required for inventory (ADR-0004 mandates an idempotency key for offline inventory commands); not yet implemented for POS sale/cash |
+| 22 | Stock is a mutable field rather than an auditable movement ledger | Already mitigated | ADR-0004 (inventory ledger, accepted); movements, balances, posting, and reversal are implemented per the Inventario row above |
+| 23 | Concurrent terminals have no locking, versioning, or conflict-safe source of truth | Still relevant during Flutter migration | Optimistic concurrency (`version` / `ETag` / `If-Match`) already exists for inventory; sale/cash transactional concurrency is not yet implemented |
+| 24 | A single global `DB` and many secondary globals create inconsistent state | Historical prototype risk | Specific to the single-file browser architecture; superseded by a modular backend with PostgreSQL as the source of truth |
+| 25 | Hundreds of functions share mutable state and lack module boundaries | Historical prototype risk | Specific to the prototype's construction; the current repository enforces modular app/package boundaries |
+| 26 | Business logic and DOM manipulation interleaved, cannot be tested independently | Historical prototype risk | The current Flutter POS shell already separates shell, controller, and gateway layers (`pos_shell.dart`, `pos_read_controller.dart`, `pos_read_gateway.dart`) |
+| 27 | Similar rendering, lookup, formatting, and helper logic duplicated | Historical prototype risk | Specific to the prototype's lack of shared components; the Shared AS Design System section above exists to prevent recurrence |
+| 28 | Hard-coded branches, IP addresses, roles, users, dates, catalog items, and mock metrics | Historical prototype risk | Specific to the prototype's demo data; the current architecture uses real tenant-scoped data under ADR-0006 |
+| 29 | Timers and fake network states diverge from UI state and leak across navigation/session changes | Historical prototype risk | Specific to the prototype's simulated infrastructure; not applicable once real network/session state is in place |
+| 30 | Simulated CFDI, email, WhatsApp, AI, PDF/Excel, synchronization, and backup behaviors | Deferred operational concern | Each is explicitly postponed to a separately approved task per the phased plan below (CFDI, AI, notifications, and synchronization are outside the current POS scope) |
+
 ## Recommended implementation phases
 
 ### Phase 0 — Reference freeze and acceptance evidence
