@@ -76,7 +76,12 @@ Secrets come from environment or a future external secret manager. `.env.example
   context-switching policy are resolved by
   [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md) and
   ADR-0007. Challenge schema exists in migration `0009`; transport persistence
-  requires the separately implemented future migration `0010`.
+  is implemented by migration `0010`. Browser reload restoration reserves E164:
+  a cookie-and-Origin-validated read-only bootstrap returns only a short-lived,
+  generation-bound CSRF proof, then E002 performs the normal rotation. E008 is
+  the global-user-derived source of every active company switch destination;
+  E009 remains the current-company branch authority with explicit
+  `company_wide_access`.
 - Define credential enrollment, password changes, lockout escalation, recovery, and breach response.
 - Define session and audit retention periods.
 - Add MFA and stronger device attestation only through later approved tasks.

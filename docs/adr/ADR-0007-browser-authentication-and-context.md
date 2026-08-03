@@ -35,6 +35,14 @@ also need protection from JavaScript without weakening mobile and POS clients.
   authenticated transport-switch operation.
 - Represent company-wide authority explicitly; never infer it from an empty
   branch list.
+- Restore browser sessions after reload through E164: validate the canonical
+  cookie, exact Origin, stored browser mode, active session, and generation;
+  return only a short-lived signed CSRF proof, then let E002 rotate normally.
+  E164 never issues access credentials or context and requires no persistent
+  CSRF storage.
+- Use E008 as the authenticated actor's complete active company-switch
+  directory, derived from the global user in the session; E009 remains the
+  server-authoritative current-company branch directory.
 
 ## Alternatives considered
 
@@ -58,6 +66,10 @@ column is required. The API must support two explicit refresh transports, CSRF
 validation, and credential replacement during context switches. Existing
 bearer clients remain compatible; new session creation writes its validated
 mode explicitly.
+
+E164 and the E008 response clarification reuse existing session, refresh,
+membership, company, transport, and signing state. They require no schema
+change, no CSRF table, and no migration `0011`.
 
 ## Validation
 

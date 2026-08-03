@@ -2035,7 +2035,7 @@ The existing findings lifecycle, audit log and idempotency record support this
 surface. Preview remains ephemeral and repair detail remains audit evidence, so
 no preview table, repair table, schema change or migration 0009 is approved.
 
-## 22.4 Browser authentication and context — E161-E163
+## 22.4 Browser authentication and context — E161-E164
 
 TASK 10.2 reserves the first continuous IDs after E160. The authoritative
 request, response, browser transport, CSRF, CORS, state-machine, audit, error,
@@ -2047,12 +2047,58 @@ and compatibility rules are in
 | E161 | `POST /auth/company-selections` | Valid short-lived login challenge; no normal session | Strict challenge token, company ID, optional branch/device; no transport override | `200` normal login result using the challenge's validated client-to-transport mapping; consumes challenge and creates session atomically |
 | E162 | `POST /auth/company-switches` | Current authenticated user; active target membership | Strict company ID and optional branch; no transport field | `200` replacement credentials; new company session copies current `transport_mode` and old-session revocation is atomic |
 | E163 | `POST /auth/branch-switches` | Current company membership and server-authorized branch | Strict nullable branch ID; no transport field | `200` replacement credentials; context revalidation, preserved `transport_mode`, and refresh-generation rotation atomic |
+| E164 | `POST /auth/browser-bootstrap` | Valid browser refresh cookie; no access token | Empty body; exact approved `Origin`; no bearer credential and no `X-CSRF-Token` | `200` `{result: "csrf_ready", csrf_token, csrf_expires_at, transport_mode: "browser"}`; `Cache-Control: no-store` | Does not rotate, create a session, or issue access/context; validates cookie, active browser session, active generation, and returns a short-lived signed CSRF token for E002 |
 
-These routes are **Approved contract, not implemented**. No alias, generic
-context PATCH, or client-controlled membership/permission field is approved.
+E161-E163 are implemented. E164 is **Approved contract, not implemented**. No
+alias, generic context PATCH, or client-controlled membership/permission field
+is approved.
 E161 is auth-rate-limited. E162-E163 use bearer authentication for native/POS
 or cookie plus CSRF controls for browsers. None uses `Idempotency-Key`; their
 single-use challenge or credential generation provides the concurrency guard.
+
+E164 is browser-only and breaks the safe reload bootstrap deadlock. It accepts
+the canonical host-only refresh cookie automatically sent by the browser,
+requires an exact allowlisted `Origin`, and rejects an Authorization header,
+refresh credential in the body, missing origin, non-browser parent session,
+stale generation, and malformed input. It never returns an access token,
+refresh token, identity, tenant, memberships, permissions, or branch data.
+Concurrent calls for one active generation are read-only and may return
+equivalent proofs; they never rotate, create, duplicate, or revoke sessions.
+
+The E164 proof is a short-lived, tamper-evident server-signed CSRF token bound
+to `session_id`, current refresh generation, `transport_mode=browser`,
+`issued_at`, and `expires_at`. It is invalid after expiry, generation change,
+session revocation, or use with another session/transport. It is memory-only,
+never logged, and requires no database row.
+
+E164 reuses existing safe session errors, `validation_error`,
+`rate_limit_exceeded`, and service-unavailable behavior; no new public error is
+introduced. Missing, unknown, or malformed cookies are indistinguishable as
+unauthenticated. Confirmed expiry, revocation, or reuse may clear the matching
+cookie; invalid Origin, throttling, and dependency failure do not. Successful
+bootstrap uses a dedicated low-cost IP plus non-reversible cookie/session key
+rate limit and aggregate metrics, not a full audit record. Confirmed misuse
+keeps existing security audit behavior. Cookie and CSRF values are never
+logged.
+
+After E164, the browser calls E002 with its cookie and returned
+`X-CSRF-Token`. E002 remains the only rotation operation: it replaces the
+generation and cookie, invalidates the bootstrap proof, and returns the access
+token, replacement CSRF, and one canonical hydration bundle containing safe
+user, current company, nullable branch, permitted branch summaries, explicit
+company-wide authority, effective permissions, and session metadata. Browser
+JSON still omits the refresh token. Mobile and POS bearer behavior is
+unchanged. All HTTP fields use canonical snake_case.
+
+E008 returns every currently active company membership eligible for the
+authenticated global user, not merely the current company. Each safe item is
+`{company_id, display_name, current, switch_permitted}` with only an optional
+approved logo reference and default-branch summary. The user is derived from
+the session; inactive memberships/companies are excluded. Cross-company
+permissions, billing data, settings, and hidden metadata are omitted. E009
+returns authorized active branches for the current company, marks current and
+default branches, and returns `company_wide_access` separately; an empty list
+never implies company-wide authority.
 
 Invalid or unsupported `transport_mode`, an incompatible `client_type`, a body
 token for a browser session, a cookie token for a bearer session, conflicting

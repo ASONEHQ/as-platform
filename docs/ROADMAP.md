@@ -95,6 +95,9 @@ Detailed sales and inventory behavior requires separate approval before implemen
    **10.2B.1** completes that contract by freezing durable, server-owned
    `sessions.transport_mode`; implementation requires the reviewed additive
    migration `0010_auth_session_transport_mode` before TASK 10.2B resumes.
+   **10.4A** reserves E164 for secure post-reload CSRF bootstrap and clarifies
+   E008 as the complete authenticated company-switch directory; both require
+   application implementation before the visible login flow resumes.
 3. **10.3 — Web foundation:** create the approved Flutter Web application,
    design tokens, typed minimal API client, and non-secret environment model.
 4. **10.4 — Login and session UI:** implement credential, company, branch,

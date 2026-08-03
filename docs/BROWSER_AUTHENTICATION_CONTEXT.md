@@ -112,10 +112,82 @@ Paths are below `/api/v1`.
 | E161 | `POST /auth/company-selections` | Public challenge completion. Strict body `challenge_token`, `company_id`, optional `branch_id` and `device_id`; no transport override. Returns normal login success using the challenge's validated mapping. |
 | E162 | `POST /auth/company-switches` | Current session. Strict body `company_id`, optional `branch_id`; no transport field. Creates a new session with the current mode and revokes the previous session atomically. |
 | E163 | `POST /auth/branch-switches` | Current session. Strict body `branch_id` nullable; no transport field. Revalidates scope, preserves mode, updates context, advances generation, and returns replacement credentials atomically. |
+| E164 | `POST /auth/browser-bootstrap` | Browser reload bootstrap. Requires only the canonical refresh cookie and exact allowed Origin; returns a short-lived generation-bound CSRF token without rotating or exposing session context. |
 
 E161-E163 accept request/correlation IDs, reject unknown fields, and never trust
 payload ownership. E162-E163 are protected by authenticated-session policy,
 CSRF for cookie clients, and dedicated rate limits. No aliases are approved.
+
+## Browser reload bootstrap
+
+A full reload destroys the memory-only access and CSRF tokens but leaves the
+refresh credential inaccessible in its `HttpOnly` cookie. Calling E002
+directly is impossible because its CSRF proof was also destroyed. Persisting
+that proof in browser storage or bypassing CSRF would weaken the accepted
+boundary. E164 is the single bootstrap mechanism.
+
+The client sends `POST /api/v1/auth/browser-bootstrap` with an empty body,
+browser credentials enabled, and an exact allowlisted `Origin`. It sends no
+Authorization, refresh-token body, or CSRF header. The server resolves the
+cookie hash through its parent session and verifies the active refresh
+generation, active session, and `transport_mode=browser`. It returns only:
+
+```json
+{
+  "data": {
+    "result": "csrf_ready",
+    "csrf_token": "<opaque signed value>",
+    "csrf_expires_at": "<UTC timestamp>",
+    "transport_mode": "browser"
+  },
+  "meta": { "request_id": "<opaque>", "correlation_id": "<opaque>" }
+}
+```
+
+The response is `Cache-Control: no-store`. It contains no access/refresh token,
+session identifier, identity, tenant, membership, company, branch, or
+permission. The signed proof binds session ID, refresh generation, browser
+mode, issue time, and expiry. It is short-lived, memory-only, invalid across
+sessions, invalid after rotation/revocation, and requires no table. Concurrent
+bootstrap calls are read-only and may produce equivalent proofs for one
+generation; they never create, rotate, revoke, or duplicate a session.
+
+Flutter immediately calls E002 with the cookie and bootstrap
+`X-CSRF-Token`. E002 performs its existing single-winner rotation, replaces the
+cookie, and returns the access token, replacement CSRF, and canonical session
+context. The bootstrap proof is then stale. A challenge awaiting E161 remains
+memory-only and is deliberately not restorable after reload.
+
+Missing or unknown cookies are safely unauthenticated. Confirmed expiry,
+revocation, and reuse retain existing safe classifications and may clear the
+matching cookie. Invalid Origin, throttling, and temporary dependency failure
+do not clear a potentially valid cookie. E164 always requires Origin; absent
+Origin is rejected. Same-origin production, staging, demo, test, and fixed-port
+local development must each be in the exact environment allowlist. Reverse
+proxies preserve the original origin under the existing trusted-proxy policy.
+
+The environment contract uses these exact frontend origins; deployment may
+activate only its own environment entry:
+
+| Environment | Approved browser origin |
+| --- | --- |
+| Local | `http://127.0.0.1:8080` |
+| Test | `http://127.0.0.1:8081` |
+| Staging | `https://app.staging.asone.mx` |
+| Demo | `https://demo.asone.mx` |
+| Production | `https://app.asone.mx` |
+
+`localhost` and `127.0.0.1` are distinct origins, not aliases. Handler-level
+tests without browser cookies may omit Origin, but E164 itself always rejects
+it. Production values remain environment configuration and are not hardcoded
+by this documentation block.
+
+Successful reloads produce aggregate metrics/security logs rather than a full
+audit record. Confirmed revoked-session use, reuse, or transport misuse keeps
+existing exceptional audit actions. Raw cookie, refresh hash, and CSRF are
+never logged. A dedicated low-cost rate limit combines IP with a
+non-reversible cookie/session-derived key when available and never revokes a
+valid session solely due to throttling.
 
 ## Canonical session context
 
@@ -145,12 +217,14 @@ returned to JavaScript and uses a host-only cookie:
 
 ```text
 __Host-asone_refresh=<opaque token>; HttpOnly; Secure; SameSite=Strict;
-Path=/api/v1/auth; Max-Age=<remaining session seconds>
+Path=/; Max-Age=<remaining session seconds>
 ```
 
-No `Domain` attribute is allowed. Production, demo, and staging use HTTPS and
-the `__Host-` prefix. Local HTTP development uses a differently named host-only
-cookie without `Secure`; it must never be accepted outside development. Cookie
+No `Domain` attribute is allowed. Production, demo, and staging use HTTPS, the
+`__Host-` prefix, and the mandatory root `Path=/`; a narrower path is invalid
+for that prefix and browsers must reject it. Local HTTP development uses a
+differently named host-only cookie without `Secure`; it must never be accepted
+outside development. Its path may remain `/api/v1/auth`. Cookie
 expiry equals server refresh expiry. Rotation replaces it. Logout, reuse,
 expiry, revocation, and invalid challenge completion clear it with matching
 attributes.
@@ -172,8 +246,8 @@ the rotated refresh token in JSON. Missing required sources are
 
 Cookie-authenticated E002, E003, E004, E162, and E163 require all of:
 
-- exact `Origin` allowlist validation, with safe `Referer` fallback only when
-  browser policy legitimately omits Origin;
+- exact `Origin` allowlist validation; browser cookie operations do not use a
+  Referer-only fallback;
 - a per-session random CSRF token returned in login/refresh response metadata,
   held in memory, and echoed as `X-CSRF-Token`;
 - constant-time comparison with its server-side hash;
@@ -211,6 +285,22 @@ telemetry, URLs, and error messages contain no credentials or tokens.
 - Zero branches without company-wide authority returns `branch_access_denied`.
 - Inactive, cross-company, stale, or unauthorized branches are concealed as
   `branch_access_denied` and never expand the session.
+
+## Authenticated company and branch discovery
+
+E008 is the authoritative company-switch directory. It derives the global user
+from the authenticated session and returns every active eligible membership,
+including the current company marker and whether switching is permitted. Safe
+items contain company UUID, display name, `current`, `switch_permitted`, and
+only an optional approved logo/default-branch summary. Inactive memberships
+and companies, cross-company permissions, billing, settings, and hidden
+metadata are excluded. The implementation that returns only the active company
+must be expanded before Flutter exposes E162.
+
+E009 remains the authoritative branch source for the current company. It
+returns only active permitted branch summaries with current/default markers
+and an explicit top-level `company_wide_access`. Zero items never means
+corporate access. Flutter does not infer company or branch destinations.
 
 ## Refresh and logout behavior
 
@@ -322,6 +412,22 @@ selection, authenticated, empty authorized scope, permission denied, session
 expired/revoked, rate limited with retry time, validation error, and API
 unavailable. Lists shown by the UI are hints; every selection is revalidated by
 the server.
+
+TASK 10.4 may model bootstrap as `csrf_ready`, `unauthenticated`, `expired`,
+`revoked`, `unavailable`, or safe `failure`. An authenticated reload is E164
+then E002. The browser E002 response atomically hydrates access token,
+replacement CSRF, safe user, current company, nullable branch, permitted branch
+summaries, company-wide authority, effective permissions, and session metadata.
+It never includes a refresh token. HTTP field names use canonical snake_case.
+The login challenge is not restored. Company switch targets come only from the
+reconciled E008 response.
+
+Future security tests cover valid reload, CSRF-only response, no rotation,
+E002 completion, stale proof after rotation, missing/expired/revoked/reused
+cookies, bearer misuse, missing/wrong Origin, secret-free logs, concurrent
+bootstrap, single-winner refresh, allowed/denied CORS, eligible/current company
+filtering, cross-user isolation, inactive membership exclusion, and
+server-authoritative branch discovery.
 
 ## Compatibility and deprecation
 

@@ -15,6 +15,8 @@ Use least privilege, deny by default, defense in depth, secure defaults, auditab
 - Browser access tokens remain in memory; rotating refresh tokens use the
   host-only HttpOnly cookie and CSRF controls defined in
   [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md).
+- Production `__Host-` cookies use `Secure`, omit `Domain`, and use `Path=/` as
+  required by the prefix; a narrower path is not valid for an `__Host-` cookie.
 - Mobile and POS refresh credentials remain in platform secure storage and do
   not depend on browser cookies.
 - Persist the server-authorized `browser|bearer` mode on each session. Do not
@@ -24,6 +26,14 @@ Use least privilege, deny by default, defense in depth, secure defaults, auditab
   require CSRF, and never expose refresh tokens in JSON. Bearer sessions accept
   only the approved explicit credential source and never authenticate through
   ambient cookies.
+- After a full reload, E164 validates the host-only cookie, exact Origin,
+  stored browser transport, active session, and current generation. It returns
+  only a short-lived signed CSRF proof; it never rotates credentials or exposes
+  an access token, identity, tenant context, or permissions. E002 remains the
+  sole rotation boundary.
+- Bootstrap CSRF is bound to session, generation, browser transport, issue
+  time, and expiry; it stays memory-only and becomes invalid on rotation or
+  revocation. No CSRF bypass or browser-storage persistence is permitted.
 - Context switches cannot upgrade or downgrade transport: company replacement
   copies it and branch switching preserves it.
 
