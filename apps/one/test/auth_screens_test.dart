@@ -53,7 +53,7 @@ void main() {
       expect(find.text('Validando…'), findsOneWidget);
       gateway.loginCompleter!.complete(gateway.loginOutcome);
       await tester.pumpAndSettle();
-      expect(find.text('Centro de control'), findsOneWidget);
+      expect(find.byKey(const Key('pos-topbar')), findsOneWidget);
     },
   );
 
@@ -80,7 +80,7 @@ void main() {
     expect(find.text('Empresa AS'), findsOneWidget);
     await tester.tap(find.text('Empresa AS'));
     await tester.pumpAndSettle();
-    expect(find.text('Centro de control'), findsOneWidget);
+    expect(find.byKey(const Key('pos-topbar')), findsOneWidget);
   });
 
   testWidgets(
@@ -132,7 +132,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Cuenta y empresa'));
+    await tester.tap(find.byTooltip('Cuenta'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Cerrar sesión'));
     await tester.pumpAndSettle();

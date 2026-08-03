@@ -1,5 +1,6 @@
 import 'package:as_one/app/app.dart';
 import 'package:as_one/app/router.dart';
+import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,12 +19,15 @@ void main() {
     await tester.pumpWidget(
       MaterialApp.router(
         routerConfig: router,
-        builder: (_, child) => AuthScope(controller: auth, child: child!),
+        builder: (_, child) => PlatformScope(
+          posReadGateway: const EmptyPosReadGateway(),
+          child: AuthScope(controller: auth, child: child!),
+        ),
       ),
     );
     await tester.pumpAndSettle();
     expect(find.text('Bienvenido'), findsOneWidget);
-    expect(find.text('Centro de control'), findsNothing);
+    expect(find.byKey(const Key('pos-topbar')), findsNothing);
   });
 
   testWidgets('missing challenge cannot open company selection', (
@@ -38,7 +42,10 @@ void main() {
     await tester.pumpWidget(
       MaterialApp.router(
         routerConfig: router,
-        builder: (_, child) => AuthScope(controller: auth, child: child!),
+        builder: (_, child) => PlatformScope(
+          posReadGateway: const EmptyPosReadGateway(),
+          child: AuthScope(controller: auth, child: child!),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -56,11 +63,14 @@ void main() {
     await tester.pumpWidget(
       MaterialApp.router(
         routerConfig: router,
-        builder: (_, child) => AuthScope(controller: auth, child: child!),
+        builder: (_, child) => PlatformScope(
+          posReadGateway: const EmptyPosReadGateway(),
+          child: AuthScope(controller: auth, child: child!),
+        ),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Centro de control'), findsOneWidget);
+    expect(find.byKey(const Key('pos-topbar')), findsOneWidget);
     expect(find.text('Bienvenido'), findsNothing);
   });
 }

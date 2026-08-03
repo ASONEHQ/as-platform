@@ -57,8 +57,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Centro de control'), findsOneWidget);
+    expect(find.text('Dashboard'), findsWidgets);
     expect(find.text('Sucursal Centro'), findsWidgets);
-    expect(find.text('Conectado'), findsOneWidget);
+    expect(find.text('Sesión conectada'), findsOneWidget);
   });
 }
