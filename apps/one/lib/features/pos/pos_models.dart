@@ -6,6 +6,8 @@ class PosProduct {
     required this.type,
     required this.status,
     required this.tracksInventory,
+    this.categoryId,
+    this.defaultVariantId,
   });
 
   factory PosProduct.fromJson(Map<String, Object?> json) => PosProduct(
@@ -15,6 +17,14 @@ class PosProduct {
     type: json.string('product_type'),
     status: json.string('status'),
     tracksInventory: json['tracks_inventory'] == true,
+    categoryId: json['category_id'] as String?,
+    // The products list endpoint does not expand `default_variant`; this is
+    // only ever populated when a future projection includes it (see
+    // docs/AS_POS_READ_ONLY_SHELL.md, "Read-only limitations").
+    defaultVariantId: switch (json['default_variant']) {
+      final Map<String, Object?> variant => variant['id'] as String?,
+      _ => null,
+    },
   );
 
   final String id;
@@ -23,6 +33,22 @@ class PosProduct {
   final String type;
   final String status;
   final bool tracksInventory;
+  final String? categoryId;
+  final String? defaultVariantId;
+}
+
+class PosCategory {
+  const PosCategory({required this.id, required this.name, required this.status});
+
+  factory PosCategory.fromJson(Map<String, Object?> json) => PosCategory(
+    id: json.string('id'),
+    name: json.string('name'),
+    status: json.string('status'),
+  );
+
+  final String id;
+  final String name;
+  final String status;
 }
 
 class PosInventoryBalance {

@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
-  test('consumes only the three approved read endpoints', () async {
+  test('consumes only the four approved read endpoints', () async {
     final paths = <String>[];
     final gateway = ApiPosReadGateway(
       ApiClient(
@@ -22,7 +22,11 @@ void main() {
                 'product_type': 'simple',
                 'status': 'active',
                 'tracks_inventory': true,
+                'category_id': 'cat-1',
               },
+            ],
+            '/api/v1/categories' => [
+              {'id': 'cat-1', 'name': 'Categoría', 'status': 'active'},
             ],
             '/api/v1/inventory/balances' => [
               {
@@ -59,7 +63,10 @@ void main() {
       ),
     );
 
-    expect((await gateway.products()).single.name, 'Producto');
+    final product = (await gateway.products()).single;
+    expect(product.name, 'Producto');
+    expect(product.categoryId, 'cat-1');
+    expect((await gateway.categories()).single.name, 'Categoría');
     expect(
       (await gateway.inventoryBalances(branchId: 'branch-id')).single.onHand,
       '12.000000',
@@ -67,6 +74,7 @@ void main() {
     expect((await gateway.users()).single.displayName, 'Usuario');
     expect(paths, [
       'GET /api/v1/products',
+      'GET /api/v1/categories',
       'GET /api/v1/inventory/balances',
       'GET /api/v1/users',
     ]);

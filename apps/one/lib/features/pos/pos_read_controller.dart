@@ -20,6 +20,9 @@ class PosReadController extends ChangeNotifier {
 
   final PosReadGateway _gateway;
   PosReadState<PosProduct> products = const PosReadState(PosReadPhase.idle);
+  PosReadState<PosCategory> categories = const PosReadState(
+    PosReadPhase.idle,
+  );
   PosReadState<PosInventoryBalance> balances = const PosReadState(
     PosReadPhase.idle,
   );
@@ -37,6 +40,25 @@ class PosReadController extends ChangeNotifier {
       );
     } on Object catch (error) {
       products = PosReadState(PosReadPhase.failure, message: _message(error));
+    }
+    notifyListeners();
+  }
+
+  Future<void> loadCategories({bool refresh = false}) async {
+    if (!refresh && categories.phase != PosReadPhase.idle) return;
+    categories = const PosReadState(PosReadPhase.loading);
+    notifyListeners();
+    try {
+      final items = await _gateway.categories();
+      categories = PosReadState(
+        items.isEmpty ? PosReadPhase.empty : PosReadPhase.ready,
+        items: items,
+      );
+    } on Object catch (error) {
+      categories = PosReadState(
+        PosReadPhase.failure,
+        message: _message(error),
+      );
     }
     notifyListeners();
   }

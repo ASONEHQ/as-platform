@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../authentication/auth_models.dart';
 import 'pos_models.dart';
@@ -28,7 +29,11 @@ class _PosShellState extends State<PosShell> {
 
   void select(PosModule module) {
     setState(() => selected = module);
-    if (module == PosModule.products) {
+    if (module == PosModule.pos) {
+      widget.controller.loadProducts();
+      widget.controller.loadCategories();
+      widget.controller.loadBalances(branchId: widget.context.session.branchId);
+    } else if (module == PosModule.products) {
       widget.controller.loadProducts();
     } else if (module == PosModule.inventory) {
       widget.controller.loadBalances(branchId: widget.context.session.branchId);
@@ -498,6 +503,10 @@ class _Content extends StatelessWidget {
         ),
         child: switch (module) {
           PosModule.dashboard => _Dashboard(context: this.context),
+          PosModule.pos => _PosSale(
+            context: this.context,
+            controller: controller,
+          ),
           PosModule.products => _Products(
             state: controller.products,
             allowed: this.context.permissions.contains('catalog.read'),
@@ -756,6 +765,494 @@ class _Directory extends StatelessWidget {
                 ),
               ),
         ],
+      ),
+    );
+  }
+}
+
+/// Read-only "Punto de Venta" foundation: category strip, search, a product
+/// grid reusing the same load/empty/error states as the other modules, and a
+/// persistent ticket panel frame. No cart, pricing, or checkout behavior is
+/// implemented — see docs/AS_POS_READ_ONLY_SHELL.md.
+class _PosSale extends StatefulWidget {
+  const _PosSale({required this.context, required this.controller});
+  final AuthenticatedContext context;
+  final PosReadController controller;
+
+  @override
+  State<_PosSale> createState() => _PosSaleState();
+}
+
+class _PosSaleState extends State<_PosSale> {
+  String? selectedCategoryId;
+  String query = '';
+  final searchFocusNode = FocusNode(debugLabel: 'pos-sale-search');
+
+  @override
+  void dispose() {
+    searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed = widget.context.permissions.contains('catalog.read');
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.f2) {
+          searchFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            title: 'Punto de Venta',
+            description:
+                'Catálogo real en modo de solo lectura. Sin ventas, cobros ni '
+                'cambios de inventario.',
+            action: const _VisualDialogButton(),
+          ),
+          if (!allowed)
+            const _PermissionState()
+          else
+            _PosSaleBody(
+              controller: widget.controller,
+              selectedCategoryId: selectedCategoryId,
+              onSelectCategory: (id) =>
+                  setState(() => selectedCategoryId = id),
+              query: query,
+              onQueryChanged: (value) => setState(() => query = value),
+              searchFocusNode: searchFocusNode,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PosSaleBody extends StatelessWidget {
+  const _PosSaleBody({
+    required this.controller,
+    required this.selectedCategoryId,
+    required this.onSelectCategory,
+    required this.query,
+    required this.onQueryChanged,
+    required this.searchFocusNode,
+  });
+
+  final PosReadController controller;
+  final String? selectedCategoryId;
+  final ValueChanged<String?> onSelectCategory;
+  final String query;
+  final ValueChanged<String> onQueryChanged;
+  final FocusNode searchFocusNode;
+
+  @override
+  Widget build(BuildContext context) {
+    final catalog = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _CategoryStrip(
+          state: controller.categories,
+          selected: selectedCategoryId,
+          onSelected: onSelectCategory,
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('pos-sale-search'),
+          focusNode: searchFocusNode,
+          onChanged: onQueryChanged,
+          decoration: const InputDecoration(
+            hintText: 'Buscar producto o código (F2)',
+            prefixIcon: Icon(Icons.search),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ReadState<PosProduct>(
+          state: controller.products,
+          emptyMessage: 'No hay productos disponibles.',
+          onRetry: () => controller.loadProducts(refresh: true),
+          ready: (items) => _PosProductGrid(
+            items: _filter(items, selectedCategoryId, query),
+            balances: controller.balances.items,
+          ),
+        ),
+      ],
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 1000;
+        if (wide) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: catalog),
+              const SizedBox(width: 14),
+              const SizedBox(width: 300, child: _TicketPanel()),
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [catalog, const SizedBox(height: 14), const _TicketBar()],
+        );
+      },
+    );
+  }
+
+  static List<PosProduct> _filter(
+    List<PosProduct> items,
+    String? categoryId,
+    String query,
+  ) {
+    final normalized = query.trim().toLowerCase();
+    return items.where((item) {
+      final matchesCategory =
+          categoryId == null || item.categoryId == categoryId;
+      final matchesQuery =
+          normalized.isEmpty ||
+          '${item.code} ${item.name}'.toLowerCase().contains(normalized);
+      return matchesCategory && matchesQuery;
+    }).toList(growable: false);
+  }
+}
+
+class _CategoryStrip extends StatelessWidget {
+  const _CategoryStrip({
+    required this.state,
+    required this.selected,
+    required this.onSelected,
+  });
+  final PosReadState<PosCategory> state;
+  final String? selected;
+  final ValueChanged<String?> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = state.items
+        .where((category) => category.status == 'active')
+        .toList(growable: false);
+    return SizedBox(
+      key: const Key('pos-category-strip'),
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: _CategoryChip(
+              key: const Key('pos-category-all'),
+              label: 'Todas',
+              selected: selected == null,
+              onSelected: () => onSelected(null),
+            ),
+          ),
+          for (final category in active)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _CategoryChip(
+                key: Key('pos-category-${category.id}'),
+                label: category.name,
+                selected: selected == category.id,
+                onSelected: () => onSelected(category.id),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryChip extends StatelessWidget {
+  const _CategoryChip({
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+    super.key,
+  });
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      showCheckmark: false,
+      labelStyle: TextStyle(
+        color: selected ? Colors.white : palette.textSecondary,
+        fontWeight: FontWeight.w700,
+        fontSize: 12,
+      ),
+      backgroundColor: palette.surface,
+      selectedColor: palette.action,
+      side: BorderSide(color: selected ? palette.action : palette.border),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    );
+  }
+}
+
+class _PosProductGrid extends StatelessWidget {
+  const _PosProductGrid({required this.items, required this.balances});
+  final List<PosProduct> items;
+  final List<PosInventoryBalance> balances;
+
+  @override
+  Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return const _EmptyState(message: 'Sin productos en esta categoría.');
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 1200
+            ? 5
+            : constraints.maxWidth >= 900
+            ? 4
+            : constraints.maxWidth >= 560
+            ? 3
+            : 2;
+        return GridView.count(
+          crossAxisCount: columns,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: .98,
+          children: items
+              .map(
+                (item) => _PosProductCard(
+                  item: item,
+                  outOfStock: _isOutOfStock(item, balances),
+                ),
+              )
+              .toList(),
+        );
+      },
+    );
+  }
+
+  /// Matches `PosProduct.defaultVariantId` against inventory balances. The
+  /// products list endpoint does not expand `default_variant` today, so in
+  /// production this is currently always `false`; see the read-only
+  /// limitations note in docs/AS_POS_READ_ONLY_SHELL.md.
+  static bool _isOutOfStock(
+    PosProduct item,
+    List<PosInventoryBalance> balances,
+  ) {
+    if (!item.tracksInventory || item.defaultVariantId == null) return false;
+    final matches = balances.where(
+      (balance) => balance.variantId == item.defaultVariantId,
+    );
+    if (matches.isEmpty) return false;
+    final onHand = matches.fold<double>(
+      0,
+      (sum, balance) => sum + (double.tryParse(balance.onHand) ?? 0),
+    );
+    return onHand <= 0;
+  }
+}
+
+class _PosProductCard extends StatelessWidget {
+  const _PosProductCard({required this.item, required this.outOfStock});
+  final PosProduct item;
+  final bool outOfStock;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Opacity(
+      key: Key('pos-product-${item.id}'),
+      opacity: outOfStock ? .55 : 1,
+      child: _PosCard(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: palette.blueTint,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.inventory_2_outlined, color: palette.blueDeep),
+            ),
+            const SizedBox(height: 9),
+            Text(
+              item.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: palette.text,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              item.code,
+              style: TextStyle(color: palette.textMuted, fontSize: 10),
+            ),
+            const SizedBox(height: 7),
+            if (outOfStock)
+              _StatusChip(label: 'Agotado', color: palette.error)
+            else
+              _StatusChip(label: item.status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TicketPanel extends StatelessWidget {
+  const _TicketPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      key: const Key('pos-ticket-panel'),
+      height: 480,
+      decoration: BoxDecoration(
+        color: palette.surface,
+        border: Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Icon(Icons.receipt_long_outlined, color: palette.blueDeep),
+                const SizedBox(width: 8),
+                Text(
+                  'Ticket',
+                  style: TextStyle(
+                    color: palette.text,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: palette.border),
+          const Expanded(child: _TicketEmptyState()),
+          Divider(height: 1, color: palette.border),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Total',
+                  style: TextStyle(
+                    color: palette.textSecondary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  '—',
+                  style: TextStyle(
+                    color: palette.textMuted,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TicketEmptyState extends StatelessWidget {
+  const _TicketEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.shopping_cart_outlined,
+              size: 38,
+              color: palette.blueDeep,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'El ticket está vacío',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: palette.text, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              'Esta vista es de solo lectura: no admite ventas ni cobros.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: palette.textSecondary, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TicketBar extends StatelessWidget {
+  const _TicketBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return InkWell(
+      key: const Key('pos-ticket-bar'),
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: palette.surface,
+        builder: (context) => SafeArea(
+          child: SizedBox(height: 420, child: const _TicketPanel()),
+        ),
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: palette.surface,
+          border: Border.all(color: palette.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.receipt_long_outlined, color: palette.blueDeep),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Ticket (vacío)',
+                style: TextStyle(
+                  color: palette.text,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Icon(Icons.expand_less, color: palette.textSecondary),
+          ],
+        ),
       ),
     );
   }
@@ -1289,14 +1786,15 @@ class _VisualDialogButton extends StatelessWidget {
 }
 
 class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.label});
+  const _StatusChip({required this.label, this.color});
   final String label;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     final active = label == 'active';
-    final color = active ? palette.success : palette.warning;
+    final color = this.color ?? (active ? palette.success : palette.warning);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(

@@ -503,6 +503,10 @@ inventory above and the authoritative backend before a screen is built.
 - Reproduce shell, sidebar, topbar, category strip, product cards, ticket frame,
   loading/empty/error states, and keyboard focus behavior.
 - Connect only authentication, context, catalog, and authorized inventory reads.
+- **Status:** implemented (TASK 12.2) in `apps/one/lib/features/pos/`. See
+  `docs/AS_POS_READ_ONLY_SHELL.md` for the implemented component inventory,
+  data-source behavior, and read-only limitations. No mutation, checkout, or
+  transaction capability exists yet — that remains Phase 2 onward.
 
 ### Phase 2 — Transaction contracts and backend
 

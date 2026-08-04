@@ -34,6 +34,7 @@ enum PosModule {
 
   bool get implementedReadOnly => const {
     PosModule.dashboard,
+    PosModule.pos,
     PosModule.products,
     PosModule.inventory,
     PosModule.users,

@@ -34,6 +34,7 @@ AS ONE is a multi-tenant, multi-branch SaaS platform for entertainment centers, 
 | [BROWSER_AUTHENTICATION_CONTEXT.md](BROWSER_AUTHENTICATION_CONTEXT.md) | Browser login challenge, company/branch context switching, cookies, CSRF, CORS, and compatibility |
 | [CEO_DASHBOARD_V1.md](CEO_DASHBOARD_V1.md) | Current backend capability matrix and canonical evidence-based CEO Dashboard V1 contract |
 | [AS_POS_V1_FOUNDATION.md](AS_POS_V1_FOUNDATION.md) | Canonical AS POS visual language, functional inventory, backend reconciliation, and Flutter migration map |
+| [AS_POS_READ_ONLY_SHELL.md](AS_POS_READ_ONLY_SHELL.md) | Implemented read-only POS shell (TASK 12.2): components, architecture boundaries, data-source behavior, and read-only limitations |
 | [ADMINISTRATION_FOUNDATION.md](ADMINISTRATION_FOUNDATION.md) | Multi-tenant companies, memberships, authorization, branch access, devices, audit, and outbox |
 | [SETTINGS_FOUNDATION.md](SETTINGS_FOUNDATION.md) | Typed company and branch settings, effective resolution, concurrency, audit, and outbox |
 | [INVENTORY_ENGINE.md](INVENTORY_ENGINE.md) | Approved inventory architecture, proposed contracts, ledger rules, workflows, and future NFC/RFID extension |

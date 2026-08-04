@@ -3,6 +3,7 @@ import 'pos_models.dart';
 
 abstract interface class PosReadGateway {
   Future<List<PosProduct>> products();
+  Future<List<PosCategory>> categories();
   Future<List<PosInventoryBalance>> inventoryBalances({String? branchId});
   Future<List<PosUser>> users();
 }
@@ -16,6 +17,11 @@ class ApiPosReadGateway implements PosReadGateway {
   Future<List<PosProduct>> products() async => _items(
     await _client.getJson('/api/v1/products?limit=100'),
   ).map(PosProduct.fromJson).toList(growable: false);
+
+  @override
+  Future<List<PosCategory>> categories() async => _items(
+    await _client.getJson('/api/v1/categories?limit=100'),
+  ).map(PosCategory.fromJson).toList(growable: false);
 
   @override
   Future<List<PosInventoryBalance>> inventoryBalances({
@@ -54,6 +60,9 @@ class EmptyPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosProduct>> products() async => const [];
+
+  @override
+  Future<List<PosCategory>> categories() async => const [];
 
   @override
   Future<List<PosInventoryBalance>> inventoryBalances({
