@@ -28,7 +28,9 @@ This is a logical specification, not SQL. Names and constraints are migration in
 
 ### Excluded
 
-Rewards, events, memberships, advanced promotions, suppliers, purchase orders, recipes, payroll, accounting, invoicing, AI, and advanced analytics are not designed here. They may reference stable core identifiers later but must own their own data and migrations. Customer identity is also deferred; `sales.customer_id` is intentionally absent until the customer model is approved.
+Events, advanced promotions, suppliers, purchase orders, recipes, payroll, accounting, invoicing, AI, and advanced analytics are not designed here. They may reference stable core identifiers later but must own their own data and migrations.
+
+Customer identity, membership plans/entitlements, and the AS Rewards+ loyalty-ledger foundation are no longer excluded — TASK 13.0 approved and built them (`customers`, `customer_qr_tokens`, `membership_plans`, `membership_plan_branches`, `customer_memberships`, `loyalty_programs`, `loyalty_accounts`, `loyalty_ledger`; see ADR-0017 and `docs/API_CONTRACTS.md` §16.10). Exactly as this section already anticipated, they own their own schema/migrations rather than being folded into this document's 32-entity core count. `sales.customer_id`/`sales.customer_display_name` are additive columns on the existing `sales` table (ADR-0017 D6) — the two exact deviations this section's own principle above requires an ADR for. Reward-entitlement issuance, loyalty redemption, and Wallet-pass integration remain deferred (ADR-0017's own Deferred section).
 
 ## 3. Mandatory conventions
 
@@ -935,7 +937,7 @@ the finding with actor and reason, writes audit and existing outbox facts, and
 stores the idempotency result. The complete contract is in
 [INVENTORY_OPERATIONS_DESIGN.md](INVENTORY_OPERATIONS_DESIGN.md#inventory-repair-contract).
 
-- Rewards and memberships may reference `companies`, `branches`, `users` or future customers, `sales`, and immutable ledger identifiers.
+- Rewards and memberships now reference `companies`, `customers`, `sales`, and immutable ledger identifiers exactly as anticipated here — see ADR-0017. Reward-entitlement issuance, loyalty redemption, and Wallet-pass integration remain future extension points.
 - Events may reference branches, products, sales, payments, refunds, files, and access credentials while owning capacity/reservation data.
 - Promotions may contribute immutable evaluation snapshots to sale items without rewriting completed sales.
 - Suppliers, purchases, recipes, payroll, accounting, invoicing, AI, and analytics must use module-owned tables and public contracts; they must not add columns opportunistically to core ledgers without an ADR.

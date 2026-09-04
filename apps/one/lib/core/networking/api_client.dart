@@ -10,9 +10,18 @@ typedef CorrelationIdFactory = String Function();
 typedef UnauthorizedHandler = Future<void> Function();
 
 class ApiException implements Exception {
-  const ApiException(this.failure, {this.statusCode});
+  const ApiException(this.failure, {this.statusCode, this.details});
   final AppFailure failure;
   final int? statusCode;
+
+  /// TASK 13.0: the backend error envelope's own optional `error.details`
+  /// (see `AppError.toPublicResponse`/`CustomerError` — e.g. a 409
+  /// `resource_conflict`/`customer_identity_conflict` carries
+  /// `existing_customer_id`/`email_customer_id`/`phone_customer_id` so a
+  /// caller can offer the existing customer instead of failing blindly,
+  /// per ADR-0017 D5). `null` whenever the backend didn't send one —
+  /// never fabricated here.
+  final Map<String, Object?>? details;
 }
 
 class ApiClient {
@@ -52,6 +61,12 @@ class ApiClient {
     // login/refresh/logout — predates any domain-object-creation
     // endpoint). Optional so every existing call site is unaffected.
     String? idempotencyKey,
+    // TASK 13.0: the first `POST` call site that is also a cancel-style
+    // mutation requiring a strong `If-Match` version header —
+    // `POST /customer-memberships/{id}/cancel` (`memberships.routes.ts`).
+    // Optional, exactly like [idempotencyKey] above, so every existing
+    // `postJson` call site is unaffected.
+    String? ifMatch,
   }) => _send(
     'POST',
     path,
@@ -60,6 +75,7 @@ class ApiClient {
     authenticated: authenticated,
     retryAfterRefresh: false,
     idempotencyKey: idempotencyKey,
+    ifMatch: ifMatch,
   );
 
   /// TASK 12.9: the first Flutter caller of a `PUT` update — promotions/
@@ -74,6 +90,25 @@ class ApiClient {
     bool authenticated = true,
   }) => _send(
     'PUT',
+    path,
+    body: body,
+    authenticated: authenticated,
+    retryAfterRefresh: false,
+    ifMatch: ifMatch,
+  );
+
+  /// TASK 13.0: the first Flutter caller of a `PATCH` update —
+  /// `PATCH /api/v1/customers/{id}` (`customers.routes.ts`), a partial
+  /// update requiring the resource's own strong `If-Match` version header
+  /// — mirrors `putJson`'s exact style/contract, just a different HTTP
+  /// verb (no `Idempotency-Key`, matching the backend route schema).
+  Future<Map<String, Object?>> patchJson(
+    String path, {
+    Map<String, Object?> body = const {},
+    String? ifMatch,
+    bool authenticated = true,
+  }) => _send(
+    'PATCH',
     path,
     body: body,
     authenticated: authenticated,
@@ -176,9 +211,11 @@ class ApiClient {
         final code = error is Map<String, Object?> && error['code'] is String
             ? error['code']! as String
             : 'unknown';
+        final rawDetails = error is Map<String, Object?> ? error['details'] : null;
         throw ApiException(
           AppFailure.fromCode(code),
           statusCode: response.statusCode,
+          details: rawDetails is Map<String, Object?> ? rawDetails : null,
         );
       }
       return decoded;

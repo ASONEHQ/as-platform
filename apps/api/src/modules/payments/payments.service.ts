@@ -5,6 +5,8 @@ import { normalizeCurrencyCode, normalizeMoneyAmount } from '@asone/database';
 
 import type { CashRepository } from '../cash/cash.repository.js';
 import { CashError, type CashSessionRow } from '../cash/cash.types.js';
+import type { LoyaltyService } from '../loyalty/loyalty.service.js';
+import type { MembershipsService } from '../memberships/memberships.service.js';
 import type { SalesRepository } from '../sales/sales.repository.js';
 import type { SaleRow } from '../sales/sales.types.js';
 import type { PaymentRepository, PaymentTransaction } from './payments.repository.js';
@@ -140,7 +142,58 @@ export class PaymentService {
     // client structurally identical to this module's own, never a second
     // transaction). See ADR-0014.
     private readonly cashRepository: CashRepository,
+    // TASK 13.0 — optional, backward-compatible (same reasoning as
+    // `SalesService`'s own `promotionsRepository`/`customersRepository`):
+    // only exercised at the exact moment a Sale newly settles (see
+    // `applyPostSettlementHooks` below); every pre-existing test/caller
+    // that constructs `PaymentService` without these two keeps compiling
+    // and behaving identically — no membership/loyalty activation, same
+    // as a deployment that never configured the modules at all.
+    private readonly membershipsService?: MembershipsService,
+    private readonly loyaltyService?: LoyaltyService,
   ) {}
+
+  /** Called ONLY at the exact moment `SalesRepository.trySettleSale`
+   * returns `settled: true` — i.e. the one instant a Sale genuinely,
+   * newly transitions to `completed` (see that method's own doc comment;
+   * a replay/retry never reaches this a second time). Same transaction
+   * `client` as the settlement itself — see ADR-0017 "Activation
+   * boundary"/"Automatic earning": a failure here rolls back the whole
+   * settlement, exactly like TASK 12.6's inventory-consumption posting
+   * already does at this identical call site. */
+  private async applyPostSettlementHooks(
+    client: PaymentTransaction,
+    context: PaymentMutationContext,
+    settledSale: SaleRow,
+  ): Promise<void> {
+    if (this.membershipsService === undefined && this.loyaltyService === undefined) return;
+    const items = await this.salesRepository.saleItems(context.companyId, settledSale.id);
+    const productIds = [...new Set(items.map((item) => item.productId).filter((id): id is string => id !== null))];
+    if (this.membershipsService !== undefined) {
+      await this.membershipsService.activateFromSale(client, {
+        companyId: context.companyId,
+        branchId: settledSale.branchId,
+        saleId: settledSale.id,
+        customerId: settledSale.customerId,
+        actorId: context.actorId,
+        correlationId: context.correlationId,
+        timestamp: context.timestamp,
+        productIds,
+      });
+    }
+    if (this.loyaltyService !== undefined) {
+      await this.loyaltyService.earnFromSale(client, {
+        companyId: context.companyId,
+        branchId: settledSale.branchId,
+        saleId: settledSale.id,
+        customerId: settledSale.customerId,
+        saleTotal: settledSale.total,
+        actorId: context.actorId,
+        correlationId: context.correlationId,
+        timestamp: context.timestamp,
+      });
+    }
+  }
 
   // --- Terminals -------------------------------------------------------
 
@@ -573,11 +626,12 @@ export class PaymentService {
           // one `transitionAttempt`'s own `'approved'` branch makes —
           // completes the sale only the first time every captured
           // payment's sum covers its total, idempotent by construction.
-          const { sale: settledSale } = await this.salesRepository.trySettleSale(
+          const { sale: settledSale, settled } = await this.salesRepository.trySettleSale(
             client,
             context,
             sale.id,
           );
+          if (settled) await this.applyPostSettlementHooks(client, context, settledSale);
           // TASK 12.7 Part E: the drawer's own net fact — exactly
           // `amountDue` ($29 for the task's own $29/$50/$21 example),
           // never the tendered $50. Posted once per captured cash
@@ -895,7 +949,8 @@ export class PaymentService {
             // retry, or two workers racing this same transition can never
             // finalize the sale twice. This is the only place a sale
             // transitions to `completed` in this pass.
-            await this.salesRepository.trySettleSale(client, context, payment.saleId);
+            const settlement = await this.salesRepository.trySettleSale(client, context, payment.saleId);
+            if (settlement.settled) await this.applyPostSettlementHooks(client, context, settlement.sale);
           }
           await this.repository.auditAndPublish(client, context, {
             action: 'payment_attempt.status_changed',

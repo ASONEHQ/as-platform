@@ -120,6 +120,17 @@ export const infrastructureErrorCodes = [
   'coupon_cart_not_eligible',
   'discount_not_authorized',
   'discount_invalid',
+  // TASK 13.0: customers/memberships/rewards — this domain is not
+  // pre-reserved anywhere (see ADR-0017); every other lookup/validation
+  // failure in this domain reuses an existing generic code
+  // (`resource_not_found`, `resource_conflict`, `validation_error`) rather
+  // than inventing a synonym, matching this codebase's own convention.
+  // These four are genuinely new SEMANTIC concepts a generic code cannot
+  // express.
+  'customer_identity_conflict',
+  'membership_plan_inactive',
+  'membership_not_active',
+  'qr_token_invalid',
   'product_not_found',
   'product_not_active',
   'price_not_found',

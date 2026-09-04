@@ -1,0 +1,514 @@
+import { randomUUID } from 'node:crypto';
+
+import type { DatabaseClient } from '@asone/database';
+
+import {
+  LoyaltyError,
+  type LoyaltyAccountRow,
+  type LoyaltyBalance,
+  type LoyaltyEntrySourceType,
+  type LoyaltyEntryType,
+  type LoyaltyLedgerEntryRow,
+  type LoyaltyMutationContext,
+  type LoyaltyProgramRow,
+  type LoyaltyUnitType,
+} from './loyalty.types.js';
+
+/** Structurally identical to every other module's transaction interface
+ * in this codebase — a real `pg` client from `PaymentsService`'s own
+ * settlement transaction satisfies this too. */
+export interface LoyaltyTransaction {
+  query(sql: string, values?: readonly unknown[]): Promise<unknown>;
+}
+
+interface QueryResult<T> {
+  rows: T[];
+}
+function result<T>(value: unknown): QueryResult<T> {
+  return value as QueryResult<T>;
+}
+function jsonValue(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? value.toString() : value;
+}
+interface IdempotencyDb {
+  request_hash: string;
+  response_body: unknown;
+}
+
+const PROGRAM_COLUMNS =
+  'id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,' +
+  'reward_threshold,reward_description,created_by,updated_by,version,created_at,updated_at';
+interface ProgramDb {
+  id: string;
+  company_id: string;
+  name: string;
+  active: boolean;
+  unit_type: LoyaltyUnitType;
+  earning_rule_type: 'per_completed_sale';
+  earn_quantity_per_sale: number;
+  minimum_sale_total: string | null;
+  reward_threshold: number | null;
+  reward_description: string | null;
+  created_by: string;
+  updated_by: string;
+  version: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+interface AccountDb {
+  id: string;
+  company_id: string;
+  customer_id: string;
+  status: 'active' | 'closed';
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+const LEDGER_COLUMNS =
+  'id,company_id,loyalty_account_id,loyalty_program_id,branch_id,entry_type,quantity,unit_type,' +
+  'source_type,source_id,reason,actor_id,occurred_at,created_at';
+interface LedgerDb {
+  id: string;
+  company_id: string;
+  loyalty_account_id: string;
+  loyalty_program_id: string | null;
+  branch_id: string | null;
+  entry_type: LoyaltyEntryType;
+  quantity: number;
+  unit_type: LoyaltyUnitType;
+  source_type: LoyaltyEntrySourceType;
+  source_id: string | null;
+  reason: string | null;
+  actor_id: string | null;
+  occurred_at: Date | string;
+  created_at: Date | string;
+}
+
+function program(row: ProgramDb): LoyaltyProgramRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    name: row.name,
+    active: row.active,
+    unitType: row.unit_type,
+    earningRuleType: row.earning_rule_type,
+    earnQuantityPerSale: row.earn_quantity_per_sale,
+    minimumSaleTotal: row.minimum_sale_total,
+    rewardThreshold: row.reward_threshold,
+    rewardDescription: row.reward_description,
+    createdBy: row.created_by,
+    updatedBy: row.updated_by,
+    version: BigInt(row.version),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+function account(row: AccountDb): LoyaltyAccountRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    customerId: row.customer_id,
+    status: row.status,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+function ledgerEntry(row: LedgerDb): LoyaltyLedgerEntryRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    loyaltyAccountId: row.loyalty_account_id,
+    loyaltyProgramId: row.loyalty_program_id,
+    branchId: row.branch_id,
+    entryType: row.entry_type,
+    quantity: row.quantity,
+    unitType: row.unit_type,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    reason: row.reason,
+    actorId: row.actor_id,
+    occurredAt: new Date(row.occurred_at),
+    createdAt: new Date(row.created_at),
+  };
+}
+
+export interface InsertProgramInput {
+  id: string;
+  companyId: string;
+  name: string;
+  active: boolean;
+  unitType: LoyaltyUnitType;
+  earnQuantityPerSale: number;
+  minimumSaleTotal: string | null;
+  rewardThreshold: number | null;
+  rewardDescription: string | null;
+  createdBy: string;
+  timestamp: Date;
+}
+export interface UpdateProgramFields {
+  name?: string;
+  active?: boolean;
+  unitType?: LoyaltyUnitType;
+  earnQuantityPerSale?: number;
+  minimumSaleTotal?: string | null;
+  rewardThreshold?: number | null;
+  rewardDescription?: string | null;
+  updatedBy: string;
+  timestamp: Date;
+}
+export interface InsertLedgerEntryInput {
+  id: string;
+  companyId: string;
+  loyaltyAccountId: string;
+  loyaltyProgramId: string | null;
+  branchId: string | null;
+  entryType: LoyaltyEntryType;
+  quantity: number;
+  unitType: LoyaltyUnitType;
+  sourceType: LoyaltyEntrySourceType;
+  sourceId: string | null;
+  reason: string | null;
+  actorId: string | null;
+  timestamp: Date;
+}
+
+export class LoyaltyRepository {
+  public constructor(private readonly database: DatabaseClient) {}
+
+  public async transaction<T>(callback: (client: LoyaltyTransaction) => Promise<T>): Promise<T> {
+    const client = await this.database.pool.connect();
+    try {
+      await client.query('begin');
+      const value = await callback(client);
+      await client.query('commit');
+      return value;
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async idempotent<T>(
+    client: LoyaltyTransaction,
+    context: LoyaltyMutationContext,
+    operation: string,
+    key: string,
+    requestHash: string,
+    decode: (value: unknown) => T,
+    create: () => Promise<T & { id: string }>,
+  ): Promise<{ value: T; replayed: boolean }> {
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [
+      `${context.companyId}:${operation}:${key}`,
+    ]);
+    const existing = result<IdempotencyDb>(
+      await client.query(
+        `select request_hash,response_body from idempotency_keys where company_id=$1 and operation=$2 and key=$3`,
+        [context.companyId, operation, key],
+      ),
+    ).rows[0];
+    if (existing !== undefined) {
+      if (existing.request_hash !== requestHash || existing.response_body === null)
+        throw new LoyaltyError('validation_error', 'The idempotency key was used with another request.');
+      return { value: decode(existing.response_body), replayed: true };
+    }
+    const id = randomUUID();
+    await client.query(
+      `insert into idempotency_keys (id,company_id,key,operation,request_hash,expires_at,created_at)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
+      [id, context.companyId, key, operation, requestHash, new Date(context.timestamp.getTime() + 86_400_000), context.timestamp],
+    );
+    const value = await create();
+    await client.query(`update idempotency_keys set response_body=$1::jsonb where id=$2`, [
+      JSON.stringify(value, jsonValue),
+      id,
+    ]);
+    return { value, replayed: false };
+  }
+
+  public async auditAndPublish(
+    client: LoyaltyTransaction,
+    context: LoyaltyMutationContext,
+    input: {
+      action: string;
+      resourceType: 'loyalty_program' | 'loyalty_account' | 'loyalty_ledger_entry';
+      resourceId: string;
+      eventType: string;
+      version: bigint;
+      payload: Readonly<Record<string, unknown>>;
+    },
+  ): Promise<void> {
+    await client.query(
+      `insert into audit_log
+       (id,company_id,actor_type,actor_id,action,entity_type,entity_id,request_id,correlation_id,metadata,occurred_at)
+       values ($1,$2,'user',$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
+      [
+        randomUUID(),
+        context.companyId,
+        context.actorId,
+        input.action,
+        input.resourceType,
+        input.resourceId,
+        context.requestId,
+        context.correlationId,
+        JSON.stringify(input.payload, jsonValue),
+        context.timestamp,
+      ],
+    );
+    await client.query(
+      `insert into outbox_events
+       (event_id,company_id,branch_id,event_type,schema_version,aggregate_type,aggregate_id,aggregate_version,
+        correlation_id,payload,occurred_at,available_at,created_at)
+       values ($1,$2,null,$3,1,$4,$5,$6,$7,$8::jsonb,$9,$9,$9)`,
+      [
+        randomUUID(),
+        context.companyId,
+        input.eventType,
+        input.resourceType,
+        input.resourceId,
+        input.version.toString(),
+        context.correlationId,
+        JSON.stringify(input.payload, jsonValue),
+        context.timestamp,
+      ],
+    );
+  }
+
+  // --- Programs (Part S) ---------------------------------------------------
+
+  public async insertProgram(client: LoyaltyTransaction, input: InsertProgramInput): Promise<LoyaltyProgramRow> {
+    await client.query(
+      `insert into loyalty_programs
+       (id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,
+        reward_threshold,reward_description,created_by,updated_by,created_at,updated_at)
+       values ($1,$2,$3,$4,$5,'per_completed_sale',$6,$7,$8,$9,$10,$10,$11,$11)`,
+      [
+        input.id,
+        input.companyId,
+        input.name,
+        input.active,
+        input.unitType,
+        input.earnQuantityPerSale,
+        input.minimumSaleTotal,
+        input.rewardThreshold,
+        input.rewardDescription,
+        input.createdBy,
+        input.timestamp,
+      ],
+    );
+    const created = await this.program(client, input.companyId, input.id);
+    if (created === null) throw new Error('Loyalty program insertion did not return a row.');
+    return created;
+  }
+
+  public async updateProgram(
+    client: LoyaltyTransaction,
+    companyId: string,
+    id: string,
+    expectedVersion: bigint,
+    fields: UpdateProgramFields,
+  ): Promise<LoyaltyProgramRow> {
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    let index = 1;
+    const set = (column: string, value: unknown): void => {
+      assignments.push(`${column}=$${String(index)}`);
+      values.push(value);
+      index += 1;
+    };
+    if (fields.name !== undefined) set('name', fields.name);
+    if (fields.active !== undefined) set('active', fields.active);
+    if (fields.unitType !== undefined) set('unit_type', fields.unitType);
+    if (fields.earnQuantityPerSale !== undefined) set('earn_quantity_per_sale', fields.earnQuantityPerSale);
+    if (fields.minimumSaleTotal !== undefined) set('minimum_sale_total', fields.minimumSaleTotal);
+    if (fields.rewardThreshold !== undefined) set('reward_threshold', fields.rewardThreshold);
+    if (fields.rewardDescription !== undefined) set('reward_description', fields.rewardDescription);
+    set('updated_by', fields.updatedBy);
+    set('updated_at', fields.timestamp);
+    set('version', (expectedVersion + 1n).toString());
+    const companyParam = index;
+    values.push(companyId);
+    index += 1;
+    const idParam = index;
+    values.push(id);
+    index += 1;
+    const versionParam = index;
+    values.push(expectedVersion.toString());
+    const updated = result<{ id: string }>(
+      await client.query(
+        `update loyalty_programs set ${assignments.join(',')}
+         where company_id=$${String(companyParam)} and id=$${String(idParam)} and version=$${String(versionParam)}
+         returning id`,
+        values,
+      ),
+    ).rows[0];
+    if (updated === undefined) {
+      const current = await this.program(client, companyId, id);
+      if (current === null) throw new LoyaltyError('resource_not_found', 'The loyalty program was not found.');
+      throw new LoyaltyError('version_conflict', 'The loyalty program was modified by another request.');
+    }
+    const row = await this.program(client, companyId, id);
+    if (row === null) throw new Error('Loyalty program update did not return a row.');
+    return row;
+  }
+
+  public async program(client: LoyaltyTransaction | null, companyId: string, id: string): Promise<LoyaltyProgramRow | null> {
+    const row = result<ProgramDb>(
+      await (client ?? this.database.pool).query(
+        `select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 and id=$2`,
+        [companyId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : program(row);
+  }
+
+  public async listPrograms(companyId: string, active: boolean | null): Promise<LoyaltyProgramRow[]> {
+    const rows =
+      active === null
+        ? result<ProgramDb>(
+            await this.database.pool.query(`select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 order by created_at desc`, [
+              companyId,
+            ]),
+          ).rows
+        : result<ProgramDb>(
+            await this.database.pool.query(
+              `select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 and active=$2 order by created_at desc`,
+              [companyId, active],
+            ),
+          ).rows;
+    return rows.map(program);
+  }
+
+  public async activePrograms(companyId: string): Promise<LoyaltyProgramRow[]> {
+    return this.listPrograms(companyId, true);
+  }
+
+  // --- Accounts (Part P) ---------------------------------------------------
+
+  public async accountByCustomerId(companyId: string, customerId: string): Promise<LoyaltyAccountRow | null> {
+    const row = result<AccountDb>(
+      await this.database.pool.query(
+        `select id,company_id,customer_id,status,created_at,updated_at
+         from loyalty_accounts where company_id=$1 and customer_id=$2`,
+        [companyId, customerId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : account(row);
+  }
+
+  /** Lazily creates the account on first touch — Part P: a customer MAY
+   * have a loyalty account, never every customer automatically. */
+  public async getOrCreateAccount(
+    client: LoyaltyTransaction,
+    companyId: string,
+    customerId: string,
+    timestamp: Date,
+  ): Promise<LoyaltyAccountRow> {
+    const existing = result<AccountDb>(
+      await client.query(
+        `select id,company_id,customer_id,status,created_at,updated_at
+         from loyalty_accounts where company_id=$1 and customer_id=$2`,
+        [companyId, customerId],
+      ),
+    ).rows[0];
+    if (existing !== undefined) return account(existing);
+    const id = randomUUID();
+    await client.query(
+      `insert into loyalty_accounts (id,company_id,customer_id,status,created_at,updated_at)
+       values ($1,$2,$3,'active',$4,$4)
+       on conflict on constraint loyalty_accounts_company_customer_uq do nothing`,
+      [id, companyId, customerId, timestamp],
+    );
+    const row = result<AccountDb>(
+      await client.query(
+        `select id,company_id,customer_id,status,created_at,updated_at
+         from loyalty_accounts where company_id=$1 and customer_id=$2`,
+        [companyId, customerId],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Loyalty account creation did not return a row.');
+    return account(row);
+  }
+
+  // --- Ledger (Part Q) ------------------------------------------------------
+
+  /** `on conflict ... do nothing` on the automatic-earn idempotency index
+   * — a retried/replayed sale settlement returns `null`, treated by the
+   * caller as "already earned, nothing new to do" (mirrors
+   * `MembershipsRepository.insertMembership` exactly). Manual entries
+   * (`source_type='manual'`) never collide with this index (their
+   * `source_id` is always null, and Postgres treats every null as
+   * distinct), so they always succeed. */
+  public async insertLedgerEntry(
+    client: LoyaltyTransaction,
+    input: InsertLedgerEntryInput,
+  ): Promise<LoyaltyLedgerEntryRow | null> {
+    const inserted = result<{ id: string }>(
+      await client.query(
+        `insert into loyalty_ledger
+         (id,company_id,loyalty_account_id,loyalty_program_id,branch_id,entry_type,quantity,unit_type,
+          source_type,source_id,reason,actor_id,occurred_at,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+         on conflict on constraint loyalty_ledger_company_program_sale_uq do nothing
+         returning id`,
+        [
+          input.id,
+          input.companyId,
+          input.loyaltyAccountId,
+          input.loyaltyProgramId,
+          input.branchId,
+          input.entryType,
+          input.quantity,
+          input.unitType,
+          input.sourceType,
+          input.sourceId,
+          input.reason,
+          input.actorId,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (inserted === undefined) return null;
+    const row = result<LedgerDb>(
+      await client.query(`select ${LEDGER_COLUMNS} from loyalty_ledger where company_id=$1 and id=$2`, [
+        input.companyId,
+        inserted.id,
+      ]),
+    ).rows[0];
+    if (row === undefined) throw new Error('Loyalty ledger insertion did not return a row.');
+    return ledgerEntry(row);
+  }
+
+  public async ledgerForAccount(companyId: string, accountId: string, limit: number): Promise<LoyaltyLedgerEntryRow[]> {
+    const rows = result<LedgerDb>(
+      await this.database.pool.query(
+        `select ${LEDGER_COLUMNS} from loyalty_ledger
+         where company_id=$1 and loyalty_account_id=$2
+         order by occurred_at desc, id desc
+         limit $3`,
+        [companyId, accountId, limit],
+      ),
+    ).rows;
+    return rows.map(ledgerEntry);
+  }
+
+  /** Part Q — the balance is always this `SUM(quantity)`, grouped per
+   * program (a null `loyalty_program_id` groups every manual entry not
+   * tied to a specific program together). Never a cached counter. */
+  public async balances(companyId: string, accountId: string): Promise<LoyaltyBalance[]> {
+    const rows = result<{ loyalty_program_id: string | null; unit_type: LoyaltyUnitType; balance: string }>(
+      await this.database.pool.query(
+        `select loyalty_program_id, unit_type, sum(quantity)::text as balance
+         from loyalty_ledger
+         where company_id=$1 and loyalty_account_id=$2
+         group by loyalty_program_id, unit_type`,
+        [companyId, accountId],
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      programId: row.loyalty_program_id,
+      unitType: row.unit_type,
+      balance: Number(row.balance),
+    }));
+  }
+}

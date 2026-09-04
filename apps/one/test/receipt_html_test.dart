@@ -360,4 +360,29 @@ void main() {
       expect(cardHtml, isNot(contains('Cambio')));
     });
   });
+
+  group('TASK 13.0 — customer name on the receipt', () {
+    test('renders no Cliente line at all when customerDisplayName is omitted — '
+        'a walk-in sale prints byte-identical to before this task (ADR-0017 D6)', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      expect(html, isNot(contains('Cliente:')));
+    });
+
+    test('renders the customer name under the folio/cajero meta block when given', () {
+      final html = buildReceiptHtml(receipt: receipt(), customerDisplayName: 'Ana Pérez');
+      expect(html, contains('Cliente: Ana Pérez'));
+    });
+
+    test('never renders phone, email, or birth date — the caller only ever supplies a name '
+        '(Part AB) — and the name is HTML-escaped like every other snapshot value', () {
+      final html = buildReceiptHtml(receipt: receipt(), customerDisplayName: '<b>Ana</b> & Cía');
+      expect(html, contains('Cliente: &lt;b&gt;Ana&lt;/b&gt; &amp; Cía'));
+      expect(html, isNot(contains('<b>Ana</b>')));
+    });
+
+    test('an empty customerDisplayName renders nothing extra, never a bare "Cliente:" label', () {
+      final html = buildReceiptHtml(receipt: receipt(), customerDisplayName: '');
+      expect(html, isNot(contains('Cliente:')));
+    });
+  });
 }

@@ -101,6 +101,19 @@ export const ianaTimezone: ValueNormalizer = (key, value) => {
   return normalized;
 };
 
+/** TASK 13.0 — an empty string means "no country context configured";
+ * `CustomersService`'s phone normalization treats that as "do not guess a
+ * country" (see ADR-0017 "Phone normalization"), never defaulting to any
+ * hardcoded country. A non-empty value must be a real ISO 3166-1 alpha-2
+ * code. */
+export const isoCountryCodeOrEmpty: ValueNormalizer = (key, value) => {
+  const normalized = stringValue(key, value).trim().toUpperCase();
+  if (normalized.length === 0) return '';
+  if (!/^[A-Z]{2}$/u.test(normalized))
+    validationError(key, 'iso_country_code', 'The setting value must be a 2-letter ISO country code.');
+  return normalized;
+};
+
 export function validateSettingValue(
   definition: SettingDefinition,
   valueType: SettingValueType,

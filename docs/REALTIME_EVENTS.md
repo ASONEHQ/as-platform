@@ -22,7 +22,9 @@ PostgreSQL and its transactional outbox are authoritative. WebSocket connections
 | Payload | Minimal notification data; retrieve authoritative state through REST |
 | Scope | Derived and continuously enforced by the server |
 
-Excluded: push notifications, webhooks, Kafka, detailed provider/library selection, Redis configuration, consumers/workers, Rewards, parties/events, memberships, customers, advanced analytics, and offline authentication.
+Excluded: push notifications, webhooks, Kafka, detailed provider/library selection, Redis configuration, consumers/workers, parties/events, advanced analytics, and offline authentication.
+
+Customers, membership plans/entitlements, and the AS Rewards+ loyalty-ledger foundation are no longer excluded — see §11.12 and ADR-0017. Reward-entitlement issuance, loyalty redemption, and Wallet-pass events remain excluded/deferred.
 
 ## 3. Architecture and publication
 
@@ -237,7 +239,7 @@ Revocation enforcement does not depend on successful delivery of the control mes
 
 ## 11. Event catalogue conventions
 
-The catalogue defines **70 unique event types**. Every row inherits the normative envelope and security rules.
+The catalogue defines **85 unique event types**. Every row inherits the normative envelope and security rules.
 
 ### 11.1 Field and recovery profiles
 
@@ -253,7 +255,7 @@ The catalogue defines **70 unique event types**. Every row inherits the normativ
 | `P-SEC` | access/refresh tokens, credentials, detection internals, IP/device fingerprint detail |
 | `P-CEO` | raw transactions, customer/PII data, accounting claims, unrestricted cross-branch detail |
 
-Recovery codes: `ORG` = organization/settings REST routes; `IAM` = users/roles/permissions/branch-access routes; `DEV` = devices/registers; `CASH` = cash sessions/movements; `CAT` = categories/products/prices/availability; `INV` = inventory locations/balances/movements; `SALE` = sales/payments; `REF` = refunds; `SYNC` = sync operations/checkpoints/changes; `REC` = `/recovery/changes` plus authoritative resource route; `AUTH` = `/auth/session`, `/auth/me`, `/auth/permissions` after reauthentication. Collection route details remain authoritative in [API_CONTRACTS.md](API_CONTRACTS.md).
+Recovery codes: `ORG` = organization/settings REST routes; `IAM` = users/roles/permissions/branch-access routes; `DEV` = devices/registers; `CASH` = cash sessions/movements; `CAT` = categories/products/prices/availability; `INV` = inventory locations/balances/movements; `SALE` = sales/payments; `REF` = refunds; `PROMO` = promotions/coupons routes; `CUST` = customers/membership-plans/customer-memberships/loyalty-programs routes; `SYNC` = sync operations/checkpoints/changes; `REC` = `/recovery/changes` plus authoritative resource route; `AUTH` = `/auth/session`, `/auth/me`, `/auth/permissions` after reauthentication. Collection route details remain authoritative in [API_CONTRACTS.md](API_CONTRACTS.md).
 
 For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `aggregate_version` is expected; `C` means checkpoint traversal only. Retention is `CP` (recoverable only within configured checkpoint/event retention) unless stated `SEC` (security retention policy). Retention durations remain open.
 
@@ -479,6 +481,24 @@ Not part of any prior domain grouping — §1's own excluded-scope list named "a
 | `coupon.created` | promotions / `coupon` | company / `coupon.read` | coupon ID, code, active flag, benefit type, version; `P-FIN` | committed coupon creation / `PROMO` | C / CP |
 | `coupon.updated` | promotions / `coupon` | company / `coupon.read` | coupon ID, code, active flag, version; `P-FIN` | committed coupon edit/activation change / `PROMO` | C / CP |
 
+### 11.12 Customers, memberships, and AS Rewards+ — 11 events (TASK 13.0)
+
+Not part of any prior domain grouping — §1's own excluded-scope list named "Rewards, parties/events, memberships, customers" out of contract until this task. See ADR-0017. Every payload reuses `P-FIN`'s existing "unnecessary customer/PII data" prohibition — never a name/email/phone/birth date, only ids and non-sensitive status fields. No reward-entitlement-issuance, loyalty-redemption, or Wallet-pass event exists — none of those facts are implemented yet (ADR-0017's own Deferred section).
+
+| Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
+| --- | --- | --- | --- | --- | --- |
+| `customer.created` | customers / `customer` | company / `customer.read` | customer ID, status; `P-FIN` | committed customer creation / `CUST` | C / CP |
+| `customer.updated` | customers / `customer` | company / `customer.read` | customer ID, status; `P-FIN` | committed customer edit / `CUST` | C / CP |
+| `customer.qr_token.issued` | customers / `customer_qr_token` | company / `customer.read` | customer ID (never the token value itself); `P-FIN` | QR identity issued/rotated / `CUST` | C / CP |
+| `membership_plan.created` | memberships / `membership_plan` | company / `membership.read` | plan ID, active flag; `P-FIN` | committed plan creation / `CUST` | C / CP |
+| `membership_plan.updated` | memberships / `membership_plan` | company / `membership.read` | plan ID, active flag; `P-FIN` | committed plan edit/activation change / `CUST` | C / CP |
+| `membership.activated` | memberships / `customer_membership` | company / `membership.read` | membership ID, customer ID, status (source: manual issue, renewal, or Sale settlement); `P-FIN` | POS-purchase activation, manual issuance, or renewal / `CUST` | C / CP |
+| `membership.cancelled` | memberships / `customer_membership` | company / `membership.read` | membership ID, customer ID; `P-FIN` | committed cancellation / `CUST` | C / CP |
+| `loyalty_program.created` | loyalty / `loyalty_program` | company / `loyalty.read` | program ID, active flag; `P-FIN` | committed program creation / `CUST` | C / CP |
+| `loyalty_program.updated` | loyalty / `loyalty_program` | company / `loyalty.read` | program ID, active flag; `P-FIN` | committed program edit/activation change / `CUST` | C / CP |
+| `loyalty.earned` | loyalty / `loyalty_ledger_entry` | company / `loyalty.read` | customer ID, source sale ID, quantity, unit type; `P-FIN` | automatic earning on Sale settlement / `CUST` | C / CP |
+| `loyalty.adjusted` | loyalty / `loyalty_ledger_entry` | company / `loyalty.read` | customer ID, quantity, unit type (never the reason text); `P-FIN` | manual ledger correction / `CUST` | C / CP |
+
 ## 12. Protocol errors
 
 Errors use a safe envelope containing `code`, human-readable `message`, optional bounded `details`, `message_id`, `request_id` where available, and `correlation_id`. They never expose hidden resource or subscription existence.
@@ -544,12 +564,12 @@ These require measured load, deployment evidence, privacy/retention policy, clie
 
 ## 16. Contract inventory
 
-- Unique event types: **74**.
+- Unique event types: **85**.
 - Client-to-server protocol messages: **6**.
 - Server-to-client protocol messages: **11**.
 - Total protocol message types: **17**.
 - Mermaid diagrams: **4**.
-- Unique permission keys used by event delivery: **21**.
+- Unique permission keys used by event delivery: **24**.
 - Open decision areas: **11**.
 
-The 21 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `promotion.read`, `coupon.read`, `sync.execute`, `recovery.read`, and `audit.read`.
+The 24 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `promotion.read`, `coupon.read`, `customer.read`, `membership.read`, `loyalty.read`, `sync.execute`, `recovery.read`, and `audit.read`.

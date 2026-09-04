@@ -4,6 +4,7 @@ import {
   boundedInteger,
   boundedString,
   ianaTimezone,
+  isoCountryCodeOrEmpty,
   timeOfDay,
   trimmedString,
 } from './settings.validation.js';
@@ -183,6 +184,22 @@ export const settingsCatalog = [
     public: true,
     resolveDefault: constantDefault('24h'),
     normalize: (value: unknown) => allowedString(['12h', '24h'])('ui.time_format', value),
+  },
+  {
+    // TASK 13.0 — Part C: phone country context must be explicit, never
+    // guessed. An empty string (the default) means "not configured"; a
+    // non-empty value is the ISO 3166-1 alpha-2 country
+    // `CustomersService` assumes when normalizing a phone number that
+    // itself carries no country code. Company-wide only (no branch
+    // override) — a company's own phone-normalization context does not
+    // vary by branch in this codebase's tenancy model.
+    key: 'customers.default_country_code',
+    type: 'string',
+    technicalDefault: '',
+    branchOverride: false,
+    public: true,
+    resolveDefault: constantDefault(''),
+    normalize: (value: unknown) => isoCountryCodeOrEmpty('customers.default_country_code', value),
   },
 ] as const satisfies readonly SettingDefinition[];
 

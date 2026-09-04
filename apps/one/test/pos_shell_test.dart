@@ -5,6 +5,9 @@ import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/money.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
+import 'package:as_one/features/pos/pos_customers_gateway.dart';
+import 'package:as_one/features/pos/pos_loyalty_gateway.dart';
+import 'package:as_one/features/pos/pos_memberships_gateway.dart';
 import 'package:as_one/features/pos/pos_models.dart';
 import 'package:as_one/features/pos/pos_navigation.dart';
 import 'package:as_one/features/pos/pos_payments_gateway.dart';
@@ -147,6 +150,9 @@ void main() {
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
             promotionsGateway: const EmptyPosPromotionsGateway(),
+            customersGateway: const EmptyPosCustomersGateway(),
+            membershipsGateway: const EmptyPosMembershipsGateway(),
+            loyaltyGateway: const EmptyPosLoyaltyGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -178,6 +184,9 @@ void main() {
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
             promotionsGateway: const EmptyPosPromotionsGateway(),
+            customersGateway: const EmptyPosCustomersGateway(),
+            membershipsGateway: const EmptyPosMembershipsGateway(),
+            loyaltyGateway: const EmptyPosLoyaltyGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -203,6 +212,9 @@ void main() {
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
             promotionsGateway: const EmptyPosPromotionsGateway(),
+            customersGateway: const EmptyPosCustomersGateway(),
+            membershipsGateway: const EmptyPosMembershipsGateway(),
+            loyaltyGateway: const EmptyPosLoyaltyGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -3192,6 +3204,9 @@ void main() {
               cashGateway: const EmptyPosCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
               promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -3226,6 +3241,9 @@ void main() {
               cashGateway: const EmptyPosCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
               promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -4699,6 +4717,770 @@ void main() {
       },
     );
   });
+
+  group('Customers, Memberships, and AS Rewards+ (TASK 13.0)', () {
+    Future<void> navigateToCustomersAdmin(WidgetTester tester) async {
+      if (find.byKey(const Key('nav-customers')).evaluate().isEmpty) {
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(const Key('nav-customers')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> navigateToMembershipsAdmin(WidgetTester tester) async {
+      if (find.byKey(const Key('nav-memberships')).evaluate().isEmpty) {
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(const Key('nav-memberships')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'a permission-less actor never sees the create action and sees an '
+      'honest permission state, never a silently-empty list',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          customersGateway: _FakeCustomersGateway(),
+        );
+        await navigateToCustomersAdmin(tester);
+
+        expect(find.byKey(const Key('pos-customer-new')), findsNothing);
+        expect(find.text('Acceso no autorizado'), findsWidgets);
+      },
+    );
+
+    testWidgets('the customers list renders the backend own summary rows and '
+        'handles the empty state honestly', (tester) async {
+      final customersGateway = _FakeCustomersGateway(
+        listResult: PosCustomerPage(
+          items: [
+            PosCustomerSummary(
+              id: 'customer-1',
+              displayName: 'Ana Pérez',
+              status: 'active',
+              version: 1,
+              createdAt: DateTime.utc(2026, 9, 1),
+            ),
+          ],
+          nextCursor: null,
+        ),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithCustomerPermissions,
+        customersGateway: customersGateway,
+      );
+      await navigateToCustomersAdmin(tester);
+
+      expect(find.text('Ana Pérez'), findsOneWidget);
+      expect(find.byKey(const Key('pos-customer-new')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-customers-search')), 'sin resultados');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      expect(customersGateway.listSearchCalls, contains('sin resultados'));
+    });
+
+    testWidgets('creating a new customer calls the backend with the real form '
+        'values, minimum-friction (only first name required)', (tester) async {
+      final customersGateway = _FakeCustomersGateway(
+        listResult: const PosCustomerPage(items: [], nextCursor: null),
+        createResult: _fixtureCustomer(id: 'customer-new', displayName: 'Nuevo Cliente'),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithCustomerPermissions,
+        customersGateway: customersGateway,
+      );
+      await navigateToCustomersAdmin(tester);
+
+      await tester.tap(find.byKey(const Key('pos-customer-new')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-customer-save')));
+      await tester.pump();
+      expect(find.text('El nombre es obligatorio.'), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-customer-first-name')), 'Nuevo Cliente');
+      await tester.tap(find.byKey(const Key('pos-customer-save')));
+      await tester.pumpAndSettle();
+
+      expect(customersGateway.createCalls, hasLength(1));
+      expect(customersGateway.createCalls.single.firstName, 'Nuevo Cliente');
+    });
+
+    testWidgets(
+      'a 409 conflict on customer creation offers the existing customer '
+      'instead of a generic error, never blindly retried',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: const PosCustomerPage(items: [], nextCursor: null),
+          createFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'ignored', code: 'resource_conflict'),
+            details: {'existing_customer_id': 'customer-existing'},
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+
+        await tester.tap(find.byKey(const Key('pos-customer-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-customer-first-name')), 'Duplicado');
+        await tester.tap(find.byKey(const Key('pos-customer-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Ya existe un cliente con ese correo o teléfono.'), findsOneWidget);
+        expect(find.textContaining('customer-existing'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a mutation failure while saving a customer surfaces the backend own '
+      'honest error, never a fake success',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: const PosCustomerPage(items: [], nextCursor: null),
+          createFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+
+        await tester.tap(find.byKey(const Key('pos-customer-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-customer-first-name')), 'Cliente');
+        await tester.tap(find.byKey(const Key('pos-customer-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+        // The dialog stays open — never a fake success.
+        expect(find.byKey(const Key('pos-customer-save')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail shows an honest empty Rewards state — never a fake '
+      "'reward available' badge — and an honest empty Membresías state",
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+          membershipsGateway: _FakeMembershipsGateway(membershipsResult: const []),
+          loyaltyGateway: _FakeLoyaltyGateway(
+            summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+          ),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Sin actividad de rewards.'), findsOneWidget);
+        expect(find.text('Sin membresías registradas.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-loyalty-adjust')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'loyalty.adjust is gated SEPARATELY from loyalty.manage — an actor '
+      'without it never sees the Ajustar action',
+      (tester) async {
+        final contextWithoutAdjust = AuthenticatedContext(
+          session: _context.session,
+          user: _context.user,
+          companies: _context.companies,
+          branches: _context.branches,
+          companyWideAccess: false,
+          permissions: [..._context.permissions, 'customer.read', 'loyalty.read', 'loyalty.manage'],
+        );
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: contextWithoutAdjust,
+          customersGateway: customersGateway,
+          loyaltyGateway: _FakeLoyaltyGateway(
+            summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+          ),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-loyalty-adjust')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the membership plans admin screen renders from the backend list and '
+      'creating a plan calls the backend with the real form values',
+      (tester) async {
+        final membershipsGateway = _FakeMembershipsGateway(
+          plansResult: [_fixturePlan(id: 'plan-1', name: 'Plan Oro')],
+          createPlanResult: _fixturePlan(id: 'plan-new', name: 'Plan Plata'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          membershipsGateway: membershipsGateway,
+        );
+        await navigateToMembershipsAdmin(tester);
+
+        expect(find.text('Plan Oro'), findsOneWidget);
+        expect(find.byKey(const Key('pos-membership-plan-new')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-membership-plan-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-membership-plan-name')), 'Plan Plata');
+        await tester.tap(find.byKey(const Key('pos-membership-plan-save')));
+        await tester.pumpAndSettle();
+
+        expect(membershipsGateway.createPlanCalls, ['Plan Plata']);
+      },
+    );
+
+    testWidgets(
+      'a permission-less actor never sees the new-plan action on the '
+      'membership plans admin screen',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerReadOnly,
+          membershipsGateway: _FakeMembershipsGateway(),
+        );
+        await navigateToMembershipsAdmin(tester);
+
+        expect(find.byKey(const Key('pos-membership-plan-new')), findsNothing);
+        expect(find.text('Acceso no autorizado'), findsWidgets);
+      },
+    );
+
+    testWidgets('Sales History shows the attached customer name where present, '
+        'and an honest dash for a walk-in sale', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        listResult: PosSaleHistoryPage(
+          items: [
+            PosSaleSummary(
+              id: 'sale-1',
+              saleNumber: 'SALE-1',
+              status: 'completed',
+              currencyCode: 'MXN',
+              branchId: 'branch-id',
+              branchName: 'Main',
+              cashierId: 'user-id',
+              cashierName: 'Cash Ier',
+              occurredAt: DateTime.utc(2026, 9, 1),
+              completedAt: DateTime.utc(2026, 9, 1, 0, 5),
+              itemCount: 1,
+              subtotal: '10.0000',
+              taxTotal: '1.6000',
+              total: '11.6000',
+              paymentMethods: const ['cash'],
+              customerId: 'customer-1',
+              customerDisplayName: 'Ana Pérez',
+            ),
+            PosSaleSummary(
+              id: 'sale-2',
+              saleNumber: 'SALE-2',
+              status: 'completed',
+              currencyCode: 'MXN',
+              branchId: 'branch-id',
+              branchName: 'Main',
+              cashierId: 'user-id',
+              cashierName: 'Cash Ier',
+              occurredAt: DateTime.utc(2026, 9, 1),
+              completedAt: DateTime.utc(2026, 9, 1, 0, 5),
+              itemCount: 1,
+              subtotal: '10.0000',
+              taxTotal: '1.6000',
+              total: '11.6000',
+              paymentMethods: const ['cash'],
+            ),
+          ],
+          nextCursor: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithSaleRead, salesGateway: salesGateway);
+      // `history` lives under "Administración", the sidebar's own
+      // default-expanded group — already visible with no group to open
+      // first (see the TASK 12.6 `navigateToHistory` helper above).
+      await tester.tap(find.byKey(const Key('nav-history')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ana Pérez'), findsOneWidget);
+    });
+
+    testWidgets(
+      'the POS ticket customer selector defaults to "Venta sin cliente", '
+      "searches via the backend's own GET /customers?search=, and attaches "
+      'the selected customer id to POST /sales',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        final salesGateway = _FakeSalesGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          customersGateway: customersGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        expect(find.byKey(const Key('pos-ticket-customer-select')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-select')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-customer-selector-search')), 'Ana');
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        expect(customersGateway.listSearchCalls, contains('Ana'));
+
+        await tester.tap(find.byKey(const Key('pos-customer-selector-result-customer-1')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-customer-attached')), findsOneWidget);
+        expect(find.text('Ana Pérez'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(salesGateway.calls, isNotEmpty);
+        expect(salesGateway.calls.last.customerId, 'customer-1');
+      },
+    );
+
+    testWidgets(
+      '"Nuevo cliente" quick-registration from the ticket customer selector '
+      'offers the existing customer on a 409 conflict instead of blindly '
+      'duplicating',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          createFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'ignored', code: 'resource_conflict'),
+            details: {'existing_customer_id': 'customer-existing'},
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-existing', displayName: 'Cliente Existente'),
+        );
+        await _pump(tester, const Size(1440, 900), customersGateway: customersGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-select')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-selector-new')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-quick-customer-first-name')), 'Duplicado');
+        await tester.tap(find.byKey(const Key('pos-quick-customer-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-quick-customer-use-existing')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('pos-quick-customer-use-existing')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-customer-attached')), findsOneWidget);
+        expect(find.text('Cliente Existente'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'removing the attached customer restores "Venta sin cliente"',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), customersGateway: customersGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-select')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-customer-selector-search')), 'Ana');
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-selector-result-customer-1')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-ticket-customer-attached')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-remove')));
+        await tester.pump();
+
+        expect(find.byKey(const Key('pos-ticket-customer-select')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-customer-attached')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CLIENTE mode never gains a customer directory search — no selector '
+      'affordance exists in the locked CLIENTE surface',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-customer-select')), findsNothing);
+        expect(find.byKey(const Key('pos-customer-selector-search')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the customers list and Customer Detail surface the backend own '
+      'honest errors, never a fabricated success',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'editing an existing customer calls updateCustomer with the real '
+      'form values',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+          customerFailure: null,
+          updateResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana P. Editada'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-detail-edit')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-save')));
+        await tester.pumpAndSettle();
+
+        expect(customersGateway.updateCalls, ['customer-1']);
+      },
+    );
+
+    testWidgets(
+      'a failed customer edit keeps the dialog open with the backend own '
+      'honest error, never a fake success',
+      (tester) async {
+        final failingGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+          updateFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'La información cambió mientras tanto.', code: 'version_conflict'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: failingGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-detail-edit')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('La información cambió mientras tanto.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-save')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: QR issuance, membership issue/renew/cancel/'
+      'validate, and a manual rewards adjustment all call the real '
+      'backend, never a client-computed decision',
+      (tester) async {
+        final membership = _fixtureMembership(id: 'membership-1', customerId: 'customer-1', planId: 'plan-1');
+        final membershipsGateway = _FakeMembershipsGateway(
+          membershipsResult: [membership],
+          membershipsFailure: null,
+          plansResult: [_fixturePlan(id: 'plan-1', name: 'Plan Oro')],
+          issueResult: _fixtureMembership(id: 'membership-3', customerId: 'customer-1', planId: 'plan-1'),
+          issueFailure: null,
+          renewResult: _fixtureMembership(id: 'membership-2', customerId: 'customer-1', planId: 'plan-1'),
+          cancelResult: _fixtureMembership(
+            id: 'membership-1',
+            customerId: 'customer-1',
+            planId: 'plan-1',
+            status: 'cancelled',
+          ),
+          validateResult: const PosMembershipValidation(
+            valid: true,
+            reason: null,
+            eligibleBranch: true,
+            membership: null,
+          ),
+        );
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+          customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+          qrTokenResult: PosCustomerQrToken(
+            id: 'qr-1',
+            customerId: 'customer-1',
+            token: 'opaque-token-value',
+            status: 'active',
+            createdAt: DateTime.utc(2026, 9, 1),
+          ),
+        );
+        final loyaltyGateway = _FakeLoyaltyGateway(
+          programsResult: [
+            const PosLoyaltyProgram(
+              id: 'program-1',
+              name: 'AS Rewards+',
+              active: true,
+              unitType: 'point',
+              earnQuantityPerSale: 1,
+              minimumSaleTotal: null,
+              rewardThreshold: null,
+              rewardDescription: null,
+              version: 1,
+            ),
+          ],
+          summaryResult: const PosLoyaltySummary(
+            accountId: 'account-1',
+            balances: [PosLoyaltyBalance(programId: 'program-1', unitType: 'point', balance: 5)],
+            ledger: [],
+          ),
+          summaryFailure: null,
+          adjustResult: PosLoyaltyLedgerEntry(
+            id: 'ledger-9',
+            entryType: 'adjustment',
+            quantity: 3,
+            unitType: 'point',
+            sourceType: 'manual',
+            reason: 'ajuste',
+            occurredAt: DateTime.utc(2026, 9, 4),
+          ),
+          adjustFailure: null,
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          customersGateway: customersGateway,
+          membershipsGateway: membershipsGateway,
+          loyaltyGateway: loyaltyGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        // The joined program name — never a bare id (ADR-0017: honest
+        // display of backend-returned data only).
+        expect(find.text('AS Rewards+'), findsOneWidget);
+
+        // QR issuance.
+        await tester.tap(find.byKey(const Key('pos-customer-detail-qr')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-customer-qr-token')), findsOneWidget);
+        expect(find.text('opaque-token-value'), findsOneWidget);
+
+        // Issue a new membership.
+        await tester.tap(find.byKey(const Key('pos-customer-membership-issue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-issue-membership-save')));
+        await tester.pumpAndSettle();
+        expect(membershipsGateway.issueCalls, contains('plan-1'));
+
+        // Renew.
+        await tester.tap(find.byKey(const Key('pos-customer-membership-renew-membership-1')));
+        await tester.pumpAndSettle();
+        expect(membershipsGateway.renewCalls, contains('membership-1'));
+
+        // Verificar vigencia — the ONE source of truth (ADR-0017 D11),
+        // never a client-side recomputation of `status`/`expiresAt`.
+        await tester.tap(find.byKey(const Key('pos-customer-membership-validate-membership-1')));
+        await tester.pumpAndSettle();
+        expect(find.text('Membresía vigente en esta sucursal.'), findsOneWidget);
+
+        // Cancel — a manual remedy only (ADR-0017 D20).
+        await tester.tap(find.byKey(const Key('pos-customer-membership-cancel-membership-1')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-cancel-membership-reason')), 'Solicitud del cliente');
+        await tester.tap(find.byKey(const Key('pos-cancel-membership-confirm')));
+        await tester.pumpAndSettle();
+        expect(membershipsGateway.cancelCalls, contains('membership-1'));
+
+        // Manual rewards adjustment.
+        await tester.tap(find.byKey(const Key('pos-customer-loyalty-adjust')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-loyalty-adjust-quantity')), '3');
+        await tester.enterText(find.byKey(const Key('pos-loyalty-adjust-reason')), 'Bono de bienvenida');
+        await tester.tap(find.byKey(const Key('pos-loyalty-adjust-save')));
+        await tester.pumpAndSettle();
+        expect(loyaltyGateway.adjustCalls, contains(3));
+      },
+    );
+
+    testWidgets(
+      'the membership plans admin surfaces the backend own honest error',
+      (tester) async {
+        final membershipsGateway = _FakeMembershipsGateway(
+          plansFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          membershipsGateway: membershipsGateway,
+        );
+        await navigateToMembershipsAdmin(tester);
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+      },
+    );
+
+    testWidgets('editing an existing membership plan calls updatePlan with '
+        'the real form values', (tester) async {
+      final workingGateway = _FakeMembershipsGateway(
+        plansResult: [_fixturePlan(id: 'plan-1', name: 'Plan Oro')],
+        updatePlanResult: _fixturePlan(id: 'plan-1', name: 'Plan Oro Editado'),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithCustomerPermissions,
+        membershipsGateway: workingGateway,
+      );
+      await navigateToMembershipsAdmin(tester);
+      await tester.tap(find.byKey(const Key('pos-membership-plan-edit-plan-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-membership-plan-save')));
+      await tester.pumpAndSettle();
+
+      expect(workingGateway.updatePlanCalls, ['plan-1']);
+    });
+  });
 }
 
 Future<void> _pump(
@@ -4710,6 +5492,9 @@ Future<void> _pump(
   PosCashGateway? cashGateway,
   PosRefundsGateway? refundsGateway,
   PosPromotionsGateway? promotionsGateway,
+  PosCustomersGateway? customersGateway,
+  PosMembershipsGateway? membershipsGateway,
+  PosLoyaltyGateway? loyaltyGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -4743,6 +5528,13 @@ Future<void> _pump(
         // dedicated promotions/coupons tests below inject their own
         // explicit fake instead.
         promotionsGateway: promotionsGateway ?? _FakePromotionsGateway(),
+        // TASK 13.0: defaults to fakes that return empty-but-successful
+        // results — every pre-existing test keeps seeing honest empty
+        // states for Clientes/Membresías/Rewards; the dedicated tests
+        // below inject their own explicit fakes instead.
+        customersGateway: customersGateway ?? _FakeCustomersGateway(),
+        membershipsGateway: membershipsGateway ?? _FakeMembershipsGateway(),
+        loyaltyGateway: loyaltyGateway ?? _FakeLoyaltyGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -5002,6 +5794,43 @@ final _contextWithPromotionPermissions = AuthenticatedContext(
   ],
 );
 
+/// TASK 13.0: `_context` plus every real customers/memberships/loyalty
+/// permission (see `packages/database/src/seeds/technical-permissions.ts`
+/// and `bootstrap-owner.service.ts`, ADR-0017 D21) — `_context` itself
+/// predates TASK 13.0.
+final _contextWithCustomerPermissions = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._context.permissions,
+    'sale.read',
+    'customer.read',
+    'customer.create',
+    'customer.update',
+    'membership.read',
+    'membership.manage',
+    'membership.issue',
+    'loyalty.read',
+    'loyalty.manage',
+    'loyalty.adjust',
+  ],
+);
+
+/// TASK 13.0: `_context` plus only `customer.read` — proves the create/
+/// edit actions stay hidden for a read-only actor (Part Y honest-
+/// disabled-state requirement).
+final _contextWithCustomerReadOnly = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [..._context.permissions, 'customer.read'],
+);
+
 /// Same addition, for the company-wide branch filter test.
 final _companyWideContextWithSaleRead = AuthenticatedContext(
   session: _companyWideContext.session,
@@ -5151,6 +5980,9 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     cashGateway: widget.cashGateway ?? _FakeCashGateway(),
     refundsGateway: const EmptyPosRefundsGateway(),
     promotionsGateway: const EmptyPosPromotionsGateway(),
+    customersGateway: const EmptyPosCustomersGateway(),
+    membershipsGateway: const EmptyPosMembershipsGateway(),
+    loyaltyGateway: const EmptyPosLoyaltyGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -5267,6 +6099,7 @@ class _FakeSalesGateway implements PosSalesGateway {
         List<PosSaleLineRequest> items,
         List<String>? couponCodes,
         PosManualDiscountRequest? manualDiscount,
+        String? customerId,
       })>
   calls = [];
 
@@ -5286,12 +6119,14 @@ class _FakeSalesGateway implements PosSalesGateway {
     required List<PosSaleLineRequest> items,
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
   }) async {
     calls.add((
       branchId: branchId,
       items: items,
       couponCodes: couponCodes,
       manualDiscount: manualDiscount,
+      customerId: customerId,
     ));
     if (failure != null) throw failure!;
     return result ??
@@ -6207,3 +7042,318 @@ PosRefund _fixtureRefund({
     ),
   ],
 );
+
+/// TASK 13.0: a controllable fake for the customer directory — mirrors
+/// `_FakePromotionsGateway`'s own shape exactly (canned results/failures,
+/// recorded calls, never a fabricated success).
+class _FakeCustomersGateway implements PosCustomersGateway {
+  _FakeCustomersGateway({
+    this.createResult,
+    this.createFailure,
+    this.listResult,
+    this.listFailure,
+    this.customerResult,
+    this.customerFailure,
+    this.updateResult,
+    this.updateFailure,
+    this.qrTokenResult,
+  });
+
+  final PosCustomer? createResult;
+  final ApiException? createFailure;
+  final List<PosCustomerInput> createCalls = [];
+
+  final PosCustomerPage? listResult;
+  final ApiException? listFailure;
+  final List<String?> listSearchCalls = [];
+
+  final PosCustomer? customerResult;
+  final ApiException? customerFailure;
+
+  final PosCustomer? updateResult;
+  final ApiException? updateFailure;
+  final List<String> updateCalls = [];
+
+  final PosCustomerQrToken? qrTokenResult;
+
+  @override
+  Future<PosCustomer> createCustomer(PosCustomerInput input) async {
+    createCalls.add(input);
+    if (createFailure != null) throw createFailure!;
+    return createResult ??
+        PosCustomer(
+          id: 'customer-new',
+          firstName: input.firstName ?? 'Cliente',
+          lastName: input.lastName,
+          displayName: input.displayName ?? input.firstName ?? 'Cliente',
+          email: input.email,
+          phone: input.phone,
+          birthDate: input.birthDate,
+          status: 'active',
+          notes: input.notes,
+          createdBy: 'user-id',
+          updatedBy: 'user-id',
+          version: 1,
+          createdAt: DateTime.utc(2026, 9, 4),
+          updatedAt: DateTime.utc(2026, 9, 4),
+        );
+  }
+
+  @override
+  Future<PosCustomerPage> listCustomers({String? cursor, int limit = 50, String? search, String? status}) async {
+    listSearchCalls.add(search);
+    if (listFailure != null) throw listFailure!;
+    return listResult ?? const PosCustomerPage(items: [], nextCursor: null);
+  }
+
+  @override
+  Future<PosCustomer> customer(String id) async {
+    if (customerFailure != null) throw customerFailure!;
+    return customerResult ?? _fixtureCustomer(id: id);
+  }
+
+  @override
+  Future<PosCustomer> updateCustomer(String id, PosCustomerInput input, {required int version}) async {
+    updateCalls.add(id);
+    if (updateFailure != null) throw updateFailure!;
+    return updateResult ?? _fixtureCustomer(id: id);
+  }
+
+  @override
+  Future<PosCustomerQrToken> issueQrToken(String customerId) async =>
+      qrTokenResult ??
+      PosCustomerQrToken(
+        id: 'qr-1',
+        customerId: customerId,
+        token: 'opaque-token-value',
+        status: 'active',
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+
+  @override
+  Future<PosCustomerQrToken?> activeQrToken(String customerId) async => qrTokenResult;
+
+  @override
+  Future<PosCustomer> resolveQrToken(String token) async => customerResult ?? _fixtureCustomer(id: 'customer-1');
+}
+
+PosCustomer _fixtureCustomer({required String id, String displayName = 'Cliente de prueba'}) => PosCustomer(
+  id: id,
+  firstName: displayName,
+  lastName: null,
+  displayName: displayName,
+  email: null,
+  phone: null,
+  birthDate: null,
+  status: 'active',
+  notes: null,
+  createdBy: 'user-id',
+  updatedBy: 'user-id',
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 4),
+  updatedAt: DateTime.utc(2026, 9, 4),
+);
+
+/// TASK 13.0: a controllable fake for membership plan admin plus
+/// per-customer issued memberships.
+class _FakeMembershipsGateway implements PosMembershipsGateway {
+  _FakeMembershipsGateway({
+    this.plansResult,
+    this.plansFailure,
+    this.createPlanResult,
+    this.updatePlanResult,
+    this.membershipsResult,
+    this.membershipsFailure,
+    this.issueResult,
+    this.issueFailure,
+    this.renewResult,
+    this.cancelResult,
+    this.validateResult,
+  });
+
+  final List<PosMembershipPlan>? plansResult;
+  final ApiException? plansFailure;
+  final PosMembershipPlan? createPlanResult;
+  final List<String> createPlanCalls = [];
+  final PosMembershipPlan? updatePlanResult;
+  final List<String> updatePlanCalls = [];
+
+  final List<PosCustomerMembership>? membershipsResult;
+  final ApiException? membershipsFailure;
+
+  final PosCustomerMembership? issueResult;
+  final ApiException? issueFailure;
+  final List<String> issueCalls = [];
+
+  final PosCustomerMembership? renewResult;
+  final List<String> renewCalls = [];
+
+  final PosCustomerMembership? cancelResult;
+  final List<String> cancelCalls = [];
+
+  final PosMembershipValidation? validateResult;
+
+  @override
+  Future<PosMembershipPlan> createPlan(PosMembershipPlanInput input) async {
+    createPlanCalls.add(input.name ?? '');
+    return createPlanResult ?? _fixturePlan(id: 'plan-new', name: input.name ?? 'Plan');
+  }
+
+  @override
+  Future<List<PosMembershipPlan>> listPlans({bool? active}) async {
+    if (plansFailure != null) throw plansFailure!;
+    return plansResult ?? const [];
+  }
+
+  @override
+  Future<PosMembershipPlan> plan(String id) async => _fixturePlan(id: id, name: 'Plan');
+
+  @override
+  Future<PosMembershipPlan> updatePlan(String id, PosMembershipPlanInput input, {required int version}) async {
+    updatePlanCalls.add(id);
+    return updatePlanResult ?? _fixturePlan(id: id, name: input.name ?? 'Plan');
+  }
+
+  @override
+  Future<List<PosCustomerMembership>> membershipsForCustomer(String customerId) async {
+    if (membershipsFailure != null) throw membershipsFailure!;
+    return membershipsResult ?? const [];
+  }
+
+  @override
+  Future<PosCustomerMembership> issueMembership({
+    required String customerId,
+    required String membershipPlanId,
+    DateTime? startsAt,
+  }) async {
+    issueCalls.add(membershipPlanId);
+    if (issueFailure != null) throw issueFailure!;
+    return issueResult ?? _fixtureMembership(id: 'membership-new', customerId: customerId, planId: membershipPlanId);
+  }
+
+  @override
+  Future<PosCustomerMembership> renewMembership(String id) async {
+    renewCalls.add(id);
+    return renewResult ?? _fixtureMembership(id: 'membership-renewed', customerId: 'customer-1', planId: 'plan-1');
+  }
+
+  @override
+  Future<PosCustomerMembership> cancelMembership(String id, {required String reason, required int version}) async {
+    cancelCalls.add(id);
+    return cancelResult ?? _fixtureMembership(id: id, customerId: 'customer-1', planId: 'plan-1', status: 'cancelled');
+  }
+
+  @override
+  Future<PosMembershipValidation> validate({required String customerId, required String branchId}) async =>
+      validateResult ?? const PosMembershipValidation(valid: false, reason: 'no_membership', eligibleBranch: true, membership: null);
+}
+
+PosMembershipPlan _fixturePlan({required String id, required String name}) => PosMembershipPlan(
+  id: id,
+  name: name,
+  description: null,
+  active: true,
+  productId: null,
+  durationDays: 30,
+  benefitDescription: null,
+  branchIds: const [],
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 4),
+  updatedAt: DateTime.utc(2026, 9, 4),
+);
+
+PosCustomerMembership _fixtureMembership({
+  required String id,
+  required String customerId,
+  required String planId,
+  String status = 'active',
+}) => PosCustomerMembership(
+  id: id,
+  customerId: customerId,
+  membershipPlanId: planId,
+  membershipNumber: 'MEM-$id',
+  status: status,
+  startsAt: DateTime.utc(2026, 9, 1),
+  expiresAt: DateTime.utc(2026, 10, 1),
+  issuedAt: DateTime.utc(2026, 9, 1),
+  sourceSaleId: null,
+  renewedFromMembershipId: null,
+  cancelledAt: null,
+  version: 1,
+);
+
+/// TASK 13.0: a controllable fake for AS Rewards+ programs/summary/adjust.
+class _FakeLoyaltyGateway implements PosLoyaltyGateway {
+  _FakeLoyaltyGateway({
+    this.programsResult,
+    this.summaryResult,
+    this.summaryFailure,
+    this.adjustResult,
+    this.adjustFailure,
+  });
+
+  final List<PosLoyaltyProgram>? programsResult;
+  final PosLoyaltySummary? summaryResult;
+  final ApiException? summaryFailure;
+  final PosLoyaltyLedgerEntry? adjustResult;
+  final ApiException? adjustFailure;
+  final List<int> adjustCalls = [];
+
+  @override
+  Future<PosLoyaltyProgram> createProgram(PosLoyaltyProgramInput input) async => PosLoyaltyProgram(
+    id: 'program-new',
+    name: input.name ?? 'Programa',
+    active: input.active ?? false,
+    unitType: input.unitType ?? 'point',
+    earnQuantityPerSale: input.earnQuantityPerSale ?? 1,
+    minimumSaleTotal: input.minimumSaleTotal,
+    rewardThreshold: input.rewardThreshold,
+    rewardDescription: input.rewardDescription,
+    version: 1,
+  );
+
+  @override
+  Future<List<PosLoyaltyProgram>> listPrograms({bool? active}) async => programsResult ?? const [];
+
+  @override
+  Future<PosLoyaltyProgram> updateProgram(String id, PosLoyaltyProgramInput input, {required int version}) async =>
+      PosLoyaltyProgram(
+        id: id,
+        name: input.name ?? 'Programa',
+        active: input.active ?? true,
+        unitType: input.unitType ?? 'point',
+        earnQuantityPerSale: input.earnQuantityPerSale ?? 1,
+        minimumSaleTotal: input.minimumSaleTotal,
+        rewardThreshold: input.rewardThreshold,
+        rewardDescription: input.rewardDescription,
+        version: version + 1,
+      );
+
+  @override
+  Future<PosLoyaltySummary> customerLoyalty(String customerId) async {
+    if (summaryFailure != null) throw summaryFailure!;
+    return summaryResult ?? const PosLoyaltySummary(accountId: null, balances: [], ledger: []);
+  }
+
+  @override
+  Future<PosLoyaltyLedgerEntry> adjustLoyalty({
+    required String customerId,
+    required int quantity,
+    required String unitType,
+    required String reason,
+    String? loyaltyProgramId,
+  }) async {
+    adjustCalls.add(quantity);
+    if (adjustFailure != null) throw adjustFailure!;
+    return adjustResult ??
+        PosLoyaltyLedgerEntry(
+          id: 'ledger-1',
+          entryType: 'adjustment',
+          quantity: quantity,
+          unitType: unitType,
+          sourceType: 'manual',
+          reason: reason,
+          occurredAt: DateTime.utc(2026, 9, 4),
+        );
+  }
+}

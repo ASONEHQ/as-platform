@@ -153,6 +153,32 @@ class AppFailure {
       'La información cambió mientras tanto. Actualiza e inténtalo de nuevo.',
       code: 'version_conflict',
     ),
+    // TASK 13.0: customers/memberships/loyalty — see ADR-0017 D5/D21.
+    // `resource_conflict`'s own switch entry above stays refund-scoped
+    // (its message is specific to that domain); a customer-domain caller
+    // never trusts that generic text and instead builds its own honest
+    // message from this exception's own `code`/`details` — see
+    // `posCustomerConflictMessage` in `pos_customers_gateway.dart`.
+    'customer_identity_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'El correo y el teléfono ya pertenecen a clientes distintos.',
+      code: 'customer_identity_conflict',
+    ),
+    'qr_token_invalid' => const AppFailure(
+      AppErrorKind.validation,
+      'El código QR no es válido.',
+      code: 'qr_token_invalid',
+    ),
+    'membership_plan_inactive' => const AppFailure(
+      AppErrorKind.validation,
+      'Este plan de membresía no está activo.',
+      code: 'membership_plan_inactive',
+    ),
+    'membership_not_active' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta membresía no está activa.',
+      code: 'membership_not_active',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

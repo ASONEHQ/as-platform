@@ -11,12 +11,13 @@ import { SettingValidationError } from './settings.types.js';
 import { validateSettingValue } from './settings.validation.js';
 
 describe('settings catalog', () => {
-  it('defines the closed public version 1 catalog with 13 unique keys', () => {
+  // TASK 13.0 added `customers.default_country_code` (Part C) — 13 → 14.
+  it('defines the closed public version 1 catalog with 14 unique keys', () => {
     expect(SETTINGS_CATALOG_VERSION).toBe(1);
-    expect(settingsCatalog).toHaveLength(13);
-    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(13);
+    expect(settingsCatalog).toHaveLength(14);
+    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(14);
     expect(settingsCatalog.map((definition) => definition.public)).toEqual(
-      Array.from({ length: 13 }, () => true),
+      Array.from({ length: 14 }, () => true),
     );
   });
 

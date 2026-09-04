@@ -153,6 +153,19 @@ export const ownerPermissionCodes = Object.freeze([
   'coupon.read',
   'coupon.manage',
   'discount.apply',
+  // TASK 13.0: Customers/Memberships/AS Rewards+ foundation — the owner
+  // seed exercises QA for the full domain (customer lookup/registration,
+  // membership plan admin + purchase-through-POS, loyalty program admin +
+  // manual adjustment), so it needs every reserved code this task added.
+  'customer.read',
+  'customer.create',
+  'customer.update',
+  'membership.read',
+  'membership.manage',
+  'membership.issue',
+  'loyalty.read',
+  'loyalty.manage',
+  'loyalty.adjust',
 ]);
 
 export interface BootstrapEnvironment {

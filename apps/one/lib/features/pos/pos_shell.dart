@@ -10,6 +10,9 @@ import '../authentication/auth_models.dart';
 import '../authentication/startup_visuals.dart';
 import 'money.dart';
 import 'pos_cash_gateway.dart';
+import 'pos_customers_gateway.dart';
+import 'pos_loyalty_gateway.dart';
+import 'pos_memberships_gateway.dart';
 import 'pos_models.dart';
 import 'pos_navigation.dart';
 import 'pos_payments_gateway.dart';
@@ -34,6 +37,9 @@ class PosShell extends StatefulWidget {
     required this.cashGateway,
     required this.refundsGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
+    required this.membershipsGateway,
+    required this.loyaltyGateway,
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -54,6 +60,12 @@ class PosShell extends StatefulWidget {
   // TASK 12.9: pricing-quote preview plus promotions/coupons admin
   // management — see `pos_promotions_gateway.dart` and ADR-0016.
   final PosPromotionsGateway promotionsGateway;
+  // TASK 13.0: customer identity/membership/loyalty foundation — see
+  // `pos_customers_gateway.dart`/`pos_memberships_gateway.dart`/
+  // `pos_loyalty_gateway.dart` and ADR-0017.
+  final PosCustomersGateway customersGateway;
+  final PosMembershipsGateway membershipsGateway;
+  final PosLoyaltyGateway loyaltyGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -248,6 +260,9 @@ class _PosShellState extends State<PosShell> {
                             cashGateway: widget.cashGateway,
                             refundsGateway: widget.refundsGateway,
                             promotionsGateway: widget.promotionsGateway,
+                            customersGateway: widget.customersGateway,
+                            membershipsGateway: widget.membershipsGateway,
+                            loyaltyGateway: widget.loyaltyGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -1216,6 +1231,10 @@ Future<void> _submitSaleForPayment(
       // that quote blindly (ADR-0016 D1/D10).
       couponCodes: saleSession.couponCodes,
       manualDiscount: saleSession.manualDiscount,
+      // TASK 13.0: attaches whichever customer the cashier selected at
+      // the ticket, if any (ADR-0017 D6) — `null` reproduces "Venta sin
+      // cliente" exactly.
+      customerId: saleSession.customerId,
     );
     if (!context.mounted) return;
 
@@ -1333,6 +1352,8 @@ Future<void> _submitCashSaleForPayment(
       // TASK 12.9: same rationale as `_submitSaleForPayment` above.
       couponCodes: saleSession.couponCodes,
       manualDiscount: saleSession.manualDiscount,
+      // TASK 13.0: same rationale as `_submitSaleForPayment` above.
+      customerId: saleSession.customerId,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1386,6 +1407,13 @@ Future<void> _submitCashSaleForPayment(
   // the persisted Sale (never SaleSession, which is now empty), until
   // the cashier explicitly taps "Nueva venta" (see `_ReceiptSuccessDialog`
   // and ADR-0012).
+  //
+  // TASK 13.0: the attached customer's display name is captured BEFORE
+  // `clearAll()` wipes it — `SaleSession` carries no customer field for
+  // the receipt to read afterward, and the backend's own
+  // `GET /sales/{id}/receipt` response carries none either (unlike
+  // `GET /sales`) — see `buildReceiptHtml`'s own doc comment.
+  final customerDisplayName = saleSession.customerDisplayName;
   saleSession.clearAll();
   await showDialog<void>(
     context: context,
@@ -1396,6 +1424,7 @@ Future<void> _submitCashSaleForPayment(
       total: total,
       change: change,
       salesGateway: salesGateway,
+      customerDisplayName: customerDisplayName,
     ),
   );
 }
@@ -1443,12 +1472,17 @@ class _ReceiptSuccessDialog extends StatefulWidget {
     required this.total,
     required this.change,
     required this.salesGateway,
+    this.customerDisplayName,
   });
   final String saleId;
   final String saleNumber;
   final Money total;
   final Money change;
   final PosSalesGateway salesGateway;
+  // TASK 13.0: captured by the caller before `SaleSession.clearAll()` —
+  // see `buildReceiptHtml`'s own doc comment for why this isn't read off
+  // the receipt itself.
+  final String? customerDisplayName;
 
   @override
   State<_ReceiptSuccessDialog> createState() => _ReceiptSuccessDialogState();
@@ -1506,7 +1540,11 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
     // completed sale (see ADR-0012) — `buildReceiptHtml`/
     // `openReceiptPrintWindow` are pure/side-effect-free with respect to
     // backend state; only the browser's own print window is affected.
-    final html = buildReceiptHtml(receipt: receipt, logoDataUri: logoDataUri);
+    final html = buildReceiptHtml(
+      receipt: receipt,
+      logoDataUri: logoDataUri,
+      customerDisplayName: widget.customerDisplayName,
+    );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
     setState(() {
@@ -1556,6 +1594,16 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
                   value: widget.saleNumber,
                   big: true,
                 ),
+                // TASK 13.0: a name only — never phone/email/birth date
+                // (Part AB). Only shown when a customer was actually
+                // attached; a walk-in sale renders exactly as before.
+                if (widget.customerDisplayName != null) ...[
+                  const SizedBox(height: 4),
+                  _CashSummaryRow(
+                    label: 'Cliente',
+                    value: widget.customerDisplayName!,
+                  ),
+                ],
                 const SizedBox(height: 6),
                 _CashSummaryRow(label: 'Total', value: _money(widget.total)),
                 const SizedBox(height: 4),
@@ -2252,6 +2300,9 @@ class _Content extends StatelessWidget {
     required this.cashGateway,
     required this.refundsGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
+    required this.membershipsGateway,
+    required this.loyaltyGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2268,6 +2319,11 @@ class _Content extends StatelessWidget {
   // TASK 12.9: promotion/coupon quoting and admin management — see
   // `pos_promotions_gateway.dart` and ADR-0016.
   final PosPromotionsGateway promotionsGateway;
+  // TASK 13.0: customer identity/membership/loyalty foundation — see
+  // ADR-0017.
+  final PosCustomersGateway customersGateway;
+  final PosMembershipsGateway membershipsGateway;
+  final PosLoyaltyGateway loyaltyGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2314,6 +2370,7 @@ class _Content extends StatelessWidget {
                         paymentsGateway: paymentsGateway,
                         cashGateway: cashGateway,
                         promotionsGateway: promotionsGateway,
+                        customersGateway: customersGateway,
                         onEnterCliente: onEnterCliente,
                       ),
               )
@@ -2379,6 +2436,25 @@ class _Content extends StatelessWidget {
                   PosModule.promotions => _PromotionsAdmin(
                     context: this.context,
                     promotionsGateway: promotionsGateway,
+                  ),
+                  // TASK 13.0: the pre-reserved `PosModule.customers` slot
+                  // ("Clientes") — customer directory (search/list/
+                  // detail/create/edit); Membresías/Rewards/Ventas
+                  // recientes live inside Customer Detail (see ADR-0017).
+                  PosModule.customers => _CustomersAdmin(
+                    context: this.context,
+                    customersGateway: customersGateway,
+                    membershipsGateway: membershipsGateway,
+                    loyaltyGateway: loyaltyGateway,
+                    salesGateway: salesGateway,
+                  ),
+                  // TASK 13.0: the pre-reserved `PosModule.memberships`
+                  // slot ("Membresías") — membership PLAN admin only; a
+                  // customer's own issued memberships live in Customer
+                  // Detail instead of a second, duplicate list here.
+                  PosModule.memberships => _MembershipsAdmin(
+                    context: this.context,
+                    membershipsGateway: membershipsGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -2640,6 +2716,7 @@ class _PosSale extends StatefulWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
     required this.onEnterCliente,
   });
   final AuthenticatedContext context;
@@ -2653,6 +2730,8 @@ class _PosSale extends StatefulWidget {
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
   final PosPromotionsGateway promotionsGateway;
+  // TASK 13.0: the CAJERO-only customer selector — see `_TicketFooter`.
+  final PosCustomersGateway customersGateway;
   final VoidCallback onEnterCliente;
 
   @override
@@ -2700,6 +2779,7 @@ class _PosSaleState extends State<_PosSale> {
                     paymentsGateway: widget.paymentsGateway,
                     cashGateway: widget.cashGateway,
                     promotionsGateway: widget.promotionsGateway,
+                    customersGateway: widget.customersGateway,
                     branchId: widget.context.session.branchId,
                     permissions: widget.context.permissions,
                     selectedCategoryId: selectedCategoryId,
@@ -2754,6 +2834,7 @@ class _PosSaleBody extends StatelessWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
     required this.branchId,
     required this.permissions,
     required this.selectedCategoryId,
@@ -2770,6 +2851,7 @@ class _PosSaleBody extends StatelessWidget {
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
   final PosPromotionsGateway promotionsGateway;
+  final PosCustomersGateway customersGateway;
   final String? branchId;
   final List<String> permissions;
   final String? selectedCategoryId;
@@ -2828,6 +2910,7 @@ class _PosSaleBody extends StatelessWidget {
       paymentsGateway: paymentsGateway,
       cashGateway: cashGateway,
       promotionsGateway: promotionsGateway,
+      customersGateway: customersGateway,
       branchId: branchId,
       permissions: permissions,
     );
@@ -3517,6 +3600,7 @@ class _TicketPanel extends StatelessWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
     required this.branchId,
     required this.permissions,
   });
@@ -3527,6 +3611,8 @@ class _TicketPanel extends StatelessWidget {
   // TASK 12.9: coupon/manual-discount quoting — see
   // `pos_promotions_gateway.dart` and ADR-0016.
   final PosPromotionsGateway promotionsGateway;
+  // TASK 13.0: the CAJERO-only customer selector — see `_TicketFooter`.
+  final PosCustomersGateway customersGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -3626,6 +3712,7 @@ class _TicketPanel extends StatelessWidget {
               paymentsGateway: paymentsGateway,
               cashGateway: cashGateway,
               promotionsGateway: promotionsGateway,
+              customersGateway: customersGateway,
               branchId: branchId,
               permissions: permissions,
             ),
@@ -3838,6 +3925,30 @@ class _ClienteTicketFooter extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // TASK 13.0 (Part AH): read-only — the CURRENT sale's own
+          // already-attached customer name, if any (set by the cashier at
+          // the CAJERO ticket before handing off to CLIENTE). No search,
+          // no directory, no other customer's data — CLIENTE never gains
+          // any new privacy surface here.
+          if (saleSession.customerDisplayName != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                key: const Key('pos-cliente-ticket-customer'),
+                children: [
+                  Icon(Icons.person_outline, size: 14, color: palette.textSecondary),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      saleSession.customerDisplayName!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           _TicketTotalRow(
             label: 'Subtotal',
             value: _money(saleSession.displaySubtotal),
@@ -4987,6 +5098,7 @@ class _TicketFooter extends StatefulWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.promotionsGateway,
+    required this.customersGateway,
     required this.branchId,
     required this.permissions,
   });
@@ -4995,6 +5107,9 @@ class _TicketFooter extends StatefulWidget {
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
   final PosPromotionsGateway promotionsGateway;
+  // TASK 13.0: "Buscar cliente"/"Nuevo cliente" — see
+  // `_CustomerSelectorDialog` and ADR-0017 Part H/I.
+  final PosCustomersGateway customersGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -5174,6 +5289,21 @@ class _TicketFooterState extends State<_TicketFooter> {
     widget.saleSession.setQuote(result.quote);
   }
 
+  // TASK 13.0: "Buscar cliente" — a small inline action in the cart/
+  // ticket area, mirroring the coupon UX pattern exactly (ADR-0017 Part
+  // H). Attaching a customer is never required and never blocks checkout
+  // speed — "Venta sin cliente" stays the default/fast path.
+  Future<void> _openCustomerSelector() async {
+    final selected = await showDialog<_CustomerSelectorResult>(
+      context: context,
+      builder: (dialogContext) => _CustomerSelectorDialog(customersGateway: widget.customersGateway),
+    );
+    if (selected == null || !mounted) return;
+    widget.saleSession.setCustomer(customerId: selected.id, displayName: selected.displayName);
+  }
+
+  void _removeCustomer() => widget.saleSession.clearCustomer();
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -5190,6 +5320,16 @@ class _TicketFooterState extends State<_TicketFooter> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // TASK 13.0: the customer selector — "Venta sin cliente" is the
+          // default/fast path (ADR-0017 Part H).
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _TicketCustomerRow(
+              customerDisplayName: saleSession.customerDisplayName,
+              onSelect: () => unawaited(_openCustomerSelector()),
+              onRemove: _removeCustomer,
+            ),
+          ),
           // TASK 12.9: automatic promotions surface on their own, no
           // coupon code required (ADR-0016) — the quote's own label,
           // never a hardcoded business name.
@@ -6897,6 +7037,7 @@ class _SalesHistoryState extends State<_SalesHistory> {
         saleId: summary.id,
         saleNumber: summary.saleNumber,
         refundState: summary.refundState,
+        customerDisplayName: summary.customerDisplayName,
         salesGateway: widget.salesGateway,
         refundsGateway: widget.refundsGateway,
         context: widget.context,
@@ -7169,6 +7310,9 @@ class _SalesHistoryTable extends StatelessWidget {
             DataColumn(label: Text('Fecha / hora')),
             DataColumn(label: Text('Sucursal')),
             DataColumn(label: Text('Cajero')),
+            // TASK 13.0: a name only — never phone/email/birth date
+            // (Part AA/AB); `—` for a walk-in sale.
+            DataColumn(label: Text('Cliente')),
             DataColumn(label: Text('Estado')),
             DataColumn(label: Text('Método')),
             DataColumn(label: Text('Total'), numeric: true),
@@ -7183,6 +7327,7 @@ class _SalesHistoryTable extends StatelessWidget {
                     DataCell(Text(_formatDateTime(item.occurredAt))),
                     DataCell(Text(item.branchName ?? '—')),
                     DataCell(Text(item.cashierName ?? '—')),
+                    DataCell(Text(item.customerDisplayName ?? '—')),
                     DataCell(
                       _SaleStatusChip(
                         status: item.status,
@@ -7259,6 +7404,7 @@ class _SaleDetailDialog extends StatefulWidget {
     required this.refundsGateway,
     required this.context,
     required this.onNavigateToCaja,
+    this.customerDisplayName,
   });
   final String saleId;
   final String saleNumber;
@@ -7269,6 +7415,11 @@ class _SaleDetailDialog extends StatefulWidget {
   final PosRefundsGateway refundsGateway;
   final AuthenticatedContext context;
   final VoidCallback onNavigateToCaja;
+  // TASK 13.0: the already-fetched Sales History row's own value — the
+  // backend's own `GET /sales/{id}/receipt` response carries no customer
+  // field at all (see `buildReceiptHtml`'s own doc comment), so this is
+  // threaded from the list row instead.
+  final String? customerDisplayName;
 
   @override
   State<_SaleDetailDialog> createState() => _SaleDetailDialogState();
@@ -7386,7 +7537,11 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
     // re-renders data already fetched by the read-only `receipt()` call
     // above. It never creates a payment, posts inventory again, creates
     // another Sale, or alters status (see ADR-0012).
-    final html = buildReceiptHtml(receipt: receipt, logoDataUri: logoDataUri);
+    final html = buildReceiptHtml(
+      receipt: receipt,
+      logoDataUri: logoDataUri,
+      customerDisplayName: widget.customerDisplayName,
+    );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
     setState(() {
@@ -7460,6 +7615,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
                       : _SaleDetailBody(
                           receipt: _receipt!,
                           refundState: widget.refundState,
+                          customerDisplayName: widget.customerDisplayName,
                         ),
                 ),
               ),
@@ -7545,9 +7701,13 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
 }
 
 class _SaleDetailBody extends StatelessWidget {
-  const _SaleDetailBody({required this.receipt, this.refundState});
+  const _SaleDetailBody({required this.receipt, this.refundState, this.customerDisplayName});
   final PosReceipt receipt;
   final String? refundState;
+  // TASK 13.0: threaded from the Sales History row (the receipt response
+  // itself carries no customer field — see `buildReceiptHtml`'s own doc
+  // comment). A name only — never phone/email/birth date (Part AB).
+  final String? customerDisplayName;
 
   @override
   Widget build(BuildContext context) {
@@ -7592,6 +7752,10 @@ class _SaleDetailBody extends StatelessWidget {
         if (cashier != null) ...[
           const SizedBox(height: 4),
           _CashSummaryRow(label: 'Cajero', value: cashier.displayName),
+        ],
+        if (customerDisplayName != null) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Cliente', value: customerDisplayName!),
         ],
         const SizedBox(height: 4),
         _CashSummaryRow(
@@ -11758,6 +11922,2309 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
           child: const Text('Cerrar'),
         ),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// TASK 13.0 — Customers (Clientes), Memberships (Membresías), and AS
+// Rewards+ — see ADR-0017 and `pos_customers_gateway.dart`/
+// `pos_memberships_gateway.dart`/`pos_loyalty_gateway.dart`. Mirrors the
+// `_PromotionsAdmin`/`_Devoluciones` self-contained gateway-call/loading-
+// state pattern exactly. No client-side promotion/membership/loyalty
+// "engine" — every eligibility/validity/pricing decision comes from the
+// backend response already fetched; this UI only renders what the
+// backend returned (Part U/D11).
+// ---------------------------------------------------------------------
+
+/// The CAJERO ticket's own customer row — "Venta sin cliente" (the
+/// default/fast path) or the attached customer's name plus a "Quitar"
+/// action. Never a search field inline; tapping "Buscar cliente" opens
+/// [_CustomerSelectorDialog] — mirrors the coupon input's own
+/// button-opens-a-focused-flow shape (ADR-0017 Part H).
+class _TicketCustomerRow extends StatelessWidget {
+  const _TicketCustomerRow({
+    required this.customerDisplayName,
+    required this.onSelect,
+    required this.onRemove,
+  });
+  final String? customerDisplayName;
+  final VoidCallback onSelect;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final name = customerDisplayName;
+    if (name == null) {
+      return OutlinedButton.icon(
+        key: const Key('pos-ticket-customer-select'),
+        onPressed: onSelect,
+        icon: const Icon(Icons.person_search_outlined, size: 15),
+        label: const Text('Venta sin cliente · Buscar cliente'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: palette.textSecondary,
+          side: BorderSide(color: palette.border),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          textStyle: const TextStyle(fontSize: 12),
+          alignment: Alignment.centerLeft,
+        ),
+      );
+    }
+    return Container(
+      key: const Key('pos-ticket-customer-attached'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.actionTint,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.person_outline, size: 15, color: palette.blueDeep),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+          IconButton(
+            key: const Key('pos-ticket-customer-remove'),
+            tooltip: 'Quitar cliente',
+            onPressed: onRemove,
+            icon: Icon(Icons.close, size: 15, color: palette.textSecondary),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// What [_CustomerSelectorDialog] resolves with — just enough for
+/// [SaleSession.setCustomer] (ADR-0017 D6): never a full [PosCustomer],
+/// since the ticket only ever needs the id and a display name.
+class _CustomerSelectorResult {
+  const _CustomerSelectorResult({required this.id, required this.displayName});
+  final String id;
+  final String displayName;
+}
+
+enum _CustomerSelectorPhase { idle, loading, ready, empty, failure }
+
+/// "Buscar cliente" — search by phone/name/email via `GET /customers?
+/// search=`, select → resolves with a [_CustomerSelectorResult]. Also
+/// offers "Nuevo cliente" quick-registration inline (Part H/I). Never a
+/// separate page — a focused dialog, mirroring the manual-discount flow's
+/// own shape.
+class _CustomerSelectorDialog extends StatefulWidget {
+  const _CustomerSelectorDialog({required this.customersGateway});
+  final PosCustomersGateway customersGateway;
+
+  @override
+  State<_CustomerSelectorDialog> createState() => _CustomerSelectorDialogState();
+}
+
+class _CustomerSelectorDialogState extends State<_CustomerSelectorDialog> {
+  final _searchController = TextEditingController();
+  _CustomerSelectorPhase _phase = _CustomerSelectorPhase.idle;
+  List<PosCustomerSummary> _items = const [];
+  String? _errorMessage;
+  Timer? _debounce;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _phase = _CustomerSelectorPhase.idle;
+        _items = const [];
+      });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 350), () => unawaited(_search(query)));
+  }
+
+  Future<void> _search(String query) async {
+    setState(() {
+      _phase = _CustomerSelectorPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.customersGateway.listCustomers(search: query);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _phase = _items.isEmpty ? _CustomerSelectorPhase.empty : _CustomerSelectorPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _CustomerSelectorPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _CustomerSelectorPhase.failure;
+        _errorMessage = 'No fue posible buscar clientes.';
+      });
+    }
+  }
+
+  Future<void> _openQuickNewCustomer() async {
+    final created = await showDialog<_CustomerSelectorResult>(
+      context: context,
+      builder: (dialogContext) => _QuickNewCustomerDialog(customersGateway: widget.customersGateway),
+    );
+    if (created == null || !mounted) return;
+    Navigator.of(context).pop(created);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Buscar cliente',
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-customer-selector-search'),
+                controller: _searchController,
+                autofocus: true,
+                onChanged: _onQueryChanged,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  hintText: 'Nombre, teléfono o correo',
+                  prefixIcon: Icon(Icons.search),
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                key: const Key('pos-customer-selector-new'),
+                onPressed: () => unawaited(_openQuickNewCustomer()),
+                icon: const Icon(Icons.person_add_alt_outlined, size: 16),
+                label: const Text('Nuevo cliente'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: palette.blueDeep,
+                  side: BorderSide(color: palette.border),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: switch (_phase) {
+                  _CustomerSelectorPhase.idle => const SizedBox.shrink(),
+                  _CustomerSelectorPhase.loading => const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  _CustomerSelectorPhase.empty => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      'Sin resultados para esta búsqueda.',
+                      style: TextStyle(color: palette.textSecondary),
+                    ),
+                  ),
+                  _CustomerSelectorPhase.failure => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      _errorMessage ?? 'No fue posible buscar clientes.',
+                      style: TextStyle(color: palette.error),
+                    ),
+                  ),
+                  _CustomerSelectorPhase.ready => ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _items.length,
+                    separatorBuilder: (context, index) => Divider(height: 1, color: palette.border),
+                    itemBuilder: (context, index) {
+                      final item = _items[index];
+                      return ListTile(
+                        key: Key('pos-customer-selector-result-${item.id}'),
+                        dense: true,
+                        title: Text(item.displayName),
+                        onTap: () => Navigator.of(context).pop(
+                          _CustomerSelectorResult(id: item.id, displayName: item.displayName),
+                        ),
+                      );
+                    },
+                  ),
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// "Nuevo cliente" quick-registration reached from [_CustomerSelectorDialog]
+/// — minimal fields (first name required, phone/email optional, Part H/I).
+/// A 409 conflict offers the existing customer instead of blindly
+/// retrying/duplicating.
+class _QuickNewCustomerDialog extends StatefulWidget {
+  const _QuickNewCustomerDialog({required this.customersGateway});
+  final PosCustomersGateway customersGateway;
+
+  @override
+  State<_QuickNewCustomerDialog> createState() => _QuickNewCustomerDialogState();
+}
+
+class _QuickNewCustomerDialogState extends State<_QuickNewCustomerDialog> {
+  final _firstNameController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _emailController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  String? _existingCustomerId;
+
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _phoneController.dispose();
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final firstName = _firstNameController.text.trim();
+    if (firstName.isEmpty) {
+      setState(() => _error = 'Escribe al menos el nombre del cliente.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _existingCustomerId = null;
+    });
+    final phone = _phoneController.text.trim();
+    final email = _emailController.text.trim();
+    try {
+      final created = await widget.customersGateway.createCustomer(
+        PosCustomerInput(
+          firstName: firstName,
+          phone: phone.isEmpty ? null : phone,
+          email: email.isEmpty ? null : email,
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(_CustomerSelectorResult(id: created.id, displayName: created.displayName));
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      final conflict = posCustomerConflictFrom(error);
+      setState(() {
+        _busy = false;
+        _error = conflict?.message ?? error.failure.message;
+        _existingCustomerId = conflict?.existingCustomerId;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible registrar al cliente.';
+      });
+    }
+  }
+
+  Future<void> _useExistingCustomer() async {
+    final id = _existingCustomerId;
+    if (id == null) return;
+    setState(() => _busy = true);
+    try {
+      final existing = await widget.customersGateway.customer(id);
+      if (!mounted) return;
+      Navigator.of(context).pop(_CustomerSelectorResult(id: existing.id, displayName: existing.displayName));
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible abrir el cliente existente.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Nuevo cliente',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-quick-customer-first-name'),
+                controller: _firstNameController,
+                decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-quick-customer-phone'),
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(isDense: true, labelText: 'Teléfono (opcional)'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-quick-customer-email'),
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(isDense: true, labelText: 'Correo (opcional)'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-quick-customer-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              if (_existingCustomerId != null) ...[
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  key: const Key('pos-quick-customer-use-existing'),
+                  onPressed: _busy ? null : () => unawaited(_useExistingCustomer()),
+                  child: const Text('Usar cliente existente'),
+                ),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: palette.textSecondary,
+                        side: BorderSide(color: palette.border),
+                      ),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-quick-customer-save'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Registrar'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `PosModule.customers` ("Clientes") — the customer directory: search
+/// box, cursor-paginated list (Part AE), tap a row to open Customer
+/// Detail. Gated on `customer.read`/`customer.create`, matching the
+/// promotions admin's own `_canRead*`/`_canManage*` pattern exactly.
+class _CustomersAdmin extends StatefulWidget {
+  const _CustomersAdmin({
+    required this.context,
+    required this.customersGateway,
+    required this.membershipsGateway,
+    required this.loyaltyGateway,
+    required this.salesGateway,
+  });
+  final AuthenticatedContext context;
+  final PosCustomersGateway customersGateway;
+  final PosMembershipsGateway membershipsGateway;
+  final PosLoyaltyGateway loyaltyGateway;
+  final PosSalesGateway salesGateway;
+
+  @override
+  State<_CustomersAdmin> createState() => _CustomersAdminState();
+}
+
+class _CustomersAdminState extends State<_CustomersAdmin> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosCustomerSummary> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+  String _query = '';
+  Timer? _debounce;
+
+  bool get _canRead => widget.context.permissions.contains('customer.read');
+  bool get _canCreate => widget.context.permissions.contains('customer.create');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.customersGateway.listCustomers(search: _query.trim().isEmpty ? null : _query.trim());
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los clientes.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.customersGateway.listCustomers(
+        search: _query.trim().isEmpty ? null : _query.trim(),
+        cursor: cursor,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  void _onQueryChanged(String value) {
+    setState(() => _query = value);
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () => unawaited(_load()));
+  }
+
+  Future<void> _openNewCustomerForm() async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _CustomerFormDialog(customersGateway: widget.customersGateway),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
+  Future<void> _openDetail(PosCustomerSummary summary) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _CustomerDetailDialog(
+        customerId: summary.id,
+        context: widget.context,
+        customersGateway: widget.customersGateway,
+        membershipsGateway: widget.membershipsGateway,
+        loyaltyGateway: widget.loyaltyGateway,
+        salesGateway: widget.salesGateway,
+      ),
+    );
+    if (changed == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Clientes',
+          description: 'Directorio de clientes — búsqueda, alta y edición mínima (ADR-0017).',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (!_canRead)
+          const _PermissionState()
+        else ...[
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('pos-customers-search'),
+                  onChanged: _onQueryChanged,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: 'Buscar por nombre, teléfono o correo',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                ),
+              ),
+              if (_canCreate) ...[
+                const SizedBox(width: 10),
+                FilledButton.icon(
+                  key: const Key('pos-customer-new'),
+                  onPressed: () => unawaited(_openNewCustomerForm()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  icon: const Icon(Icons.person_add_alt_outlined, size: 16),
+                  label: const Text('Nuevo cliente'),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          switch (_phase) {
+            _AdminListPhase.loading => const _LoadingState(),
+            _AdminListPhase.empty => const _EmptyState(message: 'No hay clientes registrados.'),
+            _AdminListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar los clientes.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _AdminListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final item in _items)
+                  _CustomerRow(customer: item, onTap: () => unawaited(_openDetail(item))),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-customers-load-more'),
+                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+        ],
+      ],
+    );
+  }
+}
+
+class _CustomerRow extends StatelessWidget {
+  const _CustomerRow({required this.customer, required this.onTap});
+  final PosCustomerSummary customer;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _PosCard(
+      key: Key('pos-customer-row-${customer.id}'),
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  customer.displayName,
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+              _StatusChip(label: customer.status == 'active' ? 'active' : 'inactive'),
+              const SizedBox(width: 8),
+              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// New/edit customer — minimum friction: only `first_name` required
+/// (Part E). A 409 conflict on create offers the existing customer
+/// instead of retrying blindly (ADR-0017 D5).
+class _CustomerFormDialog extends StatefulWidget {
+  const _CustomerFormDialog({required this.customersGateway, this.existing});
+  final PosCustomersGateway customersGateway;
+  final PosCustomer? existing;
+
+  @override
+  State<_CustomerFormDialog> createState() => _CustomerFormDialogState();
+}
+
+class _CustomerFormDialogState extends State<_CustomerFormDialog> {
+  late final _firstNameController = TextEditingController(text: widget.existing?.firstName ?? '');
+  late final _lastNameController = TextEditingController(text: widget.existing?.lastName ?? '');
+  late final _phoneController = TextEditingController(text: widget.existing?.phone ?? '');
+  late final _emailController = TextEditingController(text: widget.existing?.email ?? '');
+  late final _notesController = TextEditingController(text: widget.existing?.notes ?? '');
+  late String _status = widget.existing?.status ?? 'active';
+  bool _busy = false;
+  String? _error;
+  String? _existingCustomerId;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _phoneController.dispose();
+    _emailController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final firstName = _firstNameController.text.trim();
+    if (firstName.isEmpty) {
+      setState(() => _error = 'El nombre es obligatorio.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _existingCustomerId = null;
+    });
+    final lastName = _lastNameController.text.trim();
+    final phone = _phoneController.text.trim();
+    final email = _emailController.text.trim();
+    final notes = _notesController.text.trim();
+    final input = PosCustomerInput(
+      firstName: firstName,
+      lastName: lastName.isEmpty ? null : lastName,
+      phone: phone.isEmpty ? null : phone,
+      email: email.isEmpty ? null : email,
+      notes: notes.isEmpty ? null : notes,
+      status: _isEdit ? _status : null,
+    );
+    try {
+      if (_isEdit) {
+        await widget.customersGateway.updateCustomer(widget.existing!.id, input, version: widget.existing!.version);
+      } else {
+        await widget.customersGateway.createCustomer(input);
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      final conflict = posCustomerConflictFrom(error);
+      setState(() {
+        _busy = false;
+        _error = conflict?.message ?? error.failure.message;
+        _existingCustomerId = conflict?.existingCustomerId;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar el cliente.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 640),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  _isEdit ? 'Editar cliente' : 'Nuevo cliente',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  key: const Key('pos-customer-first-name'),
+                  controller: _firstNameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-customer-last-name'),
+                  controller: _lastNameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Apellido (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-customer-phone'),
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Teléfono (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-customer-email'),
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Correo (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-customer-notes'),
+                  controller: _notesController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Notas (opcional)'),
+                ),
+                if (_isEdit) ...[
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-customer-status'),
+                    initialValue: _status,
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                    items: const [
+                      DropdownMenuItem(value: 'active', child: Text('Activo')),
+                      DropdownMenuItem(value: 'inactive', child: Text('Inactivo')),
+                      DropdownMenuItem(value: 'archived', child: Text('Archivado')),
+                    ],
+                    onChanged: (value) => setState(() => _status = value ?? 'active'),
+                  ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-customer-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                if (_existingCustomerId != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Id del cliente existente: $_existingCustomerId',
+                    key: const Key('pos-customer-existing-id'),
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.textSecondary,
+                          side: BorderSide(color: palette.border),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-customer-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Customer Detail — Resumen/Membresías/Rewards/Ventas recientes, all in
+/// one scrollable dialog (mirrors `_SaleDetailDialog`'s own shape: a
+/// dialog, never a route). Every section fetches independently and only
+/// shows data actually returned — no fake/placeholder section, and every
+/// mutating action is gated on its own real permission (Part Y).
+class _CustomerDetailDialog extends StatefulWidget {
+  const _CustomerDetailDialog({
+    required this.customerId,
+    required this.context,
+    required this.customersGateway,
+    required this.membershipsGateway,
+    required this.loyaltyGateway,
+    required this.salesGateway,
+  });
+  final String customerId;
+  final AuthenticatedContext context;
+  final PosCustomersGateway customersGateway;
+  final PosMembershipsGateway membershipsGateway;
+  final PosLoyaltyGateway loyaltyGateway;
+  final PosSalesGateway salesGateway;
+
+  @override
+  State<_CustomerDetailDialog> createState() => _CustomerDetailDialogState();
+}
+
+class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
+  bool _loading = true;
+  String? _errorMessage;
+  PosCustomer? _customer;
+  PosCustomerQrToken? _qrToken;
+  bool _qrBusy = false;
+
+  bool _membershipsLoaded = false;
+  List<PosCustomerMembership> _memberships = const [];
+  Map<String, PosMembershipPlan> _plansById = const {};
+  List<PosMembershipPlan> _plans = const [];
+  String? _membershipsError;
+
+  bool _loyaltyLoaded = false;
+  PosLoyaltySummary? _loyalty;
+  Map<String, PosLoyaltyProgram> _programsById = const {};
+  List<PosLoyaltyProgram> _programs = const [];
+  String? _loyaltyError;
+
+  bool _salesLoaded = false;
+  List<PosSaleSummary> _sales = const [];
+  String? _salesError;
+
+  // Whether the caller's own list should reload (e.g. after an edit
+  // changes this customer's `display_name`/`status`).
+  bool _changed = false;
+
+  bool get _canReadCustomer => widget.context.permissions.contains('customer.read');
+  bool get _canUpdateCustomer => widget.context.permissions.contains('customer.update');
+  bool get _canReadMembership => widget.context.permissions.contains('membership.read');
+  bool get _canIssueMembership => widget.context.permissions.contains('membership.issue');
+  bool get _canManageMembership => widget.context.permissions.contains('membership.manage');
+  bool get _canReadLoyalty => widget.context.permissions.contains('loyalty.read');
+  bool get _canAdjustLoyalty => widget.context.permissions.contains('loyalty.adjust');
+  bool get _canReadSales => widget.context.permissions.contains('sale.read');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadCustomer());
+    unawaited(_loadMemberships());
+    unawaited(_loadLoyalty());
+    unawaited(_loadSales());
+  }
+
+  Future<void> _loadCustomer() async {
+    if (!_canReadCustomer) {
+      setState(() {
+        _loading = false;
+        _errorMessage = null;
+      });
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+    try {
+      final customer = await widget.customersGateway.customer(widget.customerId);
+      PosCustomerQrToken? token;
+      try {
+        token = await widget.customersGateway.activeQrToken(widget.customerId);
+      } on Object {
+        token = null;
+      }
+      if (!mounted) return;
+      setState(() {
+        _customer = customer;
+        _qrToken = token;
+        _loading = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _errorMessage = 'No fue posible cargar el cliente.';
+      });
+    }
+  }
+
+  Future<void> _loadMemberships() async {
+    if (!_canReadMembership) {
+      setState(() => _membershipsLoaded = true);
+      return;
+    }
+    setState(() => _membershipsError = null);
+    try {
+      final memberships = await widget.membershipsGateway.membershipsForCustomer(widget.customerId);
+      final plans = await widget.membershipsGateway.listPlans();
+      if (!mounted) return;
+      setState(() {
+        _memberships = memberships;
+        _plans = plans;
+        _plansById = {for (final plan in plans) plan.id: plan};
+        _membershipsLoaded = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _membershipsLoaded = true;
+        _membershipsError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _membershipsLoaded = true;
+        _membershipsError = 'No fue posible cargar las membresías.';
+      });
+    }
+  }
+
+  Future<void> _loadLoyalty() async {
+    if (!_canReadLoyalty) {
+      setState(() => _loyaltyLoaded = true);
+      return;
+    }
+    setState(() => _loyaltyError = null);
+    try {
+      final summary = await widget.loyaltyGateway.customerLoyalty(widget.customerId);
+      final programs = await widget.loyaltyGateway.listPrograms();
+      if (!mounted) return;
+      setState(() {
+        _loyalty = summary;
+        _programs = programs;
+        _programsById = {for (final program in programs) program.id: program};
+        _loyaltyLoaded = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loyaltyLoaded = true;
+        _loyaltyError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loyaltyLoaded = true;
+        _loyaltyError = 'No fue posible cargar AS Rewards+.';
+      });
+    }
+  }
+
+  Future<void> _loadSales() async {
+    if (!_canReadSales) {
+      setState(() => _salesLoaded = true);
+      return;
+    }
+    setState(() => _salesError = null);
+    try {
+      final page = await widget.salesGateway.listSales(
+        filter: PosSaleHistoryFilter(customerId: widget.customerId),
+      );
+      if (!mounted) return;
+      setState(() {
+        _sales = page.items;
+        _salesLoaded = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _salesLoaded = true;
+        _salesError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _salesLoaded = true;
+        _salesError = 'No fue posible cargar las ventas recientes.';
+      });
+    }
+  }
+
+  Future<void> _openEdit() async {
+    final customer = _customer;
+    if (customer == null) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _CustomerFormDialog(customersGateway: widget.customersGateway, existing: customer),
+    );
+    if (saved != true || !mounted) return;
+    _changed = true;
+    unawaited(_loadCustomer());
+  }
+
+  Future<void> _issueOrRotateQr() async {
+    setState(() => _qrBusy = true);
+    try {
+      final token = await widget.customersGateway.issueQrToken(widget.customerId);
+      if (!mounted) return;
+      setState(() {
+        _qrToken = token;
+        _qrBusy = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _qrBusy = false);
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _qrBusy = false);
+      _showNotice(context, 'No fue posible generar el código QR.');
+    }
+  }
+
+  Future<void> _openIssueMembership() async {
+    final issued = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _IssueMembershipDialog(
+        membershipsGateway: widget.membershipsGateway,
+        customerId: widget.customerId,
+        plans: _plans,
+      ),
+    );
+    if (issued == true) unawaited(_loadMemberships());
+  }
+
+  Future<void> _renewMembership(PosCustomerMembership membership) async {
+    try {
+      await widget.membershipsGateway.renewMembership(membership.id);
+      if (!mounted) return;
+      _showNotice(context, 'Membresía renovada.');
+      unawaited(_loadMemberships());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible renovar la membresía.');
+    }
+  }
+
+  Future<void> _openCancelMembership(PosCustomerMembership membership) async {
+    final cancelled = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _CancelMembershipDialog(
+        membershipsGateway: widget.membershipsGateway,
+        membership: membership,
+      ),
+    );
+    if (cancelled == true) unawaited(_loadMemberships());
+  }
+
+  Future<void> _validateMembership(PosCustomerMembership membership) async {
+    final branchId = widget.context.session.branchId;
+    if (branchId == null) {
+      _showNotice(context, 'Selecciona una sucursal para verificar la vigencia.');
+      return;
+    }
+    try {
+      final result = await widget.membershipsGateway.validate(customerId: widget.customerId, branchId: branchId);
+      if (!mounted) return;
+      _showNotice(
+        context,
+        result.valid ? 'Membresía vigente en esta sucursal.' : 'No vigente: ${result.reason ?? 'sin motivo informado'}.',
+      );
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible verificar la vigencia.');
+    }
+  }
+
+  Future<void> _openAdjustLoyalty() async {
+    final adjusted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _LoyaltyAdjustDialog(
+        loyaltyGateway: widget.loyaltyGateway,
+        customerId: widget.customerId,
+        programs: _programs,
+      ),
+    );
+    if (adjusted == true) unawaited(_loadLoyalty());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _customer?.displayName ?? 'Detalle de cliente',
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('pos-customer-detail-close'),
+                    onPressed: () => Navigator.of(context).pop(_changed),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: !_canReadCustomer
+                      ? const _PermissionState()
+                      : _loading
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 40),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      : _errorMessage != null
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(_errorMessage!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                            const SizedBox(height: 6),
+                            OutlinedButton(
+                              onPressed: () => unawaited(_loadCustomer()),
+                              child: const Text('Reintentar'),
+                            ),
+                          ],
+                        )
+                      : _buildBody(palette),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(PosPalette palette) {
+    final customer = _customer!;
+    Widget sectionTitle(String label) => Text(
+      label,
+      style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 11),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        sectionTitle('RESUMEN'),
+        Divider(color: palette.border, height: 16),
+        _CashSummaryRow(label: 'Nombre', value: customer.displayName, big: true),
+        const SizedBox(height: 4),
+        _CashSummaryRow(label: 'Estado', value: customer.status),
+        if (customer.phone != null) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Teléfono', value: customer.phone!),
+        ],
+        if (customer.email != null) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Correo', value: customer.email!),
+        ],
+        if (customer.birthDate != null) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Nacimiento', value: customer.birthDate!),
+        ],
+        if (customer.notes != null && customer.notes!.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Notas', value: customer.notes!),
+        ],
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (_canUpdateCustomer)
+              OutlinedButton.icon(
+                key: const Key('pos-customer-detail-edit'),
+                onPressed: () => unawaited(_openEdit()),
+                icon: const Icon(Icons.edit_outlined, size: 15),
+                label: const Text('Editar'),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+              ),
+            if (_canUpdateCustomer)
+              OutlinedButton.icon(
+                key: const Key('pos-customer-detail-qr'),
+                onPressed: _qrBusy ? null : () => unawaited(_issueOrRotateQr()),
+                icon: _qrBusy
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.qr_code_2_outlined, size: 15),
+                label: Text(_qrToken == null ? 'Generar QR' : 'Rotar QR'),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+              ),
+          ],
+        ),
+        if (_qrToken != null) ...[
+          const SizedBox(height: 8),
+          // No QR-image-rendering package is a pre-existing dependency
+          // (checked `pubspec.yaml` first, per the task's own constraint)
+          // — the opaque token is shown as selectable text instead of a
+          // cosmetic QR image; Wallet/QR-scanning integration remains
+          // future work (ADR-0017 D17).
+          SelectableText(
+            _qrToken!.token,
+            key: const Key('pos-customer-qr-token'),
+            style: TextStyle(color: palette.text, fontFamily: 'monospace', fontSize: 11),
+          ),
+          Text(
+            'Código de identificación del cliente (texto seleccionable). '
+            'La integración con Wallet/escaneo QR es trabajo futuro.',
+            style: TextStyle(color: palette.textMuted, fontSize: 10),
+          ),
+        ],
+        const SizedBox(height: 16),
+        sectionTitle('MEMBRESÍAS'),
+        Divider(color: palette.border, height: 16),
+        _buildMembershipsSection(palette),
+        const SizedBox(height: 16),
+        sectionTitle('REWARDS'),
+        Divider(color: palette.border, height: 16),
+        _buildLoyaltySection(palette),
+        const SizedBox(height: 16),
+        sectionTitle('VENTAS RECIENTES'),
+        Divider(color: palette.border, height: 16),
+        _buildSalesSection(palette),
+      ],
+    );
+  }
+
+  Widget _buildMembershipsSection(PosPalette palette) {
+    if (!_canReadMembership) {
+      return Text('Sin permiso para ver membresías.', style: TextStyle(color: palette.textMuted, fontSize: 12));
+    }
+    if (!_membershipsLoaded) {
+      return const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    if (_membershipsError != null) {
+      return Text(_membershipsError!, style: TextStyle(color: palette.error, fontSize: 12));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_memberships.isEmpty)
+          Text('Sin membresías registradas.', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+        for (final membership in _memberships)
+          Padding(
+            key: Key('pos-customer-membership-${membership.id}'),
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _plansById[membership.membershipPlanId]?.name ?? membership.membershipNumber,
+                        style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                      ),
+                      Text(
+                        membership.expiresAt == null
+                            ? 'Desde ${_formatShortDate(membership.startsAt)}'
+                            : 'Vence ${_formatShortDate(membership.expiresAt!)}',
+                        style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                _StatusChip(label: membership.status),
+              ],
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (_canIssueMembership && _plans.isNotEmpty)
+              OutlinedButton.icon(
+                key: const Key('pos-customer-membership-issue'),
+                onPressed: () => unawaited(_openIssueMembership()),
+                icon: const Icon(Icons.add, size: 15),
+                label: const Text('Agregar membresía'),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+              ),
+            for (final membership in _memberships)
+              if (membership.status == 'active' || membership.status == 'expired')
+                if (_canIssueMembership)
+                  OutlinedButton(
+                    key: Key('pos-customer-membership-renew-${membership.id}'),
+                    onPressed: () => unawaited(_renewMembership(membership)),
+                    style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                    child: const Text('Renovar'),
+                  ),
+            for (final membership in _memberships)
+              if (membership.status == 'active' || membership.status == 'pending')
+                if (_canManageMembership)
+                  OutlinedButton(
+                    key: Key('pos-customer-membership-cancel-${membership.id}'),
+                    onPressed: () => unawaited(_openCancelMembership(membership)),
+                    style: OutlinedButton.styleFrom(foregroundColor: palette.error, side: BorderSide(color: palette.border)),
+                    child: const Text('Cancelar'),
+                  ),
+            for (final membership in _memberships)
+              OutlinedButton(
+                key: Key('pos-customer-membership-validate-${membership.id}'),
+                onPressed: () => unawaited(_validateMembership(membership)),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.blueDeep, side: BorderSide(color: palette.border)),
+                child: const Text('Verificar vigencia'),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoyaltySection(PosPalette palette) {
+    if (!_canReadLoyalty) {
+      return Text('Sin permiso para ver AS Rewards+.', style: TextStyle(color: palette.textMuted, fontSize: 12));
+    }
+    if (!_loyaltyLoaded) {
+      return const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    if (_loyaltyError != null) {
+      return Text(_loyaltyError!, style: TextStyle(color: palette.error, fontSize: 12));
+    }
+    final loyalty = _loyalty;
+    // ADR-0017 D12 — `account: null` means "never earned/adjusted", an
+    // honest empty state, never a fake zero-balance card.
+    if (loyalty == null || !loyalty.hasAccount) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Sin actividad de rewards.', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+          if (_canAdjustLoyalty) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('pos-customer-loyalty-adjust'),
+                onPressed: () => unawaited(_openAdjustLoyalty()),
+                icon: const Icon(Icons.tune, size: 15),
+                label: const Text('Ajustar'),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final balance in loyalty.balances)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    balance.programId == null ? 'General' : (_programsById[balance.programId]?.name ?? balance.programId!),
+                    style: TextStyle(color: palette.text, fontSize: 12),
+                  ),
+                ),
+                Text(
+                  '${balance.balance} ${balance.unitType == 'stamp' ? 'sellos' : 'puntos'}',
+                  style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        if (loyalty.ledger.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text('Historial', style: TextStyle(color: palette.textMuted, fontSize: 10, fontWeight: FontWeight.w700)),
+          for (final entry in loyalty.ledger.take(8))
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_entryTypeLabel(entry.entryType)}${entry.reason == null ? '' : ' — ${entry.reason}'}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '${entry.quantity > 0 ? '+' : ''}${entry.quantity}',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+        ],
+        if (_canAdjustLoyalty) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('pos-customer-loyalty-adjust'),
+              onPressed: () => unawaited(_openAdjustLoyalty()),
+              icon: const Icon(Icons.tune, size: 15),
+              label: const Text('Ajustar'),
+              style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSalesSection(PosPalette palette) {
+    if (!_canReadSales) {
+      return Text('Sin permiso para ver ventas.', style: TextStyle(color: palette.textMuted, fontSize: 12));
+    }
+    if (!_salesLoaded) {
+      return const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    if (_salesError != null) {
+      return Text(_salesError!, style: TextStyle(color: palette.error, fontSize: 12));
+    }
+    if (_sales.isEmpty) {
+      return Text('Sin ventas registradas.', style: TextStyle(color: palette.textMuted, fontSize: 12));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final sale in _sales)
+          Padding(
+            key: Key('pos-customer-sale-${sale.id}'),
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(displaySaleFolio(sale.saleNumber), style: TextStyle(color: palette.text, fontSize: 12)),
+                ),
+                Text(
+                  _money(Money.parse(sale.total, sale.currencyCode)),
+                  style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+String _entryTypeLabel(String entryType) => switch (entryType) {
+  'earn' => 'Ganado',
+  'redeem' => 'Canjeado',
+  'adjustment' => 'Ajuste',
+  'expiration' => 'Expiración',
+  _ => entryType,
+};
+
+/// Manual admin issuance only (ADR-0017 D9) — never the POS-purchase
+/// path, which happens automatically server-side on payment settlement.
+class _IssueMembershipDialog extends StatefulWidget {
+  const _IssueMembershipDialog({
+    required this.membershipsGateway,
+    required this.customerId,
+    required this.plans,
+  });
+  final PosMembershipsGateway membershipsGateway;
+  final String customerId;
+  final List<PosMembershipPlan> plans;
+
+  @override
+  State<_IssueMembershipDialog> createState() => _IssueMembershipDialogState();
+}
+
+class _IssueMembershipDialogState extends State<_IssueMembershipDialog> {
+  late String? _selectedPlanId = widget.plans.where((plan) => plan.active).isEmpty
+      ? null
+      : widget.plans.firstWhere((plan) => plan.active).id;
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _submit() async {
+    final planId = _selectedPlanId;
+    if (planId == null) {
+      setState(() => _error = 'Selecciona un plan.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.membershipsGateway.issueMembership(customerId: widget.customerId, membershipPlanId: planId);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible emitir la membresía.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Agregar membresía',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                key: const Key('pos-issue-membership-plan'),
+                initialValue: _selectedPlanId,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Plan'),
+                items: [
+                  for (final plan in widget.plans)
+                    DropdownMenuItem(value: plan.id, child: Text(plan.name)),
+                ],
+                onChanged: (value) => setState(() => _selectedPlanId = value),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-issue-membership-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-issue-membership-save'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Emitir'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `POST /customer-memberships/{id}/cancel` — a manual remedy only, never
+/// automatic (ADR-0017 D20).
+class _CancelMembershipDialog extends StatefulWidget {
+  const _CancelMembershipDialog({required this.membershipsGateway, required this.membership});
+  final PosMembershipsGateway membershipsGateway;
+  final PosCustomerMembership membership;
+
+  @override
+  State<_CancelMembershipDialog> createState() => _CancelMembershipDialogState();
+}
+
+class _CancelMembershipDialogState extends State<_CancelMembershipDialog> {
+  final _reasonController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _error = 'Escribe un motivo.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.membershipsGateway.cancelMembership(
+        widget.membership.id,
+        reason: reason,
+        version: widget.membership.version,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible cancelar la membresía.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Cancelar membresía',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-cancel-membership-reason'),
+                controller: _reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-cancel-membership-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Regresar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-cancel-membership-confirm'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.error),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Cancelar membresía'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `POST /customers/{customerId}/loyalty/adjust` — gated by the caller on
+/// `loyalty.adjust` SEPARATELY from `loyalty.manage` (Part Y). [quantity]
+/// is signed — a correction is always a new ledger row, never an edit to
+/// a prior one (ADR-0017 D13).
+class _LoyaltyAdjustDialog extends StatefulWidget {
+  const _LoyaltyAdjustDialog({
+    required this.loyaltyGateway,
+    required this.customerId,
+    required this.programs,
+  });
+  final PosLoyaltyGateway loyaltyGateway;
+  final String customerId;
+  final List<PosLoyaltyProgram> programs;
+
+  @override
+  State<_LoyaltyAdjustDialog> createState() => _LoyaltyAdjustDialogState();
+}
+
+class _LoyaltyAdjustDialogState extends State<_LoyaltyAdjustDialog> {
+  final _quantityController = TextEditingController();
+  final _reasonController = TextEditingController();
+  String _unitType = 'point';
+  String? _programId;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _quantityController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final quantity = int.tryParse(_quantityController.text.trim());
+    final reason = _reasonController.text.trim();
+    if (quantity == null || quantity == 0 || reason.isEmpty) {
+      setState(() => _error = 'Escribe una cantidad distinta de cero y un motivo.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.loyaltyGateway.adjustLoyalty(
+        customerId: widget.customerId,
+        quantity: quantity,
+        unitType: _unitType,
+        reason: reason,
+        loyaltyProgramId: _programId,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible registrar el ajuste.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Ajustar rewards',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-loyalty-adjust-quantity'),
+                controller: _quantityController,
+                keyboardType: const TextInputType.numberWithOptions(signed: true),
+                decoration: const InputDecoration(isDense: true, labelText: 'Cantidad (+/-)'),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                key: const Key('pos-loyalty-adjust-unit-type'),
+                initialValue: _unitType,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Unidad'),
+                items: const [
+                  DropdownMenuItem(value: 'point', child: Text('Puntos')),
+                  DropdownMenuItem(value: 'stamp', child: Text('Sellos')),
+                ],
+                onChanged: (value) => setState(() => _unitType = value ?? 'point'),
+              ),
+              if (widget.programs.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-loyalty-adjust-program'),
+                  initialValue: _programId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Programa (opcional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('General')),
+                    for (final program in widget.programs)
+                      DropdownMenuItem(value: program.id, child: Text(program.name)),
+                  ],
+                  onChanged: (value) => setState(() => _programId = value),
+                ),
+              ],
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-loyalty-adjust-reason'),
+                controller: _reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-loyalty-adjust-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-loyalty-adjust-save'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Guardar ajuste'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `PosModule.memberships` ("Membresías") — membership PLAN admin only
+/// (list/create/edit); a customer's own issued memberships live in
+/// Customer Detail instead of a second, duplicate list here.
+class _MembershipsAdmin extends StatefulWidget {
+  const _MembershipsAdmin({required this.context, required this.membershipsGateway});
+  final AuthenticatedContext context;
+  final PosMembershipsGateway membershipsGateway;
+
+  @override
+  State<_MembershipsAdmin> createState() => _MembershipsAdminState();
+}
+
+class _MembershipsAdminState extends State<_MembershipsAdmin> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosMembershipPlan> _plans = const [];
+  String? _errorMessage;
+
+  bool get _canRead => widget.context.permissions.contains('membership.read');
+  bool get _canManage => widget.context.permissions.contains('membership.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final plans = await widget.membershipsGateway.listPlans();
+      if (!mounted) return;
+      setState(() {
+        _plans = plans;
+        _phase = _plans.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los planes de membresía.';
+      });
+    }
+  }
+
+  Future<void> _openForm({PosMembershipPlan? existing}) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _MembershipPlanFormDialog(membershipsGateway: widget.membershipsGateway, existing: existing),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Membresías',
+          description: 'Planes de membresía — administración mínima: listar, crear y editar (ADR-0017).',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (_canManage)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: FilledButton.icon(
+                key: const Key('pos-membership-plan-new'),
+                onPressed: () => unawaited(_openForm()),
+                style: FilledButton.styleFrom(backgroundColor: palette.action),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Nuevo plan'),
+              ),
+            ),
+          ),
+        if (!_canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _AdminListPhase.loading => const _LoadingState(),
+            _AdminListPhase.empty => const _EmptyState(message: 'No hay planes de membresía registrados.'),
+            _AdminListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar los planes de membresía.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _AdminListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final plan in _plans)
+                  _MembershipPlanRow(plan: plan, canManage: _canManage, onEdit: () => unawaited(_openForm(existing: plan))),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _MembershipPlanRow extends StatelessWidget {
+  const _MembershipPlanRow({required this.plan, required this.canManage, required this.onEdit});
+  final PosMembershipPlan plan;
+  final bool canManage;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final details = [
+      if (plan.durationDays != null) '${plan.durationDays} días',
+      if (plan.benefitDescription != null && plan.benefitDescription!.isNotEmpty) plan.benefitDescription!,
+    ].join(' · ');
+    return _PosCard(
+      key: Key('pos-membership-plan-row-${plan.id}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(plan.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  if (details.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(details, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+            _StatusChip(label: plan.active ? 'active' : 'inactive'),
+            if (canManage)
+              IconButton(
+                key: Key('pos-membership-plan-edit-${plan.id}'),
+                tooltip: 'Editar plan',
+                onPressed: onEdit,
+                icon: Icon(Icons.edit_outlined, size: 18, color: palette.blueDeep),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// `POST/PUT /membership-plans` — the minimal admin form (name, optional
+/// description/duration/benefit description, active toggle). Product
+/// linkage/branch eligibility stay backend-configured defaults here — no
+/// product picker exists elsewhere in this app to safely reuse, and Part U
+/// calls for minimum operational management, not a full catalog editor.
+class _MembershipPlanFormDialog extends StatefulWidget {
+  const _MembershipPlanFormDialog({required this.membershipsGateway, this.existing});
+  final PosMembershipsGateway membershipsGateway;
+  final PosMembershipPlan? existing;
+
+  @override
+  State<_MembershipPlanFormDialog> createState() => _MembershipPlanFormDialogState();
+}
+
+class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
+  late final _nameController = TextEditingController(text: widget.existing?.name ?? '');
+  late final _descriptionController = TextEditingController(text: widget.existing?.description ?? '');
+  late final _durationController = TextEditingController(text: widget.existing?.durationDays?.toString() ?? '');
+  late final _benefitController = TextEditingController(text: widget.existing?.benefitDescription ?? '');
+  late bool _active = widget.existing?.active ?? true;
+  bool _busy = false;
+  String? _error;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _durationController.dispose();
+    _benefitController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'El nombre es obligatorio.');
+      return;
+    }
+    final durationText = _durationController.text.trim();
+    final duration = durationText.isEmpty ? null : int.tryParse(durationText);
+    if (durationText.isNotEmpty && duration == null) {
+      setState(() => _error = 'La duración debe ser un número de días.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final description = _descriptionController.text.trim();
+    final benefit = _benefitController.text.trim();
+    final input = PosMembershipPlanInput(
+      name: name,
+      description: description.isEmpty ? null : description,
+      active: _active,
+      durationDays: duration,
+      benefitDescription: benefit.isEmpty ? null : benefit,
+    );
+    try {
+      if (_isEdit) {
+        await widget.membershipsGateway.updatePlan(widget.existing!.id, input, version: widget.existing!.version);
+      } else {
+        await widget.membershipsGateway.createPlan(input);
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar el plan.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  _isEdit ? 'Editar plan' : 'Nuevo plan',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  key: const Key('pos-membership-plan-name'),
+                  controller: _nameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-membership-plan-description'),
+                  controller: _descriptionController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Descripción (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-membership-plan-duration'),
+                  controller: _durationController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Duración en días (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-membership-plan-benefit'),
+                  controller: _benefitController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Beneficio (opcional)'),
+                ),
+                const SizedBox(height: 6),
+                SwitchListTile(
+                  key: const Key('pos-membership-plan-active'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Activo'),
+                  value: _active,
+                  onChanged: (value) => setState(() => _active = value),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-membership-plan-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-membership-plan-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

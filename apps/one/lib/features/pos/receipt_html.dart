@@ -65,10 +65,21 @@ String _paymentMethodLabel(String method) => switch (method) {
 /// URI (e.g. from the bundled `assets/branding/as_logo_mark.png`) — this
 /// function never fetches or reads a file itself, and never accepts a
 /// bare filesystem path.
+/// [customerDisplayName], when given, is rendered as one extra line under
+/// the folio/cajero meta block — TASK 13.0 (ADR-0017 Part AB/D6). Deliberately
+/// a plain caller-supplied `String?`, never read off [receipt] itself: the
+/// backend's own `GET /sales/{id}/receipt` response carries no customer
+/// field at all (unlike `GET /sales`/`GET /sales/{id}`), so a caller
+/// threads the sale's already-known `customer_display_name` (from
+/// [SaleSession] right after checkout, or from the `PosSaleSummary` row
+/// that opened a reprint) through here instead. `null` renders the
+/// receipt byte-identical to before this task — never phone, email, or
+/// birth date, per Part AB.
 String buildReceiptHtml({
   required PosReceipt receipt,
   String? logoDataUri,
   double paperWidthMm = 80,
+  String? customerDisplayName,
 }) {
   final sale = receipt.sale;
   final business = receipt.business;
@@ -205,6 +216,8 @@ String buildReceiptHtml({
       // every API reference; this is a display-only substitution.
       '<b>Folio ${_escape(displaySaleFolio(sale.saleNumber))}</b> · ${_formatDateTime(sale.completedAt ?? sale.occurredAt)}'
       '${cashier == null ? '' : '<br>Cajero: ${_escape(cashier.displayName)}'}'
+      // TASK 13.0: a name only — never phone/email/birth date (Part AB).
+      '${customerDisplayName == null || customerDisplayName.isEmpty ? '' : '<br>Cliente: ${_escape(customerDisplayName)}'}'
       '</div>'
       '<hr class="divider">'
       '<table>$itemsRowsHtml</table>'

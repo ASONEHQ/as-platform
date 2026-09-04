@@ -52,6 +52,15 @@ import {
   InventoryLocationService,
   InventoryMovementReadService,
 } from '../modules/inventory/inventory.service.js';
+import { CustomersRepository } from '../modules/customers/customers.repository.js';
+import { registerCustomerRoutes } from '../modules/customers/customers.routes.js';
+import { CustomersService } from '../modules/customers/customers.service.js';
+import { LoyaltyRepository } from '../modules/loyalty/loyalty.repository.js';
+import { registerLoyaltyRoutes } from '../modules/loyalty/loyalty.routes.js';
+import { LoyaltyService } from '../modules/loyalty/loyalty.service.js';
+import { MembershipsRepository } from '../modules/memberships/memberships.repository.js';
+import { registerMembershipRoutes } from '../modules/memberships/memberships.routes.js';
+import { MembershipsService } from '../modules/memberships/memberships.service.js';
 import { PaymentRepository } from '../modules/payments/payments.repository.js';
 import { registerPaymentRoutes } from '../modules/payments/payments.routes.js';
 import { PaymentService } from '../modules/payments/payments.service.js';
@@ -208,13 +217,28 @@ export async function registerPlugins(
       // see ADR-0016), so `SalesService` needs this repository directly.
       const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
       const promotionsService = new PromotionsService(promotionsRepository);
-      const salesService = new SalesService(salesRepository, promotionsRepository);
+      // TASK 13.0: constructed before `salesService` too — `createSale`
+      // resolves/validates an optional `customer_id` (Part G) through
+      // this repository directly, the same cross-module shape
+      // `promotionsRepository` above already established.
+      const customersRepository = new CustomersRepository(options.infrastructure.database);
+      const customersService = new CustomersService(customersRepository);
+      const salesService = new SalesService(salesRepository, promotionsRepository, customersRepository);
       const paymentRepository = new PaymentRepository(options.infrastructure.database);
       // TASK 12.7: constructed before `paymentService` — a cash payment
       // confirmation now requires it (open-session enforcement + drawer
       // movement posting, see ADR-0014).
       const cashRepository = new CashRepository(options.infrastructure.database);
       const cashService = new CashService(cashRepository);
+      // TASK 13.0: constructed before `paymentService` — membership
+      // activation and loyalty earning happen inside the SAME
+      // transaction `SalesRepository.trySettleSale` uses to newly settle
+      // a Sale (see `PaymentService.applyPostSettlementHooks` and
+      // ADR-0017 "Activation boundary"/"Automatic earning").
+      const membershipsRepository = new MembershipsRepository(options.infrastructure.database);
+      const membershipsService = new MembershipsService(membershipsRepository);
+      const loyaltyRepository = new LoyaltyRepository(options.infrastructure.database);
+      const loyaltyService = new LoyaltyService(loyaltyRepository);
       // TASK 12.4B.1: constructed unconditionally, even with no
       // MERCADO_PAGO_ACCESS_TOKEN set — see MercadoPagoClient's own doc
       // comment for why this is the correct "fail safely" boundary.
@@ -224,7 +248,14 @@ export async function registerPlugins(
         logger: app.log,
       });
       const mercadoPagoProvider = new MercadoPagoPointProvider(mercadoPagoClient);
-      const paymentService = new PaymentService(paymentRepository, salesRepository, mercadoPagoProvider, cashRepository);
+      const paymentService = new PaymentService(
+        paymentRepository,
+        salesRepository,
+        mercadoPagoProvider,
+        cashRepository,
+        membershipsService,
+        loyaltyService,
+      );
       // TASK 12.8: constructed after payments/cash — a refund completion
       // reverses the original payment and, for a cash refund, posts to
       // the *current* open session (see ADR-0015), so it needs both
@@ -248,6 +279,9 @@ export async function registerPlugins(
       registerCashRoutes(app, authentication, cashService);
       registerRefundRoutes(app, authentication, refundsService);
       registerPromotionRoutes(app, authentication, promotionsService);
+      registerCustomerRoutes(app, authentication, customersService);
+      registerMembershipRoutes(app, authentication, membershipsService);
+      registerLoyaltyRoutes(app, authentication, loyaltyService);
       registerMercadoPagoWebhookRoutes(app, {
         paymentService,
         mercadoPagoProvider,

@@ -78,6 +78,12 @@ class PosSaleSummary {
     // fixture/test that constructs a [PosSaleSummary] directly (without
     // this field) keeps compiling unchanged.
     this.refundState = 'not_refunded',
+    // TASK 13.0: `null` for every pre-existing fixture/test that
+    // constructs a [PosSaleSummary] directly (without these fields) —
+    // matches a real walk-in sale exactly (ADR-0017 D6/D19), so nothing
+    // written before this task changes behavior.
+    this.customerId,
+    this.customerDisplayName,
   });
 
   factory PosSaleSummary.fromJson(Map<String, Object?> json) => PosSaleSummary(
@@ -101,6 +107,8 @@ class PosSaleSummary {
         .whereType<String>()
         .toList(growable: false),
     refundState: json['refund_state'] as String? ?? 'not_refunded',
+    customerId: json['customer_id'] as String?,
+    customerDisplayName: json['customer_display_name'] as String?,
   );
 
   final String id;
@@ -124,6 +132,12 @@ class PosSaleSummary {
   /// the two into one display label (e.g. "Completada · reembolsada"),
   /// never hides the original sale status.
   final String refundState;
+
+  /// TASK 13.0: `null` for a walk-in sale (ADR-0017 D6) — a frozen
+  /// commercial snapshot taken at sale-creation time, never re-derived
+  /// from today's (possibly since-edited) customer record (Part AA).
+  final String? customerId;
+  final String? customerDisplayName;
 }
 
 /// A page of [PosSaleSummary] rows plus the opaque cursor for the next
@@ -145,6 +159,7 @@ class PosSaleHistoryFilter {
     this.occurredTo,
     this.saleNumber,
     this.paymentMethod,
+    this.customerId,
   });
   final String? branchId;
   final String? status;
@@ -152,6 +167,11 @@ class PosSaleHistoryFilter {
   final DateTime? occurredTo;
   final String? saleNumber;
   final String? paymentMethod;
+
+  /// TASK 13.0: Customer Detail's own "Ventas recientes" section — the
+  /// same real `GET /sales?customer_id=` filter (`sales.routes.ts`), never
+  /// a second, locally-filtered copy of the whole sales history.
+  final String? customerId;
 }
 
 abstract interface class PosSalesGateway {
@@ -168,11 +188,17 @@ abstract interface class PosSalesGateway {
   /// engine, never trusting whatever that earlier quote returned
   /// (ADR-0016 D1/D10). Omitting both reproduces the exact pre-TASK-12.9
   /// request shape.
+  ///
+  /// TASK 13.0: [customerId] attaches an already-selected customer to the
+  /// sale (ADR-0017 D6) — omit entirely for "Venta sin cliente", the
+  /// default/fast path that must never be required or block checkout
+  /// speed.
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
   });
 
   /// `GET /api/v1/sales/{sale_id}/receipt` — TASK 12.5B. A plain,
@@ -208,6 +234,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
     required List<PosSaleLineRequest> items,
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales',
@@ -220,6 +247,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
         ],
         if (couponCodes != null && couponCodes.isNotEmpty) 'coupon_codes': couponCodes,
         if (manualDiscount != null) 'manual_discount': manualDiscount.toJson(),
+        if (customerId != null) 'customer_id': customerId,
       },
     );
     final data = envelope['data'];
@@ -254,6 +282,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
       if (filter.occurredTo != null) 'occurred_to': filter.occurredTo!.toUtc().toIso8601String(),
       if (filter.saleNumber != null && filter.saleNumber!.isNotEmpty) 'sale_number': filter.saleNumber!,
       if (filter.paymentMethod != null) 'payment_method': filter.paymentMethod!,
+      if (filter.customerId != null) 'customer_id': filter.customerId!,
     };
     final path = Uri(path: '/api/v1/sales', queryParameters: query).toString();
     final envelope = await _client.getJson(path);
@@ -280,6 +309,7 @@ class EmptyPosSalesGateway implements PosSalesGateway {
     required List<PosSaleLineRequest> items,
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
   }) => Future.error(StateError('No sales gateway is configured.'));
 
   @override

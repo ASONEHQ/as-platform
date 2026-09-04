@@ -5,6 +5,9 @@ import '../core/telemetry/telemetry.dart';
 import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
+import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_loyalty_gateway.dart';
+import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
@@ -23,6 +26,9 @@ class AsOneApp extends StatefulWidget {
     this.posCashGateway = const EmptyPosCashGateway(),
     this.posRefundsGateway = const EmptyPosRefundsGateway(),
     this.posPromotionsGateway = const EmptyPosPromotionsGateway(),
+    this.posCustomersGateway = const EmptyPosCustomersGateway(),
+    this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
+    this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
     super.key,
   });
 
@@ -39,6 +45,13 @@ class AsOneApp extends StatefulWidget {
   // TASK 12.9: pricing-quote preview plus promotions/coupons admin
   // management — see `pos_promotions_gateway.dart` and ADR-0016.
   final PosPromotionsGateway posPromotionsGateway;
+  // TASK 13.0: customer identity, membership plans/entitlements, and AS
+  // Rewards+ loyalty — see `pos_customers_gateway.dart`/
+  // `pos_memberships_gateway.dart`/`pos_loyalty_gateway.dart` and
+  // ADR-0017.
+  final PosCustomersGateway posCustomersGateway;
+  final PosMembershipsGateway posMembershipsGateway;
+  final PosLoyaltyGateway posLoyaltyGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -64,6 +77,9 @@ class _AsOneAppState extends State<AsOneApp> {
       posCashGateway: widget.posCashGateway,
       posRefundsGateway: widget.posRefundsGateway,
       posPromotionsGateway: widget.posPromotionsGateway,
+      posCustomersGateway: widget.posCustomersGateway,
+      posMembershipsGateway: widget.posMembershipsGateway,
+      posLoyaltyGateway: widget.posLoyaltyGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -81,6 +97,9 @@ class PlatformScope extends InheritedWidget {
     this.posCashGateway = const EmptyPosCashGateway(),
     this.posRefundsGateway = const EmptyPosRefundsGateway(),
     this.posPromotionsGateway = const EmptyPosPromotionsGateway(),
+    this.posCustomersGateway = const EmptyPosCustomersGateway(),
+    this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
+    this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -109,6 +128,18 @@ class PlatformScope extends InheritedWidget {
   /// management — see `pos_promotions_gateway.dart` and ADR-0016.
   final PosPromotionsGateway posPromotionsGateway;
 
+  /// TASK 13.0: customer identity (search/create/edit/QR) — see
+  /// `pos_customers_gateway.dart` and ADR-0017.
+  final PosCustomersGateway posCustomersGateway;
+
+  /// TASK 13.0: membership plan admin plus per-customer issued
+  /// memberships — see `pos_memberships_gateway.dart` and ADR-0017.
+  final PosMembershipsGateway posMembershipsGateway;
+
+  /// TASK 13.0: AS Rewards+ loyalty programs/balances/ledger — see
+  /// `pos_loyalty_gateway.dart` and ADR-0017.
+  final PosLoyaltyGateway posLoyaltyGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -128,6 +159,9 @@ class PlatformScope extends InheritedWidget {
       posCashGateway != oldWidget.posCashGateway ||
       posRefundsGateway != oldWidget.posRefundsGateway ||
       posPromotionsGateway != oldWidget.posPromotionsGateway ||
+      posCustomersGateway != oldWidget.posCustomersGateway ||
+      posMembershipsGateway != oldWidget.posMembershipsGateway ||
+      posLoyaltyGateway != oldWidget.posLoyaltyGateway ||
       environment != oldWidget.environment;
 }
 

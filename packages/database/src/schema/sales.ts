@@ -18,6 +18,7 @@ import {
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
 import { cashRegisters, cashSessions } from './cash.js';
 import { products, productVariants } from './catalog.js';
+import { customers } from './customers.js';
 import { devices } from './devices.js';
 import { companyMemberships } from './identity.js';
 import { branches, companies } from './organizations.js';
@@ -47,6 +48,17 @@ import { branches, companies } from './organizations.js';
  * requires it"), so requiring one here would make sale creation
  * impossible from the actual current session shape. All three are real,
  * scoped-FK columns today — never fabricated relationships.
+ *
+ * TASK 13.0 adds `customer_id` (additive, nullable) — `docs/CORE_DATA_
+ * MODEL.md` previously deferred this exact column pending an approved
+ * customer model; ADR-0017 is that approval. Walk-in sales continue
+ * working unchanged (`customer_id` stays null); no historical sale is
+ * ever backfilled. `customer_display_name` is a frozen commercial
+ * snapshot of the customer's display name AT THE MOMENT this sale was
+ * created — mirroring `sale_items.name_snapshot`'s own "never re-read a
+ * mutable record later" convention — so a later customer name edit can
+ * never silently change a historical receipt (see ADR-0017 "Receipt
+ * customer snapshot").
  */
 export const sales = pgTable(
   'sales',
@@ -57,6 +69,8 @@ export const sales = pgTable(
     cashRegisterId: uuid('cash_register_id'),
     cashSessionId: uuid('cash_session_id'),
     deviceId: uuid('device_id'),
+    customerId: uuid('customer_id'),
+    customerDisplayName: text('customer_display_name'),
     // §6.6's `sync_operation_id uuid` (nullable there too) — reserved the
     // same way as the three columns above: no `sync_operations` table
     // exists in this schema yet (ADR-0003's offline command sync is
@@ -112,6 +126,11 @@ export const sales = pgTable(
       name: 'sales_device_scope_fk',
     }).onDelete('restrict'),
     foreignKey({
+      columns: [table.companyId, table.customerId],
+      foreignColumns: [customers.companyId, customers.id],
+      name: 'sales_customer_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
       columns: [table.companyId, table.branchId, table.cashRegisterId],
       foreignColumns: [cashRegisters.companyId, cashRegisters.branchId, cashRegisters.id],
       name: 'sales_cash_register_scope_fk',
@@ -128,7 +147,12 @@ export const sales = pgTable(
     }).onDelete('restrict'),
     index('sales_company_branch_idx').on(table.companyId, table.branchId),
     index('sales_company_status_idx').on(table.companyId, table.status),
+    index('sales_company_customer_idx').on(table.companyId, table.customerId),
     check('sales_number_nonblank_ck', sql`length(btrim(${table.saleNumber})) > 0`),
+    check(
+      'sales_customer_display_name_ck',
+      sql`${table.customerId} is null or (${table.customerDisplayName} is not null and length(btrim(${table.customerDisplayName})) > 0)`,
+    ),
     check('sales_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check(
       'sales_status_ck',

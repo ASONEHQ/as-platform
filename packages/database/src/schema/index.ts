@@ -2,6 +2,7 @@ export * from './catalog.js';
 export * from './auth-challenges.js';
 export * from './cash.js';
 export * from './control.js';
+export * from './customers.js';
 export * from './devices.js';
 export * from './identity.js';
 export * from './inventory.js';

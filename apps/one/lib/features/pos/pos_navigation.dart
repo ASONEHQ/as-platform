@@ -56,6 +56,14 @@ enum PosModule {
     // "implemented" screens containing a mutating action, not merely a
     // read-only view.
     PosModule.promotions,
+    // TASK 13.0: Clientes — customer directory (search/list/detail/create/
+    // edit), plus each customer's own Membresías/Rewards/Ventas recientes
+    // sections — see ADR-0017 and `pos_customers_gateway.dart`.
+    PosModule.customers,
+    // TASK 13.0: Membresías — membership plan admin (list/create/edit);
+    // a customer's own issued memberships live in Customer Detail instead
+    // of a second, duplicate list here.
+    PosModule.memberships,
   }.contains(this);
 }
 

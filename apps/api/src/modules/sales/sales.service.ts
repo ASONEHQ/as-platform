@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { ivaBasisPointsForTaxCode, normalizeCurrencyCode } from '@asone/database';
 
+import type { CustomersRepository } from '../customers/customers.repository.js';
 import { evaluatePricing } from '../promotions/pricing.service.js';
 import type { PromotionsRepository } from '../promotions/promotions.repository.js';
 import type { CouponRow, PricingResolvedLine, PromotionRow } from '../promotions/promotions.types.js';
@@ -92,6 +93,10 @@ export class SalesService {
     // `createSale` throws a clear `validation_error` rather than
     // silently ignoring them, see below).
     private readonly promotionsRepository?: PromotionsRepository,
+    // TASK 13.0 — optional, backward-compatible (same reasoning as
+    // `promotionsRepository` above): only needed when `CreateSaleInput.
+    // customerId` is actually supplied.
+    private readonly customersRepository?: CustomersRepository,
   ) {}
 
   /**
@@ -127,11 +132,13 @@ export class SalesService {
       id: input.id ?? randomUUID(),
       branchId: input.branchId,
       deviceId: input.deviceId ?? null,
+      customerId: input.customerId ?? null,
       items: parsedItems,
     };
     const requestHash = hash({
       branchId: normalized.branchId,
       deviceId: normalized.deviceId,
+      customerId: normalized.customerId,
       currencyCode: requestedCurrency,
       items: normalized.items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
       id: input.id ?? null,
@@ -205,6 +212,24 @@ export class SalesService {
           });
           if (currencyCode === null)
             throw new SaleError('validation_error', 'Could not resolve a currency for this sale.');
+
+          // TASK 13.0 — Part G/AB: resolved and validated INSIDE this same
+          // transaction, exactly like every product line above — never
+          // trusted from a stale prior read. A supplied id that does not
+          // resolve within the actor's own company is `resource_not_found`,
+          // never silently ignored. `customerDisplayName` is the frozen
+          // snapshot AT THIS MOMENT (Part AB) — a later edit to the
+          // customer's name never rewrites this historical receipt.
+          let customerId: string | null = null;
+          let customerDisplayName: string | null = null;
+          if (normalized.customerId !== null) {
+            if (this.customersRepository === undefined)
+              throw new SaleError('validation_error', 'This deployment is not configured for customers.');
+            const customer = await this.customersRepository.customer(client, context.companyId, normalized.customerId);
+            if (customer === null) throw new SaleError('resource_not_found', 'The customer was not found.');
+            customerId = customer.id;
+            customerDisplayName = customer.displayName;
+          }
 
           // TASK 12.9 — the exact same `evaluatePricing` engine the
           // standalone quote endpoint uses (ADR-0016): promotions/
@@ -284,6 +309,8 @@ export class SalesService {
             id: normalized.id,
             branchId: normalized.branchId,
             deviceId: normalized.deviceId,
+            customerId,
+            customerDisplayName,
             saleNumber: `SALE-${normalized.id.replaceAll('-', '').toLowerCase()}`,
             currencyCode,
             subtotal: formatMoney(pricing.subtotalUnits),
@@ -522,6 +549,9 @@ function salePayload(value: SaleRow): Readonly<Record<string, unknown>> {
     currency_code: value.currencyCode,
     total: value.total,
     version: value.version.toString(),
+    // Part W — an id reference only, never the customer's name/email/
+    // phone/birth date.
+    customer_id: value.customerId,
   };
 }
 

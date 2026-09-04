@@ -79,6 +79,8 @@ interface SaleDb {
   cash_session_id: string | null;
   device_id: string | null;
   sync_operation_id: string | null;
+  customer_id: string | null;
+  customer_display_name: string | null;
   sale_number: string;
   status: SaleStatus;
   currency_code: string;
@@ -140,7 +142,7 @@ interface PriceLookupDb {
 }
 
 const SALE_COLUMNS =
-  'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,created_by,version,created_at,updated_at';
+  'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,customer_id,customer_display_name,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,created_by,version,created_at,updated_at';
 const SALE_ITEM_COLUMNS =
   'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,tax_total,line_total,tax_snapshot,created_at';
 
@@ -153,6 +155,8 @@ function sale(row: SaleDb): SaleRow {
     cashSessionId: row.cash_session_id,
     deviceId: row.device_id,
     syncOperationId: row.sync_operation_id,
+    customerId: row.customer_id,
+    customerDisplayName: row.customer_display_name,
     saleNumber: row.sale_number,
     status: row.status,
     currencyCode: row.currency_code,
@@ -408,6 +412,11 @@ export class SalesRepository {
       id: string;
       branchId: string;
       deviceId: string | null;
+      // TASK 13.0 — Part G/AB: both null together for a walk-in sale;
+      // `customerDisplayName` is the frozen snapshot at THIS moment, never
+      // re-read from the customer record later.
+      customerId: string | null;
+      customerDisplayName: string | null;
       saleNumber: string;
       currencyCode: string;
       subtotal: string;
@@ -419,15 +428,17 @@ export class SalesRepository {
     const row = result<SaleDb>(
       await client.query(
         `insert into sales
-         (id,company_id,branch_id,device_id,sale_number,status,currency_code,
+         (id,company_id,branch_id,device_id,customer_id,customer_display_name,sale_number,status,currency_code,
           subtotal,discount_total,tax_total,total,occurred_at,created_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,'pending_payment',$6,$7,$8,$9,$10,$11,$12,$13,$13)
+         values ($1,$2,$3,$4,$5,$6,$7,'pending_payment',$8,$9,$10,$11,$12,$13,$14,$15,$15)
          returning ${SALE_COLUMNS}`,
         [
           input.id,
           input.companyId,
           input.branchId,
           input.deviceId,
+          input.customerId,
+          input.customerDisplayName,
           input.saleNumber,
           input.currencyCode,
           input.subtotal,
@@ -557,6 +568,11 @@ export class SalesRepository {
       createdBy?: string;
       saleNumber?: string;
       paymentMethod?: string;
+      // TASK 13.0 — Part F/AA: Customer Detail's "recent sales" reuses
+      // this exact existing query, never a duplicate/parallel one — still
+      // scoped by the caller's own `branchIds` above, so a customer's
+      // history never leaks a sale from a branch the actor cannot access.
+      customerId?: string;
     },
   ): Promise<{ items: SaleRow[]; nextCursor: string | null }> {
     const values: unknown[] = [companyId, branchIds];
@@ -564,6 +580,10 @@ export class SalesRepository {
     if (input.branchId !== undefined) {
       values.push(input.branchId);
       where.push(`branch_id=$${String(values.length)}`);
+    }
+    if (input.customerId !== undefined) {
+      values.push(input.customerId);
+      where.push(`customer_id=$${String(values.length)}`);
     }
     if (input.status !== undefined) {
       values.push(input.status);

@@ -72,6 +72,26 @@ export const technicalPermissionCodes = [
   'coupon.read',
   'coupon.manage',
   'discount.apply',
+  // TASK 13.0 — Customers/Memberships/AS Rewards+ foundation. `customer.*`
+  // gates the identity CRUD a cashier needs day-to-day (lookup + quick
+  // registration); `membership.read`/`membership.manage`/`membership.issue`
+  // mirror the `promotion.read/manage` shape (catalog-admin vs. read) plus
+  // one more (`membership.issue`) for the checkout/renewal-time action,
+  // deliberately separate from `membership.manage` the same way
+  // `discount.apply` is kept separate from `promotion.manage`; `loyalty.
+  // read`/`loyalty.manage`/`loyalty.adjust` mirror the same three-tier
+  // shape, with `loyalty.adjust` kept separately permissioned as the
+  // highest-risk manual ledger correction (Part Y explicitly requires
+  // this separation).
+  'customer.read',
+  'customer.create',
+  'customer.update',
+  'membership.read',
+  'membership.manage',
+  'membership.issue',
+  'loyalty.read',
+  'loyalty.manage',
+  'loyalty.adjust',
   'sync.execute',
   'audit.read',
   'recovery.read',

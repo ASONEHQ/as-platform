@@ -10,6 +10,9 @@ import '../core/telemetry/telemetry.dart';
 import '../features/authentication/auth_gateway.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
+import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_loyalty_gateway.dart';
+import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
@@ -56,6 +59,9 @@ void bootstrap() {
       posCashGateway: ApiPosCashGateway(api),
       posRefundsGateway: ApiPosRefundsGateway(api),
       posPromotionsGateway: ApiPosPromotionsGateway(api),
+      posCustomersGateway: ApiPosCustomersGateway(api),
+      posMembershipsGateway: ApiPosMembershipsGateway(api),
+      posLoyaltyGateway: ApiPosLoyaltyGateway(api),
     ),
   );
   authController.bootstrapSession();

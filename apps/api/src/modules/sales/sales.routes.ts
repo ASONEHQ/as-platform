@@ -29,6 +29,8 @@ interface SaleListQuery {
   created_by?: string;
   sale_number?: string;
   payment_method?: string;
+  // TASK 13.0 — Part F/AA: Customer Detail's "recent sales".
+  customer_id?: string;
 }
 interface SaleItemBody {
   product_id: string;
@@ -46,6 +48,9 @@ interface SaleBody {
   branch_id: string;
   currency_code?: string;
   device_id?: string;
+  // TASK 13.0 — Part G/H: optional. Omitted entirely for "Venta sin
+  // cliente" — a walk-in sale is not required to carry one.
+  customer_id?: string;
   items: SaleItemBody[];
   coupon_codes?: string[];
   manual_discount?: ManualDiscountBody;
@@ -124,6 +129,9 @@ function saleHttp(
     cash_register_id: value.cashRegisterId,
     cash_session_id: value.cashSessionId,
     device_id: value.deviceId,
+    // Part AB — the frozen snapshot, never today's mutable customer row.
+    customer_id: value.customerId,
+    customer_display_name: value.customerDisplayName,
     sale_number: value.saleNumber,
     status: value.status,
     currency_code: value.currencyCode,
@@ -175,6 +183,10 @@ function saleSummaryHttp(
     branch_name: summary.branchName,
     cashier_id: value.createdBy,
     cashier_name: summary.cashierName,
+    // Part AA — displayed where attached, never re-derived from today's
+    // (possibly since-edited) customer record.
+    customer_id: value.customerId,
+    customer_display_name: value.customerDisplayName,
     occurred_at: value.occurredAt.toISOString(),
     completed_at: value.completedAt?.toISOString() ?? null,
     item_count: summary.itemCount,
@@ -316,6 +328,7 @@ export function registerSaleRoutes(
             branch_id: { type: 'string', format: 'uuid' },
             currency_code: { type: 'string', minLength: 3, maxLength: 3 },
             device_id: { type: 'string', format: 'uuid' },
+            customer_id: { type: 'string', format: 'uuid' },
             items: {
               type: 'array',
               minItems: 1,
@@ -376,6 +389,7 @@ export function registerSaleRoutes(
             branchId: request.body.branch_id,
             ...(request.body.currency_code === undefined ? {} : { currencyCode: request.body.currency_code }),
             ...(deviceId === undefined ? {} : { deviceId }),
+            ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
             ...(request.body.coupon_codes === undefined ? {} : { couponCodes: request.body.coupon_codes }),
             ...(manualDiscount === undefined
@@ -440,6 +454,7 @@ export function registerSaleRoutes(
               type: 'string',
               enum: ['cash', 'card_terminal', 'card_manual', 'other'],
             },
+            customer_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -461,6 +476,7 @@ export function registerSaleRoutes(
           ...(query.created_by === undefined ? {} : { createdBy: query.created_by }),
           ...(query.sale_number === undefined ? {} : { saleNumber: query.sale_number }),
           ...(query.payment_method === undefined ? {} : { paymentMethod: query.payment_method }),
+          ...(query.customer_id === undefined ? {} : { customerId: query.customer_id }),
         });
         const saleIds = page.items.map((item) => item.id);
         const [summaries, refundStates] = await Promise.all([

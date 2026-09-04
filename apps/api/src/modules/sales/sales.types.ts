@@ -21,6 +21,11 @@ export interface SaleRow {
   cashSessionId: string | null;
   deviceId: string | null;
   syncOperationId: string | null;
+  // TASK 13.0 — optional customer link (Part G) and its immutable
+  // display-name snapshot AT SALE-CREATION TIME (Part AB) — never
+  // re-read from today's (possibly since-edited) customer record.
+  customerId: string | null;
+  customerDisplayName: string | null;
   saleNumber: string;
   status: SaleStatus;
   currencyCode: string;
@@ -89,6 +94,10 @@ export interface CreateSaleInput {
    * omitted — every line must still agree (see ADR-0009). */
   currencyCode?: string;
   deviceId?: string;
+  /** TASK 13.0 — Part G/H: optional. Walk-in sales keep working with no
+   * customer attached; a supplied id must belong to the SAME company
+   * (never trusted blindly) — see `SalesService.createSale`. */
+  customerId?: string;
   items: readonly CreateSaleLineInput[];
   couponCodes?: readonly string[];
   manualDiscount?: {

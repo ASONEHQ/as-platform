@@ -107,6 +107,30 @@ class SaleSession extends ChangeNotifier {
   PosManualDiscountRequest? get manualDiscount => _manualDiscount;
   PosPricingQuote? get quote => _quote;
 
+  // TASK 13.0: the customer optionally attached to this ticket — plain
+  // *intent*, threaded straight into `POST /sales`'s own `customer_id`
+  // (ADR-0017 D6); never required, never blocks checkout. `null` is
+  // "Venta sin cliente", the default/fast path.
+  String? _customerId;
+  String? _customerDisplayName;
+
+  String? get customerId => _customerId;
+  String? get customerDisplayName => _customerDisplayName;
+  bool get hasCustomer => _customerId != null;
+
+  void setCustomer({required String customerId, required String displayName}) {
+    _customerId = customerId;
+    _customerDisplayName = displayName;
+    notifyListeners();
+  }
+
+  void clearCustomer() {
+    if (_customerId == null) return;
+    _customerId = null;
+    _customerDisplayName = null;
+    notifyListeners();
+  }
+
   /// The currency of the ticket, taken from the first line added — kept
   /// so `subtotal`/`iva`/`total` have a currency to report even before any
   /// line exists. Every line must share one currency (mixed-currency
@@ -314,14 +338,21 @@ class SaleSession extends ChangeNotifier {
   /// TASK 12.9: also clears any applied coupon codes/manual discount/quote
   /// — a brand-new ticket never silently inherits the previous customer's
   /// discount.
+  ///
+  /// TASK 13.0: also clears any attached customer, for the identical
+  /// reason — a brand-new ticket never silently carries the previous
+  /// customer over to a different guest's sale.
   void clearAll() {
     final hadDiscountState =
         _couponCodes.isNotEmpty || _manualDiscount != null || _quote != null;
-    if (_lines.isEmpty && !hadDiscountState) return;
+    final hadCustomer = _customerId != null;
+    if (_lines.isEmpty && !hadDiscountState && !hadCustomer) return;
     _lines.clear();
     _couponCodes = const [];
     _manualDiscount = null;
     _quote = null;
+    _customerId = null;
+    _customerDisplayName = null;
     notifyListeners();
   }
 }
