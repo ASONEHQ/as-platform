@@ -81,6 +81,28 @@ class AppFailure {
       'El servicio no está disponible.',
       code: 'service_unavailable',
     ),
+    // TASK 12.7: the exact four cash-session error codes
+    // `docs/API_CONTRACTS.md` §5 reserves — see ADR-0014.
+    'cash_session_required' => const AppFailure(
+      AppErrorKind.validation,
+      'Abre la caja para comenzar a cobrar en efectivo.',
+      code: 'cash_session_required',
+    ),
+    'cash_session_already_open' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta caja ya tiene una sesión abierta.',
+      code: 'cash_session_already_open',
+    ),
+    'cash_session_not_open' => const AppFailure(
+      AppErrorKind.validation,
+      'La caja no tiene una sesión abierta.',
+      code: 'cash_session_not_open',
+    ),
+    'cash_session_closed' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta sesión de caja ya fue cerrada.',
+      code: 'cash_session_closed',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

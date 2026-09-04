@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../tokens/as_tokens.dart';
+import '../tokens/as_typography.dart';
 
 abstract final class AsTheme {
   static ThemeData light() {
@@ -19,23 +20,33 @@ abstract final class AsTheme {
     final baseText = Typography.material2021(
       platform: TargetPlatform.macOS,
     ).black;
-    final text = baseText.copyWith(
-      displayLarge: baseText.displayLarge?.copyWith(
-        fontWeight: FontWeight.w700,
-        letterSpacing: -1.8,
-      ),
-      headlineLarge: baseText.headlineLarge?.copyWith(
-        fontWeight: FontWeight.w700,
-        letterSpacing: -0.8,
-      ),
-      titleLarge: baseText.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-      bodyLarge: baseText.bodyLarge?.copyWith(height: 1.5),
-      bodyMedium: baseText.bodyMedium?.copyWith(
-        height: 1.45,
-        color: AsColors.textSecondary,
-      ),
-      labelLarge: baseText.labelLarge?.copyWith(fontWeight: FontWeight.w700),
-    );
+    final text = baseText
+        .copyWith(
+          displayLarge: baseText.displayLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            letterSpacing: -1.8,
+          ),
+          headlineLarge: baseText.headlineLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.8,
+          ),
+          titleLarge: baseText.titleLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+          bodyLarge: baseText.bodyLarge?.copyWith(height: 1.5),
+          bodyMedium: baseText.bodyMedium?.copyWith(
+            height: 1.45,
+            color: AsColors.textSecondary,
+          ),
+          labelLarge: baseText.labelLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        )
+        // V1 applies one family to the entire document
+        // (`html,*{font-family:'Questrial',sans-serif}`) — TASK 12.2G.
+        // `.apply` only swaps the family, keeping the metric-driven sizes/
+        // weights/letter-spacing above from Material's own base scale.
+        .apply(fontFamily: AsTypography.family);
     final border = OutlineInputBorder(
       borderRadius: BorderRadius.circular(AsRadius.medium),
       borderSide: const BorderSide(color: AsColors.border),
@@ -44,6 +55,7 @@ abstract final class AsTheme {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: AsColors.background,
+      fontFamily: AsTypography.family,
       textTheme: text,
       focusColor: AsColors.primaryLight,
       hoverColor: AsColors.primaryLight.withValues(alpha: 0.45),

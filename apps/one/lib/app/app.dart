@@ -4,7 +4,10 @@ import '../core/config/app_config.dart';
 import '../core/telemetry/telemetry.dart';
 import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
+import '../features/pos/pos_cash_gateway.dart';
+import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
+import '../features/pos/pos_sales_gateway.dart';
 import 'router.dart';
 
 class AsOneApp extends StatefulWidget {
@@ -13,6 +16,9 @@ class AsOneApp extends StatefulWidget {
     required this.authController,
     required this.telemetry,
     this.posReadGateway = const EmptyPosReadGateway(),
+    this.posSalesGateway = const EmptyPosSalesGateway(),
+    this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
+    this.posCashGateway = const EmptyPosCashGateway(),
     super.key,
   });
 
@@ -20,13 +26,20 @@ class AsOneApp extends StatefulWidget {
   final AuthController authController;
   final Telemetry telemetry;
   final PosReadGateway posReadGateway;
+  final PosSalesGateway posSalesGateway;
+  final PosPaymentsGateway posPaymentsGateway;
+  final PosCashGateway posCashGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
 }
 
 class _AsOneAppState extends State<AsOneApp> {
-  late final router = createRouter(widget.authController, widget.telemetry);
+  late final router = createRouter(
+    widget.authController,
+    widget.telemetry,
+    environment: widget.config.environment,
+  );
 
   @override
   Widget build(BuildContext context) => MaterialApp.router(
@@ -36,6 +49,10 @@ class _AsOneAppState extends State<AsOneApp> {
     routerConfig: router,
     builder: (context, child) => PlatformScope(
       posReadGateway: widget.posReadGateway,
+      posSalesGateway: widget.posSalesGateway,
+      posPaymentsGateway: widget.posPaymentsGateway,
+      posCashGateway: widget.posCashGateway,
+      environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
         child: child ?? const SizedBox.shrink(),
@@ -47,11 +64,33 @@ class _AsOneAppState extends State<AsOneApp> {
 class PlatformScope extends InheritedWidget {
   const PlatformScope({
     required this.posReadGateway,
+    this.posSalesGateway = const EmptyPosSalesGateway(),
+    this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
+    this.posCashGateway = const EmptyPosCashGateway(),
+    this.environment = AsEnvironment.production,
     required super.child,
     super.key,
   });
 
   final PosReadGateway posReadGateway;
+
+  /// TASK 12.4A.1: the one write path the POS ticket has today — creating
+  /// a real, backend-priced sale. See `pos_sales_gateway.dart`.
+  final PosSalesGateway posSalesGateway;
+
+  /// TASK 12.4B.1: terminal discovery, card_terminal payment creation,
+  /// and payment-status polling — see `pos_payments_gateway.dart`. Never
+  /// a path to Mercado Pago itself.
+  final PosPaymentsGateway posPaymentsGateway;
+
+  /// TASK 12.7: cash register/session/movement/close/summary/history — see
+  /// `pos_cash_gateway.dart` and ADR-0014.
+  final PosCashGateway posCashGateway;
+
+  /// Threaded through so pre-authenticated screens (e.g. the login
+  /// screen's TASK 12.2F first-run-wizard preview link) can gate
+  /// dev-only affordances without a real activation/licensing contract.
+  final AsEnvironment environment;
 
   static PlatformScope of(BuildContext context) {
     final scope = context.dependOnInheritedWidgetOfExactType<PlatformScope>();
@@ -61,7 +100,11 @@ class PlatformScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(PlatformScope oldWidget) =>
-      posReadGateway != oldWidget.posReadGateway;
+      posReadGateway != oldWidget.posReadGateway ||
+      posSalesGateway != oldWidget.posSalesGateway ||
+      posPaymentsGateway != oldWidget.posPaymentsGateway ||
+      posCashGateway != oldWidget.posCashGateway ||
+      environment != oldWidget.environment;
 }
 
 class AuthScope extends InheritedNotifier<AuthController> {

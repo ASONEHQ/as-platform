@@ -26,7 +26,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Bienvenido'), findsOneWidget);
+    expect(find.text('Iniciar sesión'), findsOneWidget);
     expect(find.byKey(const Key('pos-topbar')), findsNothing);
   });
 
@@ -49,8 +49,32 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Bienvenido'), findsOneWidget);
+    expect(find.text('Iniciar sesión'), findsOneWidget);
   });
+
+  testWidgets(
+    'production deep link to the dev first-run preview redirects to login',
+    (tester) async {
+      final auth = testAuthController()..retry();
+      final router = createRouter(
+        auth,
+        const NoopTelemetry(),
+        initialLocation: '/dev/first-run-preview',
+      ); // environment defaults to production — no explicit bypass.
+      await tester.pumpWidget(
+        MaterialApp.router(
+          routerConfig: router,
+          builder: (_, child) => PlatformScope(
+            posReadGateway: const EmptyPosReadGateway(),
+            child: AuthScope(controller: auth, child: child!),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Iniciar sesión'), findsOneWidget);
+      expect(find.text('¡Bienvenido a AS+ POS!'), findsNothing);
+    },
+  );
 
   testWidgets('authenticated user cannot return to login', (tester) async {
     final auth = testAuthController()..retry();

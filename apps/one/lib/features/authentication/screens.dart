@@ -1,29 +1,108 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/app.dart';
+import '../../core/config/app_config.dart';
 import '../../design_system/components/as_components.dart';
 import '../../design_system/tokens/as_tokens.dart';
+import '../../design_system/tokens/as_typography.dart';
 import 'auth_models.dart';
+import 'startup_visuals.dart';
 
-class BootstrapScreen extends StatelessWidget {
+/// The splash state — ported from V1's `#pos-splash`: the same deep-blue
+/// radial gradient, the real "AS+" mark, and a letter-spaced "PUNTO DE
+/// VENTA" label, with a light fade/scale entrance (TASK 12.2F).
+class BootstrapScreen extends StatefulWidget {
   const BootstrapScreen({super.key});
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
-    backgroundColor: AsColors.primaryDark,
-    body: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AsAppLogo(onDark: true),
-          SizedBox(height: AsSpacing.x8),
-          AsLoadingIndicator(label: 'Restaurando sesión segura'),
-        ],
-      ),
-    ),
-  );
+  State<BootstrapScreen> createState() => _BootstrapScreenState();
 }
 
+class _BootstrapScreenState extends State<BootstrapScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller = AnimationController(
+    vsync: this,
+    duration: AsMotion.slow,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    controller.forward();
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final reducedMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final logo = const StartupLogoMark(size: 96);
+    final label = const Text('PUNTO DE VENTA', style: _splashTextStyle);
+    return Scaffold(
+      body: StartupBackground(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              reducedMotion
+                  ? logo
+                  : ScaleTransition(
+                      scale: Tween(begin: 0.9, end: 1.0).animate(
+                        CurvedAnimation(
+                          parent: controller,
+                          curve: Curves.easeOutBack,
+                        ),
+                      ),
+                      child: FadeTransition(opacity: controller, child: logo),
+                    ),
+              const SizedBox(height: AsSpacing.x5),
+              reducedMotion
+                  ? label
+                  : FadeTransition(opacity: controller, child: label),
+              const SizedBox(height: AsSpacing.x8),
+              Semantics(
+                liveRegion: true,
+                label: 'Restaurando sesión segura',
+                child: const SizedBox.square(
+                  dimension: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation(Colors.white70),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `.splash-text{font-weight:600;font-size:24px;letter-spacing:8px;
+/// color:rgba(255,255,255,.9)}` — exact literal from V1's `#pos-splash`.
+const _splashTextStyle = TextStyle(
+  fontFamily: AsTypography.family,
+  color: Color(0xE6FFFFFF),
+  fontSize: 24,
+  fontWeight: FontWeight.w600,
+  letterSpacing: 8,
+);
+
+enum _LoginTab { password, pin, qr }
+
+/// The mandatory sign-in gate — ported from V1's
+/// `#modal-login.gate-activo`: centered card over the same deep-blue
+/// background, "Iniciar sesión" header, AS+ branding, Contraseña/PIN/QR
+/// tabs. Only the Contraseña tab is real (it drives the existing
+/// `AuthController.login`); PIN and QR are visually faithful but inert —
+/// there is no PIN/QR authentication contract on the backend (TASK 12.2F).
 class LoginFoundationScreen extends StatefulWidget {
   const LoginFoundationScreen({super.key});
 
@@ -34,12 +113,16 @@ class LoginFoundationScreen extends StatefulWidget {
 class _LoginFoundationScreenState extends State<LoginFoundationScreen> {
   final identifier = TextEditingController();
   final password = TextEditingController();
+  final qrCode = TextEditingController();
   String? localError;
+  _LoginTab tab = _LoginTab.password;
+  String pinBuffer = '';
 
   @override
   void dispose() {
     identifier.dispose();
     password.dispose();
+    qrCode.dispose();
     super.dispose();
   }
 
@@ -57,114 +140,379 @@ class _LoginFoundationScreenState extends State<LoginFoundationScreen> {
     if (mounted && auth.phase == AuthPhase.failure) password.clear();
   }
 
+  void _handleEntrarPressed() {
+    switch (tab) {
+      case _LoginTab.password:
+        submit();
+      case _LoginTab.pin:
+      case _LoginTab.qr:
+        StartupToast.show(
+          context,
+          'Este método de acceso estará disponible cuando su backend esté '
+          'conectado.',
+        );
+    }
+  }
+
+  // Matches V1's `cerrarModalLoginSiPosible()`: while the login gate is
+  // mandatory (always true in this app — there is no dismissible,
+  // non-gated login route), closing is blocked with the same notice.
+  void _showGateNotice() => StartupToast.show(
+    context,
+    'Debes iniciar sesión para continuar',
+    color: StartupColors.amber,
+  );
+
+  // Matches V1's `avisoSinCuenta()` exactly — in V1 this link was never a
+  // real self-service flow either, just an informational toast.
+  void _showNoAccountNotice() => StartupToast.show(
+    context,
+    'Pide a tu administrador que te cree un usuario en Configuración › '
+    'Usuarios.',
+    color: StartupColors.amber,
+  );
+
+  // There is no session to close on this screen (it only renders while
+  // unauthenticated) — kept visible for fidelity, but honestly inert
+  // rather than wired to `AuthController.logout()`.
+  void _showNoSessionNotice() =>
+      StartupToast.show(context, 'No hay una sesión activa que cerrar.');
+
+  void _pinDigit(String digit) {
+    if (pinBuffer.length >= 4) return;
+    setState(() => pinBuffer += digit);
+  }
+
+  void _pinBackspace() {
+    if (pinBuffer.isEmpty) return;
+    setState(() => pinBuffer = pinBuffer.substring(0, pinBuffer.length - 1));
+  }
+
+  void _pinOk() {
+    setState(() => pinBuffer = '');
+    StartupToast.show(
+      context,
+      'El acceso con PIN estará disponible cuando su backend esté conectado.',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = AuthScope.of(context);
     final loading = auth.phase == AuthPhase.authenticating;
     final error = localError ?? auth.state.failure?.message;
     return Scaffold(
-      body: Row(
-        children: [
-          if (MediaQuery.sizeOf(context).width >= AsBreakpoints.tablet)
-            Expanded(
-              child: Container(
-                color: AsColors.primaryDark,
-                padding: const EdgeInsets.all(AsSpacing.x12),
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    AsAppLogo(onDark: true),
-                    SizedBox(height: AsSpacing.x8),
-                    Text(
-                      'Una plataforma. Toda tu operación.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 42,
-                        fontWeight: FontWeight.w700,
-                        height: 1.08,
-                      ),
-                    ),
-                    SizedBox(height: AsSpacing.x4),
-                    Text(
-                      'Contexto, control e inteligencia para negocios de experiencias.',
-                      style: TextStyle(
-                        color: Color(0xFFDCEAFF),
-                        fontSize: 18,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          Expanded(
-            child: Center(
+      body: StartupBackground(
+        child: Stack(
+          children: [
+            Center(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(AsSpacing.x6),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 440),
+                  constraints: const BoxConstraints(maxWidth: 420),
                   child: AutofillGroup(
-                    child: AsCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const AsAppLogo(),
-                          const SizedBox(height: AsSpacing.x8),
-                          Text(
-                            'Bienvenido',
-                            style: Theme.of(context).textTheme.headlineMedium
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                          ),
-                          const SizedBox(height: AsSpacing.x2),
-                          const Text(
-                            'Accede de forma segura a tu espacio de trabajo.',
-                          ),
-                          const SizedBox(height: AsSpacing.x6),
-                          AsTextField(
-                            key: const Key('login-identifier'),
-                            label: 'Correo electrónico',
-                            controller: identifier,
-                            keyboardType: TextInputType.emailAddress,
-                            autofillHints: const [AutofillHints.username],
-                            enabled: !loading,
-                          ),
-                          const SizedBox(height: AsSpacing.x4),
-                          AsPasswordField(
-                            key: const Key('login-password'),
-                            label: 'Contraseña',
-                            controller: password,
-                            enabled: !loading,
-                            onSubmitted: (_) => submit(),
-                          ),
-                          if (error != null) ...[
-                            const SizedBox(height: AsSpacing.x4),
-                            Semantics(
-                              liveRegion: true,
-                              child: Text(
-                                error,
-                                key: const Key('login-error'),
-                                style: const TextStyle(color: AsColors.error),
+                    child: StartupCardEntrance(
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: StartupColors.cardSurface,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: StartupColors.border),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.login,
+                                  size: 18,
+                                  color: StartupColors.text,
+                                ),
+                                const SizedBox(width: 9),
+                                const Expanded(
+                                  child: Text(
+                                    'Iniciar sesión',
+                                    style: AsTypography.title,
+                                  ),
+                                ),
+                                StartupCloseButton(onPressed: _showGateNotice),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            Center(
+                              child: Column(
+                                children: [
+                                  const StartupLogoMark(),
+                                  const SizedBox(height: 10),
+                                  const Text.rich(
+                                    TextSpan(
+                                      children: [
+                                        TextSpan(
+                                          text: 'AS',
+                                          style: TextStyle(
+                                            color: StartupColors.purpleDeep,
+                                          ),
+                                        ),
+                                        TextSpan(
+                                          text: '+',
+                                          style: TextStyle(
+                                            color: StartupColors.purple,
+                                          ),
+                                        ),
+                                        TextSpan(
+                                          text: ' PUNTO DE VENTA',
+                                          style: TextStyle(
+                                            color: StartupColors.text,
+                                          ),
+                                        ),
+                                        TextSpan(
+                                          text: '+',
+                                          style: TextStyle(
+                                            color: StartupColors.purple,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    style: AsTypography.wordmark,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'CONTROLA. VENDE. CRECE.',
+                                    style: AsTypography.caption.copyWith(
+                                      color: StartupColors.textMuted,
+                                      letterSpacing: .5,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Plataforma AS ONE+ · Acceso seguro',
+                                    style: AsTypography.body.copyWith(
+                                      color: StartupColors.textSecondary,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
+                            const SizedBox(height: 18),
+                            StartupTabBar(
+                              labels: const ['Contraseña', 'PIN', 'QR'],
+                              icons: const [
+                                Icons.key_outlined,
+                                Icons.dialpad,
+                                Icons.qr_code_2,
+                              ],
+                              selected: tab.index,
+                              onChanged: (i) =>
+                                  setState(() => tab = _LoginTab.values[i]),
+                            ),
+                            const SizedBox(height: 16),
+                            // `.tab-pane.active{animation:pgFade .15s ease}`
+                            // — a fade+4px-slide-up on tab switch.
+                            AnimatedSwitcher(
+                              duration: AsMotion.resolve(
+                                context,
+                                AsMotion.tabFade,
+                              ),
+                              transitionBuilder: (child, animation) =>
+                                  FadeTransition(
+                                    opacity: animation,
+                                    child: SlideTransition(
+                                      position:
+                                          Tween(
+                                            begin: const Offset(0, .02),
+                                            end: Offset.zero,
+                                          ).animate(
+                                            CurvedAnimation(
+                                              parent: animation,
+                                              curve: Curves.ease,
+                                            ),
+                                          ),
+                                      child: child,
+                                    ),
+                                  ),
+                              child: KeyedSubtree(
+                                key: ValueKey(tab),
+                                child: switch (tab) {
+                                  _LoginTab.password => _passwordTab(loading),
+                                  _LoginTab.pin => _pinTab(),
+                                  _LoginTab.qr => _qrTab(),
+                                },
+                              ),
+                            ),
+                            if (error != null && tab == _LoginTab.password) ...[
+                              const SizedBox(height: 12),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFEE2E2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Semantics(
+                                  liveRegion: true,
+                                  child: Text(
+                                    error,
+                                    key: const Key('login-error'),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: StartupColors.red,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 16),
+                            StartupPrimaryButton(
+                              label: loading ? 'Validando…' : 'Entrar',
+                              loading: loading,
+                              onPressed: loading ? null : _handleEntrarPressed,
+                            ),
+                            const SizedBox(height: 14),
+                            Center(
+                              child: TextButton(
+                                key: const Key('startup-no-account-link'),
+                                onPressed: _showNoAccountNotice,
+                                child: const Text.rich(
+                                  TextSpan(
+                                    children: [
+                                      TextSpan(
+                                        text: '¿No tienes cuenta? ',
+                                        style: TextStyle(
+                                          color: StartupColors.textSecondary,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      TextSpan(
+                                        text: 'Pide acceso a tu administrador',
+                                        style: TextStyle(
+                                          color: StartupColors.purple,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Center(
+                              child: TextButton.icon(
+                                key: const Key('startup-close-session-link'),
+                                onPressed: _showNoSessionNotice,
+                                icon: const Icon(
+                                  Icons.logout,
+                                  size: 14,
+                                  color: StartupColors.textMuted,
+                                ),
+                                label: const Text(
+                                  'Cerrar sesión',
+                                  style: TextStyle(
+                                    color: StartupColors.textMuted,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (PlatformScope.of(context).environment !=
+                                AsEnvironment.production) ...[
+                              const SizedBox(height: 4),
+                              Center(
+                                child: TextButton(
+                                  key: const Key('dev-first-run-preview-link'),
+                                  onPressed: () =>
+                                      context.push('/dev/first-run-preview'),
+                                  child: const Text(
+                                    'Vista previa: primer uso (dev)',
+                                    style: TextStyle(
+                                      color: StartupColors.textMuted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
-                          const SizedBox(height: AsSpacing.x6),
-                          AsPrimaryButton(
-                            label: loading ? 'Validando…' : 'Continuar',
-                            onPressed: loading ? null : submit,
-                          ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+            const Positioned(left: 24, bottom: 24, child: StartupAiBadge()),
+          ],
+        ),
       ),
     );
   }
+
+  Widget _passwordTab(bool loading) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      StartupField(
+        fieldKey: const Key('login-identifier'),
+        label: 'Usuario',
+        controller: identifier,
+        hintText: 'usuario',
+        autofillHints: const [AutofillHints.username],
+        enabled: !loading,
+      ),
+      const SizedBox(height: 12),
+      StartupPasswordField(
+        fieldKey: const Key('login-password'),
+        label: 'Contraseña',
+        controller: password,
+        enabled: !loading,
+        onSubmitted: (_) => submit(),
+      ),
+    ],
+  );
+
+  Widget _pinTab() => Column(
+    children: [
+      const Text(
+        'Ingresa tu PIN de 4 dígitos',
+        style: TextStyle(fontSize: 13, color: StartupColors.textSecondary),
+      ),
+      const SizedBox(height: 12),
+      StartupPinDots(filled: pinBuffer.length),
+      const SizedBox(height: 16),
+      StartupPinKeypad(
+        onDigit: _pinDigit,
+        onBackspace: _pinBackspace,
+        onOk: _pinOk,
+      ),
+    ],
+  );
+
+  Widget _qrTab() => Column(
+    children: [
+      const StartupQrFrame(),
+      const SizedBox(height: 12),
+      const Text(
+        'Escanea tu código QR personal\ncon el lector de la caja',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, color: StartupColors.textSecondary),
+      ),
+      const SizedBox(height: 12),
+      StartupField(
+        label: 'Código',
+        controller: qrCode,
+        hintText: 'O escribe el código QR...',
+        onSubmitted: (_) => StartupToast.show(
+          context,
+          'El acceso por QR estará disponible cuando su backend esté '
+          'conectado.',
+        ),
+      ),
+    ],
+  );
 }
 
 class CompanySelectionScreen extends StatelessWidget {

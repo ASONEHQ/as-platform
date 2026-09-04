@@ -39,11 +39,38 @@ abstract final class AsRadius {
   static const pill = 999.0;
 }
 
+/// Durations sourced directly from the canonical HTML's own CSS
+/// `transition`/`animation` rules (TASK 12.2G) — cited per constant.
 abstract final class AsMotion {
+  /// Generic hover/press/focus transitions: `transition:.12s` (buttons,
+  /// icons, inputs, sidebar items throughout the HTML).
   static const fast = Duration(milliseconds: 120);
   static const normal = Duration(milliseconds: 220);
   static const slow = Duration(milliseconds: 360);
   static const easing = Curves.easeOutCubic;
+
+  /// `.sidebar{transition:width .18s ease}` — rail↔expanded width change.
+  static const sidebarWidth = Duration(milliseconds: 180);
+
+  /// `.sb-group-body{transition:max-height .2s ease}` — accordion
+  /// group open/close.
+  static const accordion = Duration(milliseconds: 200);
+
+  /// `.tab-pane.active{animation:pgFade .15s ease}` — tab content switch.
+  static const tabFade = Duration(milliseconds: 150);
+
+  /// `.modal{animation:slideUp .25s ease}` — modal/card entrance
+  /// (`from{transform:translateY(30px);opacity:0}`).
+  static const modalEntrance = Duration(milliseconds: 250);
+
+  /// Returns [duration] unless the platform/user requests reduced
+  /// motion (`MediaQuery.disableAnimations`), in which case animations
+  /// resolve instantly — every animated widget in this app should route
+  /// its duration through this helper rather than using a raw constant.
+  static Duration resolve(BuildContext context, Duration duration) =>
+      MediaQuery.maybeOf(context)?.disableAnimations ?? false
+      ? Duration.zero
+      : duration;
 }
 
 abstract final class AsBreakpoints {

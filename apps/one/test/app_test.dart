@@ -34,9 +34,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Bienvenido'), findsOneWidget);
+      expect(find.text('Iniciar sesión'), findsOneWidget);
       expect(find.byKey(const Key('login-identifier')), findsOneWidget);
-      expect(find.text('Continuar'), findsOneWidget);
+      expect(find.text('Entrar'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   }
@@ -59,6 +59,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Dashboard'), findsWidgets);
     expect(find.text('Sucursal Centro'), findsWidgets);
-    expect(find.text('Sesión conectada'), findsOneWidget);
+    // The rail starts collapsed (matching the canonical `.sidebar` with no
+    // `.expanded` class by default) — expand it via the hamburger to see
+    // the brand row's online indicator.
+    await tester.tap(find.byKey(const Key('pos-hamburger')));
+    await tester.pumpAndSettle();
+    expect(find.text('En línea'), findsOneWidget);
   });
 }

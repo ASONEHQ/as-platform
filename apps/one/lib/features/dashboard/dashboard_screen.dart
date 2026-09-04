@@ -39,7 +39,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return PosShell(
       context: current,
       controller: controller!,
+      salesGateway: PlatformScope.of(context).posSalesGateway,
+      paymentsGateway: PlatformScope.of(context).posPaymentsGateway,
+      cashGateway: PlatformScope.of(context).posCashGateway,
       onLogout: auth.logout,
+      // TASK: POS branch-context fix — the exact same canonical
+      // session-branch switch the login-time `BranchSelectionScreen`
+      // already uses (`AuthController.selectBranch`), threaded down as a
+      // callback rather than importing `AuthScope` into `pos_shell.dart`
+      // — matches how `onLogout` is already passed, keeps the POS shell
+      // decoupled from the auth-state layer, and avoids a circular
+      // import (`app.dart` → router → `dashboard_screen.dart` →
+      // `pos_shell.dart`).
+      onBranchSelected: auth.selectBranch,
     );
   }
 }

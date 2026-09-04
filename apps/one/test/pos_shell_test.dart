@@ -1,10 +1,16 @@
 import 'dart:async';
 
+import 'package:as_one/core/errors/app_error.dart';
+import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_models.dart';
 import 'package:as_one/features/pos/pos_navigation.dart';
+import 'package:as_one/features/pos/pos_payments_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
 import 'package:as_one/features/pos/pos_read_gateway.dart';
+import 'package:as_one/features/pos/pos_receipt.dart';
+import 'package:as_one/features/pos/pos_sales_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,7 +19,10 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   test('keeps all 25 canonical modules in their inspected order', () {
     expect(PosModule.values, hasLength(25));
-    expect(PosModule.values.first.label, 'Dashboard');
+    // Matches the canonical `.sb-item[data-nav]` order: Ventas first
+    // (Punto de Venta), Sistema last (Configuración) — not an
+    // app-specific "Inicio first" ordering.
+    expect(PosModule.values.first.label, 'Punto de Venta');
     expect(PosModule.values.last.label, 'Configuración');
     expect(PosModule.values.map((item) => item.label).toSet(), hasLength(25));
   });
@@ -33,6 +42,10 @@ void main() {
 
   testWidgets('shows unsupported modules as Coming soon', (tester) async {
     await _pump(tester, const Size(1440, 900));
+    // Cafetería is already in Ventas, opened by the Punto de Venta
+    // navigation this helper performs — reused here purely to land on an
+    // open group before switching modules within it.
+    await _navigateToPos(tester);
     await tester.tap(find.byKey(const Key('nav-cafeteria')));
     await tester.pumpAndSettle();
     expect(find.text('Coming soon'), findsOneWidget);
@@ -43,6 +56,8 @@ void main() {
     tester,
   ) async {
     await _pump(tester, const Size(1440, 900));
+    await tester.tap(find.byKey(const Key('nav-group-Catálogo')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nav-products')));
     await tester.pumpAndSettle();
     expect(find.text('Producto real'), findsOneWidget);
@@ -58,13 +73,12 @@ void main() {
     testWidgets('renders the POS shell with category strip, search, grid '
         'and an empty persistent ticket panel', (tester) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.byKey(const Key('pos-category-strip')), findsOneWidget);
       expect(find.byKey(const Key('pos-sale-search')), findsOneWidget);
       expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
       expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
-      expect(find.text('El ticket está vacío'), findsOneWidget);
+      expect(find.textContaining('Selecciona productos'), findsOneWidget);
       expect(find.text('Coming soon'), findsNothing);
       expect(tester.takeException(), isNull);
     });
@@ -73,8 +87,7 @@ void main() {
       tester,
     ) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
       expect(find.byKey(const Key('pos-product-product-2')), findsOneWidget);
 
@@ -91,8 +104,7 @@ void main() {
 
     testWidgets('product search filters the read-only grid', (tester) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       await tester.enterText(
         find.byKey(const Key('pos-sale-search')),
         'refresco',
@@ -102,20 +114,18 @@ void main() {
       expect(find.byKey(const Key('pos-product-product-1')), findsNothing);
     });
 
-    testWidgets('shows an out-of-stock badge only for zero-quantity '
+    testWidgets('shows an out-of-stock indicator only for zero-quantity '
         'balances matched to a product default variant', (tester) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
-      final outOfStockCard = tester.widget<Opacity>(
-        find.byKey(const Key('pos-product-product-3')),
+      await _navigateToPos(tester);
+      expect(find.text('Sin existencia'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('pos-product-product-1')),
+          matching: find.text('Sin existencia'),
+        ),
+        findsNothing,
       );
-      expect(outOfStockCard.opacity, lessThan(1));
-      expect(find.text('Agotado'), findsOneWidget);
-      final inStockCard = tester.widget<Opacity>(
-        find.byKey(const Key('pos-product-product-1')),
-      );
-      expect(inStockCard.opacity, 1);
     });
 
     testWidgets('product grid shows a loading state while products load', (
@@ -129,11 +139,19 @@ void main() {
           home: PosShell(
             context: _context,
             controller: PosReadController(const _SlowPosReadGateway()),
+            salesGateway: _FakeSalesGateway(),
+            paymentsGateway: _FakePaymentsGateway(),
+            cashGateway: const EmptyPosCashGateway(),
             onLogout: () {},
+            onBranchSelected: _noopBranchSelected,
           ),
         ),
       );
       await tester.pump();
+      await tester.tap(find.byKey(const Key('nav-group-Ventas')));
+      // Settle the accordion's own open animation (unrelated to the
+      // pending product load below) before tapping the now-visible item.
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('nav-pos')));
       await tester.pump();
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
@@ -150,13 +168,16 @@ void main() {
           home: PosShell(
             context: _context,
             controller: PosReadController(const _EmptyPosReadGateway()),
+            salesGateway: _FakeSalesGateway(),
+            paymentsGateway: _FakePaymentsGateway(),
+            cashGateway: const EmptyPosCashGateway(),
             onLogout: () {},
+            onBranchSelected: _noopBranchSelected,
           ),
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.text('No hay productos disponibles.'), findsOneWidget);
     });
 
@@ -170,13 +191,16 @@ void main() {
           home: PosShell(
             context: _context,
             controller: PosReadController(const _FailingPosReadGateway()),
+            salesGateway: _FakeSalesGateway(),
+            paymentsGateway: _FakePaymentsGateway(),
+            cashGateway: const EmptyPosCashGateway(),
             onLogout: () {},
+            onBranchSelected: _noopBranchSelected,
           ),
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.text('No fue posible cargar'), findsOneWidget);
       expect(find.text('Reintentar'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -185,22 +209,20 @@ void main() {
     testWidgets('collapses the ticket panel into a bar below the reference '
         'breakpoint and keeps it empty', (tester) async {
       await _pump(tester, const Size(768, 1024));
-      await tester.tap(find.byTooltip('Abrir navegación'));
+      await tester.tap(find.byKey(const Key('pos-hamburger')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
       expect(find.byKey(const Key('pos-ticket-bar')), findsOneWidget);
       await tester.tap(find.byKey(const Key('pos-ticket-bar')));
       await tester.pumpAndSettle();
-      expect(find.text('El ticket está vacío'), findsOneWidget);
+      expect(find.textContaining('Selecciona productos'), findsOneWidget);
     });
 
     testWidgets('shows the persistent ticket panel at the wide reference '
         'breakpoint', (tester) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
       expect(find.byKey(const Key('pos-ticket-bar')), findsNothing);
     });
@@ -209,14 +231,161 @@ void main() {
       tester,
     ) async {
       await _pump(tester, const Size(1440, 900));
-      await tester.tap(find.byKey(const Key('nav-pos')));
-      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
       await simulateKeyDownEvent(LogicalKeyboardKey.f2);
       await tester.pump();
       final field = tester.widget<TextField>(
         find.byKey(const Key('pos-sale-search')),
       );
       expect(field.focusNode?.hasFocus, isTrue);
+    });
+
+    testWidgets('renders the canonical mode switch, search actions, ticket '
+        'header, and transactional chrome as visual placeholders '
+        '(TASK 12.2C)', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      expect(find.byKey(const Key('pos-mode-cajero')), findsOneWidget);
+      expect(find.byKey(const Key('pos-mode-cliente')), findsOneWidget);
+      expect(find.text('CAJERO'), findsOneWidget);
+      expect(find.text('CLIENTE'), findsOneWidget);
+
+      expect(find.byTooltip('Vincular cliente (F3)'), findsOneWidget);
+      expect(find.byTooltip('Reimprimir ticket (F4)'), findsOneWidget);
+      expect(find.byTooltip('Suspender venta (F5)'), findsOneWidget);
+      expect(find.byTooltip('Cancelar venta (F6)'), findsOneWidget);
+
+      expect(find.text('Ticket #1'), findsOneWidget);
+      expect(find.text('Producto'), findsOneWidget);
+      expect(find.text('Unidades'), findsOneWidget);
+
+      expect(find.text('Subtotal'), findsOneWidget);
+      expect(find.text('IVA incluido'), findsOneWidget);
+      // No product was tapped — the ticket is genuinely empty here.
+      expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+      expect(find.text('Efectivo'), findsOneWidget);
+      expect(find.text('Tarjeta'), findsOneWidget);
+      expect(find.text('Transfer'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('clearly marks non-functional controls as read-only on tap '
+        'instead of performing any transaction (TASK 12.2C/12.3)', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      // TASK 12.4A.1: Cobrar now really tries to create a sale — but this
+      // ticket is genuinely empty, so it must say so honestly rather than
+      // submit an empty (or fabricated) request.
+      await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+      await tester.pump();
+      expect(
+        find.text('Agrega al menos un producto al ticket.'),
+        findsOneWidget,
+        reason: 'An empty ticket must never reach the sale-creation gateway.',
+      );
+      await tester.pumpAndSettle();
+
+      // The payment-method grid, coupon/cash fields, and the ticket
+      // header's Nota/Limpiar actions are untouched by TASK 12.3 — still
+      // visually faithful, still wired to the generic read-only notice.
+      await tester.tap(find.byTooltip('Nota de venta'));
+      // `hideCurrentSnackBar()` animates the previous SnackBar out before
+      // the new one queues in — settle, not just one frame, so the
+      // replacement is visible.
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Modo de solo lectura: disponible'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('CLIENTE mode swaps in a read-only preview of the same ticket, '
+        'card-payment only, without switching away from the shell '
+        '(TASK 12.3 addendum)', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+      expect(find.byKey(const Key('pos-cliente-ticket-preview')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      // TASK 12.3B: CLIENTE mode is a dedicated locked surface, not a
+      // navigation state inside the admin shell — the sidebar/topbar
+      // are gone entirely (not merely hidden), replaced by the
+      // dedicated `_ClienteLockedShell`.
+      expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-preview')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+      expect(find.byKey(const Key('pos-sidebar')), findsNothing);
+      expect(find.byKey(const Key('pos-topbar')), findsNothing);
+
+      // CLIENTE never exposes cashier-only controls.
+      expect(find.byKey(const Key('pos-ticket-coupon-input')), findsNothing);
+      expect(find.byKey(const Key('pos-ticket-cash-input')), findsNothing);
+      expect(find.text('Efectivo'), findsNothing);
+      expect(find.text('Tarjeta'), findsNothing);
+      expect(find.text('Transfer'), findsNothing);
+
+      // The single card-payment action — TASK 12.4A.1: it really tries to
+      // create a sale now, but this ticket is empty, so it must say so
+      // honestly rather than submit an empty (or fabricated) request.
+      expect(find.byKey(const Key('pos-cliente-card-payment')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+      await tester.pump();
+      expect(
+        find.text('Agrega al menos un producto al ticket.'),
+        findsOneWidget,
+        reason: 'An empty ticket must never reach the sale-creation gateway.',
+      );
+
+      // Switching back to CAJERO now requires authorization (TASK
+      // 12.3A) — `_context` carries `sale.create`, so confirming the
+      // dialog restores the full panel over the exact same session, not
+      // a reset one (see the shared-state test below).
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final size in const [
+      Size(1024, 768),
+      Size(1440, 900),
+      Size(1920, 1080),
+    ]) {
+      testWidgets('renders the workspace without overflow at '
+          '${size.width.toInt()} px', (tester) async {
+        await _pump(tester, size);
+        await _navigateToPos(tester);
+        expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+        expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('preserves POS proportions and legibility in dark mode', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await tester.tap(find.byKey(const Key('pos-dark-mode-toggle')));
+      await tester.pumpAndSettle();
+      await _navigateToPos(tester);
+      expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+      expect(find.byKey(const Key('pos-category-strip')), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -225,20 +394,2401 @@ void main() {
   ) async {
     await _pump(tester, const Size(390, 844));
     expect(find.byKey(const Key('pos-sidebar')), findsNothing);
-    expect(find.byTooltip('Abrir navegación'), findsOneWidget);
-    await tester.tap(find.byTooltip('Abrir navegación'));
+    final hamburger = find.byKey(const Key('pos-hamburger'));
+    expect(hamburger, findsOneWidget);
+    await tester.tap(hamburger);
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('pos-sidebar')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('toggles the preserved dark theme', (tester) async {
-    await _pump(tester, const Size(1024, 768));
-    expect(find.byTooltip('Usar tema oscuro'), findsOneWidget);
-    await tester.tap(find.byTooltip('Usar tema oscuro'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('Usar tema claro'), findsOneWidget);
+  group('Sale engine (TASK 12.3)', () {
+    testWidgets('tapping a product adds it to the ticket reactively, no manual '
+        'refresh needed', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      expect(find.text('Selecciona productos\npara comenzar'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+
+      expect(find.text('Selecciona productos\npara comenzar'), findsNothing);
+      final line = find.byKey(const Key('pos-ticket-line-product-1'));
+      expect(line, findsOneWidget);
+      // The name appears twice on screen now (product card + ticket
+      // line) — confirm it specifically inside the new ticket line.
+      expect(
+        find.descendant(of: line, matching: find.text('Producto real')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping the same product again merges into the existing line '
+        'instead of duplicating it', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-1')),
+        findsOneWidget,
+        reason: 'Adding the same product twice must merge, not duplicate.',
+      );
+      expect(find.text('2'), findsOneWidget);
+    });
+
+    testWidgets(
+      'quantity buttons increase/decrease the line, removing it at zero',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(
+          find.byKey(const Key('pos-ticket-qty-plus-product-1')),
+        );
+        await tester.pump();
+        expect(find.text('2'), findsOneWidget);
+
+        await tester.tap(
+          find.byKey(const Key('pos-ticket-qty-minus-product-1')),
+        );
+        await tester.pump();
+        expect(find.text('1'), findsOneWidget);
+
+        await tester.tap(
+          find.byKey(const Key('pos-ticket-qty-minus-product-1')),
+        );
+        await tester.pump();
+        expect(
+          find.byKey(const Key('pos-ticket-line-product-1')),
+          findsNothing,
+          reason: 'Decreasing to 0 must remove the line entirely.',
+        );
+        expect(
+          find.text('Selecciona productos\npara comenzar'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('the remove button deletes a line directly', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-product-product-2')));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('pos-ticket-remove-product-1')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('pos-ticket-line-product-1')), findsNothing);
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-2')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('an out-of-stock product cannot be added to the ticket', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      // product-3 (Refresco de cola) has an onHand=0 balance for its
+      // default variant — the fixture's one genuinely out-of-stock item.
+      await tester.tap(find.byKey(const Key('pos-product-product-3')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('pos-ticket-line-product-3')), findsNothing);
+      expect(find.text('Producto sin existencia.'), findsOneWidget);
+    });
+
+    testWidgets(
+      'Subtotal/IVA/Total recompute automatically as the ticket changes',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        // The empty cart starts at an honest $0.00.
+        expect(find.text(r'$0.00'), findsWidgets);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        // TASK 12.3C: product-1 @ $10.00 => $10.00 subtotal, +16% IVA
+        // ($1.60) = $11.60 — a real backend-priced total, not the old
+        // placeholder $0.00.
+        expect(find.textContaining(r'Cobrar — $11.60'), findsOneWidget);
+        await tester.tap(find.byKey(const Key('pos-product-product-2')));
+        await tester.pump();
+        // + product-2 @ $10.00 => $20.00 subtotal, +16% IVA ($3.20) =
+        // $23.20 — proves the totals genuinely recompute, not just render
+        // once.
+        expect(find.textContaining(r'Cobrar — $23.20'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'CAJERO and CLIENTE observe the exact same SaleSession — a change '
+      'made in one is immediately visible in the other, without '
+      'resetting or duplicating the ticket',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+
+        // Build up ticket state in CAJERO.
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-product-product-2')));
+        await tester.pump();
+
+        // Switch to CLIENTE — the same lines/quantities must appear
+        // immediately, not an empty/reset ticket.
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('pos-cliente-ticket-line-product-1')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('pos-cliente-ticket-line-product-2')),
+          findsOneWidget,
+        );
+
+        // Back to CAJERO — authorize the return (TASK 12.3A); still the
+        // same session underneath (quantity survives).
+        await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('pos-ticket-line-product-1')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('pos-ticket-line-product-2')),
+          findsOneWidget,
+        );
+
+        // Remove a line in CAJERO — CLIENTE reflects it without switching
+        // modes again to "refresh".
+        await tester.tap(find.byKey(const Key('pos-ticket-remove-product-2')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('pos-cliente-ticket-line-product-1')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('pos-cliente-ticket-line-product-2')),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
+
+  group(
+    'Cobrar and CLIENTE card payment create a real sale (TASK 12.4A.1)',
+    () {
+      testWidgets('Cobrar submits the ticket to the backend and reports the '
+          'honest, non-final result', (tester) async {
+        final gateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-1',
+            saleNumber: 'SALE-abc123',
+            status: 'pending_payment',
+            total: '46.4000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: gateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        // TASK 12.5A: Efectivo is now the real default — select Tarjeta so
+        // Cobrar still exercises the card/terminal path this test covers.
+        await tester.tap(find.byKey(const Key('pos-pay-card')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(gateway.calls, hasLength(1));
+        expect(gateway.calls.single.branchId, 'branch-id');
+        expect(gateway.calls.single.items, hasLength(1));
+        expect(gateway.calls.single.items.single.productId, 'product-1');
+        // Never a fabricated approval or terminal result — the backend's
+        // own sale number is surfaced, and the message stops at "prepared
+        // for payment," never "paid" or "approved."
+        expect(
+          find.text(
+            'Venta SALE-abc123 preparada para pago — '
+            'terminal no configurada.',
+          ),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a rejected sale creation surfaces the real backend error, '
+          'never a fake success', (tester) async {
+        final gateway = _FakeSalesGateway(
+          failure: const ApiException(
+            AppFailure(
+              AppErrorKind.validation,
+              'El producto ya no está disponible.',
+            ),
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: gateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        // TASK 12.5A: Efectivo is now the real default — select Tarjeta so
+        // Cobrar still exercises the card/terminal path this test covers.
+        await tester.tap(find.byKey(const Key('pos-pay-card')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(gateway.calls, hasLength(1));
+        expect(find.text('El producto ya no está disponible.'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('the CLIENTE card-payment button submits the same shared '
+          'SaleSession and reports the same honest result', (tester) async {
+        final gateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-2',
+            saleNumber: 'SALE-def456',
+            status: 'pending_payment',
+            total: '46.4000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: gateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(gateway.calls, hasLength(1));
+        expect(gateway.calls.single.items.single.productId, 'product-1');
+        expect(
+          find.text(
+            'Venta SALE-def456 preparada para pago — '
+            'terminal no configurada.',
+          ),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      });
+    },
+  );
+
+  group('Mercado Pago Point dispatch and polling (TASK 12.4B.1)', () {
+    // Mirrors `_paymentPollInterval` in pos_shell.dart — a private
+    // top-level const, so restated here rather than imported.
+    const pollInterval = Duration(seconds: 2);
+
+    testWidgets('a configured Point terminal triggers a real card_terminal '
+        'payment and polls through honest states to "Pago aprobado" — '
+        'never approved before the backend says so', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-mp-1',
+          saleNumber: 'SALE-mp1',
+          status: 'pending_payment',
+          total: '46.4000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        terminals: const [
+          PosPaymentTerminal(
+            id: 'terminal-1',
+            provider: 'mercado_pago',
+            status: 'active',
+          ),
+        ],
+        createResult: const PosPaymentStatus(
+          id: 'payment-1',
+          status: 'pending',
+          attempts: [PosPaymentAttempt(id: 'attempt-1', status: 'created')],
+        ),
+        pollResults: const [
+          PosPaymentStatus(
+            id: 'payment-1',
+            status: 'pending',
+            attempts: [
+              PosPaymentAttempt(id: 'attempt-1', status: 'awaiting_terminal'),
+            ],
+          ),
+          PosPaymentStatus(
+            id: 'payment-1',
+            status: 'pending',
+            attempts: [
+              PosPaymentAttempt(id: 'attempt-1', status: 'processing'),
+            ],
+          ),
+          PosPaymentStatus(
+            id: 'payment-1',
+            status: 'captured',
+            attempts: [PosPaymentAttempt(id: 'attempt-1', status: 'approved')],
+          ),
+        ],
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+
+      // TASK 12.5A: Efectivo is now the real default — select Tarjeta so
+      // Cobrar still exercises the card/terminal path this test covers.
+      await tester.tap(find.byKey(const Key('pos-pay-card')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+      // Sale creation, terminal discovery, and payment creation all
+      // resolve without a real timer — a couple of empty pumps flush
+      // that microtask chain.
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Esperando pago en terminal'), findsOneWidget);
+      expect(find.text('Pago aprobado'), findsNothing);
+
+      await tester.pump(pollInterval); // poll 1: awaiting_terminal
+      expect(find.text('Esperando pago en terminal'), findsOneWidget);
+
+      await tester.pump(pollInterval); // poll 2: processing
+      expect(find.text('Procesando'), findsOneWidget);
+
+      await tester.pump(pollInterval); // poll 3: approved — loop exits
+      await tester.pumpAndSettle();
+
+      expect(paymentsGateway.statusCalls, hasLength(3));
+      expect(find.text('Pago aprobado — venta SALE-mp1.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a declined payment is reported honestly, never as approved', (
+      tester,
+    ) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-mp-2',
+          saleNumber: 'SALE-mp2',
+          status: 'pending_payment',
+          total: '46.4000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        terminals: const [
+          PosPaymentTerminal(
+            id: 'terminal-1',
+            provider: 'mercado_pago',
+            status: 'active',
+          ),
+        ],
+        createResult: const PosPaymentStatus(
+          id: 'payment-2',
+          status: 'pending',
+          attempts: [PosPaymentAttempt(id: 'attempt-2', status: 'created')],
+        ),
+        pollResults: const [
+          PosPaymentStatus(
+            id: 'payment-2',
+            status: 'failed',
+            attempts: [
+              PosPaymentAttempt(
+                id: 'attempt-2',
+                status: 'declined',
+                declineReason: 'cc_rejected_insufficient_amount',
+              ),
+            ],
+          ),
+        ],
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+
+      // TASK 12.5A: Efectivo is now the real default — select Tarjeta so
+      // Cobrar still exercises the card/terminal path this test covers.
+      await tester.tap(find.byKey(const Key('pos-pay-card')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(pollInterval);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Pago aprobado — venta SALE-mp2.'), findsNothing);
+      expect(find.text('Pago no completado (Pago rechazado).'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the CLIENTE card button follows the exact same dispatch/poll '
+        'flow as Cobrar', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-mp-3',
+          saleNumber: 'SALE-mp3',
+          status: 'pending_payment',
+          total: '46.4000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        terminals: const [
+          PosPaymentTerminal(
+            id: 'terminal-1',
+            provider: 'mercado_pago',
+            status: 'assigned',
+          ),
+        ],
+        createResult: const PosPaymentStatus(
+          id: 'payment-3',
+          status: 'captured',
+          attempts: [PosPaymentAttempt(id: 'attempt-3', status: 'approved')],
+        ),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Pago aprobado — venta SALE-mp3.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Cash payment and sale completion (TASK 12.5A)', () {
+    testWidgets(
+      'REGRESSION (visual QA): tapping the exact visible CAJERO "Cobrar — \$X.XX" button '
+      'with Efectivo selected reaches the real cash flow — never the stale TASK 12.4 '
+      'read-only handler/"Disponible en TASK 12.4" notice',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-regression-1',
+            saleNumber: 'SALE-regression1',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        // The exact visible control: `_PosCobrarButton`'s own `InkWell`,
+        // keyed `pos-ticket-cobrar`, showing the real live total (never a
+        // static/placeholder label). Efectivo is confirmed pre-selected by
+        // a separate test below — this one only proves what tapping this
+        // exact button actually does.
+        final cobrarButton = find.byKey(const Key('pos-ticket-cobrar'));
+        expect(cobrarButton, findsOneWidget);
+        expect(find.textContaining('Cobrar — \$'), findsOneWidget);
+        expect(find.byKey(const Key('pos-pay-cash')), findsOneWidget);
+
+        await tester.tap(cobrarButton);
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // The stale TASK 12.4 inert notice must never appear — neither
+        // its own literal text nor the generic `_showReadOnlyNotice`
+        // fallback every other still-inert V1-faithful control shows.
+        expect(find.text('Disponible en TASK 12.4'), findsNothing);
+        expect(
+          find.textContaining('Modo de solo lectura: disponible'),
+          findsNothing,
+        );
+        // Instead, the real TASK 12.5A cash dialog is open, showing the
+        // authoritative backend total — proof the visible button reached
+        // `_submitCashSaleForPayment` → `_CashPaymentDialog`, not the old
+        // `_showReadOnlyNotice` handler.
+        expect(salesGateway.calls, hasLength(1));
+        expect(
+          find.text('Pago en efectivo — venta SALE-regression1'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pos-cash-dialog-input')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('Efectivo is shown and pre-selected in CAJERO; the cash '
+        'option is entirely absent in CLIENTE', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      expect(find.byKey(const Key('pos-pay-cash')), findsOneWidget);
+      expect(find.byKey(const Key('pos-pay-card')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-pay-cash')), findsNothing);
+      expect(find.byKey(const Key('pos-cash-dialog-input')), findsNothing);
+      expect(find.text('Efectivo'), findsNothing);
+    });
+
+    testWidgets('tapping Cobrar with Efectivo selected creates the sale and '
+        'opens the cash dialog showing the authoritative total — never '
+        'completing the sale just by opening it', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-1',
+          saleNumber: 'SALE-cash1',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway();
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      expect(salesGateway.calls, hasLength(1));
+      expect(find.text('Pago en efectivo — venta SALE-cash1'), findsOneWidget);
+      expect(find.text(r'$58.00'), findsOneWidget);
+      expect(paymentsGateway.cashCalls, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an insufficient tender blocks confirmation and shows how '
+        'much remains', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-2',
+          saleNumber: 'SALE-cash2',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway();
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '50',
+      );
+      await tester.pump();
+
+      expect(find.text('Faltan \$8.00'), findsOneWidget);
+      final confirmButton = tester.widget<FilledButton>(
+        find.byKey(const Key('pos-cash-dialog-confirm')),
+      );
+      expect(confirmButton.onPressed, isNull);
+
+      await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+      await tester.pump();
+      expect(paymentsGateway.cashCalls, isEmpty);
+    });
+
+    testWidgets('an exact tender shows zero change and confirms the exact '
+        'cash payment', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-3',
+          saleNumber: 'SALE-cash3',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        cashResult: const PosCashPaymentResult(
+          paymentId: 'payment-cash-3',
+          status: 'captured',
+          tenderedAmount: '58.0000',
+          changeAmount: '0.0000',
+          saleId: 'sale-cash-3',
+          saleNumber: 'SALE-cash3',
+          saleStatus: 'completed',
+        ),
+      );
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '58',
+      );
+      await tester.pump();
+      expect(find.text(r'$0.00'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(paymentsGateway.cashCalls, hasLength(1));
+      expect(paymentsGateway.cashCalls.single.saleId, 'sale-cash-3');
+      expect(paymentsGateway.cashCalls.single.tenderedAmount, '58.0000');
+      // TASK 12.5B: the success/receipt dialog — folio/total/cambio from
+      // the backend's own cash-payment response, not a plain SnackBar.
+      // Scoped to `Dialog` since the (now-empty) ticket panel behind it
+      // also legitimately shows "$0.00" for its own zeroed totals.
+      expect(find.text('Venta completada'), findsOneWidget);
+      expect(find.text('SALE-cash3'), findsOneWidget);
+      // At least one "$58.00" inside the dialog (Total, and — once the
+      // default fixture receipt loads — its own matching item/total rows).
+      expect(
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.text(r'$58.00'),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(of: find.byType(Dialog), matching: find.text(r'$0.00')),
+        findsOneWidget,
+      );
+      // Never fakes the card/terminal path.
+      expect(paymentsGateway.statusCalls, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an over-tender shows the exact backend-confirmed change and '
+        'never charges the tendered amount', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-4',
+          saleNumber: 'SALE-cash4',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        cashResult: const PosCashPaymentResult(
+          paymentId: 'payment-cash-4',
+          status: 'captured',
+          tenderedAmount: '100.0000',
+          changeAmount: '42.0000',
+          saleId: 'sale-cash-4',
+          saleNumber: 'SALE-cash4',
+          saleStatus: 'completed',
+        ),
+      );
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      // Live client-side preview, before confirmation.
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '100',
+      );
+      await tester.pump();
+      expect(find.text(r'$42.00'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      // The backend's own authoritative tendered/change is what the
+      // success/receipt dialog reports — worked example from the task spec.
+      expect(paymentsGateway.cashCalls.single.tenderedAmount, '100.0000');
+      expect(find.text('Venta completada'), findsOneWidget);
+      expect(find.text('SALE-cash4'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.text(r'$42.00'),
+        ),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a backend cash failure keeps the dialog open, shows the '
+        'real error, and leaves the ticket completely untouched', (
+      tester,
+    ) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-5',
+          saleNumber: 'SALE-cash5',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        cashFailure: const ApiException(
+          AppFailure(AppErrorKind.validation, 'La venta ya fue completada.'),
+        ),
+      );
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '58',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.text('La venta ya fue completada.'), findsOneWidget);
+      // The dialog is still open — no fabricated success, no auto-dismiss.
+      expect(find.byKey(const Key('pos-cash-dialog-input')), findsOneWidget);
+      // Close it and confirm the ticket line survived untouched — the
+      // Cobrar button still reports a real, non-zero total (SaleSession
+      // was never cleared on this failure path).
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining(r'Cobrar — $0.00'), findsNothing);
+      expect(find.byKey(const Key('pos-ticket-cobrar')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('cancelling the dialog makes no cash-payment call and '
+        'leaves the ticket intact', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-6',
+          saleNumber: 'SALE-cash6',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway();
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '100',
+      );
+      await tester.pump();
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+
+      expect(paymentsGateway.cashCalls, isEmpty);
+      expect(find.byKey(const Key('pos-cash-dialog-input')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a confirmed cash sale resets SaleSession — the ticket is '
+        'empty and ready for "Nueva venta"', (tester) async {
+      final salesGateway = _FakeSalesGateway(
+        result: const PosSaleCreated(
+          id: 'sale-cash-7',
+          saleNumber: 'SALE-cash7',
+          status: 'pending_payment',
+          total: '58.0000',
+        ),
+      );
+      final paymentsGateway = _FakePaymentsGateway(
+        cashResult: const PosCashPaymentResult(
+          paymentId: 'payment-cash-7',
+          status: 'captured',
+          tenderedAmount: '58.0000',
+          changeAmount: '0.0000',
+          saleId: 'sale-cash-7',
+          saleNumber: 'SALE-cash7',
+          saleStatus: 'completed',
+        ),
+      );
+      await _addProductAndOpenCashDialog(
+        tester,
+        salesGateway: salesGateway,
+        paymentsGateway: paymentsGateway,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-cash-dialog-input')),
+        '58',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      // The *local* ticket total (from the real product fixture, not the
+      // fake sale total above) goes back to zero — SaleSession was reset
+      // immediately, even while the success/receipt dialog is still open.
+      expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+      // The dialog itself stays up until "Nueva venta" — never
+      // auto-dismissed, never dismissible by tapping outside it.
+      expect(find.text('Venta completada'), findsOneWidget);
+      await tester.tapAt(const Offset(5, 5)); // barrier tap — must be a no-op.
+      await tester.pump();
+      expect(find.text('Venta completada'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-receipt-new-sale')));
+      await tester.pumpAndSettle();
+      expect(find.text('Venta completada'), findsNothing);
+    });
+  });
+
+  group('Sale receipt and printing (TASK 12.5B)', () {
+    testWidgets(
+      'the completed-sale dialog loads the canonical receipt from the backend — folio, items, '
+      'subtotal/IVA/total, efectivo recibido, and cambio — never from SaleSession',
+      (tester) async {
+        final receipt = PosReceipt(
+          sale: PosReceiptSale(
+            id: 'sale-receipt-1',
+            saleNumber: 'SALE-cash3',
+            status: 'completed',
+            currencyCode: 'MXN',
+            branchId: 'branch-id',
+            occurredAt: DateTime.utc(2026, 8, 1),
+            completedAt: DateTime.utc(2026, 8, 1, 0, 5),
+            subtotal: '100.0000',
+            discountTotal: '0.0000',
+            taxTotal: '16.0000',
+            total: '116.0000',
+          ),
+          business: const PosReceiptBusiness(
+            companyName: 'AS ONE Fixture Co.',
+            branchName: 'Main',
+            branchAddress: null,
+          ),
+          cashier: const PosReceiptCashier(
+            id: 'user-id',
+            displayName: 'Cash Ier',
+          ),
+          items: const [
+            PosReceiptItem(
+              lineNumber: 1,
+              nameSnapshot: 'Fixture Product',
+              skuSnapshot: 'SKU-1',
+              quantity: '2.000000',
+              unitPrice: '50.0000',
+              discountTotal: '0.0000',
+              taxTotal: '16.0000',
+              lineTotal: '116.0000',
+            ),
+          ],
+          payments: const [
+            PosReceiptPayment(
+              id: 'payment-id',
+              paymentMethod: 'cash',
+              status: 'captured',
+              amount: '116.0000',
+              currencyCode: 'MXN',
+              capturedAt: null,
+              tenderedAmount: '120.0000',
+              changeAmount: '4.0000',
+              provider: null,
+              terminalId: null,
+              providerReference: null,
+            ),
+          ],
+        );
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-receipt-1',
+            saleNumber: 'SALE-cash3',
+            status: 'pending_payment',
+            total: '116.0000',
+          ),
+          receiptResult: receipt,
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-cash-3',
+            status: 'captured',
+            tenderedAmount: '120.0000',
+            changeAmount: '4.0000',
+            saleId: 'sale-receipt-1',
+            saleNumber: 'SALE-cash3',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '120',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // The full receipt is fetched by sale id — proof the dialog reads
+        // persisted backend data, not `SaleSession` (which is already
+        // cleared by this point).
+        expect(salesGateway.receiptCalls, ['sale-receipt-1']);
+        expect(find.textContaining('AS ONE Fixture Co.'), findsOneWidget);
+        // Item name + quantity suffix, and the receipt's own real
+        // subtotal/IVA/total/efectivo-recibido/cambio — all read straight
+        // off the fetched `PosReceipt`, never re-derived.
+        expect(find.textContaining('Fixture Product'), findsOneWidget);
+        expect(find.textContaining('x2'), findsOneWidget);
+        expect(find.textContaining(r'$100.00'), findsWidgets); // subtotal
+        expect(find.textContaining(r'$16.00'), findsWidgets); // IVA
+        expect(
+          find.textContaining(r'$120.00'),
+          findsWidgets,
+        ); // efectivo recibido
+        expect(find.textContaining(r'$4.00'), findsWidgets); // cambio
+        expect(
+          find.descendant(
+            of: find.byType(Dialog),
+            matching: find.text(r'$50.0000'),
+          ),
+          findsNothing, // never the raw 4-decimal wire string — always formatted.
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      '"Imprimir ticket" is available once the receipt loads and honestly reports a '
+      'blocked print window rather than pretending to print',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-receipt-2',
+            saleNumber: 'SALE-cash3',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-cash-2',
+            status: 'captured',
+            tenderedAmount: '58.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-receipt-2',
+            saleNumber: 'SALE-cash3',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '58',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        final printButton = find.byKey(const Key('pos-receipt-print'));
+        expect(printButton, findsOneWidget);
+        await tester.tap(printButton);
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // `flutter test` runs on the Dart VM, where `openReceiptPrintWindow`
+        // (the `receipt_print_stub.dart` branch) always returns `false` —
+        // exactly the same honest "could not open a print window" outcome a
+        // real popup-blocked browser would report. Never a silent success.
+        expect(
+          find.textContaining('El navegador bloqueó la ventana de impresión'),
+          findsOneWidget,
+        );
+        // The completed-sale state is completely unaffected by a print
+        // failure — the sale was already done before printing was attempted.
+        expect(find.text('Venta completada'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a backend receipt-fetch failure is shown honestly, with a retry, and never implies '
+      'the sale itself failed',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-receipt-3',
+            saleNumber: 'SALE-cash3',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+          receiptFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.unavailable,
+              'No se pudo cargar el recibo.',
+            ),
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-cash-1',
+            status: 'captured',
+            tenderedAmount: '58.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-receipt-3',
+            saleNumber: 'SALE-cash3',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '58',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // The sale itself is still honestly reported as completed — a
+        // receipt-fetch failure is a separate, retryable concern.
+        expect(find.text('Venta completada'), findsOneWidget);
+        expect(find.text('SALE-cash3'), findsOneWidget);
+        expect(find.text('No se pudo cargar el recibo.'), findsOneWidget);
+        final printButton = tester.widget<OutlinedButton>(
+          find.byKey(const Key('pos-receipt-print')),
+        );
+        expect(printButton.onPressed, isNull); // nothing to print yet.
+
+        await tester.tap(find.byKey(const Key('pos-receipt-retry')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+        // The retry hits the same failing fake gateway again — still an
+        // honest error, never a silently fabricated success.
+        expect(find.text('No se pudo cargar el recibo.'), findsOneWidget);
+        expect(salesGateway.receiptCalls, hasLength(2));
+
+        // "Nueva venta" still works even though the receipt never loaded.
+        await tester.tap(find.byKey(const Key('pos-receipt-new-sale')));
+        await tester.pumpAndSettle();
+        expect(find.text('Venta completada'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CLIENTE never reaches a completed-sale receipt today — its card path stops at honest '
+      '"terminal no configurada" (Mercado Pago remains paused), so no receipt dialog exists there',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-cliente-1',
+            saleNumber: 'SALE-cliente1',
+            status: 'pending_payment',
+            total: '46.4000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // No receipt gateway call, no receipt dialog — see ADR-0012's
+        // CLIENTE note: a receipt/print UI for a customer-facing kiosk is
+        // deliberately out of scope until Mercado Pago resumes and a real
+        // completed card sale from CLIENTE is even possible.
+        expect(salesGateway.receiptCalls, isEmpty);
+        expect(find.text('Venta completada'), findsNothing);
+        expect(find.byKey(const Key('pos-receipt-print')), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('Completed-sale dialog receipt polish (TASK 12.5B.1)', () {
+    // The real TASK 12.5B QA sale number — a genuine 37-character
+    // `SALE-<32-hex>` value, not a shortened test fixture, so this
+    // regresses the exact real-browser-QA shape ("RIGHT OVERFLOWED BY 1.1
+    // PIXELS").
+    const realSaleNumber = 'SALE-2517abd73ecf44a2b2206f4eadfeee49';
+
+    testWidgets(
+      'the real long canonical sale number renders in the completed-sale '
+      'dialog with zero RenderFlex overflow',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-polish-1',
+            saleNumber: realSaleNumber,
+            status: 'pending_payment',
+            total: '29.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-polish-1',
+            status: 'captured',
+            tenderedAmount: '50.0000',
+            changeAmount: '21.0000',
+            saleId: 'sale-polish-1',
+            saleNumber: realSaleNumber,
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '50',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(find.text('Venta completada'), findsOneWidget);
+        // The full canonical sale number is shown exactly as returned —
+        // never hidden, truncated, or replaced merely to avoid overflow.
+        expect(find.text(realSaleNumber), findsOneWidget);
+        // The real bug: `flutter test` surfaces a RenderFlex overflow as a
+        // FlutterError caught here, not as a normal widget-tree assertion.
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'Folio label and value are laid out with a real, deliberate gap — '
+      'never rendered flush as "FolioSALE-..."',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-polish-2',
+            saleNumber: realSaleNumber,
+            status: 'pending_payment',
+            total: '29.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-polish-2',
+            status: 'captured',
+            tenderedAmount: '29.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-polish-2',
+            saleNumber: realSaleNumber,
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '29',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(find.text('Folio'), findsOneWidget);
+        expect(find.text(realSaleNumber), findsOneWidget);
+        // A real layout gap (the `SizedBox(width: 12)` fix), not two
+        // widgets whose rendered edges happen to touch — this is what
+        // actually distinguishes the fix from the "FolioSALE-..." bug.
+        final labelRight = tester.getTopRight(find.text('Folio')).dx;
+        final valueLeft = tester.getTopLeft(find.text(realSaleNumber)).dx;
+        expect(valueLeft - labelRight, greaterThanOrEqualTo(12));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  group('Historial de ventas (TASK 12.6 Part C)', () {
+    PosSaleSummary summary({
+      String id = 'sale-history-1',
+      String status = 'completed',
+      List<String> paymentMethods = const ['cash'],
+    }) => PosSaleSummary(
+      id: id,
+      saleNumber: 'SALE-2517abd73ecf44a2b2206f4eadfeee49',
+      status: status,
+      currencyCode: 'MXN',
+      branchId: 'branch-id',
+      branchName: 'Puerta La Victoria',
+      cashierId: 'user-id',
+      cashierName: 'Bryant Aguilera',
+      occurredAt: DateTime.utc(2026, 9, 3, 12),
+      completedAt: status == 'completed'
+          ? DateTime.utc(2026, 9, 3, 12, 1)
+          : null,
+      itemCount: 1,
+      subtotal: '25.0000',
+      taxTotal: '4.0000',
+      total: '29.0000',
+      paymentMethods: paymentMethods,
+    );
+
+    Future<void> navigateToHistory(WidgetTester tester) async {
+      // `history` lives under "Administración" (matching the canonical
+      // AS POS V1 sidebar — see pos_navigation.dart), the sidebar's own
+      // default-expanded group, so it's already visible with no group
+      // to open first (unlike Punto de Venta under "Ventas").
+      await tester.tap(find.byKey(const Key('nav-history')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'loads real backend sales and shows a completed sale honestly, distinct from pending',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [
+              summary(),
+              summary(
+                id: 'sale-history-2',
+                status: 'pending_payment',
+                paymentMethods: const [],
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await navigateToHistory(tester);
+
+        expect(find.text('Historial de ventas'), findsOneWidget);
+        expect(salesGateway.listCalls, hasLength(1));
+        // Both rows render, with distinct honest status chips — never an
+        // invented status, never pending shown as completed.
+        expect(find.text('Completada'), findsOneWidget);
+        expect(find.text('Pendiente'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('shows an honest empty state when there are no sales', (
+      tester,
+    ) async {
+      final emptyGateway = _FakeSalesGateway(
+        listResult: const PosSaleHistoryPage(items: [], nextCursor: null),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithSaleRead,
+        salesGateway: emptyGateway,
+      );
+      await navigateToHistory(tester);
+      expect(
+        find.text('No hay ventas que coincidan con los filtros actuales.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'shows the real backend error honestly with a retry on failure',
+      (tester) async {
+        final failingGateway = _FakeSalesGateway(
+          listFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.unavailable,
+              'No fue posible cargar el historial de ventas.',
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: failingGateway,
+        );
+        await navigateToHistory(tester);
+        expect(
+          find.text('No fue posible cargar el historial de ventas.'),
+          findsOneWidget,
+        );
+        expect(find.text('Reintentar'), findsOneWidget);
+        await tester.tap(find.text('Reintentar'));
+        await tester.pump();
+        expect(failingGateway.listCalls, hasLength(2));
+      },
+    );
+
+    testWidgets(
+      'the folio search filter calls the backend with the exact typed query',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await navigateToHistory(tester);
+        await tester.enterText(
+          find.byKey(const Key('pos-history-search')),
+          'ADFEEE49',
+        );
+        await tester.pump();
+        expect(salesGateway.listCalls.last.filter.saleNumber, 'ADFEEE49');
+      },
+    );
+
+    testWidgets(
+      'the status filter calls the backend with the selected status',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await navigateToHistory(tester);
+        await tester.tap(find.byKey(const Key('pos-history-status')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Completada').last);
+        await tester.pumpAndSettle();
+        expect(salesGateway.listCalls.last.filter.status, 'completed');
+      },
+    );
+
+    testWidgets(
+      'a branch filter is offered only for company-wide access, never for a single-branch session',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await navigateToHistory(tester);
+        expect(find.byKey(const Key('pos-history-branch')), findsNothing);
+
+        final companyWideGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _companyWideContextWithSaleRead,
+          salesGateway: companyWideGateway,
+        );
+        await navigateToHistory(tester);
+        expect(find.byKey(const Key('pos-history-branch')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'opening a row shows the full canonical detail — folio, \$25/\$4/\$29, and cash \$50/\$21',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+          receiptResult: PosReceipt(
+            sale: PosReceiptSale(
+              id: 'sale-history-1',
+              saleNumber: 'SALE-2517abd73ecf44a2b2206f4eadfeee49',
+              status: 'completed',
+              currencyCode: 'MXN',
+              branchId: 'branch-id',
+              occurredAt: DateTime.utc(2026, 9, 3, 12),
+              completedAt: DateTime.utc(2026, 9, 3, 12, 1),
+              subtotal: '25.0000',
+              discountTotal: '0.0000',
+              taxTotal: '4.0000',
+              total: '29.0000',
+            ),
+            business: const PosReceiptBusiness(
+              companyName: 'Inflapark Group',
+              branchName: 'Puerta La Victoria',
+              branchAddress: null,
+            ),
+            cashier: const PosReceiptCashier(
+              id: 'user-id',
+              displayName: 'Bryant Aguilera',
+            ),
+            items: const [
+              PosReceiptItem(
+                lineNumber: 1,
+                nameSnapshot: 'Agua',
+                skuSnapshot: 'AGUA-1',
+                quantity: '1.000000',
+                unitPrice: '25.0000',
+                discountTotal: '0.0000',
+                taxTotal: '4.0000',
+                lineTotal: '29.0000',
+              ),
+            ],
+            payments: const [
+              PosReceiptPayment(
+                id: 'payment-1',
+                paymentMethod: 'cash',
+                status: 'captured',
+                amount: '29.0000',
+                currencyCode: 'MXN',
+                capturedAt: null,
+                tenderedAmount: '50.0000',
+                changeAmount: '21.0000',
+                provider: null,
+                terminalId: null,
+                providerReference: null,
+              ),
+            ],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await navigateToHistory(tester);
+        // `DataRow`/`TableRow` are plain configuration objects, not
+        // `Element`s — `DataRow.key` never surfaces to `find.byKey`, so the
+        // row is found and tapped by its own rendered folio text instead.
+        await tester.tap(find.text('SALE-ADFEEE49'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Detalle de venta'), findsOneWidget);
+        // The display folio appears both in the table row behind the
+        // dialog and inside the dialog itself.
+        expect(find.text('SALE-ADFEEE49'), findsWidgets);
+        expect(find.text('Agua'), findsOneWidget);
+        expect(find.textContaining(r'25.00'), findsWidgets);
+        expect(find.textContaining(r'4.00'), findsWidgets);
+        expect(find.textContaining(r'29.00'), findsWidgets);
+        expect(find.textContaining(r'50.00'), findsWidgets);
+        expect(find.textContaining(r'21.00'), findsWidgets);
+        // No Refund/Cancel/Void control anywhere in the detail dialog.
+        expect(find.textContaining('Reembolso'), findsNothing);
+        expect(find.textContaining('Cancelar'), findsNothing);
+        expect(find.textContaining('Anular'), findsNothing);
+        expect(salesGateway.receiptCalls, hasLength(1));
+
+        // Reprint uses the exact already-fetched receipt — it's read-only
+        // and never calls the backend again.
+        await tester.tap(find.byKey(const Key('pos-history-detail-print')));
+        await tester.pump();
+        expect(salesGateway.receiptCalls, hasLength(1));
+        expect(salesGateway.calls, isEmpty); // never creates a Sale
+      },
+    );
+
+    testWidgets(
+      'CLIENTE mode never exposes Historial de ventas — the module lives only in the CAJERO sidebar',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(items: [summary()], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('nav-history')), findsNothing);
+        expect(salesGateway.listCalls, isEmpty);
+      },
+    );
+  });
+
+  group('POS operational branch context', () {
+    testWidgets(
+      '"Todas las sucursales" is not accepted as an operational POS branch — '
+      'entering Punto de Venta shows the branch-selection prompt instead of a ticket',
+      (tester) async {
+        final harness = _BranchSwitchingHarness(
+          initialContext: _companyWideContext,
+        );
+        await _pumpHarness(tester, harness);
+        await _navigateToPos(tester);
+
+        expect(find.byKey(const Key('pos-branch-required')), findsOneWidget);
+        expect(
+          find.text('Selecciona una sucursal para operar el Punto de Venta'),
+          findsOneWidget,
+        );
+        // The real ticket/Cobrar surface never renders while unresolved.
+        expect(find.byKey(const Key('pos-ticket-cobrar')), findsNothing);
+        expect(find.byKey(const Key('pos-product-product-1')), findsNothing);
+        // Only the session's own real authorized branches are offered —
+        // "Todas las sucursales" itself is deliberately not one of the
+        // choices here (that stays valid for dashboards, never for POS).
+        expect(
+          find.byKey(const Key('pos-branch-required-branch-a')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('pos-branch-required-branch-b')),
+          findsOneWidget,
+        );
+        expect(find.text('Todas las sucursales'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'selecting an authorized branch propagates to PosShell, reloads the branch-aware '
+      'catalog, and unlocks the real ticket — the full REAL QA TARGET flow through to '
+      'the cash dialog',
+      (tester) async {
+        final trackingGateway = _TrackingReadGateway();
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-branch-a-1',
+            saleNumber: 'SALE-brancha1',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final harness = _BranchSwitchingHarness(
+          initialContext: _companyWideContext,
+          salesGateway: salesGateway,
+          readGateway: trackingGateway,
+        );
+        await _pumpHarness(tester, harness);
+        await _navigateToPos(tester);
+        expect(find.byKey(const Key('pos-branch-required')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-branch-required-branch-a')));
+        await tester.pumpAndSettle();
+
+        // Propagated: the branch-required prompt is gone, the real
+        // ticket/Cobrar surface is now showing.
+        expect(find.byKey(const Key('pos-branch-required')), findsNothing);
+        expect(find.byKey(const Key('pos-ticket-cobrar')), findsOneWidget);
+        // Catalog/inventory reloaded scoped to the newly-selected branch
+        // — never the stale "Todas las sucursales" (null) scope.
+        expect(trackingGateway.productBranchIdCalls, contains('branch-a'));
+        expect(trackingGateway.balanceBranchIdCalls, contains('branch-a'));
+
+        // Add a product, confirm Efectivo (the real default), tap Cobrar.
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // No "no branch assigned" guard, no stale inert notice — a real
+        // Sale was created for the *selected* branch, and the real
+        // TASK 12.5A cash dialog opened.
+        expect(
+          find.text('Esta sesión no tiene una sucursal asignada.'),
+          findsNothing,
+        );
+        expect(salesGateway.calls, hasLength(1));
+        expect(salesGateway.calls.single.branchId, 'branch-a');
+        expect(find.byKey(const Key('pos-cash-dialog-input')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an unauthorized/arbitrary branch id can never be selected or injected — '
+      'never trusted client-side',
+      (tester) async {
+        String? rejectedAttempt;
+        final state = GlobalKey<_BranchSwitchingHarnessState>();
+        await _pumpHarness(
+          tester,
+          _BranchSwitchingHarness(
+            key: state,
+            initialContext: _companyWideContext,
+            onSwitchAttempt: (branchId) => rejectedAttempt = branchId,
+          ),
+        );
+
+        // Simulates a bug/attacker calling the exact same callback the real
+        // widgets use, but with an id never present in this session's own
+        // `permittedBranchIds` — the harness (standing in for the real
+        // backend-authoritative `AuthController.selectBranch`/`switchBranch`
+        // call) must reject it, never trust it.
+        await state.currentState!.attemptSelectBranch('branch-not-authorized');
+        await tester.pumpAndSettle();
+
+        expect(rejectedAttempt, 'branch-not-authorized');
+        // The session's operational context is completely unchanged —
+        // still "Todas las sucursales", still showing the branch prompt.
+        await _navigateToPos(tester);
+        expect(find.byKey(const Key('pos-branch-required')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-cobrar')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'switching branch while the ticket is non-empty asks before discarding it — never a '
+      'silent migration to another branch\'s catalog',
+      (tester) async {
+        final harness = _BranchSwitchingHarness(
+          initialContext: _contextWithAlternateBranch,
+        );
+        await _pumpHarness(tester, harness);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        expect(find.textContaining(r'Cobrar — $0.00'), findsNothing);
+
+        await tester.tap(find.byKey(const Key('pos-branch-switch')));
+        await tester.pumpAndSettle();
+        expect(find.text('Sucursal Otra'), findsOneWidget);
+        await tester.tap(find.text('Sucursal Otra'));
+        await tester.pumpAndSettle();
+
+        // The confirmation dialog appeared — cancelling it leaves both
+        // the ticket and the operational branch completely untouched.
+        expect(find.text('Cambiar de sucursal'), findsOneWidget);
+        await tester.tap(find.text('Cancelar'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining(r'Cobrar — $0.00'), findsNothing);
+        expect(find.byKey(const Key('pos-branch-required')), findsNothing);
+
+        // Retrying and explicitly confirming clears the ticket, then
+        // switches — never the reverse order.
+        await tester.tap(find.byKey(const Key('pos-branch-switch')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sucursal Otra'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Vaciar y cambiar'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the backend/checkout guard remains as defense in depth even when the entry-guard '
+      'signal and the checkout branch id could disagree',
+      (tester) async {
+        // A deliberately inconsistent fixture: `currentBranch` resolves
+        // (so the entry guard lets the ticket UI render) but
+        // `session.branchId` — what `_submitCashSaleForPayment` actually
+        // checks — is null. Exercises the checkout guard as a genuinely
+        // independent second check, not dead code the entry guard makes
+        // unreachable.
+        final inconsistent = AuthenticatedContext(
+          session: SessionContext(
+            id: 'session-id',
+            userId: 'user-id',
+            companyId: 'company-id',
+            branchId: null,
+            permittedBranchIds: const ['branch-id'],
+            companyWideAccess: false,
+            expiresAt: DateTime.utc(2099),
+          ),
+          user: _context.user,
+          companies: _context.companies,
+          branches: _context.branches,
+          companyWideAccess: false,
+          permissions: _context.permissions,
+        );
+        await _pump(tester, const Size(1440, 900), context: inconsistent);
+        await _navigateToPos(tester);
+        // Entry guard passed (a `currentBranch` resolves) — the real
+        // ticket renders.
+        expect(find.byKey(const Key('pos-ticket-cobrar')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        expect(
+          find.text('Esta sesión no tiene una sucursal asignada.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'CLIENTE observes the exact same operational branch CAJERO selected',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-cliente-branch-1',
+            saleNumber: 'SALE-clientebranch1',
+            status: 'pending_payment',
+            total: '46.4000',
+          ),
+        );
+        final harness = _BranchSwitchingHarness(
+          initialContext: _companyWideContext,
+          salesGateway: salesGateway,
+        );
+        await _pumpHarness(tester, harness);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-branch-required-branch-a')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(salesGateway.calls, hasLength(1));
+        expect(salesGateway.calls.single.branchId, 'branch-a');
+      },
+    );
+
+    testWidgets(
+      'the topbar branch switcher still offers "Todas las sucursales" for '
+      'consolidated dashboards/reports',
+      (tester) async {
+        // `companyWideAccess: true` — the default `_context` fixture
+        // deliberately represents an ordinary cashier without it (see its
+        // own doc comment); `_companyWideContext` represents the CEO/owner
+        // session this option is actually for.
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _companyWideContext,
+        );
+        await tester.tap(find.byKey(const Key('pos-branch-switch')));
+        await tester.pumpAndSettle();
+        expect(find.text('Todas las sucursales'), findsOneWidget);
+      },
+    );
+  });
+
+  group('CLIENTE → CAJERO authorization (TASK 12.3A)', () {
+    testWidgets('CAJERO to CLIENTE is direct — no authorization dialog', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-preview')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsNothing);
+    });
+
+    testWidgets('CLIENTE to CAJERO opens the authorization dialog instead '
+        'of returning immediately', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+      // Still on the CLIENTE preview — the switch has not happened yet.
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-preview')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('Cancelar leaves CLIENTE mode active', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-cajero-return-cancel')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsNothing);
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-preview')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
+    });
+
+    testWidgets('an unauthorized session (missing sale.create) cannot '
+        'return to CAJERO and sees the error', (tester) async {
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithoutSaleCreate,
+      );
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('pos-cajero-return-error')), findsOneWidget);
+      // The dialog stays open and CLIENTE stays active — an unauthorized
+      // attempt must never grant cashier controls.
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-cajero-return-cancel')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-preview')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
+    });
+
+    testWidgets('a sale.create-authorized confirmation returns to CAJERO', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsNothing);
+      expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+      expect(find.byKey(const Key('pos-cliente-ticket-preview')), findsNothing);
+    });
+
+    testWidgets('SaleSession lines and quantities are unchanged after the '
+        'full CLIENTE → dialog → CAJERO round trip', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-product-product-2')));
+      await tester.pump();
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-2')),
+        findsOneWidget,
+      );
+      // TASK 12.3C: product-1 x2 + product-2 x1 @ $10.00 each = $30.00
+      // subtotal, +16% IVA ($4.80) = $34.80 — a real backend-priced total,
+      // not the old placeholder $0.00.
+      expect(find.textContaining(r'Cobrar — $34.80'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-line-product-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('pos-cliente-ticket-line-product-2')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+      await tester.pumpAndSettle();
+
+      // Same lines, same quantity ("2" for product-1), same total — the
+      // authorization round trip neither reset nor duplicated the ticket.
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('pos-ticket-line-product-2')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('pos-ticket-line-product-1')),
+          matching: find.text('2'),
+        ),
+        findsOneWidget,
+      );
+      // TASK 12.3C: product-1 x2 + product-2 x1 @ $10.00 each = $30.00
+      // subtotal, +16% IVA ($4.80) = $34.80 — a real backend-priced total,
+      // not the old placeholder $0.00.
+      expect(find.textContaining(r'Cobrar — $34.80'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Canonical CLIENTE locked surface (TASK 12.3B)', () {
+    Future<void> enterCliente(WidgetTester tester) async {
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-product-product-1')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'locks out admin navigation entirely — sidebar, topbar and every '
+      'module nav item are unreachable while CLIENTE is active',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await enterCliente(tester);
+
+        // Structurally absent, not merely hidden: no sidebar, no topbar,
+        // no hamburger, no nav items for any module — there is nothing
+        // for a customer to tap toward an admin screen.
+        expect(find.byKey(const Key('pos-sidebar')), findsNothing);
+        expect(find.byKey(const Key('pos-topbar')), findsNothing);
+        expect(find.byKey(const Key('pos-hamburger')), findsNothing);
+        for (final module in [
+          'nav-dashboard',
+          'nav-products',
+          'nav-inventory',
+          'nav-users',
+          'nav-pos',
+        ]) {
+          expect(find.byKey(Key(module)), findsNothing, reason: module);
+        }
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'renders the greeting header, live clock, and stacked per-category '
+      'sections with a jumpbar pill for each active category',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await enterCliente(tester);
+
+        expect(find.byKey(const Key('pos-cliente-header')), findsOneWidget);
+        expect(find.text('¡Hola! 👋'), findsOneWidget);
+        expect(find.text('Selecciona lo que deseas'), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-clock')), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-jumpbar')), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-jump-cat-1')), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-jump-cat-2')), findsOneWidget);
+        expect(
+          find.text('Bebidas'),
+          findsWidgets,
+        ); // jumpbar pill + section title
+        expect(find.text('Snacks'), findsWidgets);
+        expect(find.byKey(const Key('pos-cliente-catalog')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('tapping a jumpbar pill scrolls to that category without '
+        'throwing', (tester) async {
+      await _pump(tester, const Size(1440, 600));
+      await enterCliente(tester);
+      await tester.tap(find.byKey(const Key('pos-cliente-jump-cat-2')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+      'an out-of-stock product inside a stacked section cannot be added',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await enterCliente(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-3')));
+        await tester.pump();
+        expect(find.text('Producto sin existencia.'), findsOneWidget);
+        expect(
+          find.byKey(const Key('pos-cliente-ticket-line-product-3')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'shows the honest per-category empty state without collapsing the '
+      'section structure, and does not fabricate demonstration products',
+      (tester) async {
+        tester.view.physicalSize = const Size(1440, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _ClienteCatalogGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: const EmptyPosCashGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await enterCliente(tester);
+
+        // Postres (cat-3) has zero matching products — the section title
+        // still renders, with the canonical empty-category copy, instead
+        // of the whole catalog collapsing to a single generic message.
+        expect(find.text('Postres'), findsWidgets);
+        expect(find.text('Sin productos en esta categoría'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'shows an honest empty state when there are no active categories at '
+      'all',
+      (tester) async {
+        tester.view.physicalSize = const Size(1440, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _EmptyPosReadGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: const EmptyPosCashGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-jumpbar')), findsNothing);
+        expect(find.text('No hay categorías disponibles.'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      '¿Necesitas ayuda? shows a deferred, non-fabricated notice — no '
+      'staff-dispatch promise this app cannot keep',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await enterCliente(tester);
+        await tester.tap(find.byKey(const Key('pos-cliente-ayuda-button')));
+        await tester.pump();
+        expect(find.textContaining('no está disponible'), findsOneWidget);
+        // V1's own fabricated staff-dispatch toast is never reproduced.
+        expect(find.textContaining('viene en camino'), findsNothing);
+      },
+    );
+
+    testWidgets('Tengo un cupón opens the coupon modal; typing via the virtual '
+        'keyboard and Aplicar never accepts or fabricates a result', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await enterCliente(tester);
+      await tester.tap(find.byKey(const Key('pos-cliente-cupon-button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cliente-cupon-dialog')), findsOneWidget);
+      expect(
+        find.byKey(const Key('pos-cliente-cupon-keyboard')),
+        findsOneWidget,
+      );
+
+      // The input is read-only and only ever changes via the on-screen
+      // keys — matching V1's `readonly` attribute (no system keyboard).
+      final input = tester.widget<TextField>(
+        find.byKey(const Key('pos-cliente-cupon-input')),
+      );
+      expect(input.readOnly, isTrue);
+
+      await tester.tap(find.text('A'));
+      await tester.tap(find.text('B'));
+      await tester.tap(find.text('C'));
+      await tester.pump();
+      expect(
+        find
+            .byKey(const Key('pos-cliente-cupon-input'))
+            .evaluate()
+            .single
+            .widget,
+        isA<TextField>().having(
+          (field) => field.controller?.text,
+          'controller.text',
+          'ABC',
+        ),
+      );
+
+      // Backspace removes the last character.
+      await tester.tap(find.byIcon(Icons.backspace_outlined));
+      await tester.pump();
+      expect(
+        find
+            .byKey(const Key('pos-cliente-cupon-input'))
+            .evaluate()
+            .single
+            .widget,
+        isA<TextField>().having(
+          (field) => field.controller?.text,
+          'controller.text',
+          'AB',
+        ),
+      );
+
+      // Aplicar never fabricates acceptance or rejection.
+      await tester.tap(find.byKey(const Key('pos-cliente-cupon-apply')));
+      await tester.pump();
+      expect(
+        find.textContaining('no está disponible'),
+        findsWidgets,
+        reason: 'Coupon validation must be honestly deferred, not faked.',
+      );
+
+      await tester.tap(find.byKey(const Key('pos-cliente-cupon-close')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-cliente-cupon-dialog')), findsNothing);
+    });
+
+    // TASK 12.3B.1: one `testWidgets` per breakpoint (matching this file's
+    // own established convention for breakpoint sweeps, e.g. the CLIENTE
+    // overflow loop below) rather than several `_pump()` calls inside a
+    // single test — reusing one `tester` across multiple full
+    // `pumpWidget` rebuilds left a `_LiveClockText` timer from an earlier
+    // iteration racing the next one, which made `pumpAndSettle()` time
+    // out. A fresh binding per breakpoint avoids that entirely.
+    for (final size in const [
+      Size(1024, 600),
+      Size(1366, 768),
+      Size(1440, 900),
+      Size(1920, 1080),
+    ]) {
+      testWidgets(
+        'the coupon virtual keyboard keeps every row structurally fixed — '
+        'no key ever moves to a different row — at '
+        '${size.width.toInt()}x${size.height.toInt()} (TASK 12.3B.1 '
+        'regression)',
+        (tester) async {
+          await _pump(tester, size);
+          await enterCliente(tester);
+          await tester.tap(find.byKey(const Key('pos-cliente-cupon-button')));
+          await tester.pumpAndSettle();
+
+          final keyboard = find.byKey(const Key('pos-cliente-cupon-keyboard'));
+          expect(keyboard, findsOneWidget);
+          double rowY(String label) => tester
+              .getCenter(
+                find.descendant(of: keyboard, matching: find.text(label)),
+              )
+              .dy;
+
+          // Rows are compared with a tolerance — this checks "on the same
+          // row", not bit-for-bit-identical doubles, since two centers
+          // legitimately on one row can differ by sub-pixel floating-
+          // point rounding without any real layout difference.
+          const tolerance = 0.5;
+
+          // Row 1: 1 2 3 4 5 6 7 8 9 0 — the regression's own reported
+          // symptom was "9 and 0 fall onto another row".
+          final row1 = rowY('1');
+          for (final key in ['2', '3', '4', '5', '6', '7', '8', '9', '0']) {
+            expect(
+              rowY(key),
+              closeTo(row1, tolerance),
+              reason: '"$key" must stay on row 1',
+            );
+          }
+
+          // Row 2: Q W E R T Y U I O P — reported symptom "O and P fall
+          // onto another row".
+          final row2 = rowY('Q');
+          expect((row2 - row1).abs(), greaterThan(tolerance));
+          for (final key in ['W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P']) {
+            expect(
+              rowY(key),
+              closeTo(row2, tolerance),
+              reason: '"$key" must stay on row 2',
+            );
+          }
+
+          // Row 3: A S D F G H J K L — reported symptom "L becomes
+          // isolated".
+          final row3 = rowY('A');
+          expect((row3 - row1).abs(), greaterThan(tolerance));
+          expect((row3 - row2).abs(), greaterThan(tolerance));
+          for (final key in ['S', 'D', 'F', 'G', 'H', 'J', 'K', 'L']) {
+            expect(
+              rowY(key),
+              closeTo(row3, tolerance),
+              reason: '"$key" must stay on row 3',
+            );
+          }
+
+          // Row 4: Z X C V B N M + backspace.
+          final row4 = rowY('Z');
+          expect((row4 - row1).abs(), greaterThan(tolerance));
+          expect((row4 - row2).abs(), greaterThan(tolerance));
+          expect((row4 - row3).abs(), greaterThan(tolerance));
+          for (final key in ['X', 'C', 'V', 'B', 'N', 'M']) {
+            expect(
+              rowY(key),
+              closeTo(row4, tolerance),
+              reason: '"$key" must stay on row 4',
+            );
+          }
+          expect(find.byIcon(Icons.backspace_outlined), findsOneWidget);
+          expect(
+            tester.getCenter(find.byIcon(Icons.backspace_outlined)).dy,
+            closeTo(row4, tolerance),
+            reason: 'Backspace must stay on row 4',
+          );
+
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final size in const [
+      Size(1024, 600),
+      Size(1366, 768),
+      Size(1440, 900),
+      Size(1920, 1080),
+    ]) {
+      testWidgets('renders the CLIENTE surface without overflow at '
+          '${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        await _pump(tester, size);
+        await enterCliente(tester);
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('preserves the CLIENTE surface in dark mode', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await tester.tap(find.byKey(const Key('pos-dark-mode-toggle')));
+      await tester.pumpAndSettle();
+      await enterCliente(tester);
+      expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+      expect(find.byKey(const Key('pos-cliente-header')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the authorization dialog is polished: canonical logo, numeric '
+        'keypad, and Escape cancels leaving CLIENTE active', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await enterCliente(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+      expect(find.byType(Image), findsWidgets); // the AS logo mark
+      // No developer/backend-contract text leaks into this dialog.
+      expect(find.textContaining('contrato de backend'), findsNothing);
+      expect(find.textContaining('AS_POS_SALE_ENGINE'), findsNothing);
+
+      // The visual numeric keypad types into the (never-compared) field.
+      // Scoped to the dialog: the CLIENTE ticket behind it already shows
+      // a "1" quantity (added by `enterCliente`), so an unscoped
+      // `find.text('1')` would be ambiguous.
+      final dialog = find.byKey(const Key('pos-cajero-return-dialog'));
+      await tester.tap(find.descendant(of: dialog, matching: find.text('1')));
+      await tester.tap(find.descendant(of: dialog, matching: find.text('2')));
+      await tester.pump();
+      final field = tester.widget<TextField>(
+        find.byKey(const Key('pos-cajero-return-input')),
+      );
+      expect(field.controller?.text, '12');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsNothing);
+      expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+    });
+  });
+
+  testWidgets(
+    'toggles the preserved dark theme, reachable at the collapsed rail '
+    'width too',
+    (tester) async {
+      // 1024px keeps the rail visible but collapsed (`wide` requires
+      // >=1200) — the dark-mode control must still be reachable there,
+      // matching the old topbar button's width-independent reachability.
+      await _pump(tester, const Size(1024, 768));
+      final toggle = find.byKey(const Key('pos-dark-mode-toggle'));
+      expect(toggle, findsOneWidget);
+      Brightness brightness() => Theme.of(
+        tester.element(find.byKey(const Key('pos-topbar'))),
+      ).brightness;
+      expect(brightness(), Brightness.light);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(brightness(), Brightness.dark);
+    },
+  );
 
   for (final size in const [
     Size(768, 1024),
@@ -261,21 +2811,772 @@ void main() {
     expect(find.text('Modo de solo lectura'), findsOneWidget);
     expect(find.text('Entendido'), findsOneWidget);
   });
+
+  group('Shared chrome (TASK 12.2E)', () {
+    testWidgets('renders the canonical topbar elements — role label, live '
+        'clock, notification bell, AI assistant — all inert', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      expect(find.text('Manager'), findsOneWidget);
+      expect(find.byKey(const Key('pos-topbar-clock')), findsOneWidget);
+
+      final bell = find.byTooltip('Notificaciones');
+      expect(bell, findsOneWidget);
+      await tester.tap(bell);
+      await tester.pump();
+      expect(
+        find.textContaining('Modo de solo lectura: disponible'),
+        findsOneWidget,
+      );
+      await tester.pumpAndSettle();
+
+      final aiButton = find.byKey(const Key('pos-ai-assistant-button'));
+      expect(aiButton, findsOneWidget);
+      expect(find.text('Asistente IA'), findsOneWidget);
+      await tester.tap(aiButton);
+      await tester.pump();
+      expect(
+        find.textContaining('Modo de solo lectura: disponible'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('sidebar starts with only the active item\'s group open, '
+        'and opening a group closes the previously open one', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await tester.tap(find.byKey(const Key('pos-hamburger')));
+      await tester.pumpAndSettle();
+
+      // Dashboard's group (Administración) is open by default; Ventas is
+      // closed, so its items are absent.
+      expect(find.byKey(const Key('nav-dashboard')), findsOneWidget);
+      expect(find.byKey(const Key('nav-pos')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('nav-group-Ventas')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('nav-pos')), findsOneWidget);
+      // Opening Ventas closed Administración — a single open group.
+      expect(find.byKey(const Key('nav-dashboard')), findsNothing);
+
+      // Tapping the already-open group's header collapses it entirely.
+      await tester.tap(find.byKey(const Key('nav-group-Ventas')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('nav-pos')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('navigating to a module auto-opens its group', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      expect(find.byKey(const Key('nav-pos')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('nav-group-Catálogo')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('nav-products')));
+      await tester.pumpAndSettle();
+      // Selecting Productos (Catálogo) closed Ventas automatically.
+      expect(find.byKey(const Key('nav-pos')), findsNothing);
+      expect(find.byKey(const Key('nav-products')), findsOneWidget);
+    });
+
+    testWidgets('rail starts collapsed by default, matching the canonical '
+        '`.sidebar` with no `.expanded` class', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      expect(find.text('Manager'), findsOneWidget); // sanity: shell rendered
+      expect(find.textContaining('AS+'), findsNothing);
+      await tester.tap(find.byKey(const Key('pos-hamburger')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('AS+'), findsOneWidget);
+    });
+  });
+
+  group('Caja (TASK 12.7)', () {
+    testWidgets(
+      'closed state shows the "Abrir caja" prompt, never a silent Efectivo unlock',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(openSessionFixture: null);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        expect(
+          find.text('Abre la caja para comenzar a cobrar en efectivo.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pos-caja-open-button')), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-cash-in')), findsNothing);
+        expect(find.byKey(const Key('pos-caja-close-button')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a session.read-only actor sees the closed state but no "Abrir caja" button',
+      (tester) async {
+        final readOnly = AuthenticatedContext(
+          session: _context.session,
+          user: _context.user,
+          companies: _context.companies,
+          branches: _context.branches,
+          companyWideAccess: false,
+          permissions: [..._context.permissions, 'cash_session.read'],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: readOnly,
+          cashGateway: _FakeCashGateway(openSessionFixture: null),
+        );
+        await _navigateToCaja(tester);
+        expect(find.byKey(const Key('pos-caja-open-button')), findsNothing);
+        expect(
+          find.text('Tu sesión no incluye el permiso para abrir la caja.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'opening flow submits the exact cashier-entered opening float — never a '
+      'fabricated \$1,000',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(openSessionFixture: null);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-open-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-fondo-input')),
+          '750.50',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-open')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.openSessionCalls, [
+          (cashRegisterId: 'register-id', openingAmount: '750.5000'),
+        ]);
+        // The dialog closed and the current-session view now renders —
+        // proof the drawer is genuinely open, not just that the call fired.
+        expect(find.byKey(const Key('pos-caja-cash-in')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'open session shows Caja/Sucursal/Cajero/Abierta/Fondo inicial/Efectivo '
+      'esperado — the exact backend result, never recomputed',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: _FakeCashGateway(),
+        );
+        await _navigateToCaja(tester);
+        expect(find.text('Caja 1'), findsOneWidget);
+        expect(find.text('Sucursal Centro'), findsOneWidget);
+        expect(find.text('Usuario AS'), findsOneWidget);
+        expect(
+          find.text(_expectClockTime(DateTime.utc(2026, 9, 6, 9))),
+          findsOneWidget,
+        );
+        expect(find.text(r'$1000.00'), findsOneWidget);
+        expect(find.text(r'$1029.00'), findsOneWidget); // Efectivo esperado.
+      },
+    );
+
+    testWidgets(
+      'movement history renders every posted movement, cash_out shown as negative',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: _FakeCashGateway(
+            movements: [
+              PosCashMovement(
+                id: 'm1',
+                cashSessionId: 'session-id',
+                movementType: 'cash_in',
+                amount: '200.0000',
+                currencyCode: 'MXN',
+                reasonCode: 'additional_float',
+                occurredAt: DateTime.utc(2026, 9, 6, 11),
+                createdBy: 'user-id',
+              ),
+              PosCashMovement(
+                id: 'm2',
+                cashSessionId: 'session-id',
+                movementType: 'cash_out',
+                amount: '50.0000',
+                currencyCode: 'MXN',
+                reasonCode: 'safe_drop',
+                occurredAt: DateTime.utc(2026, 9, 6, 12),
+                createdBy: 'user-id',
+              ),
+            ],
+          ),
+        );
+        await _navigateToCaja(tester);
+        expect(find.textContaining('+\$200.00'), findsOneWidget);
+        expect(find.textContaining('-\$50.00'), findsOneWidget);
+        expect(find.text('Sin movimientos todavía.'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Entrada de efectivo posts a cash_in movement with the typed amount and reason',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-cash-in')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-amount')),
+          '200',
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-reason')),
+          'additional_float',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-movement')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.movementCalls, [
+          (
+            cashSessionId: 'session-id',
+            movementType: 'cash_in',
+            amount: '200.0000',
+            reasonCode: 'additional_float',
+          ),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'Salida de efectivo posts a cash_out movement, and a blank reason is rejected '
+      'before any call is made',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-cash-out')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-amount')),
+          '50',
+        );
+        // No reason typed — must be rejected client-side first.
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-movement')));
+        await tester.pump();
+        expect(cashGateway.movementCalls, isEmpty);
+        expect(find.text('Ingresa un motivo.'), findsOneWidget);
+
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-reason')),
+          'safe_drop',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-movement')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.movementCalls, [
+          (
+            cashSessionId: 'session-id',
+            movementType: 'cash_out',
+            amount: '50.0000',
+            reasonCode: 'safe_drop',
+          ),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'a rejected movement (backend session-closed error) keeps the dialog open and '
+      'shows the real error',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          movementFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.validation,
+              'Esta sesión de caja ya fue cerrada.',
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-cash-in')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-amount')),
+          '10',
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-movement-reason')),
+          'x',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-movement')));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Esta sesión de caja ya fue cerrada.'),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('pos-caja-movement-amount')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'close flow shows the backend expected cash, submits only the counted amount, '
+      'and the result shows the backend-computed difference — never a client-submitted one',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          closeResult: PosCashSession(
+            id: 'session-id',
+            branchId: 'branch-id',
+            cashRegisterId: 'register-id',
+            openedBy: 'user-id',
+            openedAt: DateTime.utc(2026, 9, 6, 9),
+            openingAmount: '1000.0000',
+            currencyCode: 'MXN',
+            status: 'closed',
+            closedBy: 'user-id',
+            closedAt: DateTime.utc(2026, 9, 6, 20),
+            declaredClosingAmount: '1000.0000',
+            expectedClosingAmount: '1029.0000',
+            discrepancyAmount: '-29.0000',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        // The dialog's own read-only "Efectivo esperado" row (the screen
+        // behind it, still in the tree under the modal barrier, shows the
+        // same figure too).
+        expect(find.text(r'$1029.00'), findsWidgets);
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-counted-input')),
+          '1000',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls, [
+          (cashSessionId: 'session-id', declaredClosingAmount: '1000.0000'),
+        ]);
+        // The result dialog shows the backend's own discrepancy — a real
+        // shortage — never a client-recomputed figure.
+        expect(find.text('Faltante'), findsOneWidget);
+        expect(find.text(r'-$29.00'), findsOneWidget);
+        // After "Entendido", the drawer reloads and shows closed again (the
+        // fake's own `_current = null` on close — a real backend session
+        // cannot be reopened either).
+        await tester.tap(find.text('Entendido'));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-caja-open-button')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a rejected close (backend already-closed error) keeps the dialog open and '
+      'shows the real error — never a fake success',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          closeFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'La sesión ya fue cerrada.'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-counted-input')),
+          '1029',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(find.text('La sesión ya fue cerrada.'), findsOneWidget);
+        // Still open, still showing the close dialog — no result dialog, no
+        // silently-assumed success.
+        expect(find.byKey(const Key('pos-caja-counted-input')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the denomination breakdown live-sums into "Efectivo contado" and submits the '
+      'exact lines typed (Part J)',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-caja-denominations-toggle')),
+        );
+        await tester.pumpAndSettle();
+        // 1×$1000 + 1×$20 + 1×$5 = $1025 — never typed directly.
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-denom-1000')),
+          '1',
+        );
+        await tester.enterText(find.byKey(const Key('pos-caja-denom-20')), '1');
+        await tester.enterText(find.byKey(const Key('pos-caja-denom-5')), '1');
+        await tester.pump();
+        final countedField = tester.widget<TextField>(
+          find.byKey(const Key('pos-caja-counted-input')),
+        );
+        expect(countedField.controller?.text, '1025.0000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(
+          cashGateway.closeCalls.single.declaredClosingAmount,
+          '1025.0000',
+        );
+      },
+    );
+
+    testWidgets(
+      'Cortes de caja lists sessions and opening a row shows the full detail',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          historyResult: PosCashSessionHistoryPage(
+            items: [
+              PosCashSession(
+                id: 'past-session',
+                branchId: 'branch-id',
+                cashRegisterId: 'register-id',
+                openedBy: 'user-id',
+                openedAt: DateTime.utc(2026, 9, 5, 9),
+                openingAmount: '1000.0000',
+                currencyCode: 'MXN',
+                status: 'closed',
+                closedBy: 'user-id',
+                closedAt: DateTime.utc(2026, 9, 5, 20),
+                declaredClosingAmount: '1029.0000',
+                expectedClosingAmount: '1029.0000',
+                discrepancyAmount: '0.0000',
+              ),
+            ],
+            nextCursor: null,
+          ),
+          summaryResult: PosCashSessionSummary(
+            session: PosCashSession(
+              id: 'past-session',
+              branchId: 'branch-id',
+              cashRegisterId: 'register-id',
+              openedBy: 'user-id',
+              openedAt: DateTime.utc(2026, 9, 5, 9),
+              openingAmount: '1000.0000',
+              currencyCode: 'MXN',
+              status: 'closed',
+              closedBy: 'user-id',
+              closedAt: DateTime.utc(2026, 9, 5, 20),
+              declaredClosingAmount: '1029.0000',
+              expectedClosingAmount: '1029.0000',
+              discrepancyAmount: '0.0000',
+            ),
+            openingAmount: '1000.0000',
+            cashSalesTotal: '29.0000',
+            cashSalesCount: 1,
+            cashInTotal: '0.0000',
+            cashOutTotal: '0.0000',
+            expectedCash: '1029.0000',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cortes de caja'));
+        await tester.pumpAndSettle();
+        final expectedClosedLabel =
+            'Cerrada — ${_expectCajaDate(DateTime.utc(2026, 9, 5, 20))}';
+        expect(find.text(expectedClosedLabel), findsOneWidget);
+        await tester.tap(find.text(expectedClosedLabel));
+        await tester.pumpAndSettle();
+        expect(find.text('Detalle de corte'), findsOneWidget);
+        expect(
+          find.text(r'$1029.00'),
+          findsWidgets,
+        ); // esperado/contado both $1029.00 here.
+      },
+    );
+
+    testWidgets(
+      'POS: Efectivo is blocked with the exact required message when no session is '
+      'open — the sale is never created',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway();
+        final cashGateway = _FakeCashGateway(openSessionFixture: null);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          cashGateway: cashGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Abre la caja para comenzar a cobrar en efectivo.'),
+          findsOneWidget,
+        );
+        expect(salesGateway.calls, isEmpty);
+        expect(cashGateway.openSessionForBranchCalls, ['branch-id']);
+      },
+    );
+
+    testWidgets(
+      'POS: Efectivo proceeds normally once a session is open — the gate checks '
+      'before sale creation, never after',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway();
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          cashGateway: cashGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+        expect(cashGateway.openSessionForBranchCalls, ['branch-id']);
+        expect(salesGateway.calls, hasLength(1));
+        // The cash dialog is the real next step — never the blocked notice.
+        expect(
+          find.text('Abre la caja para comenzar a cobrar en efectivo.'),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'POS: a failure verifying the session state fails closed — no sale is created',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway();
+        final cashGateway = _ThrowingOpenSessionCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          cashGateway: cashGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+        expect(
+          find.text('No fue posible verificar el estado de la caja.'),
+          findsOneWidget,
+        );
+        expect(salesGateway.calls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'branch switch never carries an open session across — Caja rebuilds fresh and '
+      'queries the new branch (ADR-0014 §B8)',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        final state = GlobalKey<_BranchSwitchingHarnessState>();
+        await _pumpHarness(
+          tester,
+          _BranchSwitchingHarness(
+            key: state,
+            initialContext: _contextWithAlternateBranchAndCashPermissions,
+            cashGateway: cashGateway,
+          ),
+        );
+        await _navigateToCaja(tester);
+        // Caja never itself calls the POS-gate lookup — only the ticket's
+        // Cobrar handler does.
+        expect(cashGateway.openSessionForBranchCalls, isEmpty);
+        expect(
+          find.byKey(const Key('pos-caja-cash-in')),
+          findsOneWidget,
+        ); // branch-id: open.
+
+        await state.currentState!.attemptSelectBranch('branch-other');
+        await tester.pumpAndSettle();
+        // A fresh `_Caja`/`_CajaCurrent` state (via the branch-keyed
+        // `ValueKey`) queries registers for the *new* branch from scratch —
+        // `branch-other` has no registers in this fixture, so it shows "Sin
+        // caja configurada", never the old branch's still-open session.
+        expect(find.text('Sin caja configurada'), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-cash-in')), findsNothing);
+      },
+    );
+  });
 }
 
-Future<void> _pump(WidgetTester tester, Size size) async {
+Future<void> _pump(
+  WidgetTester tester,
+  Size size, {
+  AuthenticatedContext? context,
+  PosSalesGateway? salesGateway,
+  PosPaymentsGateway? paymentsGateway,
+  PosCashGateway? cashGateway,
+  Future<void> Function(String? branchId)? onBranchSelected,
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
       home: PosShell(
-        context: _context,
+        context: context ?? _context,
         controller: PosReadController(const _FakeReadGateway()),
+        salesGateway: salesGateway ?? _FakeSalesGateway(),
+        paymentsGateway: paymentsGateway ?? _FakePaymentsGateway(),
+        // TASK 12.7: defaults to an already-open session so every
+        // pre-existing Cobrar/cash test (written before the cash-session
+        // requirement existed) keeps exercising what it actually tests —
+        // the dedicated gating tests below inject a closed/`null`-session
+        // fake explicitly instead.
+        cashGateway: cashGateway ?? _FakeCashGateway(),
         onLogout: () {},
+        onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
     ),
   );
+  await tester.pumpAndSettle();
+}
+
+// POS branch-context fix: a shared no-op for every test that doesn't
+// itself exercise branch switching — real behavior is proven by the
+// dedicated `_BranchSwitchingHarness`-backed tests below.
+Future<void> _noopBranchSelected(String? branchId) async {}
+
+/// Pumps a `_BranchSwitchingHarness` at the same desktop reference size
+/// `_pump` uses — without this, the default (sub-900px) test viewport
+/// renders the mobile drawer instead of the sidebar rail, and
+/// `nav-group-Ventas`/`nav-pos` never exist for `_navigateToPos` to find.
+Future<void> _pumpHarness(
+  WidgetTester tester,
+  Widget harness, {
+  Size size = const Size(1440, 900),
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(MaterialApp(home: harness));
+  await tester.pumpAndSettle();
+}
+
+// The sidebar now mirrors `_expandirGrupoDe`: only the active item's group
+// (Administración, containing Dashboard) starts open. Punto de Venta lives
+// under Ventas, so every test navigating there must open that group first
+// — unless it's already open from a prior navigation within the same test.
+Future<void> _openVentasGroupIfNeeded(WidgetTester tester) async {
+  if (find.byKey(const Key('nav-pos')).evaluate().isEmpty) {
+    await tester.tap(find.byKey(const Key('nav-group-Ventas')));
+    await tester.pumpAndSettle();
+  }
+}
+
+Future<void> _navigateToPos(WidgetTester tester) async {
+  await _openVentasGroupIfNeeded(tester);
+  await tester.tap(find.byKey(const Key('nav-pos')));
+  await tester.pumpAndSettle();
+}
+
+// TASK 12.7: Caja lives under "Caja y Finanzas" (`PosModule.cash`) —
+// mirrors `_openVentasGroupIfNeeded`/`_navigateToPos` exactly.
+Future<void> _navigateToCaja(WidgetTester tester) async {
+  if (find.byKey(const Key('nav-cash')).evaluate().isEmpty) {
+    await tester.tap(find.byKey(const Key('nav-group-Caja y Finanzas')));
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(find.byKey(const Key('nav-cash')));
+  await tester.pumpAndSettle();
+}
+
+// TASK 12.7: mirrors `_formatClockTime`/`_formatCajaDate` in
+// `pos_shell.dart` exactly (those are private to that library) — computed
+// from the same UTC fixture `DateTime`s via `.toLocal()`, so these
+// assertions pass regardless of the machine's own timezone rather than
+// assuming UTC.
+String _expectClockTime(DateTime value) {
+  final local = value.toLocal();
+  return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+}
+
+String _expectCajaDate(DateTime value) {
+  final local = value.toLocal();
+  return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year} ${_expectClockTime(value)}';
+}
+
+/// Shared by the TASK 12.5A and TASK 12.5B test groups: adds one product
+/// to the CAJERO ticket and taps Cobrar — Efectivo is the real default
+/// (see `_TicketFooterState`), so this always opens the cash dialog with
+/// no method selection needed.
+Future<void> _addProductAndOpenCashDialog(
+  WidgetTester tester, {
+  required PosSalesGateway salesGateway,
+  required PosPaymentsGateway paymentsGateway,
+}) async {
+  await _pump(
+    tester,
+    const Size(1440, 900),
+    salesGateway: salesGateway,
+    paymentsGateway: paymentsGateway,
+  );
+  await _navigateToPos(tester);
+  await tester.tap(find.byKey(const Key('pos-product-product-1')));
+  await tester.pump();
+  await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+  await tester.pump();
   await tester.pumpAndSettle();
 }
 
@@ -307,44 +3608,797 @@ final _context = AuthenticatedContext(
     ),
   ],
   companyWideAccess: false,
+  // Includes `sale.create` — a real permission from the backend catalog
+  // (packages/database/src/seeds/technical-permissions.ts), not a fabricated
+  // one — so this fixture represents a realistically-authorized cashier who
+  // can return from CLIENTE to CAJERO (TASK 12.3A). `_contextWithoutSaleCreate`
+  // below covers the unauthorized case.
+  permissions: const [
+    'catalog.read',
+    'inventory.read',
+    'user.read',
+    'sale.create',
+  ],
+);
+
+/// TASK 12.3A: a session identical to [_context] but lacking `sale.create` —
+/// used to prove that a genuinely unauthorized session cannot return from
+/// CLIENTE to CAJERO.
+final _contextWithoutSaleCreate = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
   permissions: const ['catalog.read', 'inventory.read', 'user.read'],
 );
+
+/// POS branch-context fix: a CEO/owner-style session with genuine
+/// company-wide access and no single operational branch selected yet
+/// ("Todas las sucursales") — `session.branchId` is `null`,
+/// `companyWideAccess` is `true`, and the session carries two real
+/// authorized branches to choose from.
+final _companyWideContext = AuthenticatedContext(
+  session: SessionContext(
+    id: 'session-id',
+    userId: 'user-id',
+    companyId: 'company-id',
+    permittedBranchIds: const ['branch-a', 'branch-b'],
+    companyWideAccess: true,
+    expiresAt: DateTime.utc(2099),
+  ),
+  user: _context.user,
+  companies: _context.companies,
+  branches: const [
+    BranchSummary(
+      id: 'branch-a',
+      code: 'SUC-A',
+      name: 'Sucursal A',
+      timezone: 'America/Mexico_City',
+    ),
+    BranchSummary(
+      id: 'branch-b',
+      code: 'SUC-B',
+      name: 'Sucursal B',
+      timezone: 'America/Mexico_City',
+    ),
+  ],
+  companyWideAccess: true,
+  permissions: _context.permissions,
+);
+
+/// TASK 12.6 Part C: `_context` plus the real `sale.read` permission
+/// (see `packages/database/src/seeds/technical-permissions.ts`) —
+/// `_context` itself deliberately lacks it (it predates TASK 12.6), so
+/// Historial de ventas tests use this instead of widening the shared
+/// fixture and risking an unrelated side effect on every other test.
+final _contextWithSaleRead = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [..._context.permissions, 'sale.read'],
+);
+
+/// TASK 12.7: `_context` plus the six real, already-reserved cash
+/// permissions (see `packages/database/src/seeds/technical-permissions.ts`
+/// and `bootstrap-owner.service.ts`) — `_context` itself predates TASK
+/// 12.7, so Caja tests use this instead of widening the shared fixture.
+final _contextWithCashPermissions = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._context.permissions,
+    'cash_register.read',
+    'cash_register.manage',
+    'cash_session.read',
+    'cash_session.open',
+    'cash_movement.create',
+    'cash_session.close',
+  ],
+);
+
+/// Same addition, for the company-wide branch filter test.
+final _companyWideContextWithSaleRead = AuthenticatedContext(
+  session: _companyWideContext.session,
+  user: _companyWideContext.user,
+  companies: _companyWideContext.companies,
+  branches: _companyWideContext.branches,
+  companyWideAccess: true,
+  permissions: [..._companyWideContext.permissions, 'sale.read'],
+);
+
+/// POS branch-context fix: the default single-branch `_context`, plus a
+/// second real authorized branch to switch to — used only by the
+/// non-empty-ticket branch-switch test, so `_context` itself (reused
+/// everywhere else) stays untouched.
+final _contextWithAlternateBranch = AuthenticatedContext(
+  session: SessionContext(
+    id: 'session-id',
+    userId: 'user-id',
+    companyId: 'company-id',
+    branchId: 'branch-id',
+    permittedBranchIds: const ['branch-id', 'branch-other'],
+    companyWideAccess: false,
+    expiresAt: DateTime.utc(2099),
+  ),
+  user: _context.user,
+  companies: _context.companies,
+  branches: const [
+    BranchSummary(
+      id: 'branch-id',
+      code: 'CENTRO',
+      name: 'Sucursal Centro',
+      timezone: 'America/Mexico_City',
+      current: true,
+    ),
+    BranchSummary(
+      id: 'branch-other',
+      code: 'OTRA',
+      name: 'Sucursal Otra',
+      timezone: 'America/Mexico_City',
+    ),
+  ],
+  companyWideAccess: false,
+  permissions: _context.permissions,
+);
+
+/// TASK 12.7: [_contextWithAlternateBranch] plus the six cash permissions
+/// — used by the branch-switch-safety Caja test.
+final _contextWithAlternateBranchAndCashPermissions = AuthenticatedContext(
+  session: _contextWithAlternateBranch.session,
+  user: _contextWithAlternateBranch.user,
+  companies: _contextWithAlternateBranch.companies,
+  branches: _contextWithAlternateBranch.branches,
+  companyWideAccess: false,
+  permissions: _contextWithCashPermissions.permissions,
+);
+
+/// POS branch-context fix: mimics the real app's `DashboardScreen`
+/// rebuild-on-`AuthController.notifyListeners()` pattern — `onBranchSelected`
+/// updates this harness's own state and rebuilds `PosShell` with a fresh
+/// `AuthenticatedContext`, exactly like a real branch switch flowing back
+/// down from the auth layer once `AuthController.selectBranch` resolves.
+/// Rejects any id absent from the session's own `permittedBranchIds`,
+/// standing in for the real, backend-authoritative
+/// `AuthController.selectBranch`/`AuthGateway.switchBranch` call (no
+/// network call happens here, but the same "never trust an arbitrary
+/// client-supplied branch id" contract is deliberately mirrored).
+class _BranchSwitchingHarness extends StatefulWidget {
+  const _BranchSwitchingHarness({
+    required this.initialContext,
+    this.salesGateway,
+    this.cashGateway,
+    this.readGateway,
+    this.onSwitchAttempt,
+    super.key,
+  });
+  final AuthenticatedContext initialContext;
+  final PosSalesGateway? salesGateway;
+  final PosCashGateway? cashGateway;
+  final PosReadGateway? readGateway;
+  final ValueChanged<String?>? onSwitchAttempt;
+
+  @override
+  State<_BranchSwitchingHarness> createState() =>
+      _BranchSwitchingHarnessState();
+}
+
+class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
+  late AuthenticatedContext current = widget.initialContext;
+  late final controller = PosReadController(
+    widget.readGateway ?? const _FakeReadGateway(),
+  );
+
+  /// Test-only hook so a test can call the exact same branch-selection
+  /// path the UI uses, without needing a widget to tap (e.g. to prove an
+  /// unauthorized id is rejected regardless of how it was invoked).
+  Future<void> attemptSelectBranch(String? branchId) => _selectBranch(branchId);
+
+  Future<void> _selectBranch(String? branchId) async {
+    widget.onSwitchAttempt?.call(branchId);
+    if (branchId != null &&
+        !current.session.permittedBranchIds.contains(branchId)) {
+      return; // Never trusted — rejected exactly like a real backend would.
+    }
+    if (branchId == null && !current.companyWideAccess) return;
+    setState(() {
+      current = AuthenticatedContext(
+        session: SessionContext(
+          id: current.session.id,
+          userId: current.session.userId,
+          companyId: current.session.companyId,
+          branchId: branchId,
+          permittedBranchIds: current.session.permittedBranchIds,
+          companyWideAccess: current.session.companyWideAccess,
+          expiresAt: current.session.expiresAt,
+        ),
+        user: current.user,
+        companies: current.companies,
+        branches: [
+          for (final branch in current.branches)
+            BranchSummary(
+              id: branch.id,
+              code: branch.code,
+              name: branch.name,
+              timezone: branch.timezone,
+              current: branch.id == branchId,
+              isDefault: branch.isDefault,
+            ),
+        ],
+        companyWideAccess: current.companyWideAccess,
+        permissions: current.permissions,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => PosShell(
+    context: current,
+    controller: controller,
+    salesGateway: widget.salesGateway ?? _FakeSalesGateway(),
+    paymentsGateway: _FakePaymentsGateway(),
+    cashGateway: widget.cashGateway ?? _FakeCashGateway(),
+    onLogout: () {},
+    onBranchSelected: _selectBranch,
+  );
+}
+
+/// POS branch-context fix: records every `branchId` a catalog/inventory
+/// load was actually requested with — proof that selecting a branch
+/// re-fetches branch-scoped data rather than retaining whatever
+/// "Todas las sucursales" (or a different branch's) catalog was loaded
+/// before.
+class _TrackingReadGateway implements PosReadGateway {
+  final List<String?> productBranchIdCalls = [];
+  final List<String?> balanceBranchIdCalls = [];
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async {
+    productBranchIdCalls.add(branchId);
+    return _catalogFixture();
+  }
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-1', name: 'Bebidas', status: 'active'),
+    PosCategory(id: 'cat-2', name: 'Snacks', status: 'active'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({
+    String? branchId,
+  }) async {
+    balanceBranchIdCalls.add(branchId);
+    return const [];
+  }
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+}
+
+/// TASK 12.3C: every fixture product now carries a real, valid,
+/// `IVA_GENERAL` price (`$10.00 MXN` by default) so the pre-existing
+/// TASK 12.3 add/merge/quantity tests — written before pricing existed —
+/// keep exercising the exact same "tap adds to the ticket" path, now for
+/// a real reason instead of an unconditional one. Dedicated
+/// missing/malformed-price fixtures are separate, below.
+PosProduct _pricedProduct({
+  required String id,
+  required String code,
+  required String name,
+  String? categoryId,
+  bool tracksInventory = false,
+  String? defaultVariantId,
+  String amount = '10.00',
+  String taxCode = 'IVA_GENERAL',
+}) => PosProduct(
+  id: id,
+  code: code,
+  name: name,
+  type: 'simple',
+  status: 'active',
+  tracksInventory: tracksInventory,
+  categoryId: categoryId,
+  defaultVariantId: defaultVariantId,
+  sku: code,
+  taxCode: taxCode,
+  pricing: PosPricing.fromJson({'amount': amount, 'currency_code': 'MXN'}),
+);
+
+List<PosProduct> _catalogFixture() => [
+  _pricedProduct(
+    id: 'product-1',
+    code: 'P-001',
+    name: 'Producto real',
+    categoryId: 'cat-1',
+    tracksInventory: true,
+  ),
+  _pricedProduct(
+    id: 'product-2',
+    code: 'P-002',
+    name: 'Agua embotellada',
+    categoryId: 'cat-2',
+    tracksInventory: true,
+    defaultVariantId: 'variant-2',
+  ),
+  _pricedProduct(
+    id: 'product-3',
+    code: 'P-003',
+    name: 'Refresco de cola',
+    categoryId: 'cat-1',
+    tracksInventory: true,
+    defaultVariantId: 'variant-3',
+  ),
+];
+
+/// TASK 12.4A.1: a controllable fake for the one write path Cobrar/the
+/// CLIENTE card button now has — records every call it received (so a
+/// test can assert exactly what was submitted) and either returns a
+/// canned, honest [PosSaleCreated] or throws a canned [ApiException],
+/// never a fabricated approval.
+class _FakeSalesGateway implements PosSalesGateway {
+  _FakeSalesGateway({
+    this.result,
+    this.failure,
+    this.receiptResult,
+    this.receiptFailure,
+    this.listResult,
+    this.listFailure,
+  });
+
+  final PosSaleCreated? result;
+  final ApiException? failure;
+  final List<({String branchId, List<PosSaleLineRequest> items})> calls = [];
+
+  // TASK 12.5B.
+  final PosReceipt? receiptResult;
+  final ApiException? receiptFailure;
+  final List<String> receiptCalls = [];
+
+  // TASK 12.6 Part C.
+  final PosSaleHistoryPage? listResult;
+  final ApiException? listFailure;
+  final List<({PosSaleHistoryFilter filter, String? cursor})> listCalls = [];
+
+  @override
+  Future<PosSaleCreated> createSale({
+    required String branchId,
+    required List<PosSaleLineRequest> items,
+  }) async {
+    calls.add((branchId: branchId, items: items));
+    if (failure != null) throw failure!;
+    return result ??
+        const PosSaleCreated(
+          id: 'sale-id',
+          saleNumber: 'SALE-fixture',
+          status: 'pending_payment',
+          total: '0.0000',
+        );
+  }
+
+  @override
+  Future<PosReceipt> receipt(String saleId) async {
+    receiptCalls.add(saleId);
+    if (receiptFailure != null) throw receiptFailure!;
+    return receiptResult ?? _fixtureReceipt(saleId);
+  }
+
+  @override
+  Future<PosSaleHistoryPage> listSales({
+    PosSaleHistoryFilter filter = const PosSaleHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async {
+    listCalls.add((filter: filter, cursor: cursor));
+    if (listFailure != null) throw listFailure!;
+    return listResult ?? const PosSaleHistoryPage(items: [], nextCursor: null);
+  }
+}
+
+PosReceipt _fixtureReceipt(String saleId) => PosReceipt(
+  sale: PosReceiptSale(
+    id: saleId,
+    saleNumber: 'SALE-fixture',
+    status: 'completed',
+    currencyCode: 'MXN',
+    branchId: 'branch-id',
+    occurredAt: DateTime.utc(2026, 8, 1),
+    completedAt: DateTime.utc(2026, 8, 1, 0, 5),
+    subtotal: '50.0000',
+    discountTotal: '0.0000',
+    taxTotal: '8.0000',
+    total: '58.0000',
+  ),
+  business: const PosReceiptBusiness(
+    companyName: 'AS ONE Fixture Co.',
+    branchName: 'Main',
+    branchAddress: null,
+  ),
+  cashier: const PosReceiptCashier(id: 'user-id', displayName: 'Cash Ier'),
+  items: const [
+    PosReceiptItem(
+      lineNumber: 1,
+      nameSnapshot: 'Fixture Product',
+      skuSnapshot: 'SKU-1',
+      quantity: '1.000000',
+      unitPrice: '50.0000',
+      discountTotal: '0.0000',
+      taxTotal: '8.0000',
+      lineTotal: '58.0000',
+    ),
+  ],
+  payments: const [
+    PosReceiptPayment(
+      id: 'payment-id',
+      paymentMethod: 'cash',
+      status: 'captured',
+      amount: '58.0000',
+      currencyCode: 'MXN',
+      capturedAt: null,
+      tenderedAmount: '58.0000',
+      changeAmount: '0.0000',
+      provider: null,
+      terminalId: null,
+      providerReference: null,
+    ),
+  ],
+);
+
+/// TASK 12.4B.1: a controllable fake for terminal discovery, card_terminal
+/// payment creation, and the bounded status-poll loop. `pollResults`
+/// (when given) is served one item per `paymentStatus` call, then repeats
+/// its last entry — lets a test script a realistic
+/// created → awaiting_terminal → processing → approved progression
+/// without a real backend or a real Mercado Pago terminal.
+class _FakePaymentsGateway implements PosPaymentsGateway {
+  _FakePaymentsGateway({
+    this.terminals = const [],
+    this.createResult,
+    this.pollResults = const [],
+    this.cashResult,
+    this.cashFailure,
+  });
+
+  final List<PosPaymentTerminal> terminals;
+  final PosPaymentStatus? createResult;
+  final List<PosPaymentStatus> pollResults;
+  int _pollIndex = 0;
+  final List<String> statusCalls = [];
+
+  // TASK 12.5A.
+  final PosCashPaymentResult? cashResult;
+  final ApiException? cashFailure;
+  final List<({String saleId, String tenderedAmount})> cashCalls = [];
+
+  @override
+  Future<List<PosPaymentTerminal>> terminalsForBranch(String branchId) async =>
+      terminals;
+
+  @override
+  Future<PosPaymentStatus> createCardTerminalPayment({
+    required String saleId,
+    required String amount,
+    required String terminalId,
+  }) async =>
+      createResult ??
+      const PosPaymentStatus(
+        id: 'payment-id',
+        status: 'pending',
+        attempts: [PosPaymentAttempt(id: 'attempt-id', status: 'created')],
+      );
+
+  @override
+  Future<PosPaymentStatus> paymentStatus(String paymentId) async {
+    statusCalls.add(paymentId);
+    if (pollResults.isEmpty) {
+      return const PosPaymentStatus(
+        id: 'payment-id',
+        status: 'captured',
+        attempts: [PosPaymentAttempt(id: 'attempt-id', status: 'approved')],
+      );
+    }
+    final index = _pollIndex < pollResults.length
+        ? _pollIndex
+        : pollResults.length - 1;
+    _pollIndex++;
+    return pollResults[index];
+  }
+
+  @override
+  Future<PosCashPaymentResult> createCashPayment({
+    required String saleId,
+    required String tenderedAmount,
+  }) async {
+    cashCalls.add((saleId: saleId, tenderedAmount: tenderedAmount));
+    if (cashFailure != null) throw cashFailure!;
+    return cashResult ??
+        const PosCashPaymentResult(
+          paymentId: 'cash-payment-id',
+          status: 'captured',
+          tenderedAmount: '0.0000',
+          changeAmount: '0.0000',
+          saleId: 'sale-id',
+          saleNumber: 'SALE-fixture',
+          saleStatus: 'completed',
+        );
+  }
+}
+
+/// TASK 12.7: a controllable fake for the Caja module and the POS
+/// Efectivo gate. Defaults to an already-open session for [branchId]
+/// (`branch-id`, this file's own default fixture branch) so every
+/// pre-existing Cobrar/cash test — written before the cash-session
+/// requirement existed — keeps exercising what it actually tests; pass
+/// `openSessionFixture: null` to simulate a closed drawer for the
+/// dedicated gating tests.
+class _FakeCashGateway implements PosCashGateway {
+  _FakeCashGateway({
+    List<PosCashRegister>? registers,
+    Object? openSessionFixture = _unset,
+    this.summaryResult,
+    this.movements = const [],
+    this.movementFailure,
+    this.closeResult,
+    this.closeFailure,
+    this.historyResult,
+  }) : registers = registers ?? [_fixtureRegister],
+       _current = identical(openSessionFixture, _unset)
+           ? _fixtureSession
+           : openSessionFixture as PosCashSession?;
+
+  /// The current in-memory session — mutated by [openSession]/
+  /// [closeSession] so a test can drive the real "closed → open → closed"
+  /// round trip through this one fake, not just assert isolated calls.
+  PosCashSession? _current;
+
+  static const _unset = Object();
+  static const _fixtureRegister = PosCashRegister(
+    id: 'register-id',
+    branchId: 'branch-id',
+    code: 'CAJA-1',
+    name: 'Caja 1',
+    status: 'active',
+  );
+  static final _fixtureSession = PosCashSession(
+    id: 'session-id',
+    branchId: 'branch-id',
+    cashRegisterId: 'register-id',
+    openedBy: 'user-id',
+    openedAt: DateTime.utc(2026, 9, 6, 9),
+    openingAmount: '1000.0000',
+    currencyCode: 'MXN',
+    status: 'open',
+  );
+
+  final List<PosCashRegister> registers;
+  final PosCashSessionSummary? summaryResult;
+  final List<PosCashMovement> movements;
+  final ApiException? movementFailure;
+  final PosCashSession? closeResult;
+  final ApiException? closeFailure;
+  final PosCashSessionHistoryPage? historyResult;
+
+  final List<String> openSessionForBranchCalls = [];
+  final List<({String cashRegisterId, String openingAmount})> openSessionCalls =
+      [];
+  final List<
+    ({
+      String cashSessionId,
+      String movementType,
+      String amount,
+      String reasonCode,
+    })
+  >
+  movementCalls = [];
+  final List<({String cashSessionId, String declaredClosingAmount})>
+  closeCalls = [];
+
+  @override
+  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
+      registers
+          .where((candidate) => candidate.branchId == branchId)
+          .toList(growable: false);
+
+  @override
+  Future<PosCashSession> openSession({
+    required String cashRegisterId,
+    required String openingAmount,
+  }) async {
+    openSessionCalls.add((
+      cashRegisterId: cashRegisterId,
+      openingAmount: openingAmount,
+    ));
+    final opened = PosCashSession(
+      id: 'session-id',
+      branchId: 'branch-id',
+      cashRegisterId: cashRegisterId,
+      openedBy: 'user-id',
+      openedAt: DateTime.utc(2026, 9, 6, 9),
+      openingAmount: openingAmount,
+      currencyCode: 'MXN',
+      status: 'open',
+    );
+    _current = opened;
+    return opened;
+  }
+
+  @override
+  Future<PosCashSession?> currentSession(String cashRegisterId) async =>
+      _current;
+
+  @override
+  Future<PosCashSession?> openSessionForBranch(String branchId) async {
+    openSessionForBranchCalls.add(branchId);
+    return _current;
+  }
+
+  @override
+  Future<PosCashSession> session(String cashSessionId) async =>
+      _current ?? _fixtureSession;
+
+  @override
+  Future<PosCashSessionSummary> summary(String cashSessionId) async =>
+      summaryResult ??
+      PosCashSessionSummary(
+        session: _current ?? _fixtureSession,
+        openingAmount: '1000.0000',
+        cashSalesTotal: '29.0000',
+        cashSalesCount: 1,
+        cashInTotal: '0.0000',
+        cashOutTotal: '0.0000',
+        expectedCash: '1029.0000',
+      );
+
+  @override
+  Future<PosCashMovement> createMovement({
+    required String cashSessionId,
+    required String movementType,
+    required String amount,
+    required String reasonCode,
+    String? note,
+  }) async {
+    movementCalls.add((
+      cashSessionId: cashSessionId,
+      movementType: movementType,
+      amount: amount,
+      reasonCode: reasonCode,
+    ));
+    if (movementFailure != null) throw movementFailure!;
+    return PosCashMovement(
+      id: 'movement-id',
+      cashSessionId: cashSessionId,
+      movementType: movementType,
+      amount: amount,
+      currencyCode: 'MXN',
+      reasonCode: reasonCode,
+      note: note,
+      occurredAt: DateTime.utc(2026, 9, 6, 10),
+      createdBy: 'user-id',
+    );
+  }
+
+  @override
+  Future<PosCashMovementPage> listMovements(
+    String cashSessionId, {
+    String? cursor,
+    int limit = 50,
+  }) async => PosCashMovementPage(items: movements, nextCursor: null);
+
+  @override
+  Future<PosCashSession> closeSession({
+    required String cashSessionId,
+    required String declaredClosingAmount,
+    List<PosCashDenominationCount>? denominationCounts,
+  }) async {
+    closeCalls.add((
+      cashSessionId: cashSessionId,
+      declaredClosingAmount: declaredClosingAmount,
+    ));
+    if (closeFailure != null) throw closeFailure!;
+    final closed =
+        closeResult ??
+        PosCashSession(
+          id: cashSessionId,
+          branchId: 'branch-id',
+          cashRegisterId: 'register-id',
+          openedBy: 'user-id',
+          openedAt: DateTime.utc(2026, 9, 6, 9),
+          openingAmount: '1000.0000',
+          currencyCode: 'MXN',
+          status: 'closed',
+          closedBy: 'user-id',
+          closedAt: DateTime.utc(2026, 9, 6, 20),
+          declaredClosingAmount: declaredClosingAmount,
+          expectedClosingAmount: '1029.0000',
+          discrepancyAmount: '0.0000',
+        );
+    // A closed session is no longer "the" open session for this register —
+    // the very next `_load()` (Part I: an immutable closed session) must
+    // see the drawer as closed again, exactly like the real backend.
+    _current = null;
+    return closed;
+  }
+
+  @override
+  Future<PosCashSessionHistoryPage> listSessions({
+    PosCashSessionHistoryFilter filter = const PosCashSessionHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async =>
+      historyResult ??
+      const PosCashSessionHistoryPage(items: [], nextCursor: null);
+}
+
+/// TASK 12.7 Part S: a network/backend failure while checking session
+/// state must fail closed — never silently let a cash sale through when
+/// the check itself couldn't be confirmed one way or the other. Every
+/// other member is unused by the one POS-gate test that needs this.
+class _ThrowingOpenSessionCashGateway implements PosCashGateway {
+  @override
+  Future<PosCashSession?> openSessionForBranch(String branchId) =>
+      Future.error(StateError('network failure'));
+
+  @override
+  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
+      const [];
+  @override
+  Future<PosCashSession> openSession({
+    required String cashRegisterId,
+    required String openingAmount,
+  }) => Future.error(StateError('not used'));
+  @override
+  Future<PosCashSession?> currentSession(String cashRegisterId) async => null;
+  @override
+  Future<PosCashSession> session(String cashSessionId) =>
+      Future.error(StateError('not used'));
+  @override
+  Future<PosCashSessionSummary> summary(String cashSessionId) =>
+      Future.error(StateError('not used'));
+  @override
+  Future<PosCashMovement> createMovement({
+    required String cashSessionId,
+    required String movementType,
+    required String amount,
+    required String reasonCode,
+    String? note,
+  }) => Future.error(StateError('not used'));
+  @override
+  Future<PosCashMovementPage> listMovements(
+    String cashSessionId, {
+    String? cursor,
+    int limit = 50,
+  }) async => const PosCashMovementPage(items: [], nextCursor: null);
+  @override
+  Future<PosCashSession> closeSession({
+    required String cashSessionId,
+    required String declaredClosingAmount,
+    List<PosCashDenominationCount>? denominationCounts,
+  }) => Future.error(StateError('not used'));
+  @override
+  Future<PosCashSessionHistoryPage> listSessions({
+    PosCashSessionHistoryFilter filter = const PosCashSessionHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async => const PosCashSessionHistoryPage(items: [], nextCursor: null);
+}
 
 class _FakeReadGateway implements PosReadGateway {
   const _FakeReadGateway();
 
   @override
-  Future<List<PosProduct>> products() async => const [
-    PosProduct(
-      id: 'product-1',
-      code: 'P-001',
-      name: 'Producto real',
-      type: 'simple',
-      status: 'active',
-      tracksInventory: true,
-      categoryId: 'cat-1',
-    ),
-    PosProduct(
-      id: 'product-2',
-      code: 'P-002',
-      name: 'Agua embotellada',
-      type: 'simple',
-      status: 'active',
-      tracksInventory: true,
-      categoryId: 'cat-2',
-      defaultVariantId: 'variant-2',
-    ),
-    PosProduct(
-      id: 'product-3',
-      code: 'P-003',
-      name: 'Refresco de cola',
-      type: 'simple',
-      status: 'active',
-      tracksInventory: true,
-      categoryId: 'cat-1',
-      defaultVariantId: 'variant-3',
-    ),
-  ];
+  Future<List<PosProduct>> products({String? branchId}) async =>
+      _catalogFixture();
 
   @override
   Future<List<PosCategory>> categories() async => const [
@@ -378,7 +4432,8 @@ class _SlowPosReadGateway implements PosReadGateway {
   const _SlowPosReadGateway();
 
   @override
-  Future<List<PosProduct>> products() => Completer<List<PosProduct>>().future;
+  Future<List<PosProduct>> products({String? branchId}) =>
+      Completer<List<PosProduct>>().future;
 
   @override
   Future<List<PosCategory>> categories() async => const [];
@@ -396,7 +4451,7 @@ class _EmptyPosReadGateway implements PosReadGateway {
   const _EmptyPosReadGateway();
 
   @override
-  Future<List<PosProduct>> products() async => const [];
+  Future<List<PosProduct>> products({String? branchId}) async => const [];
 
   @override
   Future<List<PosCategory>> categories() async => const [];
@@ -410,11 +4465,49 @@ class _EmptyPosReadGateway implements PosReadGateway {
   Future<List<PosUser>> users() async => const [];
 }
 
+/// TASK 12.3B: adds a third active category (`cat-3`, "Postres") with no
+/// matching products at all, alongside the same `cat-1`/`cat-2` products
+/// `_FakeReadGateway` uses — so the CLIENTE stacked catalog's per-category
+/// honest-empty-state can be exercised without a category-less product or
+/// an all-empty catalog (both already covered by `_EmptyPosReadGateway`).
+class _ClienteCatalogGateway implements PosReadGateway {
+  const _ClienteCatalogGateway();
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async =>
+      _catalogFixture();
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-1', name: 'Bebidas', status: 'active'),
+    PosCategory(id: 'cat-2', name: 'Snacks', status: 'active'),
+    PosCategory(id: 'cat-3', name: 'Postres', status: 'active'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({
+    String? branchId,
+  }) async => const [
+    PosInventoryBalance(
+      id: 'balance-1',
+      branchId: 'branch-id',
+      locationId: 'location-id',
+      variantId: 'variant-3',
+      onHand: '0',
+      reserved: '0',
+      inTransit: '0',
+    ),
+  ];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+}
+
 class _FailingPosReadGateway implements PosReadGateway {
   const _FailingPosReadGateway();
 
   @override
-  Future<List<PosProduct>> products() async =>
+  Future<List<PosProduct>> products({String? branchId}) async =>
       throw const FormatException('boom');
 
   @override

@@ -145,15 +145,27 @@ class ApiAuthGateway implements AuthGateway {
 
   @override
   Future<AuthenticatedContext> hydrate(SessionContext tokenSession) async {
-    final sessionData = _data(
-      await client.getJson('api/v1/auth/session', retryAfterRefresh: false),
-    );
-    final userData = _data(await client.getJson('api/v1/auth/me'));
-    final companyData = _data(await client.getJson('api/v1/context/companies'));
-    final branchData = _data(await client.getJson('api/v1/context/branches'));
-    final permissionData = _data(
-      await client.getJson('api/v1/auth/permissions'),
-    );
+    // TASK 12.2G performance finding: these five reads are independent —
+    // none consumes another's response — but were previously awaited one
+    // at a time, serializing 5 round trips into every login and every
+    // cold-start session restore. Running them concurrently cuts hydrate
+    // latency to roughly the slowest single call instead of their sum.
+    // Safe: `ApiClient` is stateless per request (see `_perform`), and
+    // `AuthController._refreshFuture`'s `??=` guard already de-duplicates
+    // concurrent 401-triggered refreshes, so parallel calls can't race
+    // each other into redundant refresh attempts.
+    final results = await Future.wait([
+      client.getJson('api/v1/auth/session', retryAfterRefresh: false),
+      client.getJson('api/v1/auth/me'),
+      client.getJson('api/v1/context/companies'),
+      client.getJson('api/v1/context/branches'),
+      client.getJson('api/v1/auth/permissions'),
+    ]);
+    final sessionData = _data(results[0]);
+    final userData = _data(results[1]);
+    final companyData = _data(results[2]);
+    final branchData = _data(results[3]);
+    final permissionData = _data(results[4]);
     final companies = _list(companyData, 'items')
         .map(
           (value) => CompanySummary(

@@ -30,7 +30,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Continuar'));
+      await tester.tap(find.text('Entrar'));
       await tester.pump();
       expect(
         find.text('Ingresa un correo y una contraseña válidos.'),
@@ -48,7 +48,7 @@ void main() {
         find.byKey(const Key('login-password')),
         'password-1',
       );
-      await tester.tap(find.text('Continuar'));
+      await tester.tap(find.text('Entrar'));
       await tester.pump();
       expect(find.text('Validando…'), findsOneWidget);
       gateway.loginCompleter!.complete(gateway.loginOutcome);
@@ -136,7 +136,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Cerrar sesión'));
     await tester.pumpAndSettle();
-    expect(find.text('Bienvenido'), findsOneWidget);
+    expect(find.text('Iniciar sesión'), findsOneWidget);
     expect(gateway.logoutCalls, 1);
   });
 }

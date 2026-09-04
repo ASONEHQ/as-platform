@@ -28,12 +28,12 @@ class PosReadController extends ChangeNotifier {
   );
   PosReadState<PosUser> users = const PosReadState(PosReadPhase.idle);
 
-  Future<void> loadProducts({bool refresh = false}) async {
+  Future<void> loadProducts({String? branchId, bool refresh = false}) async {
     if (!refresh && products.phase != PosReadPhase.idle) return;
     products = const PosReadState(PosReadPhase.loading);
     notifyListeners();
     try {
-      final items = await _gateway.products();
+      final items = await _gateway.products(branchId: branchId);
       products = PosReadState(
         items.isEmpty ? PosReadPhase.empty : PosReadPhase.ready,
         items: items,

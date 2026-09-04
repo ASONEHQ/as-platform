@@ -47,6 +47,11 @@ class ApiClient {
     Map<String, Object?> body = const {},
     String? csrfToken,
     bool authenticated = true,
+    // TASK 12.4A.1: the first Flutter caller of a mutation that requires
+    // ADR-0005's `Idempotency-Key` header (every prior `postJson` call —
+    // login/refresh/logout — predates any domain-object-creation
+    // endpoint). Optional so every existing call site is unaffected.
+    String? idempotencyKey,
   }) => _send(
     'POST',
     path,
@@ -54,6 +59,7 @@ class ApiClient {
     csrfToken: csrfToken,
     authenticated: authenticated,
     retryAfterRefresh: false,
+    idempotencyKey: idempotencyKey,
   );
 
   Future<Map<String, Object?>> _send(
@@ -63,6 +69,7 @@ class ApiClient {
     String? csrfToken,
     required bool authenticated,
     required bool retryAfterRefresh,
+    String? idempotencyKey,
   }) async {
     final response = await _perform(
       method,
@@ -70,6 +77,7 @@ class ApiClient {
       body: body,
       csrfToken: csrfToken,
       authenticated: authenticated,
+      idempotencyKey: idempotencyKey,
     );
     if (response.statusCode == 401 &&
         authenticated &&
@@ -83,6 +91,7 @@ class ApiClient {
           body: body,
           csrfToken: csrfToken,
           authenticated: authenticated,
+          idempotencyKey: idempotencyKey,
         ),
       );
     }
@@ -95,6 +104,7 @@ class ApiClient {
     Map<String, Object?>? body,
     String? csrfToken,
     required bool authenticated,
+    String? idempotencyKey,
   }) async {
     final token = authenticated ? readAccessToken() : null;
     final request = http.Request(method, baseUrl.resolve(path))
@@ -104,6 +114,7 @@ class ApiClient {
         'X-Correlation-ID': createCorrelationId(),
         ...token == null ? const {} : {'Authorization': 'Bearer $token'},
         ...csrfToken == null ? const {} : {'X-CSRF-Token': csrfToken},
+        ...idempotencyKey == null ? const {} : {'Idempotency-Key': idempotencyKey},
       })
       ..body = body == null ? '' : jsonEncode(body);
     try {

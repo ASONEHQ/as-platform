@@ -1,0 +1,592 @@
+import '../../core/networking/api_client.dart';
+
+/// TASK 12.7: the Flutter side of E038–E048 — see ADR-0014 for the full
+/// backend design this mirrors. Every model here is exactly what the
+/// backend returns; nothing is recomputed or guessed client-side (Part H/I:
+/// "Flutter displays the backend result only", "backend computes the
+/// difference").
+
+/// A `cash_registers` row — the physical drawer, independent of any one
+/// cashier or session (see ADR-0014 §B1).
+class PosCashRegister {
+  const PosCashRegister({
+    required this.id,
+    required this.branchId,
+    required this.code,
+    required this.name,
+    required this.status,
+  });
+
+  factory PosCashRegister.fromJson(Map<String, Object?> json) =>
+      PosCashRegister(
+        id: json['id']! as String,
+        branchId: json['branch_id']! as String,
+        code: json['code']! as String,
+        name: json['name']! as String,
+        status: json['status']! as String,
+      );
+
+  final String id;
+  final String branchId;
+  final String code;
+  final String name;
+  final String status;
+}
+
+/// Part J — one bills/coins line from the AS POS V1-canonical close-drawer
+/// count. `value` is the exact ADR-0001 decimal-string wire format.
+class PosCashDenominationCount {
+  const PosCashDenominationCount({required this.value, required this.quantity});
+
+  factory PosCashDenominationCount.fromJson(Map<String, Object?> json) =>
+      PosCashDenominationCount(
+        value: json['value']! as String,
+        quantity: json['quantity']! as int,
+      );
+
+  final String value;
+  final int quantity;
+
+  Map<String, Object?> toJson() => {'value': value, 'quantity': quantity};
+}
+
+/// A `cash_sessions` row — the exact 3-state machine (§21.1: `open` |
+/// `closing` | `closed`) ADR-0014 §B2 implements. `closing` is real in the
+/// contract but this backend's own close command completes it
+/// instantaneously, so Flutter should never expect to observe it at rest.
+class PosCashSession {
+  const PosCashSession({
+    required this.id,
+    required this.branchId,
+    required this.cashRegisterId,
+    required this.openedBy,
+    required this.openedAt,
+    required this.openingAmount,
+    required this.currencyCode,
+    required this.status,
+    this.closedBy,
+    this.closedAt,
+    this.declaredClosingAmount,
+    this.expectedClosingAmount,
+    this.discrepancyAmount,
+    this.denominationCounts,
+  });
+
+  factory PosCashSession.fromJson(Map<String, Object?> json) {
+    final rawDenominations = json['denomination_counts'];
+    return PosCashSession(
+      id: json['id']! as String,
+      branchId: json['branch_id']! as String,
+      cashRegisterId: json['cash_register_id']! as String,
+      openedBy: json['opened_by']! as String,
+      openedAt: DateTime.parse(json['opened_at']! as String),
+      openingAmount: json['opening_amount']! as String,
+      currencyCode: json['currency_code']! as String,
+      status: json['status']! as String,
+      closedBy: json['closed_by'] as String?,
+      closedAt: json['closed_at'] == null
+          ? null
+          : DateTime.parse(json['closed_at']! as String),
+      declaredClosingAmount: json['declared_closing_amount'] as String?,
+      expectedClosingAmount: json['expected_closing_amount'] as String?,
+      discrepancyAmount: json['discrepancy_amount'] as String?,
+      denominationCounts: rawDenominations is List<Object?>
+          ? rawDenominations
+                .whereType<Map<String, Object?>>()
+                .map(PosCashDenominationCount.fromJson)
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  final String id;
+  final String branchId;
+  final String cashRegisterId;
+  final String openedBy;
+  final DateTime openedAt;
+  final String openingAmount;
+  final String currencyCode;
+  final String status;
+  final String? closedBy;
+  final DateTime? closedAt;
+  final String? declaredClosingAmount;
+  final String? expectedClosingAmount;
+  final String? discrepancyAmount;
+  final List<PosCashDenominationCount>? denominationCounts;
+
+  bool get isOpen => status == 'open';
+  bool get isClosed => status == 'closed';
+}
+
+/// One `cash_movements` row (E046).
+class PosCashMovement {
+  const PosCashMovement({
+    required this.id,
+    required this.cashSessionId,
+    required this.movementType,
+    required this.amount,
+    required this.currencyCode,
+    required this.reasonCode,
+    this.note,
+    required this.occurredAt,
+    required this.createdBy,
+  });
+
+  factory PosCashMovement.fromJson(Map<String, Object?> json) =>
+      PosCashMovement(
+        id: json['id']! as String,
+        cashSessionId: json['cash_session_id']! as String,
+        movementType: json['movement_type']! as String,
+        amount: json['amount']! as String,
+        currencyCode: json['currency_code']! as String,
+        reasonCode: json['reason_code']! as String,
+        note: json['note'] as String?,
+        occurredAt: DateTime.parse(json['occurred_at']! as String),
+        createdBy: json['created_by']! as String,
+      );
+
+  final String id;
+  final String cashSessionId;
+  final String movementType;
+  final String amount;
+  final String currencyCode;
+  final String reasonCode;
+  final String? note;
+  final DateTime occurredAt;
+  final String createdBy;
+}
+
+/// E048 — the cash-cut summary (Part K). Every total here comes straight
+/// from the backend's own ledger fold (ADR-0014 §B4): never mixes a card
+/// total into `expectedCash`, never recomputed by summing `sales`.
+class PosCashSessionSummary {
+  const PosCashSessionSummary({
+    required this.session,
+    required this.openingAmount,
+    required this.cashSalesTotal,
+    required this.cashSalesCount,
+    required this.cashInTotal,
+    required this.cashOutTotal,
+    required this.expectedCash,
+  });
+
+  factory PosCashSessionSummary.fromJson(Map<String, Object?> json) {
+    final rawSession = json['session'];
+    return PosCashSessionSummary(
+      session: PosCashSession.fromJson(
+        rawSession is Map<String, Object?>
+            ? rawSession
+            : const <String, Object?>{},
+      ),
+      openingAmount: json['opening_amount']! as String,
+      cashSalesTotal: json['cash_sales_total']! as String,
+      cashSalesCount: json['cash_sales_count']! as int,
+      cashInTotal: json['cash_in_total']! as String,
+      cashOutTotal: json['cash_out_total']! as String,
+      expectedCash: json['expected_cash']! as String,
+    );
+  }
+
+  final PosCashSession session;
+  final String openingAmount;
+  final String cashSalesTotal;
+  final int cashSalesCount;
+  final String cashInTotal;
+  final String cashOutTotal;
+  final String expectedCash;
+}
+
+class PosCashMovementPage {
+  const PosCashMovementPage({required this.items, required this.nextCursor});
+  final List<PosCashMovement> items;
+  final String? nextCursor;
+}
+
+class PosCashSessionHistoryPage {
+  const PosCashSessionHistoryPage({
+    required this.items,
+    required this.nextCursor,
+  });
+  final List<PosCashSession> items;
+  final String? nextCursor;
+}
+
+/// Part L — every filter `GET /api/v1/cash-sessions` supports.
+class PosCashSessionHistoryFilter {
+  const PosCashSessionHistoryFilter({
+    this.branchId,
+    this.cashRegisterId,
+    this.openedBy,
+    this.status,
+    this.openedFrom,
+    this.openedTo,
+  });
+  final String? branchId;
+  final String? cashRegisterId;
+  final String? openedBy;
+  final String? status;
+  final DateTime? openedFrom;
+  final DateTime? openedTo;
+}
+
+/// Part J — the exact 11-denomination MXN set AS POS V1's own
+/// `modal-cierre-caja` counts (its `DENOMINACIONES` array), matching the
+/// backend's `canonicalCashDenominationsMXN` exactly (ADR-0014 §B10).
+/// Highest to lowest, matching V1's own display order.
+const List<String> canonicalCashDenominationsMXN = [
+  '1000',
+  '500',
+  '200',
+  '100',
+  '50',
+  '20',
+  '10',
+  '5',
+  '2',
+  '1',
+  '0.50',
+];
+
+abstract interface class PosCashGateway {
+  /// `GET /api/v1/cash-registers?branch_id=...` — the branch/register
+  /// selection step of "Abrir caja" (Part C).
+  Future<List<PosCashRegister>> registersForBranch(String branchId);
+
+  /// `POST /api/v1/cash-sessions` (E042) — the cashier's own entered
+  /// opening float; never a fabricated or seeded amount (Part C).
+  Future<PosCashSession> openSession({
+    required String cashRegisterId,
+    required String openingAmount,
+  });
+
+  /// `GET /api/v1/cash-sessions/current?cash_register_id=...` (E043) — a
+  /// `null` result is a legitimate answer ("no open session"), never an
+  /// error.
+  Future<PosCashSession?> currentSession(String cashRegisterId);
+
+  /// The branch-level open-session check the POS ticket's Efectivo gate
+  /// uses (Part N) — mirrors the backend's own register-agnostic
+  /// resolution (`PaymentService.resolveOpenCashSession` when
+  /// `cash_register_id` is omitted, ADR-0014 §B5), via
+  /// `GET /api/v1/cash-sessions?branch_id=...&status=open&limit=1`. `null`
+  /// means no open session for this branch — the caller must block
+  /// Efectivo and prompt "Abre la caja para comenzar a cobrar en
+  /// efectivo".
+  Future<PosCashSession?> openSessionForBranch(String branchId);
+
+  /// `GET /api/v1/cash-sessions/{id}` (E044).
+  Future<PosCashSession> session(String cashSessionId);
+
+  /// `GET /api/v1/cash-sessions/{id}/summary` (E048) — the one read that
+  /// carries `expected_cash`; Flutter must display this value only, never
+  /// recompute it (Part H).
+  Future<PosCashSessionSummary> summary(String cashSessionId);
+
+  /// `POST /api/v1/cash-sessions/{id}/movements` (E045) — cash in/out only;
+  /// `opening_float`/`cash_sale` are system-posted and never reach this
+  /// call (Part G).
+  Future<PosCashMovement> createMovement({
+    required String cashSessionId,
+    required String movementType,
+    required String amount,
+    required String reasonCode,
+    String? note,
+  });
+
+  /// `GET /api/v1/cash-sessions/{id}/movements` (E046).
+  Future<PosCashMovementPage> listMovements(
+    String cashSessionId, {
+    String? cursor,
+    int limit = 50,
+  });
+
+  /// `POST /api/v1/cash-sessions/{id}/closures` (E047) — [declaredClosingAmount]
+  /// is the only money figure this call submits; the backend alone computes
+  /// `expected_closing_amount`/`discrepancy_amount` (Part I).
+  /// [denominationCounts] is the optional Part J bills/coins breakdown —
+  /// the backend independently requires it to sum to
+  /// [declaredClosingAmount] exactly.
+  Future<PosCashSession> closeSession({
+    required String cashSessionId,
+    required String declaredClosingAmount,
+    List<PosCashDenominationCount>? denominationCounts,
+  });
+
+  /// `GET /api/v1/cash-sessions` (Part L cut history) — server-side
+  /// paginated/filtered; never load-all-then-filter-client-side.
+  Future<PosCashSessionHistoryPage> listSessions({
+    PosCashSessionHistoryFilter filter = const PosCashSessionHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  });
+}
+
+class ApiPosCashGateway implements PosCashGateway {
+  const ApiPosCashGateway(
+    this._client, {
+    this.createIdempotencyKey = _defaultIdempotencyKey,
+  });
+
+  final ApiClient _client;
+  final String Function() createIdempotencyKey;
+
+  static String _defaultIdempotencyKey() =>
+      'one-cash-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+
+  @override
+  Future<List<PosCashRegister>> registersForBranch(String branchId) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-registers?branch_id=$branchId&status=active&limit=50',
+    );
+    final data = envelope['data'];
+    if (data is! List<Object?>) return const [];
+    return data
+        .whereType<Map<String, Object?>>()
+        .map(PosCashRegister.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<PosCashSession> openSession({
+    required String cashRegisterId,
+    required String openingAmount,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-sessions',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'cash_register_id': cashRegisterId,
+        'opening_amount': openingAmount,
+      },
+    );
+    return _decodeSession(envelope);
+  }
+
+  @override
+  Future<PosCashSession?> currentSession(String cashRegisterId) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-sessions/current?cash_register_id=$cashRegisterId',
+    );
+    final data = envelope['data'];
+    return data is Map<String, Object?> ? PosCashSession.fromJson(data) : null;
+  }
+
+  @override
+  Future<PosCashSession?> openSessionForBranch(String branchId) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-sessions?branch_id=$branchId&status=open&limit=1',
+    );
+    final data = envelope['data'];
+    if (data is! List<Object?> || data.isEmpty) return null;
+    final first = data.first;
+    return first is Map<String, Object?>
+        ? PosCashSession.fromJson(first)
+        : null;
+  }
+
+  @override
+  Future<PosCashSession> session(String cashSessionId) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-sessions/$cashSessionId',
+    );
+    return _decodeSession(envelope);
+  }
+
+  @override
+  Future<PosCashSessionSummary> summary(String cashSessionId) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-sessions/$cashSessionId/summary',
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash session summary data.');
+    }
+    return PosCashSessionSummary.fromJson(data);
+  }
+
+  @override
+  Future<PosCashMovement> createMovement({
+    required String cashSessionId,
+    required String movementType,
+    required String amount,
+    required String reasonCode,
+    String? note,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-sessions/$cashSessionId/movements',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'movement_type': movementType,
+        'amount': amount,
+        'reason_code': reasonCode,
+        if (note != null && note.isNotEmpty) 'note': note,
+      },
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash movement data.');
+    }
+    return PosCashMovement.fromJson(data);
+  }
+
+  @override
+  Future<PosCashMovementPage> listMovements(
+    String cashSessionId, {
+    String? cursor,
+    int limit = 50,
+  }) async {
+    final query = <String, String>{
+      'limit': '$limit',
+      if (cursor != null) 'cursor': cursor,
+    };
+    final path = Uri(
+      path: '/api/v1/cash-sessions/$cashSessionId/movements',
+      queryParameters: query,
+    ).toString();
+    final envelope = await _client.getJson(path);
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing cash movement list data.');
+    }
+    final meta = envelope['meta'];
+    final page = meta is Map<String, Object?> ? meta['page'] : null;
+    final nextCursor = page is Map<String, Object?>
+        ? page['next_cursor'] as String?
+        : null;
+    return PosCashMovementPage(
+      items: data
+          .whereType<Map<String, Object?>>()
+          .map(PosCashMovement.fromJson)
+          .toList(growable: false),
+      nextCursor: nextCursor,
+    );
+  }
+
+  @override
+  Future<PosCashSession> closeSession({
+    required String cashSessionId,
+    required String declaredClosingAmount,
+    List<PosCashDenominationCount>? denominationCounts,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-sessions/$cashSessionId/closures',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'declared_closing_amount': declaredClosingAmount,
+        if (denominationCounts != null && denominationCounts.isNotEmpty)
+          'denomination_counts': [
+            for (final line in denominationCounts) line.toJson(),
+          ],
+      },
+    );
+    return _decodeSession(envelope);
+  }
+
+  @override
+  Future<PosCashSessionHistoryPage> listSessions({
+    PosCashSessionHistoryFilter filter = const PosCashSessionHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async {
+    final query = <String, String>{
+      'limit': '$limit',
+      if (cursor != null) 'cursor': cursor,
+      if (filter.branchId != null) 'branch_id': filter.branchId!,
+      if (filter.cashRegisterId != null)
+        'cash_register_id': filter.cashRegisterId!,
+      if (filter.openedBy != null) 'opened_by': filter.openedBy!,
+      if (filter.status != null) 'status': filter.status!,
+      if (filter.openedFrom != null)
+        'opened_from': filter.openedFrom!.toUtc().toIso8601String(),
+      if (filter.openedTo != null)
+        'opened_to': filter.openedTo!.toUtc().toIso8601String(),
+    };
+    final path = Uri(
+      path: '/api/v1/cash-sessions',
+      queryParameters: query,
+    ).toString();
+    final envelope = await _client.getJson(path);
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing cash session history data.');
+    }
+    final meta = envelope['meta'];
+    final page = meta is Map<String, Object?> ? meta['page'] : null;
+    final nextCursor = page is Map<String, Object?>
+        ? page['next_cursor'] as String?
+        : null;
+    return PosCashSessionHistoryPage(
+      items: data
+          .whereType<Map<String, Object?>>()
+          .map(PosCashSession.fromJson)
+          .toList(growable: false),
+      nextCursor: nextCursor,
+    );
+  }
+
+  PosCashSession _decodeSession(Map<String, Object?> envelope) {
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash session data.');
+    }
+    return PosCashSession.fromJson(data);
+  }
+}
+
+class EmptyPosCashGateway implements PosCashGateway {
+  const EmptyPosCashGateway();
+
+  @override
+  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
+      const [];
+
+  @override
+  Future<PosCashSession> openSession({
+    required String cashRegisterId,
+    required String openingAmount,
+  }) => Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<PosCashSession?> currentSession(String cashRegisterId) async => null;
+
+  @override
+  Future<PosCashSession?> openSessionForBranch(String branchId) async => null;
+
+  @override
+  Future<PosCashSession> session(String cashSessionId) =>
+      Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<PosCashSessionSummary> summary(String cashSessionId) =>
+      Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<PosCashMovement> createMovement({
+    required String cashSessionId,
+    required String movementType,
+    required String amount,
+    required String reasonCode,
+    String? note,
+  }) => Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<PosCashMovementPage> listMovements(
+    String cashSessionId, {
+    String? cursor,
+    int limit = 50,
+  }) async => const PosCashMovementPage(items: [], nextCursor: null);
+
+  @override
+  Future<PosCashSession> closeSession({
+    required String cashSessionId,
+    required String declaredClosingAmount,
+    List<PosCashDenominationCount>? denominationCounts,
+  }) => Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<PosCashSessionHistoryPage> listSessions({
+    PosCashSessionHistoryFilter filter = const PosCashSessionHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async => const PosCashSessionHistoryPage(items: [], nextCursor: null);
+}
