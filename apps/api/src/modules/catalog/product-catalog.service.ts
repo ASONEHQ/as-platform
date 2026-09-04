@@ -5,6 +5,9 @@ import {
   generateOptionSignature,
   normalizeBarcode,
   normalizeCatalogCode,
+  normalizeCurrencyCode,
+  normalizeMoneyAmount,
+  normalizeProductTaxCode,
   normalizeSku,
   validateBarcode,
   validateProductVariantState,
@@ -14,11 +17,13 @@ import type { ProductCatalogRepository } from './product-catalog.repository.js';
 import type {
   CreateBarcodeInput,
   CreateProductInput,
+  CreateProductPriceInput,
   CreateVariantInput,
   ProductDetail,
   ProductFilters,
   ProductMutationContext,
   ProductPage,
+  ProductPriceRow,
   ProductRow,
   ProductVariantPage,
   ProductVariantRow,
@@ -88,6 +93,32 @@ function normalizedBarcode(input: CreateBarcodeInput): string {
     mapDomain(error);
   }
 }
+function normalizedTaxCode(value: string): ProductRow['taxCode'] {
+  try {
+    return normalizeProductTaxCode(value);
+  } catch (error) {
+    mapDomain(error);
+  }
+}
+// TASK 12.3C: dedicated normalizers for `product_prices.amount`/
+// `currency_code` — deliberately separate from the pre-existing local
+// `money()`/`currency()` above (which validate `standard_cost`, an
+// unrelated field with its own established call sites) rather than
+// refactoring those in place.
+function priceAmount(value: string): string {
+  try {
+    return normalizeMoneyAmount(value);
+  } catch (error) {
+    mapDomain(error);
+  }
+}
+function priceCurrency(value: string): string {
+  try {
+    return normalizeCurrencyCode(value.trim().toUpperCase());
+  } catch (error) {
+    mapDomain(error);
+  }
+}
 function assertState(product: ProductRow, variants: readonly ProductVariantRow[]): void {
   try {
     validateProductVariantState({
@@ -112,6 +143,26 @@ function decodeVariant(raw: unknown): ProductVariantRow {
     version: BigInt(value.version),
     createdAt: new Date(value.createdAt),
     updatedAt: new Date(value.updatedAt),
+  };
+}
+function decodePrice(raw: unknown): ProductPriceRow {
+  const value = raw as Omit<
+    ProductPriceRow,
+    'version' | 'createdAt' | 'updatedAt' | 'validFrom' | 'validUntil'
+  > & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+    validFrom: string;
+    validUntil: string | null;
+  };
+  return {
+    ...value,
+    version: BigInt(value.version),
+    createdAt: new Date(value.createdAt),
+    updatedAt: new Date(value.updatedAt),
+    validFrom: new Date(value.validFrom),
+    validUntil: value.validUntil === null ? null : new Date(value.validUntil),
   };
 }
 function decodeProduct(raw: unknown): ProductDetail {
@@ -144,8 +195,12 @@ export class ProductCatalogService {
     });
   }
 
-  public async product(companyId: string, id: string): Promise<ProductDetail> {
-    const value = await this.repository.product(companyId, id);
+  public async product(
+    companyId: string,
+    id: string,
+    branchId: string | null = null,
+  ): Promise<ProductDetail> {
+    const value = await this.repository.product(companyId, id, branchId);
     if (value === null)
       throw new ProductCatalogError('resource_not_found', 'The product was not found.');
     return value;
@@ -188,6 +243,7 @@ export class ProductCatalogService {
         input.productType === 'service' || input.productType === 'kit'
           ? false
           : input.tracksInventory,
+      taxCode: normalizedTaxCode(input.taxCode ?? 'IVA_GENERAL'),
       status: input.status,
       categoryId: input.categoryId ?? null,
       brandId: input.brandId ?? null,
@@ -304,7 +360,10 @@ export class ProductCatalogService {
               payload: this.variantPayload(defaultVariant),
             });
           }
-          const detail = { ...created, defaultVariant };
+          // A freshly created product has no price yet — price creation
+          // is a separate, explicit follow-up call (`createProductPrice`),
+          // never fabricated here.
+          const detail = { ...created, defaultVariant, effectivePrice: null };
           assertState(created, defaultVariant === null ? [] : [defaultVariant]);
           await this.repository.auditAndPublish(client, context, {
             action: 'product.created',
@@ -340,6 +399,7 @@ export class ProductCatalogService {
         description:
           patch.description === undefined ? current.description : nullable(patch.description),
         tracksInventory: patch.tracksInventory ?? current.tracksInventory,
+        taxCode: patch.taxCode === undefined ? current.taxCode : normalizedTaxCode(patch.taxCode),
         status: patch.status ?? current.status,
         categoryId: patch.categoryId === undefined ? current.categoryId : patch.categoryId,
         brandId: patch.brandId === undefined ? current.brandId : patch.brandId,
@@ -555,6 +615,78 @@ export class ProductCatalogService {
       });
       return updated;
     });
+  }
+
+  /**
+   * TASK 12.3C, E058-equivalent: creates one effective-dated price for a
+   * product. The backend is the sole authority — the caller supplies an
+   * amount/currency/optional validity window, never a pre-computed total;
+   * `price.manage` is required (see routes), matching every other
+   * catalog-mutation permission in this module. Idempotent, same pattern
+   * as `createProduct`/`createVariant`.
+   */
+  public createProductPrice(
+    context: ProductMutationContext,
+    productId: string,
+    key: string,
+    input: CreateProductPriceInput,
+  ): Promise<{ value: ProductPriceRow; replayed: boolean }> {
+    const normalized = {
+      id: input.id ?? randomUUID(),
+      productId,
+      branchId: input.branchId ?? null,
+      priceType: 'standard',
+      amount: priceAmount(input.amount),
+      currencyCode: priceCurrency(input.currencyCode),
+      validFrom: input.validFrom ?? context.timestamp,
+      validUntil: input.validUntil ?? null,
+    };
+    if (normalized.validUntil !== null && normalized.validUntil <= normalized.validFrom)
+      throw new ProductCatalogError(
+        'validation_error',
+        'valid_until must be after valid_from when provided.',
+      );
+    const requestHash = hash({ ...normalized, id: input.id ?? null });
+    return this.repository.transaction(async (client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'product_price.create',
+        key,
+        requestHash,
+        'product_price',
+        decodePrice,
+        async () => {
+          const product = await this.repository.lockProduct(client, context.companyId, productId);
+          if (product === null)
+            throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+          if (normalized.branchId !== null)
+            await this.repository.validateBranch(client, context.companyId, normalized.branchId);
+          const created = await this.repository.insertProductPrice(client, {
+            ...context,
+            ...normalized,
+          });
+          await this.repository.auditAndPublish(client, context, {
+            action: 'price.created',
+            resourceType: 'product_price',
+            resourceId: created.id,
+            eventType: 'product.price_changed',
+            version: created.version,
+            payload: {
+              product_price_id: created.id,
+              product_id: created.productId,
+              branch_id: created.branchId,
+              price_type: created.priceType,
+              amount: created.amount,
+              currency_code: created.currencyCode,
+              status: created.status,
+              version: created.version.toString(),
+            },
+          });
+          return created;
+        },
+      ),
+    );
   }
 
   private productPayload(value: ProductRow): Readonly<Record<string, unknown>> {

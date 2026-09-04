@@ -53,6 +53,68 @@ export const ownerPermissionCodes = Object.freeze([
   'device.register',
   'device.revoke',
   'audit.read',
+  'catalog.read',
+  'inventory.read',
+  // TASK 12.3C: the local dev owner is also the account used to exercise
+  // the POS/CLIENTE flow end to end, including the CLIENTE→CAJERO
+  // authorization gate, which requires `sale.create`. Granting it here
+  // (idempotently, via the same rolePermissions upsert as every other
+  // code in this list) means a fresh `dev:bootstrap-owner` run always
+  // reproduces the correct local dev grant — no manual
+  // `role_permissions` SQL insert needed after a database recreation.
+  'sale.create',
+  // Real-browser-QA fix: the same owner account completing a normal
+  // CAJERO checkout (TASK 12.5A/12.5B) also needs the two permissions
+  // that flow actually requires end to end — `sale.create` above got the
+  // Sale created, but nothing granted the permissions its *own next
+  // steps* need:
+  //   - `sale.read`: `GET /sales/{sale_id}` and `GET /sales/{sale_id}
+  //     /receipt` — the completed-sale success/receipt dialog
+  //     (`_ReceiptSuccessDialog`) calls the latter immediately after a
+  //     successful cash confirmation.
+  //   - `payment.create`: `POST /sales/{sale_id}/cash-payments` (and the
+  //     shared `POST /sales/{sale_id}/payments`/`POST /payments` routes
+  //     for the card/terminal path) — the exact permission
+  //     `PaymentService.createCashPayment`'s route requires; this is the
+  //     one that was missing and returned "No tienes permiso para
+  //     realizar esta acción." on "Confirmar pago en efectivo".
+  // Deliberately NOT added: `sale.cancel`, `payment.read`,
+  // `payment.reverse` — none of them are exercised by this checkout
+  // flow, and this list grants only what the flow actually needs, never
+  // every reserved permission that happens to exist (see
+  // `packages/database/src/seeds/technical-permissions.ts`).
+  'sale.read',
+  'payment.create',
+  // TASK 12.7: the local dev owner is also the account used to exercise
+  // the full cash-register lifecycle end to end (open register, open
+  // session, cash sale confirmation, manual cash in/out, close/count),
+  // so it needs exactly the six reserved cash_* permissions that flow
+  // touches — no more:
+  //   - `cash_register.manage`: `POST /cash-registers` (create the
+  //     register during the Part U dev seed / first-run setup) and
+  //     `PUT /cash-registers/{id}/device-assignment`.
+  //   - `cash_register.read`: `GET /cash-registers` /
+  //     `GET /cash-registers/{id}` — the Caja module's register picker.
+  //   - `cash_session.open`: `POST /cash-sessions` — "Abrir caja" with
+  //     the cashier-entered opening float (Part C).
+  //   - `cash_session.read`: `GET /cash-sessions/current`,
+  //     `GET /cash-sessions/{id}`, `GET /cash-sessions/{id}/summary`,
+  //     `GET /cash-sessions/{id}/movements`, and the cut-history list
+  //     `GET /cash-sessions` (Part L) — every read the Caja screen and
+  //     `PaymentService.resolveOpenCashSession` perform.
+  //   - `cash_movement.create`: `POST /cash-sessions/{id}/movements` —
+  //     manual "Entrada de efectivo" / "Salida de efectivo" (Part G).
+  //   - `cash_session.close`: `POST /cash-sessions/{id}/closures` —
+  //     "Cerrar caja" / corte (Part I).
+  // Deliberately NOT added: nothing — this is the complete set Part P's
+  // own permission registry reserves for cash operations; no wildcard,
+  // no invented overlapping code.
+  'cash_register.manage',
+  'cash_register.read',
+  'cash_session.open',
+  'cash_session.read',
+  'cash_movement.create',
+  'cash_session.close',
 ]);
 
 export interface BootstrapEnvironment {

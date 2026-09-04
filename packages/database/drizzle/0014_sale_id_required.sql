@@ -1,0 +1,2 @@
+ALTER TABLE "payments" ALTER COLUMN "sale_id" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_sale_scope_fk" FOREIGN KEY ("company_id","branch_id","sale_id") REFERENCES "public"."sales"("company_id","branch_id","id") ON DELETE restrict ON UPDATE no action;

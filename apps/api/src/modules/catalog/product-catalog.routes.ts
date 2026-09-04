@@ -1,7 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { responseMeta, successResponse } from '../../http/response.js';
-import { requireAuthenticatedUser, requirePermission } from '../auth/auth.guards.js';
+import {
+  requireAuthenticatedUser,
+  requireBranchAccess,
+  requirePermission,
+} from '../auth/auth.guards.js';
 import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey, parseIfMatch } from './catalog.schemas.js';
 import { withProductCatalogErrors } from './product-catalog.http-errors.js';
@@ -9,16 +13,20 @@ import type { ProductCatalogService } from './product-catalog.service.js';
 import type {
   BarcodeType,
   CreateProductInput,
+  CreateProductPriceInput,
   CreateVariantInput,
   ProductMutationContext,
+  ProductPriceRow,
   ProductRow,
   ProductStatus,
+  ProductTaxCode,
   ProductType,
   ProductVariantRow,
   UpdateProductInput,
   UpdateVariantInput,
   VariantStatus,
 } from './product-catalog.types.js';
+import { productTaxCodes } from './product-catalog.types.js';
 
 interface Params {
   id: string;
@@ -36,6 +44,10 @@ interface ListQuery {
   search?: string;
   sku?: string;
   barcode?: string;
+  branch_id?: string;
+}
+interface DetailQuery {
+  branch_id?: string;
 }
 interface VariantListQuery {
   cursor?: string;
@@ -64,6 +76,7 @@ interface ProductBody {
   description?: string;
   product_type: ProductType;
   tracks_inventory?: boolean;
+  tax_code?: ProductTaxCode;
   status?: ProductStatus;
   category_id?: string;
   brand_id?: string;
@@ -73,9 +86,18 @@ interface ProductPatchBody {
   name?: string;
   description?: string | null;
   tracks_inventory?: boolean;
+  tax_code?: ProductTaxCode;
   status?: ProductStatus;
   category_id?: string | null;
   brand_id?: string | null;
+}
+interface ProductPriceBody {
+  id?: string;
+  branch_id?: string;
+  amount: string;
+  currency_code: string;
+  valid_from?: string;
+  valid_until?: string;
 }
 interface VariantBody {
   id?: string;
@@ -162,6 +184,7 @@ const productBodySchema = {
     description: { type: 'string', maxLength: 2000 },
     product_type: { type: 'string', enum: ['simple', 'variable', 'kit', 'service'] },
     tracks_inventory: { type: 'boolean' },
+    tax_code: { type: 'string', enum: productTaxCodes },
     status: { type: 'string', enum: ['draft', 'active', 'inactive'] },
     category_id: uuid,
     brand_id: uuid,
@@ -176,9 +199,23 @@ const productPatchSchema = {
     name: { type: 'string', minLength: 1, maxLength: 255 },
     description: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] },
     tracks_inventory: { type: 'boolean' },
+    tax_code: { type: 'string', enum: productTaxCodes },
     status: { type: 'string', enum: ['draft', 'active', 'inactive', 'retired'] },
     category_id: { anyOf: [uuid, { type: 'null' }] },
     brand_id: { anyOf: [uuid, { type: 'null' }] },
+  },
+} as const;
+const productPriceBodySchema = {
+  type: 'object',
+  additionalProperties: rejectUnknown,
+  required: ['amount', 'currency_code'],
+  properties: {
+    id: uuid,
+    branch_id: uuid,
+    amount: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
+    currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+    valid_from: { type: 'string', format: 'date-time' },
+    valid_until: { type: 'string', format: 'date-time' },
   },
 } as const;
 const variantBodySchema = {
@@ -263,8 +300,30 @@ function variantHttp(
     updated_at: value.updatedAt.toISOString(),
   };
 }
+// TASK 12.3C: `amount`/`currency_code` pass through as the exact decimal
+// string / ISO 4217 code already returned by the repository — never
+// coerced to a JS number (ADR-0001, docs/API_CONTRACTS.md §3/§8.3).
+function priceHttp(value: ProductPriceRow): Readonly<Record<string, unknown>> {
+  return {
+    id: value.id,
+    branch_id: value.branchId,
+    product_id: value.productId,
+    price_type: value.priceType,
+    amount: value.amount,
+    currency_code: value.currencyCode,
+    valid_from: value.validFrom.toISOString(),
+    valid_until: value.validUntil === null ? null : value.validUntil.toISOString(),
+    status: value.status,
+    version: Number(value.version),
+    created_at: value.createdAt.toISOString(),
+    updated_at: value.updatedAt.toISOString(),
+  };
+}
 function productHttp(
-  value: ProductRow & { defaultVariant?: ProductVariantRow | null },
+  value: ProductRow & {
+    defaultVariant?: ProductVariantRow | null;
+    effectivePrice?: ProductPriceRow | null;
+  },
   showCost: boolean,
 ): Readonly<Record<string, unknown>> {
   return {
@@ -276,6 +335,7 @@ function productHttp(
     description: value.description,
     product_type: value.productType,
     tracks_inventory: value.tracksInventory,
+    tax_code: value.taxCode,
     status: value.status,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
@@ -285,6 +345,12 @@ function productHttp(
           default_variant:
             value.defaultVariant === null ? null : variantHttp(value.defaultVariant, showCost),
         }
+      : {}),
+    // `null` is honest ("no active price exists yet") and must stay
+    // distinguishable from a genuinely free `"0.0000"` price — never
+    // silently coerced to zero.
+    ...('effectivePrice' in value
+      ? { effective_price: value.effectivePrice === null ? null : priceHttp(value.effectivePrice) }
       : {}),
   };
 }
@@ -312,6 +378,7 @@ export function registerProductCatalogRoutes(
             search: { type: 'string', minLength: 1, maxLength: 255 },
             sku: { type: 'string', minLength: 1, maxLength: 255 },
             barcode: { type: 'string', minLength: 1, maxLength: 255 },
+            branch_id: uuid,
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -322,6 +389,11 @@ export function registerProductCatalogRoutes(
         const context = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, context, 'catalog.read');
         const query = request.query;
+        // ADR-0006: a caller may narrow to one of their own authorized
+        // branches (validated here) to resolve that branch's price
+        // override; they can never widen scope this way.
+        if (query.branch_id !== undefined)
+          requireBranchAccess(authentication, context, query.branch_id);
         const page = await service.listProducts(context.companyId, {
           limit: query.limit ?? 50,
           ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
@@ -332,6 +404,7 @@ export function registerProductCatalogRoutes(
           ...(query.search === undefined ? {} : { search: query.search }),
           ...(query.sku === undefined ? {} : { sku: query.sku }),
           ...(query.barcode === undefined ? {} : { barcode: query.barcode }),
+          ...(query.branch_id === undefined ? {} : { branchId: query.branch_id }),
         });
         return reply.send({
           data: page.items.map((item) => productHttp(item, hasCostPermission(context.permissions))),
@@ -391,6 +464,7 @@ export function registerProductCatalogRoutes(
           status: body.status ?? 'draft',
           ...(body.id === undefined ? {} : { id: body.id }),
           ...(body.description === undefined ? {} : { description: body.description }),
+          ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
           ...(body.category_id === undefined ? {} : { categoryId: body.category_id }),
           ...(body.brand_id === undefined ? {} : { brandId: body.brand_id }),
           ...(defaultVariant === undefined ? {} : { defaultVariant }),
@@ -413,12 +487,17 @@ export function registerProductCatalogRoutes(
       }),
   );
 
-  app.get<{ Params: Params }>(
+  app.get<{ Params: Params; Querystring: DetailQuery }>(
     '/api/v1/products/:id',
     {
       schema: {
         tags: ['catalog'],
         params: idParamsSchema,
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { branch_id: uuid },
+        },
         response: { 200: responseSchema, ...commonErrors },
       },
     },
@@ -426,7 +505,9 @@ export function registerProductCatalogRoutes(
       withProductCatalogErrors(async () => {
         const context = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, context, 'catalog.read');
-        const value = await service.product(context.companyId, request.params.id);
+        const branchId = request.query.branch_id;
+        if (branchId !== undefined) requireBranchAccess(authentication, context, branchId);
+        const value = await service.product(context.companyId, request.params.id, branchId ?? null);
         return reply
           .header('etag', `"${value.version.toString()}"`)
           .send(
@@ -460,6 +541,7 @@ export function registerProductCatalogRoutes(
           ...(body.tracks_inventory === undefined
             ? {}
             : { tracksInventory: body.tracks_inventory }),
+          ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
           ...(body.status === undefined ? {} : { status: body.status }),
           ...(body.category_id === undefined ? {} : { categoryId: body.category_id }),
           ...(body.brand_id === undefined ? {} : { brandId: body.brand_id }),
@@ -574,6 +656,50 @@ export function registerProductCatalogRoutes(
               request.requestContext,
             ),
           );
+      }),
+  );
+
+  // TASK 12.3C, E058-equivalent: creates one effective-dated product
+  // price. `price.manage` — a real permission already seeded in
+  // packages/database/src/seeds/technical-permissions.ts, previously
+  // unused by any route — not a new one invented for this task.
+  app.post<{ Params: ProductParams; Body: ProductPriceBody }>(
+    '/api/v1/products/:product_id/prices',
+    {
+      schema: {
+        tags: ['catalog'],
+        params: productParamsSchema,
+        headers: idempotencyHeaders,
+        body: productPriceBodySchema,
+        response: { 201: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withProductCatalogErrors(async () => {
+        const context = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, context, 'price.manage');
+        const body = request.body;
+        if (body.branch_id !== undefined)
+          requireBranchAccess(authentication, context, body.branch_id);
+        const input: CreateProductPriceInput = {
+          amount: body.amount,
+          currencyCode: body.currency_code,
+          ...(body.id === undefined ? {} : { id: body.id }),
+          ...(body.branch_id === undefined ? {} : { branchId: body.branch_id }),
+          ...(body.valid_from === undefined ? {} : { validFrom: new Date(body.valid_from) }),
+          ...(body.valid_until === undefined ? {} : { validUntil: new Date(body.valid_until) }),
+        };
+        const created = await service.createProductPrice(
+          mutationContext(request, context.companyId, context.userId),
+          request.params.product_id,
+          idempotencyKey(request.headers['idempotency-key']),
+          input,
+        );
+        if (created.replayed) reply.header('idempotency-replayed', 'true');
+        return reply
+          .code(201)
+          .header('etag', `"${created.value.version.toString()}"`)
+          .send(successResponse(priceHttp(created.value), request.requestContext));
       }),
   );
 

@@ -1,0 +1,2 @@
+DROP INDEX "cash_movements_sale_reference_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX "cash_movements_payment_reference_uq" ON "cash_movements" USING btree ("company_id","reference_id") WHERE "cash_movements"."reference_type" = 'payment';

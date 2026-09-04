@@ -103,6 +103,92 @@ integration('PostgreSQL development owner bootstrap', () => {
     expect(JSON.stringify(first)).not.toContain('password_hash');
   });
 
+  it('grants exactly the permissions a normal CAJERO cash checkout requires (TASK 12.5A/12.5B)', async () => {
+    // Real-browser-QA regression: the owner role must include `sale.create`
+    // (create the Sale), `payment.create` (confirm the cash payment via
+    // `POST /sales/{sale_id}/cash-payments`), and `sale.read` (the receipt
+    // dialog's `GET /sales/{sale_id}/receipt` immediately after). This
+    // asserts the canonical list itself, not just its length, so a future
+    // accidental removal of one of these specific codes fails loudly
+    // instead of silently passing a length-only check.
+    expect(ownerPermissionCodes).toEqual(
+      expect.arrayContaining(['sale.create', 'sale.read', 'payment.create']),
+    );
+
+    await new DevelopmentOwnerBootstrap(database).run(ephemeralPassword);
+    const granted = await database.pool.query<{ code: string }>(
+      `select p.code from role_permissions rp
+       join roles r on r.id=rp.role_id and r.company_id=rp.company_id
+       join permissions p on p.id=rp.permission_id
+       where r.code='owner' and rp.effect='allow'
+       order by p.code`,
+    );
+    const codes = granted.rows.map((row) => row.code);
+    expect(codes).toEqual(expect.arrayContaining(['sale.create', 'sale.read', 'payment.create']));
+  });
+
+  it('reconciles an existing owner role that predates a new permission, additively and idempotently', async () => {
+    // Simulates the exact real-world state this fix repaired: an owner
+    // role bootstrapped by an older `ownerPermissionCodes` list that did
+    // not yet include `payment.create`/`sale.read`. Reconciliation must
+    // add the missing grants on rerun without touching any pre-existing
+    // permission, without creating a duplicate role/membership/user_roles
+    // row, and without requiring the row to be inserted by hand.
+    await new DevelopmentOwnerBootstrap(database).run(ephemeralPassword);
+    const beforeRow = await database.pool.query<{
+      role_id: string;
+      company_id: string;
+      permission_id: string;
+    }>(
+      `select rp.role_id, rp.company_id, rp.permission_id
+       from role_permissions rp
+       join roles r on r.id=rp.role_id and r.company_id=rp.company_id
+       join permissions p on p.id=rp.permission_id
+       where r.code='owner' and p.code in ('payment.create','sale.read')`,
+    );
+    expect(beforeRow.rows).toHaveLength(2);
+
+    // Roll back to the "pre-fix" state: revoke exactly the two new grants,
+    // leaving every other owner permission untouched — mirrors how the
+    // real local Owner role looked before this session's bootstrap rerun.
+    for (const row of beforeRow.rows) {
+      await database.pool.query(
+        `delete from role_permissions where role_id=$1 and company_id=$2 and permission_id=$3`,
+        [row.role_id, row.company_id, row.permission_id],
+      );
+    }
+    const idsBeforeRerun = await identityIds(database);
+    const preRerunCount = await database.pool.query<{ count: string }>(
+      `select count(*)::text from role_permissions where effect='allow'`,
+    );
+    expect(Number(preRerunCount.rows[0]?.count)).toBe(ownerPermissionCodes.length - 2);
+
+    const summary = await new DevelopmentOwnerBootstrap(database).run(ephemeralPassword);
+    const idsAfterRerun = await identityIds(database);
+
+    expect(summary).toMatchObject({
+      company: 'existing',
+      user: 'existing',
+      roleAssignment: 'existing',
+      permissions: ownerPermissionCodes.length,
+      success: true,
+    });
+    // Same company/user/membership/role identity — reconciliation never
+    // recreates or duplicates the identity, only repairs its grants.
+    expect(idsAfterRerun).toEqual(idsBeforeRerun);
+
+    const afterRerun = await database.pool.query<{ code: string }>(
+      `select p.code from role_permissions rp
+       join roles r on r.id=rp.role_id and r.company_id=rp.company_id
+       join permissions p on p.id=rp.permission_id
+       where r.code='owner' and rp.effect='allow'
+       order by p.code`,
+    );
+    const codesAfterRerun = afterRerun.rows.map((row) => row.code);
+    expect(codesAfterRerun).toEqual([...ownerPermissionCodes].sort());
+    expect(codesAfterRerun).toHaveLength(ownerPermissionCodes.length);
+  });
+
   it('exposes six active branches and derives company-wide authorization', async () => {
     await new DevelopmentOwnerBootstrap(database).run(ephemeralPassword);
     const scope = await database.pool.query<{

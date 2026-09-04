@@ -19,7 +19,7 @@ import {
 
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
 import { companyMemberships } from './identity.js';
-import { companies } from './organizations.js';
+import { branches, companies } from './organizations.js';
 
 export const productCategories = pgTable(
   'product_categories',
@@ -171,6 +171,15 @@ export const products = pgTable(
     description: text('description'),
     productType: text('product_type').notNull(),
     tracksInventory: boolean('tracks_inventory').notNull(),
+    // TASK 12.3C: tax classification, not a tax-rate engine. This is the
+    // product's stable tax *treatment* (an explicit, backend-authoritative
+    // classification the client can key off unambiguously); the actual
+    // numeric rate for each treatment is resolved by the caller (e.g.
+    // Mexico's statutory 16% IVA for 'IVA_GENERAL') — no rate table exists
+    // yet, matching the documented `products.tax_code` field
+    // (docs/CORE_DATA_MODEL.md) without building a full multi-jurisdiction
+    // tax engine.
+    taxCode: text('tax_code').notNull().default('IVA_GENERAL'),
     status: text('status').notNull().default('draft'),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
@@ -228,6 +237,7 @@ export const products = pgTable(
       'products_non_inventory_type_ck',
       sql`${table.productType} not in ('service', 'kit') or ${table.tracksInventory} is false`,
     ),
+    check('products_tax_code_ck', sql`${table.taxCode} in ('IVA_GENERAL', 'IVA_EXEMPT')`),
   ],
 );
 
@@ -581,6 +591,100 @@ export const productBarcodes = pgTable(
   ],
 );
 
+/// TASK 12.3C: authoritative product pricing. Implements the domain
+/// already designed (not invented here) in docs/CORE_DATA_MODEL.md
+/// ("product_prices") and reserved by docs/API_CONTRACTS.md §14 (E057-
+/// E059), adapted to one real discrepancy the contract doc itself notes
+/// (§14.1: "SKU, barcode, unit of measure, quantity scale, standard
+/// cost, and currency are attributes of a concrete variant, never
+/// direct product-owned fields") — pricing here is still keyed by
+/// `product_id`, matching E057-E059 exactly, which is correct because
+/// every `simple` product (the only type this task's seed uses) has
+/// exactly one variant (see `products_type_ck`/E054), so product-level
+/// and variant-level pricing coincide for this task's scope. A
+/// `variable` product with multiple variants needing distinct prices
+/// per variant is out of scope here and would need its own follow-up.
+///
+/// Money follows ADR-0001 exactly: `numeric(19,4)`, explicit ISO 4217
+/// currency, never floating point. `branchId` is nullable — null means
+/// a company-wide default price; a non-null row is a branch-specific
+/// override for that same (product, price_type, currency). Only one
+/// *open-ended* (`valid_until is null`) active price may exist per
+/// scope at a time (the two partial unique indexes below) — this is
+/// deliberately a simpler invariant than a full temporal no-overlap
+/// exclusion constraint (which would need a `btree_gist`-backed
+/// `EXCLUDE` constraint over `[valid_from, valid_until)`): building true
+/// effective-dated price history/versioning is a separate concern from
+/// "the minimum correct pricing foundation" this task asks for, and is
+/// deferred rather than half-built here.
+export const productPrices = pgTable(
+  'product_prices',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id'),
+    productId: uuid('product_id').notNull(),
+    priceType: text('price_type').notNull().default('standard'),
+    amount: numeric('amount', { precision: 19, scale: 4 }).notNull(),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    validFrom: timestamp('valid_from', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+    validUntil: timestamp('valid_until', { withTimezone: true, mode: 'date' }),
+    status: text('status').notNull().default('active'),
+    version: bigint('version', { mode: 'bigint' })
+      .notNull()
+      .default(sql`1`),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by').notNull(),
+  },
+  (table) => [
+    unique('product_prices_company_id_id_uq').on(table.companyId, table.id),
+    foreignKey({
+      columns: [table.companyId, table.productId],
+      foreignColumns: [products.companyId, products.id],
+      name: 'product_prices_product_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'product_prices_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.createdBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'product_prices_created_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.updatedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'product_prices_updated_by_membership_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('product_prices_company_active_uq')
+      .on(table.companyId, table.productId, table.priceType, table.currencyCode)
+      .where(
+        sql`${table.branchId} is null and ${table.status} = 'active' and ${table.validUntil} is null`,
+      ),
+    uniqueIndex('product_prices_branch_active_uq')
+      .on(table.companyId, table.branchId, table.productId, table.priceType, table.currencyCode)
+      .where(
+        sql`${table.branchId} is not null and ${table.status} = 'active' and ${table.validUntil} is null`,
+      ),
+    index('product_prices_product_status_idx').on(table.companyId, table.productId, table.status),
+    check('product_prices_amount_ck', sql`${table.amount} >= 0`),
+    check('product_prices_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
+    check('product_prices_price_type_ck', sql`${table.priceType} = 'standard'`),
+    check('product_prices_status_ck', sql`${table.status} in ('active', 'expired', 'cancelled')`),
+    check('product_prices_version_ck', sql`${table.version} >= 1`),
+    check(
+      'product_prices_valid_interval_ck',
+      sql`${table.validUntil} is null or ${table.validUntil} > ${table.validFrom}`,
+    ),
+  ],
+);
+
 export type ProductCategory = typeof productCategories.$inferSelect;
 export type Brand = typeof brands.$inferSelect;
 export type UnitOfMeasure = typeof unitsOfMeasure.$inferSelect;
@@ -590,3 +694,4 @@ export type ProductOptionValue = typeof productOptionValues.$inferSelect;
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type ProductVariantOptionValue = typeof productVariantOptionValues.$inferSelect;
 export type ProductBarcode = typeof productBarcodes.$inferSelect;
+export type ProductPrice = typeof productPrices.$inferSelect;

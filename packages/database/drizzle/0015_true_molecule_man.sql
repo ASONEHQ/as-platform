@@ -1,0 +1,5 @@
+ALTER TABLE "inventory_movements" DROP CONSTRAINT "inventory_movements_type_ck";--> statement-breakpoint
+ALTER TABLE "sale_items" ADD COLUMN "product_variant_id" uuid;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "sale_items_product_variant_scope_fk" FOREIGN KEY ("company_id","product_variant_id") REFERENCES "public"."product_variants"("company_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "inventory_movements_sale_reference_uq" ON "inventory_movements" USING btree ("company_id","reference_id") WHERE "inventory_movements"."reference_type" = 'sale';--> statement-breakpoint
+ALTER TABLE "inventory_movements" ADD CONSTRAINT "inventory_movements_type_ck" CHECK ("inventory_movements"."movement_type" in ('opening_balance','receipt','issue','return','adjustment','transfer_shipment','transfer_receipt','reversal','sale_consumption'));

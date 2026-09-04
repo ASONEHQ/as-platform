@@ -326,6 +326,16 @@ Administrative company/branch routes are separate from `/context/*`, which only 
 - Cash movements are positive amounts with an explicit direction/type; correction creates a reversal/compensating movement.
 - Closure recalculates all totals and rejects stale `base_version`. Closed sessions are immutable.
 
+### 13.2 Cash register/session/movement implementation (TASK 12.7)
+
+E038–E048's registers/sessions/movements/summary are now implemented — the full operational drawer lifecycle (open, cash sale, manual cash in/out, expected cash, close/count, cut history). See ADR-0014 for the full design, including the exact tendered/change-vs-drawer-net accounting semantics, the atomicity boundary with cash-payment confirmation, and the idempotency/isolation/legacy-data guarantees.
+
+- Implemented now: `POST /api/v1/cash-registers` (E039), `GET /api/v1/cash-registers` (E038), `GET /api/v1/cash-registers/{id}` (E040), `PUT /api/v1/cash-registers/{id}/device-assignment` (E041), `POST /api/v1/cash-sessions` (E042, open), `GET /api/v1/cash-sessions/current` (E043), `GET /api/v1/cash-sessions/{id}` (E044), `POST /api/v1/cash-sessions/{id}/movements` (E045, cash in/out only — `cash_sale`/`opening_float` are system-posted, never client-postable), `GET /api/v1/cash-sessions/{id}/movements` (E046), `POST /api/v1/cash-sessions/{id}/closures` (E047), `GET /api/v1/cash-sessions/{id}/summary` (E048, doubling as the persisted cash-cut summary — always computed fresh from ledger facts, never a separately-stored row). A sales-history-shaped addition, `GET /api/v1/cash-sessions` (cut history — cursor/limit, `branch_id`/`cash_register_id`/`opened_by`/`status`/`opened_from`/`opened_to` filters, newest-first), was reconciled the same way E075's `GET /sales` was in §16.8 — not individually numbered E038–E048, but part of the same domain.
+- Reconciled deltas from this table's aspirational body shapes, each a deliberate simplification justified in ADR-0014, not an oversight: E042's open-session body takes `cash_register_id`/`opening_amount`/optional `currency_code` — no client-submitted `device_id`/`occurred_at`/offline metadata (the device comes from the authenticated request context; the timestamp is always server-assigned, matching E039/E045/E047's own established pattern in this codebase). E043 takes `cash_register_id` only (not "exactly one of `cash_register_id` or `device_id`" — device-based lookup was not built). E045 takes no `device_id`/`occurred_at`/offline metadata for the identical reason as E042. E047 takes `declared_closing_amount` and an optional `denomination_counts` breakdown (Part J — see ADR-0014 §B10) but no client-submitted `currency_code` (the session's own currency is authoritative) and no client-submitted `base_version` (idempotency-key replay plus the session's own locked-row version already provide the concurrency guarantee E047 wants; a stale/already-closed session is `cash_session_closed`, not a version-conflict the client must resolve by resubmitting a version).
+- Not implemented: session `base_version`/ETag optimistic-concurrency headers on the mutation routes (the idempotency-key mechanism is the guard instead); offline-queued cash operations and their sync policy (out of scope — see ADR-0003, untouched by this task); a dedicated reversal endpoint for a posted `cash_in`/`cash_out` (`cash_movements.reversal_of_id` exists in the schema, unpopulated — see ADR-0014's "Deferred" section); reopening a closed session ("no reopen in v1" — matches this table's own note exactly).
+- `cash_register.read`, `cash_register.manage`, `cash_session.read`, `cash_session.open`, `cash_movement.create`, `cash_session.close` are the already-reserved permission codes from §6/the technical permission catalog — no new permission was introduced.
+- Outbox events reuse the canonical catalogue exactly: `cash_register.created`, `cash_register.device_assigned`, `cash_session.opened`, `cash_movement.created`, `cash_session.closed` (REALTIME_EVENTS.md).
+
 ## 14. Catalog — E049–E063
 
 | ID | Method and route; purpose | Permission / scope | Inputs | Success / errors | Idempotency, concurrency, effects |
@@ -381,6 +391,16 @@ SKU, barcode, unit of measure, quantity scale, standard cost, and currency are a
 - Product and nested references are resolved only inside the authenticated company. The server rejects unknown fields and cross-company category, brand, unit, or barcode references.
 - `standard_cost` is an exact decimal string. It is accepted under `product.manage`, but is omitted from responses unless the actor also has effective `inventory.cost.read`; omission is used instead of a placeholder zero.
 - Future sale lines, inventory facts, and commercial item references use `product_variant_id`, not `product_id`.
+
+### 14.2 Product pricing and tax classification (TASK 12.3C)
+
+E058 (create) is implemented as specified. E057's price-record listing and E059's PATCH-to-expire/correct remain designed but **not yet built** — this pass implements only the minimum correct pricing foundation (effective-dated price creation plus backend-resolved effective-price reads), deliberately deferring price history/versioning as a separate concern; the request body's optional `valid_until` still lets a caller close a price out at creation time.
+
+- `product_prices` is keyed by `product_id` (not `product_variant_id`), matching E057–E059 as written: every `simple` product has exactly one variant by construction (§14.1), so product-level and variant-level pricing coincide for the product types this pass covers.
+- `branch_id` is nullable: `null` is a company-wide default price; a non-null value is a branch-specific override. Effective-price resolution (used by `GET /products` and `GET /products/{id}` via an optional `branch_id` query param, subject to `requireBranchAccess`) prefers a branch-specific active price over the company-wide default when both exist for the requested branch, and degrades to company-wide-only when no `branch_id` is supplied.
+- Invariant implemented: **at most one open-ended (`valid_until is null`) active price per scope** (two partial unique indexes — company-wide and branch-specific), not a full temporal no-overlap constraint. A conflicting open-ended price returns `price_conflict` (`409`).
+- `effective_price` on a product response is `null` when no active price exists yet — distinguishable from a genuine `"0.0000"` free price; the backend never fabricates or defaults a price.
+- `products.tax_code` (`IVA_GENERAL` | `IVA_EXEMPT`) is an explicit, backend-authoritative tax **classification**, always present on product responses. It is not a rate engine: the numeric IVA rate mapping stays a Flutter-side constant for now, matching the existing `posIvaRate` precedent, because a full multi-jurisdiction tax-rate table is out of scope for this pass.
 
 ## 15. Inventory — E064–E072
 
@@ -475,6 +495,65 @@ The server independently resolves authorization, effective products/prices, roun
 | `duplicate` | Original status/body + `Idempotency-Replayed: true` | Exact command was already established |
 | `rejected` | Appropriate 4xx error envelope | No business effect committed; result is terminal for that payload |
 | `reconciliation_required` | `409` error plus safe current/submitted comparison | No silent overwrite; operator/client must refresh and choose an allowed new command |
+
+### 16.3 Payment and terminal foundation (TASK 12.4A)
+
+The `payments` domain and its exact §21.3 state machine are implemented — originally as a **standalone** resource, since the `sales` domain (E073–E077) did not exist in this schema yet. TASK 12.4A.1 (§16.4) has since built that domain and given `payments` a real owning `sale_id`; this subsection is kept for history. See ADR-0008 for the full design.
+
+- Implemented now: `POST /api/v1/payments` (`sale_id` is now required — see §16.4), `GET /api/v1/payments/{id}`, `GET /api/v1/payments`, `POST /api/v1/payments/{id}/attempts` (retry), `POST /api/v1/payment-attempts/{id}/transitions` (the terminal-interaction sub-lifecycle — new, not yet in this contract), `POST /api/v1/payments/{id}/cancellations`, and `POST /api/v1/payments/{id}/reversals` (this one matches E080 exactly). Terminal registry: `POST/GET /api/v1/payment-terminals`, `GET /api/v1/payment-terminals/{id}` — a `payment_terminals` row is a 1:1 payment-specific extension of a `devices` row (new `card_terminal` device type), reusing E034's device-registration permission (`device.register`/`device.read`) rather than inventing a new one.
+- Not implemented: refund-triggered reversal integration (E081–E087), and any provider/terminal SDK adapter — see ADR-0008's "Provider Integration Readiness" discussion for what a real integration still needs.
+- `payment_method` is `cash | card_terminal | card_manual | other` (extensible via a future additive migration, not a closed vendor list).
+- Realtime delivery: every state transition still writes the canonical `payment.recorded`/`payment.status_changed`/`payment.reversed` outbox events (§11.7 of REALTIME_EVENTS.md), but no WebSocket publisher exists in this repository yet — a client must poll `GET /payments/{id}` for status until that publisher is built.
+
+### 16.4 Sale foundation and payment ownership (TASK 12.4A.1)
+
+The minimum production-safe `sales`/`sale_items` aggregate E073–E077 and §21.2 already designed is now implemented, and `payments.sale_id` is a real, required, scoped foreign key — the provisional `sale_reference` from §16.3 is deprecated (column kept, unused; this repository's migration policy forbids `DROP COLUMN`). See ADR-0009 for the full design, including the exact reconciled field lists, the server-authoritative price/tax computation, and the payment→sale settlement coordination.
+
+- Implemented now: `POST /api/v1/sales` (creates a sale directly in `pending_payment` from raw `{product_id, quantity}` lines — the server independently resolves price, tax, and totals; there is no field to submit a tampered total), `GET /api/v1/sales/{id}`, `POST /api/v1/sales/{id}/cancellations` (only legal from `pending_payment`), and `POST /api/v1/sales/{sale_id}/payments` — this is E078 exactly, superseding §16.3's provisional flat-only route (which is kept, unchanged in shape, for compatibility; both call the identical `PaymentService.createPayment`).
+- Not implemented: E074's full completion detail beyond the base sale read, E076's explicit `/completion` submission endpoint (a sale still only ever completes via payment settlement in this pass), E077's dedicated cancellation-eligibility inputs beyond a reason code, `draft` as a separately observable creation step (collapsed into `pending_payment`), any inventory *availability check* (a Sale can still be created for a stock-tracked product with zero stock — only *posting consumption at completion* is implemented; see §16.8/ADR-0013), and offline command sync (`sync_operation_id` is a reserved, unenforced column). E075's list endpoint and inventory sale-consumption posting are now implemented — see §16.8.
+- `sale.create`/`sale.read`/`sale.cancel` permissions are the already-reserved codes from the technical permission catalog — no new permission was introduced.
+- Outbox events reuse the canonical catalogue exactly: `sale.created`, `sale.completed`, `sale.cancelled` (§11.7).
+
+### 16.5 Mercado Pago Point provider (TASK 12.4B.1)
+
+Mercado Pago is now the selected provider for `card_terminal` payments — see ADR-0010 for the full contract reconciliation. Nothing in §16.3/§16.4's own endpoint shapes changed; provider dispatch happens transparently after `POST /api/v1/payments` or `POST /api/v1/sales/{sale_id}/payments` for a payment whose resolved terminal has `provider: 'mercado_pago'`.
+
+- New: `POST /api/v1/webhooks/mercado-pago` — the Mercado Pago Orders-API webhook receiver. Not part of the versioned public contract in the same sense as the rest of this document (it is called by Mercado Pago, never by AS POS or Flutter) but documented here for completeness. Verifies `x-signature`, re-fetches the authoritative order, and applies it through the existing `payment_attempts` state machine.
+- Flutter-facing additions: `GET /api/v1/payment-terminals?branch_id=...` (already existed, §16.3) is now used by CAJERO/CLIENTE to discover whether a branch has a configured Mercado Pago terminal before attempting a card payment.
+- No new secrets or provider credentials are ever returned by any AS API response.
+
+### 16.6 Cash payment and sale completion (TASK 12.5A)
+
+`POST /api/v1/sales/{sale_id}/cash-payments` — a new, additive resource, not a `payment_method: 'cash'` variant of E078's body. See ADR-0011 for the full reconciliation and why a dedicated resource was chosen over widening the generic route.
+
+- Permission/scope: `payment.create` (the same permission E078 already requires — no new permission code).
+- Body: `{ id?, tendered_amount*, metadata? }` — deliberately **no** `amount`/`total` field of any kind; the server alone computes the sale's outstanding balance and the amount actually applied to it (never the tendered figure). `Idempotency-Key` is required, identical to every other mutation route.
+- Success: `201` with the captured payment (`payment_method: "cash"`, `provider: null`, `terminal_id: null`), its immediately-`approved` attempt (`provider_reference: null`), `tendered_amount`, `change_amount`, and a receipt-ready sale summary (id, branch, sale number, status, totals, timestamps, the actor who created the sale, and line items) — enough for TASK 12.5B's future receipt without a second round trip.
+- Errors: `insufficient_tendered` (409, new — the tendered amount is less than the full amount currently due), plus the same `resource_not_found`/`sale_branch_mismatch`/`invalid_sale_state`/`validation_error`/`idempotency_conflict` shapes E078 already uses.
+- No provider/terminal is ever involved; Mercado Pago's adapter and webhook receiver are untouched by this addition.
+- CLIENTE never calls this route — it remains card-only (§16.5).
+
+### 16.7 Sale receipt (TASK 12.5B)
+
+`GET /api/v1/sales/{sale_id}/receipt` — a new, read-only, additive resource. See ADR-0012 for the full design.
+
+- Permission/scope: `sale.read` (the same permission `GET /sales/{sale_id}` already requires — no new permission code). No `Idempotency-Key` (a `GET`, not a mutation).
+- No status gate — identical to `GET /sales/{sale_id}`, a `pending_payment` or `cancelled` sale's receipt is returned honestly (its `payments` array simply reflects reality), never a 409.
+- Success: `200` composing `sale` (id, sale number/folio, status, currency, timestamps, subtotal/tax/total), `business` (company display name, branch name/address), `cashier` (id, display name — `sales.created_by`), `items` (the frozen `sale_items` snapshot: name/sku snapshot, quantity, unit price, line total — never re-resolved from the live catalog), and `payments` (method, status, amount, `captured_at`, and for `cash` only `tendered_amount`/`change_amount` from the payment's own persisted metadata; `provider`/`terminal_id`/`provider_reference` are always present in shape but only ever populated for a real `card_terminal` payment — always `null` today since Mercado Pago remains paused).
+- Retrieval is a pure read: never creates a payment, mutates the sale, touches inventory, or mints a new sale number. "Reprint" is simply calling this endpoint again.
+- Not a CFDI/tax invoice — no SAT UUID, QR, sello, cadena original, or RFC (no such column exists on `companies`/`branches` at all).
+
+### 16.8 Sales history and inventory sale-consumption posting (TASK 12.6)
+
+`GET /api/v1/sales` — E075, implemented. See ADR-0013 for the full inventory-posting design and this endpoint's own reconciliation against E075's aspirational text.
+
+- Permission/scope: `sale.read` (the same permission `GET /sales/{id}` already requires — no new permission code). No `Idempotency-Key` (a `GET`, not a mutation).
+- Query: `cursor`, `limit` (default 50, max 100), `branch_id`, `status`, `occurred_from`/`occurred_to` (ISO 8601), `created_by`, `sale_number` (case-insensitive substring — a folio search, never the exact 37-character value), `payment_method` (matches a sale with at least one *captured* payment of that method). `register`/`session`/`device` from E075's own aspirational text are deliberately not exposed — no cash-register/session domain exists yet, and `device_id` is rarely populated by the current browser-session CAJERO flow.
+- Ordering/cursor: newest-first (`occurred_at desc, id desc`) via one opaque, base64url-encoded `(occurred_at, id)` cursor — not the simpler single-`id` cursor `GET /payments` uses, because (unlike a `createUuidV7()`-generated id elsewhere in this codebase) `sales.id` is a plain `crypto.randomUUID()` and carries no time ordering on its own.
+- Success: `200` with an array of *summaries* (id, sale number, status, currency, branch id/name, cashier id/display name, occurred/completed timestamps, item count, subtotal/tax/total, and the distinct set of captured payment methods) — never the full item/payment history; a manager opens one sale (`GET /sales/{id}` + `GET /sales/{id}/receipt`, both already existing and unchanged) for that.
+- Read-only: never creates, mutates, or posts anything, including inventory.
+
+**Inventory sale-consumption posting** — not a new endpoint; a side effect of the existing `POST /sales/{sale_id}/cash-payments` and `POST /sales/{sale_id}/payments` settlement paths, the moment (and only the moment) a Sale first transitions `pending_payment → completed`. A new `sale_consumption` inventory movement type (additive to the existing `inventory_movements_type_ck` enum) is posted, in the same transaction as the completion, for each sold line whose resolved `product_variant_id` currently tracks inventory — never for admissions/services/non-tracked products. See ADR-0013 for the full posting-moment, location-mapping, variant-identity, negative-stock, and idempotency design, and for why this predates and is independent of `sale_consumption` ever surfacing as its own event (it reuses the existing canonical `inventory.movement.created`/`inventory.stock.changed` outbox events, per REALTIME_EVENTS.md's own "single canonical stock-change fact" rule — no new event type).
 
 ## 17. Refunds — E081–E087
 
@@ -2128,7 +2207,7 @@ refresh transport is resolved by ADR-0007:
 4. Operations, if any, allowed without an open cash session.
 5. Effective price precedence among company, branch, channel, and future rule sources.
 6. Tax calculation and fiscal rounding rules beyond the accepted MXN commercial baseline.
-7. Electronic payment provider state mapping, authorization/capture policy, and webhook contracts.
+7. Electronic payment provider state mapping, authorization/capture policy, and webhook contracts. **Partially addressed by ADR-0008 (TASK 12.4A)**: the provider-neutral `payments`/`payment_attempts` state machine and terminal registry are built and the schema structurally supports an authorize-then-capture flow, but no real provider was chosen or integrated, and no webhook authentication/replay-protection contract was designed against a real provider's actual callback shape — that remains open until provider evidence exists.
 8. Exact boundary between eligible sale cancellation and required refund.
 9. Refund approval thresholds, separation of duties, and original-branch requirements.
 10. Whether physical inventory counts need their own durable aggregate/table before implementation; the current core records only resulting movements.

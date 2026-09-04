@@ -7,11 +7,13 @@ import type {
   ProductCatalogTransaction,
   ProductDetail,
   ProductFilters,
+  ProductListItem,
   ProductMutationContext,
   ProductOptionRow,
   ProductOptionValueRow,
   ProductBarcodeRow,
   ProductPage,
+  ProductPriceRow,
   ProductRow,
   ProductVariantPage,
   ProductVariantRow,
@@ -31,7 +33,23 @@ interface ProductDb {
   description: string | null;
   product_type: ProductRow['productType'];
   tracks_inventory: boolean;
+  tax_code: ProductRow['taxCode'];
   status: ProductRow['status'];
+  version: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+interface ProductPriceDb {
+  id: string;
+  company_id: string;
+  branch_id: string | null;
+  product_id: string;
+  price_type: string;
+  amount: string;
+  currency_code: string;
+  valid_from: Date | string;
+  valid_until: Date | string | null;
+  status: ProductPriceRow['status'];
   version: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -86,7 +104,9 @@ interface BarcodeDb {
 }
 
 const PRODUCT_COLUMNS =
-  'id,company_id,category_id,brand_id,code,name,description,product_type,tracks_inventory,status,version,created_at,updated_at';
+  'id,company_id,category_id,brand_id,code,name,description,product_type,tracks_inventory,tax_code,status,version,created_at,updated_at';
+const PRICE_COLUMNS =
+  'id,company_id,branch_id,product_id,price_type,amount,currency_code,valid_from,valid_until,status,version,created_at,updated_at';
 const VARIANT_COLUMNS =
   'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,status,version,created_at,updated_at';
 const OPTION_COLUMNS =
@@ -110,6 +130,24 @@ function product(row: ProductDb): ProductRow {
     description: row.description,
     productType: row.product_type,
     tracksInventory: row.tracks_inventory,
+    taxCode: row.tax_code,
+    status: row.status,
+    version: BigInt(row.version),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+function productPrice(row: ProductPriceDb): ProductPriceRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    branchId: row.branch_id,
+    productId: row.product_id,
+    priceType: row.price_type,
+    amount: row.amount,
+    currencyCode: row.currency_code,
+    validFrom: new Date(row.valid_from),
+    validUntil: row.valid_until === null ? null : new Date(row.valid_until),
     status: row.status,
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
@@ -238,11 +276,55 @@ export class ProductCatalogRepository {
       ),
     ).rows;
     const hasMore = rows.length > input.limit;
-    const items = rows.slice(0, input.limit).map(product);
+    const productRows = rows.slice(0, input.limit).map(product);
+    const productIds = productRows.map((item) => item.id);
+    // Two extra batched queries for every returned product's effective
+    // price and default variant — never a per-row lookup — matching this
+    // codebase's own established batching convention (see inventory
+    // balances' single joined query). TASK 12.3C follow-up: the list route
+    // previously omitted `default_variant` entirely (see
+    // docs/AS_POS_READ_ONLY_SHELL.md, "Read-only limitations"), which left
+    // every product's variant id — and therefore out-of-stock detection and
+    // the POS cart's line identity — permanently unresolvable from this
+    // endpoint. Fixed the same way `effectivePrice` already is: one
+    // additional batched query, not a redesign of the route.
+    const [prices, defaultVariants] = await Promise.all([
+      this.effectivePrices(companyId, productIds, input.branchId ?? null),
+      this.defaultVariants(companyId, productIds),
+    ]);
+    const items: ProductListItem[] = productRows.map((item) => ({
+      ...item,
+      effectivePrice: prices.get(item.id) ?? null,
+      defaultVariant: defaultVariants.get(item.id) ?? null,
+    }));
     return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
   }
 
-  public async product(companyId: string, id: string): Promise<ProductDetail | null> {
+  /**
+   * Batched sibling of `effectivePrices`: resolves the single active
+   * default variant per product id in one query, never per-row.
+   */
+  public async defaultVariants(
+    companyId: string,
+    productIds: readonly string[],
+  ): Promise<Map<string, ProductVariantRow>> {
+    if (productIds.length === 0) return new Map();
+    const rows = result<VariantDb>(
+      await this.database.pool.query(
+        `select ${VARIANT_COLUMNS}
+         from product_variants
+         where company_id=$1 and product_id=any($2::uuid[]) and is_default=true and status<>'retired'`,
+        [companyId, productIds],
+      ),
+    ).rows;
+    return new Map(rows.map((row) => [row.product_id, variant(row)]));
+  }
+
+  public async product(
+    companyId: string,
+    id: string,
+    branchId: string | null = null,
+  ): Promise<ProductDetail | null> {
     const row = result<ProductDb>(
       await this.database.pool.query(
         `select ${PRODUCT_COLUMNS} from products where company_id=$1 and id=$2`,
@@ -257,10 +339,42 @@ export class ProductCatalogRepository {
         [companyId, id],
       ),
     ).rows[0];
+    const prices = await this.effectivePrices(companyId, [id], branchId);
     return {
       ...product(row),
       defaultVariant: defaultVariant === undefined ? null : variant(defaultVariant),
+      effectivePrice: prices.get(id) ?? null,
     };
+  }
+
+  /**
+   * Resolves, in one batched query, the single most-specific *currently
+   * effective* active price per product id: a branch-specific override
+   * for `branchId` when one exists, else the company-wide default. Never
+   * a per-row/per-product query — callers pass every product id from a
+   * page (or a single-item array for a detail lookup) at once.
+   */
+  public async effectivePrices(
+    companyId: string,
+    productIds: readonly string[],
+    branchId: string | null,
+  ): Promise<Map<string, ProductPriceRow>> {
+    if (productIds.length === 0) return new Map();
+    const rows = result<ProductPriceDb>(
+      await this.database.pool.query(
+        `select distinct on (product_id) ${PRICE_COLUMNS}
+         from product_prices
+         where company_id=$1
+           and product_id=any($2::uuid[])
+           and status='active'
+           and valid_from<=now()
+           and (valid_until is null or valid_until>now())
+           and (branch_id=$3::uuid or branch_id is null)
+         order by product_id, (branch_id is not null) desc, valid_from desc`,
+        [companyId, productIds, branchId],
+      ),
+    ).rows;
+    return new Map(rows.map((row) => [row.product_id, productPrice(row)]));
   }
 
   public async listVariants(
@@ -409,6 +523,7 @@ export class ProductCatalogRepository {
       description: string | null;
       productType: ProductRow['productType'];
       tracksInventory: boolean;
+      taxCode: ProductRow['taxCode'];
       status: ProductRow['status'];
     },
   ): Promise<ProductRow> {
@@ -416,8 +531,8 @@ export class ProductCatalogRepository {
       await client.query(
         `insert into products
          (id,company_id,category_id,brand_id,code,normalized_code,name,description,product_type,
-          tracks_inventory,status,deleted_at,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$14)
+          tracks_inventory,tax_code,status,deleted_at,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$15)
          returning ${PRODUCT_COLUMNS}`,
         [
           input.id,
@@ -430,6 +545,7 @@ export class ProductCatalogRepository {
           input.description,
           input.productType,
           input.tracksInventory,
+          input.taxCode,
           input.status,
           input.status === 'retired' ? input.timestamp : null,
           input.actorId,
@@ -449,9 +565,9 @@ export class ProductCatalogRepository {
     const row = result<ProductDb>(
       await client.query(
         `update products set category_id=$4,brand_id=$5,code=$6,normalized_code=$7,name=$8,
-         description=$9,product_type=$10,tracks_inventory=$11,status=$12,
-         deleted_at=case when $12='retired' then $13::timestamptz else null end,
-         updated_by=$14,updated_at=$13,version=version+1
+         description=$9,product_type=$10,tracks_inventory=$11,tax_code=$12,status=$13,
+         deleted_at=case when $13='retired' then $14::timestamptz else null end,
+         updated_by=$15,updated_at=$14,version=version+1
          where company_id=$1 and id=$2 and version=$3 returning ${PRODUCT_COLUMNS}`,
         [
           input.companyId,
@@ -465,6 +581,7 @@ export class ProductCatalogRepository {
           input.description,
           input.productType,
           input.tracksInventory,
+          input.taxCode,
           input.status,
           input.timestamp,
           input.actorId,
@@ -474,6 +591,60 @@ export class ProductCatalogRepository {
     if (row === undefined)
       throw new ProductCatalogError('version_conflict', 'The product version changed.');
     return product(row);
+  }
+
+  public async validateBranch(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    branchId: string,
+  ): Promise<void> {
+    const found = result<{ id: string }>(
+      await client.query(
+        `select id from branches where company_id=$1 and id=$2 and status<>'closed'`,
+        [companyId, branchId],
+      ),
+    ).rows[0];
+    if (found === undefined)
+      throw new ProductCatalogError('validation_error', 'The branch is not active or does not exist.');
+  }
+
+  public async insertProductPrice(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & {
+      id: string;
+      productId: string;
+      branchId: string | null;
+      priceType: string;
+      amount: string;
+      currencyCode: string;
+      validFrom: Date;
+      validUntil: Date | null;
+    },
+  ): Promise<ProductPriceRow> {
+    const row = result<ProductPriceDb>(
+      await client.query(
+        `insert into product_prices
+         (id,company_id,branch_id,product_id,price_type,amount,currency_code,valid_from,valid_until,
+          status,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,$10,$11,$11)
+         returning ${PRICE_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.branchId,
+          input.productId,
+          input.priceType,
+          input.amount,
+          input.currencyCode,
+          input.validFrom,
+          input.validUntil,
+          input.actorId,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Product price insertion did not return a row.');
+    return productPrice(row);
   }
 
   public async insertVariant(
@@ -1046,7 +1217,8 @@ export class ProductCatalogRepository {
         | 'product_variant'
         | 'product_option'
         | 'product_option_value'
-        | 'product_barcode';
+        | 'product_barcode'
+        | 'product_price';
       resourceId: string;
       eventType: string;
       version: bigint;
@@ -1132,6 +1304,12 @@ export class ProductCatalogRepository {
         return new ProductCatalogError(
           'invalid_variant_state',
           'The product already has an active default variant.',
+        );
+      case 'product_prices_company_active_uq':
+      case 'product_prices_branch_active_uq':
+        return new ProductCatalogError(
+          'price_conflict',
+          'An active, open-ended price already exists for this product and scope.',
         );
       default:
         return error;

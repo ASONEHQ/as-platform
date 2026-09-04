@@ -89,9 +89,19 @@ services:
     networks: [asone_internal]
 
 networks:
+  # TASK 12.3C infra fix: `internal: true` was previously set here, which
+  # blocks Docker Desktop's host-port-forwarding path for every service on
+  # this network — even though each one already declares a loopback-only
+  # `127.0.0.1:PORT:PORT` mapping. That contradicts this file's own
+  # documented contract (infrastructure/docker/README.md's "Local
+  # endpoints" table, .env.example's DATABASE_URL/DATABASE_TEST_URL): local
+  # Postgres/Redis/MinIO/Mailpit must be reachable at 127.0.0.1 from the
+  # host. The loopback binding on each `ports:` entry is what already keeps
+  # these off public networks; `internal: true` was never required for
+  # that and this compose file is local-development-only (see the README),
+  # so removing it has no bearing on production.
   asone_internal:
     name: asone-local-internal
-    internal: true
 
 volumes:
   asone_postgres_data:

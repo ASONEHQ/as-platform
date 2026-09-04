@@ -43,8 +43,12 @@ export const devices = pgTable(
     check('devices_name_nonblank_ck', sql`length(btrim(${table.name})) > 0`),
     check('devices_code_nonblank_ck', sql`length(btrim(${table.deviceCode})) > 0`),
     check(
+      // TASK 12.4A: 'card_terminal' identifies a physical card-payment
+      // terminal's device identity/connectivity row — see
+      // packages/database/src/schema/payments.ts's `payment_terminals`
+      // for the payment-specific attributes layered on top of it.
       'devices_type_ck',
-      sql`${table.deviceType} in ('pos', 'kiosk', 'admin', 'worker', 'display', 'other')`,
+      sql`${table.deviceType} in ('pos', 'kiosk', 'admin', 'worker', 'display', 'card_terminal', 'other')`,
     ),
     check(
       'devices_status_ck',
@@ -52,7 +56,7 @@ export const devices = pgTable(
     ),
     check(
       'devices_branch_required_ck',
-      sql`${table.deviceType} not in ('pos', 'kiosk', 'display') or ${table.branchId} is not null`,
+      sql`${table.deviceType} not in ('pos', 'kiosk', 'display', 'card_terminal') or ${table.branchId} is not null`,
     ),
     check(
       'devices_revocation_consistency_ck',

@@ -17,6 +17,13 @@ Every future decision that materially affects architecture, module boundaries, d
 | [ADR-0005](ADR-0005-idempotency-and-outbox.md) | Transactional idempotency, audit, and outbox |
 | [ADR-0006](ADR-0006-tenant-isolation.md) | Authenticated tenant scope and composite isolation |
 | [ADR-0007](ADR-0007-browser-authentication-and-context.md) | Browser refresh transport and company/branch context selection |
+| [ADR-0008](ADR-0008-payment-and-terminal-foundation.md) | Payment/payment-attempt state machine and payment-terminal device extension |
+| [ADR-0009](ADR-0009-sale-foundation.md) | Sale aggregate foundation, server money authority, and payment ownership |
+| [ADR-0010](ADR-0010-mercado-pago-point-provider.md) | Mercado Pago Point provider adapter, order/webhook state mapping, and terminal dispatch |
+| [ADR-0011](ADR-0011-cash-payment-and-sale-completion.md) | Cash payment endpoint, server-authoritative amount due/change, and cash approval semantics |
+| [ADR-0012](ADR-0012-sale-receipt-and-printing.md) | Sale receipt data composition, CFDI boundary, reprint semantics, and the browser print foundation |
+| [ADR-0013](ADR-0013-sale-inventory-posting-and-history.md) | Sale-to-inventory posting on completion and the paginated sales history endpoint |
+| [ADR-0014](ADR-0014-cash-register-operations.md) | Cash register/session/ledger lifecycle, expected-cash formula, and cash-sale atomicity |
 
 ## When to create an ADR
 

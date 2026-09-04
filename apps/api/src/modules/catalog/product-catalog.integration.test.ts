@@ -54,6 +54,21 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
           if (statement.trim().length > 0) await database.pool.query(statement);
       }
     }
+    // TASK 12.3C: migration 0011 (product_prices + products.tax_code) is
+    // applied separately from the 0000-0004 block above so a persisted test
+    // database from a prior run (which already has `products` but predates
+    // this migration) still picks it up instead of silently skipping it.
+    const pricingPresent = await database.pool.query<{ present: string | null }>(
+      `select to_regclass('public.product_prices')::text present`,
+    );
+    if (pricingPresent.rows[0]?.present === null) {
+      const sql = await readFile(
+        resolve(migrationsPath, '0011_product_pricing_foundation.sql'),
+        'utf8',
+      );
+      for (const statement of sql.split('--> statement-breakpoint'))
+        if (statement.trim().length > 0) await database.pool.query(statement);
+    }
     await database.pool.query(
       `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
        values($1,'Products','Products',$2,'active','UTC','MXN','es-MX'),
@@ -85,6 +100,13 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       'delete from product_variant_option_values where company_id in ($1,$2)',
       [companyId, otherCompanyId],
     );
+    // TASK 12.3C: product_prices.product_id has an onDelete:'restrict' FK to
+    // products, so price rows must be cleared before the products they
+    // reference or this cleanup fails with a foreign-key violation.
+    await database.pool.query('delete from product_prices where company_id in ($1,$2)', [
+      companyId,
+      otherCompanyId,
+    ]);
     await database.pool.query('delete from product_variants where company_id in ($1,$2)', [
       companyId,
       otherCompanyId,
@@ -114,6 +136,13 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       otherCompanyId,
     ]);
     await database.pool.query('delete from company_memberships where company_id in ($1,$2)', [
+      companyId,
+      otherCompanyId,
+    ]);
+    // TASK 12.3C: branches.company_id is onDelete:'restrict' — any branch
+    // rows created by the pricing tests below must be cleared before the
+    // owning companies or this cleanup fails with a foreign-key violation.
+    await database.pool.query('delete from branches where company_id in ($1,$2)', [
       companyId,
       otherCompanyId,
     ]);
@@ -461,5 +490,247 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
     expect(counts.rows[0]).toEqual({ products: '0', keys: '0', events: '0' });
     await database.pool.query('drop trigger product_test_audit_failure on audit_log');
     await database.pool.query('drop function product_test_audit_failure()');
+  });
+
+  it('round-trips tax_code through product creation and patch', async () => {
+    const exempt = await products.createProduct(context, 'tax-code-exempt', {
+      code: 'tax-code-exempt',
+      name: 'Tax exempt product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      taxCode: 'IVA_EXEMPT',
+      defaultVariant: {
+        sku: 'tax-code-exempt',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    expect(exempt.value.taxCode).toBe('IVA_EXEMPT');
+    const defaulted = await products.createProduct(context, 'tax-code-default', {
+      code: 'tax-code-default',
+      name: 'Tax default product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'tax-code-default',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    expect(defaulted.value.taxCode).toBe('IVA_GENERAL');
+    const patched = await products.patchProduct(
+      context,
+      defaulted.value.id,
+      defaulted.value.version,
+      { taxCode: 'IVA_EXEMPT' },
+    );
+    expect(patched.taxCode).toBe('IVA_EXEMPT');
+    const reloaded = await products.product(companyId, defaulted.value.id);
+    expect(reloaded.taxCode).toBe('IVA_EXEMPT');
+  });
+
+  it('creates a company-wide price idempotently as decimal strings and exposes it as effectivePrice', async () => {
+    const product = await products.createProduct(context, 'price-company-wide', {
+      code: 'price-company-wide',
+      name: 'Priced product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-company-wide',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    const beforePrice = await products.product(companyId, product.value.id);
+    expect(beforePrice.effectivePrice).toBeNull();
+    const request = { amount: '129.5', currencyCode: 'mxn' };
+    const created = await products.createProductPrice(
+      context,
+      product.value.id,
+      'price-company-wide-key',
+      request,
+    );
+    expect(created.replayed).toBe(false);
+    expect(created.value).toMatchObject({
+      productId: product.value.id,
+      branchId: null,
+      priceType: 'standard',
+      amount: '129.5000',
+      currencyCode: 'MXN',
+      status: 'active',
+    });
+    const replay = await products.createProductPrice(
+      context,
+      product.value.id,
+      'price-company-wide-key',
+      request,
+    );
+    expect(replay).toMatchObject({ replayed: true });
+    expect(replay.value.id).toBe(created.value.id);
+    const afterPrice = await products.product(companyId, product.value.id);
+    expect(afterPrice.effectivePrice).toMatchObject({
+      amount: '129.5000',
+      currencyCode: 'MXN',
+      branchId: null,
+    });
+    const listed = await products.listProducts(companyId, {
+      limit: 20,
+      search: 'price-company-wide',
+    });
+    expect(listed.items[0]?.effectivePrice).toMatchObject({ amount: '129.5000' });
+  });
+
+  it('distinguishes a genuinely free price from no price at all', async () => {
+    const product = await products.createProduct(context, 'price-free', {
+      code: 'price-free',
+      name: 'Free product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-free',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    const beforePrice = await products.product(companyId, product.value.id);
+    expect(beforePrice.effectivePrice).toBeNull();
+    await products.createProductPrice(context, product.value.id, 'price-free-key', {
+      amount: '0',
+      currencyCode: 'MXN',
+    });
+    const afterPrice = await products.product(companyId, product.value.id);
+    expect(afterPrice.effectivePrice?.amount).toBe('0.0000');
+    expect(afterPrice.effectivePrice).not.toBeNull();
+  });
+
+  it('rejects a duplicate open-ended active price for the same product and scope', async () => {
+    const product = await products.createProduct(context, 'price-conflict-product', {
+      code: 'price-conflict',
+      name: 'Conflict product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-conflict',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    await products.createProductPrice(context, product.value.id, 'price-conflict-first', {
+      amount: '10.00',
+      currencyCode: 'MXN',
+    });
+    await expect(
+      products.createProductPrice(context, product.value.id, 'price-conflict-second', {
+        amount: '11.00',
+        currencyCode: 'MXN',
+      }),
+    ).rejects.toMatchObject({ code: 'price_conflict' });
+  });
+
+  it('resolves a branch-specific price override ahead of the company-wide default', async () => {
+    const branchId = randomUUID();
+    const otherBranchId = randomUUID();
+    await database.pool.query(
+      `insert into branches(id,company_id,name,code,status,timezone)
+       values($1,$2,'Override Branch','override-branch','active','UTC'),
+             ($3,$2,'Other Branch','other-branch','active','UTC')`,
+      [branchId, companyId, otherBranchId],
+    );
+    const product = await products.createProduct(context, 'price-branch-override', {
+      code: 'price-branch-override',
+      name: 'Branch override product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-branch-override',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    await products.createProductPrice(context, product.value.id, 'price-branch-default', {
+      amount: '10.00',
+      currencyCode: 'MXN',
+    });
+    await products.createProductPrice(context, product.value.id, 'price-branch-specific', {
+      branchId,
+      amount: '8.00',
+      currencyCode: 'MXN',
+    });
+    const withoutBranch = await products.product(companyId, product.value.id);
+    expect(withoutBranch.effectivePrice).toMatchObject({ amount: '10.0000', branchId: null });
+    const withOverride = await products.product(companyId, product.value.id, branchId);
+    expect(withOverride.effectivePrice).toMatchObject({ amount: '8.0000', branchId });
+    const withOtherBranch = await products.product(companyId, product.value.id, otherBranchId);
+    expect(withOtherBranch.effectivePrice).toMatchObject({ amount: '10.0000', branchId: null });
+    const listedWithOverride = await products.listProducts(companyId, {
+      limit: 20,
+      search: 'price-branch-override',
+      branchId,
+    });
+    expect(listedWithOverride.items[0]?.effectivePrice).toMatchObject({
+      amount: '8.0000',
+      branchId,
+    });
+  });
+
+  it('rejects a price scoped to a cross-tenant or closed branch', async () => {
+    const foreignBranchId = randomUUID();
+    const closedBranchId = randomUUID();
+    await database.pool.query(
+      `insert into branches(id,company_id,name,code,status,timezone)
+       values($1,$2,'Foreign Branch','foreign-branch','active','UTC')`,
+      [foreignBranchId, otherCompanyId],
+    );
+    await database.pool.query(
+      `insert into branches(id,company_id,name,code,status,timezone)
+       values($1,$2,'Closed Branch','closed-branch','closed','UTC')`,
+      [closedBranchId, companyId],
+    );
+    const product = await products.createProduct(context, 'price-branch-invalid', {
+      code: 'price-branch-invalid',
+      name: 'Branch invalid product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-branch-invalid',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    await expect(
+      products.createProductPrice(context, product.value.id, 'price-branch-foreign', {
+        branchId: foreignBranchId,
+        amount: '5.00',
+        currencyCode: 'MXN',
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
+    await expect(
+      products.createProductPrice(context, product.value.id, 'price-branch-closed', {
+        branchId: closedBranchId,
+        amount: '5.00',
+        currencyCode: 'MXN',
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
   });
 });

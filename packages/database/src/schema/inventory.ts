@@ -45,6 +45,14 @@ export const inventoryMovementTypes = [
   'transfer_shipment',
   'transfer_receipt',
   'reversal',
+  // TASK 12.6: the smallest canonical addition for a completed Sale's
+  // stock consumption — distinct from the generic `issue` type so a
+  // manager can query "what did sales actually consume" separately from
+  // manual issues/write-offs, without depending on `reference_type`
+  // filtering alone. Posted directly (no draft/pending phase — see
+  // `sale-consumption.ts`): a Sale's own payment settlement is already
+  // the authoritative committed fact, not a proposal awaiting approval.
+  'sale_consumption',
 ] as const;
 
 export const inventoryMovementStatuses = [
@@ -256,6 +264,16 @@ export const inventoryMovements = pgTable(
       .where(
         sql`${table.reversalOfMovementId} is not null and ${table.status} in ('posted','reversed')`,
       ),
+    // TASK 12.6 (A6 idempotency): a durable, database-level guarantee —
+    // not just an application-level check — that a Sale can never
+    // acquire a second `sale_consumption` movement, no matter how many
+    // times its settlement is retried (a replayed payment confirmation,
+    // two racing settlement callers, a process restart mid-transaction).
+    // Scoped to `reference_type='sale'` only, so it never constrains any
+    // other reference kind that might reuse this same column pair later.
+    uniqueIndex('inventory_movements_sale_reference_uq')
+      .on(table.companyId, table.referenceId)
+      .where(sql`${table.referenceType} = 'sale'`),
     foreignKey({
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],
@@ -328,7 +346,7 @@ export const inventoryMovements = pgTable(
     ),
     check(
       'inventory_movements_type_ck',
-      sql`${table.movementType} in ('opening_balance','receipt','issue','return','adjustment','transfer_shipment','transfer_receipt','reversal')`,
+      sql`${table.movementType} in ('opening_balance','receipt','issue','return','adjustment','transfer_shipment','transfer_receipt','reversal','sale_consumption')`,
     ),
     check(
       'inventory_movements_status_ck',

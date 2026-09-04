@@ -30,6 +30,7 @@ import {
   productCategories,
   productOptionDefinitions,
   productOptionValues,
+  productPrices,
   products,
   productVariantOptionValues,
   productVariants,
@@ -72,6 +73,7 @@ const tableNames = [
   productVariants,
   productVariantOptionValues,
   productBarcodes,
+  productPrices,
   inventoryLocations,
   inventoryBalances,
   inventoryMovements,
@@ -86,13 +88,15 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  it('records exactly eleven migrations ending in session transport mode', () => {
+  it('records exactly twelve migrations ending in product pricing foundation', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(11);
-    expect(journal.entries.map((entry) => entry.idx)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect(journal.entries.at(-1)?.tag).toBe('0010_auth_session_transport_mode');
+    expect(journal.entries).toHaveLength(12);
+    expect(journal.entries.map((entry) => entry.idx)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ]);
+    expect(journal.entries.at(-1)?.tag).toBe('0011_product_pricing_foundation');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {
@@ -108,6 +112,28 @@ describe('database foundation schema', () => {
       /\b(drop|truncate|delete|update|create trigger|create function)\b/iu,
     );
     expect(migration).not.toContain('session_refresh_tokens');
+  });
+
+  it('keeps migration 0011 additive and limited to product pricing', () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, '../../drizzle/0011_product_pricing_foundation.sql'),
+      'utf8',
+    );
+    expect(migration).toContain('CREATE TABLE "product_prices"');
+    expect(migration).toContain(`ADD COLUMN "tax_code" text DEFAULT 'IVA_GENERAL' NOT NULL`);
+    expect(migration).toContain('"amount" numeric(19, 4) NOT NULL');
+    expect(migration).toContain('"currency_code" char(3) NOT NULL');
+    // Every foreign key drizzle-kit emits ends in "ON DELETE ... ON
+    // UPDATE no action" — standard referential-action syntax, not a
+    // destructive DML statement — so this checks for real DROP TABLE/
+    // COLUMN, TRUNCATE, DELETE FROM, UPDATE ... SET, trigger, or
+    // function statements instead of the bare keywords.
+    expect(migration).not.toMatch(
+      /\b(drop\s+table|drop\s+column|truncate|delete\s+from|update\s+"?\w+"?\s+set|create\s+trigger|create\s+function)\b/iu,
+    );
+    // Only `products` (ALTER) and `product_prices` (CREATE) are touched.
+    const alteredTables = [...migration.matchAll(/ALTER TABLE "(\w+)"/gu)].map((m) => m[1]);
+    expect(new Set(alteredTables)).toEqual(new Set(['products', 'product_prices']));
   });
   it('defines only the approved foundation tables with snake_case names', () => {
     expect(tableNames).toEqual([
@@ -137,6 +163,7 @@ describe('database foundation schema', () => {
       'product_variants',
       'product_variant_option_values',
       'product_barcodes',
+      'product_prices',
       'inventory_locations',
       'inventory_balances',
       'inventory_movements',

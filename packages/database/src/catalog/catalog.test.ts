@@ -5,6 +5,7 @@ import { assertCategoryParentIsAcyclic } from './category-cycle.js';
 import { CatalogDomainError } from './errors.js';
 import { normalizeBarcode, normalizeCatalogCode, normalizeSku } from './normalization.js';
 import { generateOptionSignature } from './option-signature.js';
+import { normalizeCurrencyCode, normalizeMoneyAmount, normalizeProductTaxCode } from './pricing.js';
 import { validateProductVariantState } from './product-state.js';
 
 const productId = '018f0000-0000-7000-8000-000000000001';
@@ -171,5 +172,39 @@ describe('product and category domain invariants', () => {
     await expect(assertCategoryParentIsAcyclic('a', 'b', load)).rejects.toThrow(CatalogDomainError);
     parents.set('c', null);
     await expect(assertCategoryParentIsAcyclic('a', 'b', load)).resolves.toBeUndefined();
+  });
+});
+
+// TASK 12.3C: ADR-0001 (money-and-rounding) — decimal strings only, never
+// floating point, and never a silent fallback to zero for an invalid value.
+describe('pricing normalization', () => {
+  it('pads a valid decimal amount to exactly 4 fractional digits', () => {
+    expect(normalizeMoneyAmount('45')).toBe('45.0000');
+    expect(normalizeMoneyAmount('45.5')).toBe('45.5000');
+    expect(normalizeMoneyAmount('45.5000')).toBe('45.5000');
+    expect(normalizeMoneyAmount('0')).toBe('0.0000');
+  });
+
+  it('rejects negative, malformed, and non-decimal-string amounts', () => {
+    expect(() => normalizeMoneyAmount('-1')).toThrow(CatalogDomainError);
+    expect(() => normalizeMoneyAmount('45.00001')).toThrow(CatalogDomainError);
+    expect(() => normalizeMoneyAmount('1e10')).toThrow(CatalogDomainError);
+    expect(() => normalizeMoneyAmount('abc')).toThrow(CatalogDomainError);
+    expect(() => normalizeMoneyAmount('')).toThrow(CatalogDomainError);
+    expect(() => normalizeMoneyAmount('01')).toThrow(CatalogDomainError);
+  });
+
+  it('accepts only exactly-3-uppercase-letter currency codes', () => {
+    expect(normalizeCurrencyCode('MXN')).toBe('MXN');
+    expect(() => normalizeCurrencyCode('mxn')).toThrow(CatalogDomainError);
+    expect(() => normalizeCurrencyCode('MX')).toThrow(CatalogDomainError);
+    expect(() => normalizeCurrencyCode('MXNN')).toThrow(CatalogDomainError);
+  });
+
+  it('accepts only the documented product tax codes', () => {
+    expect(normalizeProductTaxCode('IVA_GENERAL')).toBe('IVA_GENERAL');
+    expect(normalizeProductTaxCode('IVA_EXEMPT')).toBe('IVA_EXEMPT');
+    expect(() => normalizeProductTaxCode('VAT_STANDARD')).toThrow(CatalogDomainError);
+    expect(() => normalizeProductTaxCode('')).toThrow(CatalogDomainError);
   });
 });

@@ -9,6 +9,9 @@ import { registerAuthRoutes } from '../modules/auth/auth.routes.js';
 import { AuthService } from '../modules/auth/auth.service.js';
 import { AuthTokens } from '../modules/auth/auth.tokens.js';
 import type { AuthRepository } from '../modules/auth/auth.types.js';
+import { CashRepository } from '../modules/cash/cash.repository.js';
+import { registerCashRoutes } from '../modules/cash/cash.routes.js';
+import { CashService } from '../modules/cash/cash.service.js';
 import { CatalogRepository } from '../modules/catalog/catalog.repository.js';
 import { registerCatalogRoutes } from '../modules/catalog/catalog.routes.js';
 import { CatalogService } from '../modules/catalog/catalog.service.js';
@@ -49,6 +52,15 @@ import {
   InventoryLocationService,
   InventoryMovementReadService,
 } from '../modules/inventory/inventory.service.js';
+import { PaymentRepository } from '../modules/payments/payments.repository.js';
+import { registerPaymentRoutes } from '../modules/payments/payments.routes.js';
+import { PaymentService } from '../modules/payments/payments.service.js';
+import { MercadoPagoClient } from '../modules/payments/providers/mercado-pago.client.js';
+import { MercadoPagoPointProvider } from '../modules/payments/providers/mercado-pago.provider.js';
+import { registerMercadoPagoWebhookRoutes } from '../modules/payments/providers/mercado-pago.webhook.routes.js';
+import { SalesRepository } from '../modules/sales/sales.repository.js';
+import { registerSaleRoutes } from '../modules/sales/sales.routes.js';
+import { SalesService } from '../modules/sales/sales.service.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
@@ -182,6 +194,37 @@ export async function registerPlugins(
         authentication,
         new InventoryRepairService(new InventoryRepairRepository(options.infrastructure.database)),
       );
+      const salesRepository = new SalesRepository(options.infrastructure.database);
+      const salesService = new SalesService(salesRepository);
+      const paymentRepository = new PaymentRepository(options.infrastructure.database);
+      // TASK 12.7: constructed before `paymentService` — a cash payment
+      // confirmation now requires it (open-session enforcement + drawer
+      // movement posting, see ADR-0014).
+      const cashRepository = new CashRepository(options.infrastructure.database);
+      const cashService = new CashService(cashRepository);
+      // TASK 12.4B.1: constructed unconditionally, even with no
+      // MERCADO_PAGO_ACCESS_TOKEN set — see MercadoPagoClient's own doc
+      // comment for why this is the correct "fail safely" boundary.
+      const mercadoPagoClient = new MercadoPagoClient({
+        accessToken: options.config.mercadoPagoAccessToken,
+        apiBaseUrl: options.config.mercadoPagoApiBaseUrl,
+        logger: app.log,
+      });
+      const mercadoPagoProvider = new MercadoPagoPointProvider(mercadoPagoClient);
+      const paymentService = new PaymentService(paymentRepository, salesRepository, mercadoPagoProvider, cashRepository);
+      // TASK 12.5B: the receipt route (`GET /sales/{id}/receipt`) composes
+      // a sale with its payments, so `registerSaleRoutes` now needs
+      // `paymentService` too — constructed above, this call is therefore
+      // moved after it (was previously registered right after
+      // `salesService`, before payments existed at all).
+      registerSaleRoutes(app, authentication, salesService, paymentService);
+      registerPaymentRoutes(app, authentication, paymentService, salesService);
+      registerCashRoutes(app, authentication, cashService);
+      registerMercadoPagoWebhookRoutes(app, {
+        paymentService,
+        mercadoPagoProvider,
+        webhookSecret: options.config.mercadoPagoWebhookSecret,
+      });
     }
   }
   if (options.config.nodeEnv === 'test') registerTestOnlyRoutes(app);

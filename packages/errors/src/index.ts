@@ -74,6 +74,36 @@ export const infrastructureErrorCodes = [
   'option_combination_conflict',
   'option_value_wrong_product',
   'product_has_active_dependencies',
+  // TASK 12.3C: reserved by docs/API_CONTRACTS.md §5 for an overlapping/
+  // conflicting product price submission.
+  'price_conflict',
+  // TASK 12.4A: payment/terminal foundation — see ADR-0008 and
+  // docs/API_CONTRACTS.md §16/§21.3.
+  'invalid_payment_state',
+  'invalid_attempt_state',
+  'terminal_not_active',
+  'terminal_branch_mismatch',
+  'terminal_required',
+  'duplicate_provider_reference',
+  'currency_mismatch',
+  // TASK 12.4A.1: sale foundation — see ADR-0009 and
+  // docs/API_CONTRACTS.md §21.2.
+  'invalid_sale_state',
+  'sale_branch_mismatch',
+  // TASK 12.5A: cash payment + real sale completion — see ADR-0011. The
+  // cashier tendered less than the server-computed amount due; the
+  // request is rejected outright (never a partial/short payment).
+  'insufficient_tendered',
+  // TASK 12.7: cash register/session — the exact four codes
+  // docs/API_CONTRACTS.md §5 already reserves verbatim, none invented
+  // here. See ADR-0015.
+  'cash_session_required',
+  'cash_session_already_open',
+  'cash_session_not_open',
+  'cash_session_closed',
+  'product_not_found',
+  'product_not_active',
+  'price_not_found',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

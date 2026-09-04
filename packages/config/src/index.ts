@@ -61,6 +61,16 @@ const apiSchema = sharedSchema.extend({
   REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(10_485_760).default(1_048_576),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
   TRUST_PROXY: booleanSchema.default(false),
+  // TASK 12.4B.1: Mercado Pago Point provider credentials. Deliberately
+  // optional — the app must still boot in any environment that has no
+  // provider configured yet (local dev, CI, a company that hasn't set up
+  // Point). The specific provider call fails cleanly and explicitly
+  // (`PaymentProviderError('not_configured', ...)`) only when actually
+  // invoked without them — see providers/mercado-pago.provider.ts. Never
+  // a secret with a baked-in default.
+  MERCADO_PAGO_ACCESS_TOKEN: z.string().trim().min(1).optional(),
+  MERCADO_PAGO_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
+  MERCADO_PAGO_API_BASE_URL: z.url().default('https://api.mercadopago.com'),
 });
 
 export interface SharedConfig {
@@ -91,6 +101,9 @@ export interface ApiConfig extends SharedConfig {
   readonly requestBodyLimitBytes: number;
   readonly requestTimeoutMs: number;
   readonly trustProxy: boolean;
+  readonly mercadoPagoAccessToken: string | undefined;
+  readonly mercadoPagoWebhookSecret: string | undefined;
+  readonly mercadoPagoApiBaseUrl: string;
 }
 
 export type WorkerConfig = SharedConfig;
@@ -133,6 +146,9 @@ export function loadApiConfig(environment: Environment = process.env): ApiConfig
     requestBodyLimitBytes: value.REQUEST_BODY_LIMIT_BYTES,
     requestTimeoutMs: value.REQUEST_TIMEOUT_MS,
     trustProxy: value.TRUST_PROXY,
+    mercadoPagoAccessToken: value.MERCADO_PAGO_ACCESS_TOKEN,
+    mercadoPagoWebhookSecret: value.MERCADO_PAGO_WEBHOOK_SECRET,
+    mercadoPagoApiBaseUrl: value.MERCADO_PAGO_API_BASE_URL,
   });
 }
 

@@ -13,6 +13,13 @@ export {
 } from './normalization.js';
 export { generateOptionSignature, type OptionValuePair } from './option-signature.js';
 export {
+  ivaBasisPointsForTaxCode,
+  normalizeCurrencyCode,
+  normalizeMoneyAmount,
+  normalizeProductTaxCode,
+  type ProductTaxCode,
+} from './pricing.js';
+export {
   validateProductVariantState,
   type ProductStatus,
   type ProductType,

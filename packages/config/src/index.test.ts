@@ -56,4 +56,27 @@ describe('configuration', () => {
     expect(config.openapiUiEnabled).toBe(true);
     expect(config.trustProxy).toBe(true);
   });
+
+  // TASK 12.4B.1: the app must still boot with no Mercado Pago
+  // configuration at all — "fail safely if configuration is missing"
+  // means the specific provider call fails cleanly when invoked, not
+  // that the whole process refuses to start.
+  it('boots with no Mercado Pago configuration, leaving the credentials undefined', () => {
+    const config = loadApiConfig(validEnvironment);
+    expect(config.mercadoPagoAccessToken).toBeUndefined();
+    expect(config.mercadoPagoWebhookSecret).toBeUndefined();
+    expect(config.mercadoPagoApiBaseUrl).toBe('https://api.mercadopago.com');
+  });
+
+  it('loads explicit Mercado Pago configuration when provided', () => {
+    const config = loadApiConfig({
+      ...validEnvironment,
+      MERCADO_PAGO_ACCESS_TOKEN: 'TEST-fixture-token',
+      MERCADO_PAGO_WEBHOOK_SECRET: 'fixture-webhook-secret',
+      MERCADO_PAGO_API_BASE_URL: 'https://sandbox.example.test',
+    });
+    expect(config.mercadoPagoAccessToken).toBe('TEST-fixture-token');
+    expect(config.mercadoPagoWebhookSecret).toBe('fixture-webhook-secret');
+    expect(config.mercadoPagoApiBaseUrl).toBe('https://sandbox.example.test');
+  });
 });
