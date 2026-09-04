@@ -663,6 +663,49 @@ export class SalesRepository {
     );
   }
 
+  /** TASK 12.8 Part Q: derives each sale's refund state
+   * (`not_refunded`/`partially_refunded`/`fully_refunded`) purely from
+   * the immutable `refunds`/`refund_items` records — never by mutating
+   * `sales.status` (see ADR-0015 "corrected original sale stays
+   * historically completed"). The per-line "is every sold unit
+   * refunded" comparison is done in SQL as an exact `numeric`
+   * comparison (`refunded_quantity >= si.quantity`), never in JS with
+   * `Number()`, matching ADR-0001. Only `completed` refunds count — a
+   * `requested`/`approved` refund that hasn't actually posted its
+   * inventory/cash/payment effects yet must never flip a sale's
+   * displayed state. Batched like `listSummaries` above (one query for
+   * however many sale ids the caller — list or single-sale detail —
+   * needs), never one query per sale. */
+  public async refundStatesForSales(
+    companyId: string,
+    saleIds: readonly string[],
+  ): Promise<Map<string, 'not_refunded' | 'partially_refunded' | 'fully_refunded'>> {
+    if (saleIds.length === 0) return new Map();
+    const queryResult = await this.database.pool.query(
+      `select si.sale_id,
+              bool_or(coalesce(ref.refunded_quantity, 0) > 0) as any_refunded,
+              bool_and(coalesce(ref.refunded_quantity, 0) >= si.quantity) as fully_refunded
+       from sale_items si
+       left join (
+         select ri.sale_item_id, sum(ri.quantity) as refunded_quantity
+         from refund_items ri
+         join refunds r on r.company_id = ri.company_id and r.id = ri.refund_id and r.status = 'completed'
+         where ri.company_id = $1
+         group by ri.sale_item_id
+       ) ref on ref.sale_item_id = si.id
+       where si.company_id = $1 and si.sale_id = any($2::uuid[])
+       group by si.sale_id`,
+      [companyId, saleIds],
+    );
+    const rows = result<{ sale_id: string; any_refunded: boolean; fully_refunded: boolean }>(queryResult).rows;
+    return new Map(
+      rows.map((row) => [
+        row.sale_id,
+        row.fully_refunded ? 'fully_refunded' : row.any_refunded ? 'partially_refunded' : 'not_refunded',
+      ]),
+    );
+  }
+
   /** TASK 12.5B: the receipt's "who/where" — company display name,
    * branch name/address, and the cashier's own display name (the user
    * who created the sale, `sales.created_by`). One direct join against

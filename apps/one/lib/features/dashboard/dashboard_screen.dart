@@ -42,6 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       salesGateway: PlatformScope.of(context).posSalesGateway,
       paymentsGateway: PlatformScope.of(context).posPaymentsGateway,
       cashGateway: PlatformScope.of(context).posCashGateway,
+      refundsGateway: PlatformScope.of(context).posRefundsGateway,
       onLogout: auth.logout,
       // TASK: POS branch-context fix — the exact same canonical
       // session-branch switch the login-time `BranchSelectionScreen`

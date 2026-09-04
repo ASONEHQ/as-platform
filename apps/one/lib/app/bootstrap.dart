@@ -12,6 +12,7 @@ import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
+import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
 import 'app.dart';
 
@@ -52,6 +53,7 @@ void bootstrap() {
       posSalesGateway: ApiPosSalesGateway(api),
       posPaymentsGateway: ApiPosPaymentsGateway(api),
       posCashGateway: ApiPosCashGateway(api),
+      posRefundsGateway: ApiPosRefundsGateway(api),
     ),
   );
   authController.bootstrapSession();

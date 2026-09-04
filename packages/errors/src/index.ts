@@ -96,11 +96,18 @@ export const infrastructureErrorCodes = [
   'insufficient_tendered',
   // TASK 12.7: cash register/session — the exact four codes
   // docs/API_CONTRACTS.md §5 already reserves verbatim, none invented
-  // here. See ADR-0015.
+  // here. See ADR-0014.
   'cash_session_required',
   'cash_session_already_open',
   'cash_session_not_open',
   'cash_session_closed',
+  // TASK 12.8: returns/refunds — the exact five codes
+  // docs/API_CONTRACTS.md §5 already reserves verbatim. See ADR-0015.
+  'sale_not_mutable',
+  'payment_not_reversible',
+  'sale_not_refundable',
+  'refund_limit_exceeded',
+  'refund_approval_required',
   'product_not_found',
   'product_not_active',
   'price_not_found',

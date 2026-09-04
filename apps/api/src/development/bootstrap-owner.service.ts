@@ -115,6 +115,26 @@ export const ownerPermissionCodes = Object.freeze([
   'cash_session.read',
   'cash_movement.create',
   'cash_session.close',
+  // TASK 12.8: the local dev owner is also the account used to exercise
+  // the returns/refunds lifecycle end to end (refundable-balance lookup,
+  // create a refund, complete it), so it needs exactly the four reserved
+  // refund.* permissions that flow touches — no more:
+  //   - `refund.read`: `GET /sales/{sale_id}/refundable-balance` (E081),
+  //     `GET /refunds/{id}` (E083), `GET /refunds` (E084).
+  //   - `refund.create`: `POST /refunds` (E082).
+  //   - `refund.approve`: this implementation's own `POST /refunds`
+  //     requires the *same* actor to hold both `refund.create` and
+  //     `refund.approve` to self-approve immediately (see ADR-0015) —
+  //     without it every refund creation would be honestly rejected with
+  //     `refund_approval_required`, never a fabricated success.
+  //   - `refund.complete`: `POST /refunds/{id}/completion` (E086).
+  // Deliberately NOT added: `refund.cancel` — no cancellation endpoint
+  // exists in this pass; this list grants only what the flow actually
+  // needs, never every reserved permission that happens to exist.
+  'refund.read',
+  'refund.create',
+  'refund.approve',
+  'refund.complete',
 ]);
 
 export interface BootstrapEnvironment {

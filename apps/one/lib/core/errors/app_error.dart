@@ -103,6 +103,56 @@ class AppFailure {
       'Esta sesión de caja ya fue cerrada.',
       code: 'cash_session_closed',
     ),
+    // TASK 12.8: the refund-specific error codes `docs/API_CONTRACTS.md`
+    // §5/§17 reserve — see ADR-0015. `payment_not_reversible`'s message is
+    // the exact honest Spanish text the task itself requires wherever a
+    // card refund is attempted while Mercado Pago stays unconfigured
+    // (ADR-0015 D15) — never a fabricated success.
+    'sale_not_refundable' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta venta no admite devoluciones.',
+      code: 'sale_not_refundable',
+    ),
+    'sale_not_mutable' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta venta ya no puede modificarse.',
+      code: 'sale_not_mutable',
+    ),
+    'refund_limit_exceeded' => const AppFailure(
+      AppErrorKind.validation,
+      'La cantidad solicitada excede lo disponible para devolución.',
+      code: 'refund_limit_exceeded',
+    ),
+    'refund_approval_required' => const AppFailure(
+      AppErrorKind.authorization,
+      'Tu sesión no puede aprobar esta devolución automáticamente.',
+      code: 'refund_approval_required',
+    ),
+    'payment_not_reversible' => const AppFailure(
+      AppErrorKind.validation,
+      'El reembolso con tarjeta requiere la configuración del proveedor de pago.',
+      code: 'payment_not_reversible',
+    ),
+    'resource_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'La devolución no se encuentra en el estado esperado.',
+      code: 'resource_conflict',
+    ),
+    'resource_not_found' => const AppFailure(
+      AppErrorKind.validation,
+      'No se encontró el recurso solicitado.',
+      code: 'resource_not_found',
+    ),
+    'idempotency_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'La solicitud ya fue procesada con datos distintos.',
+      code: 'idempotency_conflict',
+    ),
+    'version_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'La información cambió mientras tanto. Actualiza e inténtalo de nuevo.',
+      code: 'version_conflict',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

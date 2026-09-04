@@ -727,6 +727,43 @@ export class CashRepository {
     });
   }
 
+  /** TASK 12.8 (Part F/G): the identical pattern applied to a completed
+   * cash refund's own drawer-out fact — posted to the *current* open
+   * session performing the refund (never the original sale's, possibly
+   * long-closed, session — see ADR-0015 "Current vs original
+   * CashSession"). Keyed by *refund* id — `cash_movements_refund_reference_uq`
+   * is the durable, database-level idempotency boundary, not just this
+   * call being reached only once. */
+  public async postRefundMovement(
+    client: CashTransaction,
+    context: CashMutationContext,
+    input: {
+      cashSessionId: string;
+      branchId: string;
+      amount: string;
+      currencyCode: string;
+      refundId: string;
+      refundNumber: string;
+    },
+  ): Promise<CashMovementRow> {
+    return this.insertMovement(client, {
+      id: randomUUID(),
+      companyId: context.companyId,
+      branchId: input.branchId,
+      cashSessionId: input.cashSessionId,
+      movementType: 'cash_refund',
+      amount: input.amount,
+      currencyCode: input.currencyCode,
+      reasonCode: 'cash_refund',
+      note: input.refundNumber,
+      referenceType: 'refund',
+      referenceId: input.refundId,
+      occurredAt: context.timestamp,
+      createdBy: context.actorId,
+      deviceId: context.deviceId ?? null,
+    });
+  }
+
   public async movementsForSession(companyId: string, cashSessionId: string): Promise<CashMovementRow[]> {
     const rows = result<MovementDb>(
       await this.database.pool.query(

@@ -58,6 +58,9 @@ import { PaymentService } from '../modules/payments/payments.service.js';
 import { MercadoPagoClient } from '../modules/payments/providers/mercado-pago.client.js';
 import { MercadoPagoPointProvider } from '../modules/payments/providers/mercado-pago.provider.js';
 import { registerMercadoPagoWebhookRoutes } from '../modules/payments/providers/mercado-pago.webhook.routes.js';
+import { RefundsRepository } from '../modules/refunds/refunds.repository.js';
+import { registerRefundRoutes } from '../modules/refunds/refunds.routes.js';
+import { RefundsService } from '../modules/refunds/refunds.service.js';
 import { SalesRepository } from '../modules/sales/sales.repository.js';
 import { registerSaleRoutes } from '../modules/sales/sales.routes.js';
 import { SalesService } from '../modules/sales/sales.service.js';
@@ -212,6 +215,19 @@ export async function registerPlugins(
       });
       const mercadoPagoProvider = new MercadoPagoPointProvider(mercadoPagoClient);
       const paymentService = new PaymentService(paymentRepository, salesRepository, mercadoPagoProvider, cashRepository);
+      // TASK 12.8: constructed after payments/cash — a refund completion
+      // reverses the original payment and, for a cash refund, posts to
+      // the *current* open session (see ADR-0015), so it needs both
+      // repositories already built, plus the same Mercado Pago provider
+      // instance the payment side uses (never a second, separately
+      // configured one).
+      const refundsRepository = new RefundsRepository(options.infrastructure.database);
+      const refundsService = new RefundsService(
+        refundsRepository,
+        paymentRepository,
+        cashRepository,
+        mercadoPagoProvider,
+      );
       // TASK 12.5B: the receipt route (`GET /sales/{id}/receipt`) composes
       // a sale with its payments, so `registerSaleRoutes` now needs
       // `paymentService` too — constructed above, this call is therefore
@@ -220,6 +236,7 @@ export async function registerPlugins(
       registerSaleRoutes(app, authentication, salesService, paymentService);
       registerPaymentRoutes(app, authentication, paymentService, salesService);
       registerCashRoutes(app, authentication, cashService);
+      registerRefundRoutes(app, authentication, refundsService);
       registerMercadoPagoWebhookRoutes(app, {
         paymentService,
         mercadoPagoProvider,

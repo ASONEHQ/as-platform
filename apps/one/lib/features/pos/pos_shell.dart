@@ -15,10 +15,12 @@ import 'pos_navigation.dart';
 import 'pos_payments_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
+import 'pos_refunds_gateway.dart';
 import 'pos_sales_gateway.dart';
 import 'pos_tokens.dart';
 import 'receipt_html.dart';
 import 'receipt_print.dart';
+import 'refund_receipt_html.dart';
 import 'sale_folio.dart';
 import 'sale_session.dart';
 
@@ -29,6 +31,7 @@ class PosShell extends StatefulWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.refundsGateway,
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -43,6 +46,9 @@ class PosShell extends StatefulWidget {
   // TASK 12.7: cash register/session/movement/close/summary/history — see
   // `pos_cash_gateway.dart` and ADR-0014.
   final PosCashGateway cashGateway;
+  // TASK 12.8: refund request/completion/history — see
+  // `pos_refunds_gateway.dart` and ADR-0015.
+  final PosRefundsGateway refundsGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -235,8 +241,10 @@ class _PosShellState extends State<PosShell> {
                             salesGateway: widget.salesGateway,
                             paymentsGateway: widget.paymentsGateway,
                             cashGateway: widget.cashGateway,
+                            refundsGateway: widget.refundsGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
+                            onNavigateToModule: select,
                           ),
                         ),
                       ],
@@ -2217,8 +2225,10 @@ class _Content extends StatelessWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.refundsGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
+    required this.onNavigateToModule,
   });
 
   final PosModule module;
@@ -2228,8 +2238,15 @@ class _Content extends StatelessWidget {
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  final PosRefundsGateway refundsGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
+  // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
+  // Reembolsar") navigate straight to Caja after a `cash_session_required`
+  // completion error, mirroring `select` in `_PosShellState` — never a
+  // silently-opened session, just a real navigation to the existing Caja
+  // screen so the cashier can open one themselves.
+  final ValueChanged<PosModule> onNavigateToModule;
 
   @override
   Widget build(BuildContext context) {
@@ -2297,6 +2314,9 @@ class _Content extends StatelessWidget {
                   PosModule.history => _SalesHistory(
                     context: this.context,
                     salesGateway: salesGateway,
+                    refundsGateway: refundsGateway,
+                    onNavigateToCaja: () =>
+                        onNavigateToModule(PosModule.cash),
                   ),
                   // TASK 12.7: the pre-reserved `PosModule.cash` slot
                   // ("Corte de Caja") — no second, parallel Caja entry was
@@ -2308,6 +2328,18 @@ class _Content extends StatelessWidget {
                     key: ValueKey('caja-${this.context.session.branchId}'),
                     context: this.context,
                     cashGateway: cashGateway,
+                  ),
+                  // TASK 12.8: the pre-reserved `PosModule.returns` slot
+                  // ("Devoluciones") — a real, backend-paginated global
+                  // refund history (E084); a per-sale return history lives
+                  // inside Sale Detail instead (same E084 endpoint, filtered
+                  // by `sale_id` — never a second, duplicate list).
+                  PosModule.returns => _Devoluciones(
+                    context: this.context,
+                    refundsGateway: refundsGateway,
+                    salesGateway: salesGateway,
+                    onNavigateToCaja: () =>
+                        onNavigateToModule(PosModule.cash),
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -5996,9 +6028,16 @@ class _UserRow extends StatelessWidget {
 enum _SalesHistoryPhase { loading, ready, empty, failure }
 
 class _SalesHistory extends StatefulWidget {
-  const _SalesHistory({required this.context, required this.salesGateway});
+  const _SalesHistory({
+    required this.context,
+    required this.salesGateway,
+    required this.refundsGateway,
+    required this.onNavigateToCaja,
+  });
   final AuthenticatedContext context;
   final PosSalesGateway salesGateway;
+  final PosRefundsGateway refundsGateway;
+  final VoidCallback onNavigateToCaja;
 
   @override
   State<_SalesHistory> createState() => _SalesHistoryState();
@@ -6108,14 +6147,22 @@ class _SalesHistoryState extends State<_SalesHistory> {
   }
 
   Future<void> _openDetail(PosSaleSummary summary) async {
-    await showDialog<void>(
+    final refunded = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => _SaleDetailDialog(
         saleId: summary.id,
         saleNumber: summary.saleNumber,
+        refundState: summary.refundState,
         salesGateway: widget.salesGateway,
+        refundsGateway: widget.refundsGateway,
+        context: widget.context,
+        onNavigateToCaja: widget.onNavigateToCaja,
       ),
     );
+    // A completed refund changes this sale's own `refund_state` — reload
+    // the list so the row's badge reflects it immediately, rather than
+    // waiting for the next manual refresh (ADR-0015 D14).
+    if (refunded == true) await _load();
   }
 
   @override
@@ -6392,7 +6439,12 @@ class _SalesHistoryTable extends StatelessWidget {
                     DataCell(Text(_formatDateTime(item.occurredAt))),
                     DataCell(Text(item.branchName ?? '—')),
                     DataCell(Text(item.cashierName ?? '—')),
-                    DataCell(_SaleStatusChip(status: item.status)),
+                    DataCell(
+                      _SaleStatusChip(
+                        status: item.status,
+                        refundState: item.refundState,
+                      ),
+                    ),
                     DataCell(Text(_methodLabel(item.paymentMethods))),
                     DataCell(
                       Text(_money(Money.parse(item.total, item.currencyCode))),
@@ -6409,15 +6461,20 @@ class _SalesHistoryTable extends StatelessWidget {
 
 /// C2: represents the canonical `SaleStatus` states honestly — never an
 /// invented status, and `completed` is never visually confusable with
-/// `pending_payment`.
+/// `pending_payment`. TASK 12.8: [refundState], when given, is composed
+/// additively onto the same chip's label (e.g. "Completada · devolución
+/// parcial") — the original [status] text is never hidden or replaced
+/// (ADR-0015 D14); `not_refunded` (or `null`, for a caller that never
+/// looked it up) adds nothing.
 class _SaleStatusChip extends StatelessWidget {
-  const _SaleStatusChip({required this.status});
+  const _SaleStatusChip({required this.status, this.refundState});
   final String status;
+  final String? refundState;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final (label, color) = switch (status) {
+    final (baseLabel, color) = switch (status) {
       'completed' => ('Completada', palette.success),
       'pending_payment' => ('Pendiente', palette.warning),
       'cancelled' => ('Cancelada', palette.error),
@@ -6425,6 +6482,7 @@ class _SaleStatusChip extends StatelessWidget {
       'draft' => ('Borrador', palette.textMuted),
       _ => (status, palette.textMuted),
     };
+    final label = '$baseLabel${_refundStateSuffix(refundState)}';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
@@ -6452,11 +6510,21 @@ class _SaleDetailDialog extends StatefulWidget {
   const _SaleDetailDialog({
     required this.saleId,
     required this.saleNumber,
+    required this.refundState,
     required this.salesGateway,
+    required this.refundsGateway,
+    required this.context,
+    required this.onNavigateToCaja,
   });
   final String saleId;
   final String saleNumber;
+  // TASK 12.8: the already-fetched Sales History list value — additive,
+  // never a replacement for the sale's own `status` (ADR-0015 D14).
+  final String refundState;
   final PosSalesGateway salesGateway;
+  final PosRefundsGateway refundsGateway;
+  final AuthenticatedContext context;
+  final VoidCallback onNavigateToCaja;
 
   @override
   State<_SaleDetailDialog> createState() => _SaleDetailDialogState();
@@ -6468,6 +6536,13 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
   String? _errorMessage;
   bool _printing = false;
   String? _printError;
+
+  // TASK 12.8: E081's own eligibility answer — `null` while unresolved
+  // (still loading, not attempted, or the actor lacks `refund.read`), in
+  // which case the "Devolver / Reembolsar" action stays hidden rather
+  // than guessing (ADR-0015 D6 Part 3: "never Flutter").
+  PosRefundableBalance? _balance;
+  bool _balanceLoading = false;
 
   @override
   void initState() {
@@ -6487,6 +6562,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
         _receipt = receipt;
         _loading = false;
       });
+      if (receipt.sale.status == 'completed') await _loadBalance();
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -6500,6 +6576,57 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
         _errorMessage = 'No fue posible cargar el detalle de la venta.';
       });
     }
+  }
+
+  // TASK 12.8: E081 — only ever called for a `refund.read`-holding actor
+  // (mirrors every other module's own "check the permission before even
+  // attempting the read" precedent, e.g. `_SalesHistoryState`/`_CajaState`
+  // gating on `sale.read`/`cash_session.read`). A failure here never
+  // blocks the rest of Sale Detail — the refund action simply stays
+  // hidden, exactly as if the sale were reported non-refundable.
+  Future<void> _loadBalance() async {
+    if (!widget.context.permissions.contains('refund.read')) return;
+    setState(() => _balanceLoading = true);
+    try {
+      final balance = await widget.refundsGateway.refundableBalance(
+        widget.saleId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _balance = balance;
+        _balanceLoading = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _balanceLoading = false);
+    }
+  }
+
+  Future<void> _openRefundFlow() async {
+    final receipt = _receipt;
+    final balance = _balance;
+    if (receipt == null || balance == null || !balance.refundable) return;
+    final completed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _RefundFlowDialog(
+        sale: receipt.sale,
+        business: receipt.business,
+        cashier: receipt.cashier,
+        balance: balance,
+        refundsGateway: widget.refundsGateway,
+        actorContext: widget.context,
+        onNavigateToCaja: widget.onNavigateToCaja,
+      ),
+    );
+    if (!mounted) return;
+    if (completed == true) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+    // Even an approved-but-not-completed (e.g. card_terminal) refund
+    // already reduces the remaining refundable quantity server-side —
+    // refresh so the button/tooltip reflects it, never stale.
+    await _loadBalance();
   }
 
   Future<void> _print() async {
@@ -6586,7 +6713,10 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
                             ),
                           ],
                         )
-                      : _SaleDetailBody(receipt: _receipt!),
+                      : _SaleDetailBody(
+                          receipt: _receipt!,
+                          refundState: widget.refundState,
+                        ),
                 ),
               ),
               if (_printError != null) ...[
@@ -6597,23 +6727,30 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
                 ),
               ],
               const SizedBox(height: 14),
-              OutlinedButton.icon(
-                key: const Key('pos-history-detail-print'),
-                onPressed: (_receipt == null || _printing)
-                    ? null
-                    : () => unawaited(_print()),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: palette.textSecondary,
-                  side: BorderSide(color: palette.border),
-                ),
-                icon: _printing
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.print_outlined, size: 16),
-                label: const Text('Imprimir ticket'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    key: const Key('pos-history-detail-print'),
+                    onPressed: (_receipt == null || _printing)
+                        ? null
+                        : () => unawaited(_print()),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: palette.textSecondary,
+                      side: BorderSide(color: palette.border),
+                    ),
+                    icon: _printing
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.print_outlined, size: 16),
+                    label: const Text('Imprimir ticket'),
+                  ),
+                  _refundActionWidget(),
+                ],
               ),
             ],
           ),
@@ -6621,11 +6758,52 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
       ),
     );
   }
+
+  // TASK 12.8: only ever rendered for an actor holding `refund.create`
+  // (mirrors the existing `cash_movement.create`/`cash_session.close`
+  // gating precedent in `_CajaOpenView`) — and even then, only once E081
+  // has actually answered; a permission-less actor or an unresolved
+  // balance never sees any refund control at all, not even a disabled
+  // placeholder (ADR-0015 D6 Part 3, D13).
+  Widget _refundActionWidget() {
+    if (!widget.context.permissions.contains('refund.create')) {
+      return const SizedBox.shrink();
+    }
+    if (_balanceLoading) {
+      return const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    final balance = _balance;
+    if (balance == null) return const SizedBox.shrink();
+    if (!balance.refundable) {
+      return Tooltip(
+        message:
+            balance.blockedReason ??
+            'Esta venta no admite devoluciones en este momento.',
+        child: OutlinedButton.icon(
+          key: const Key('pos-history-detail-refund'),
+          onPressed: null,
+          icon: const Icon(Icons.assignment_return_outlined, size: 16),
+          label: const Text('Devolver / Reembolsar'),
+        ),
+      );
+    }
+    return FilledButton.icon(
+      key: const Key('pos-history-detail-refund'),
+      onPressed: () => unawaited(_openRefundFlow()),
+      icon: const Icon(Icons.assignment_return_outlined, size: 16),
+      label: const Text('Devolver / Reembolsar'),
+    );
+  }
 }
 
 class _SaleDetailBody extends StatelessWidget {
-  const _SaleDetailBody({required this.receipt});
+  const _SaleDetailBody({required this.receipt, this.refundState});
   final PosReceipt receipt;
+  final String? refundState;
 
   @override
   Widget build(BuildContext context) {
@@ -6672,7 +6850,10 @@ class _SaleDetailBody extends StatelessWidget {
           _CashSummaryRow(label: 'Cajero', value: cashier.displayName),
         ],
         const SizedBox(height: 4),
-        _CashSummaryRow(label: 'Estado', value: sale.status),
+        _CashSummaryRow(
+          label: 'Estado',
+          value: '${sale.status}${_refundStateSuffix(refundState)}',
+        ),
         const SizedBox(height: 14),
         // PRODUCTOS
         Text(
@@ -6790,6 +6971,1258 @@ class _SaleDetailBody extends StatelessWidget {
             'Sin pagos registrados.',
             style: TextStyle(color: palette.textSecondary, fontSize: 12),
           ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// TASK 12.8 — Returns/refunds (ADR-0015). "Devolver / Reembolsar" wizard
+// (item/quantity selection → reason → E082 create → an honest
+// pre-completion preview → E086 complete), the global Devoluciones
+// history list (E084), and a refund detail view. Every number here is
+// exactly what the backend returned — Dart never computes an
+// authoritative refund total, tax split, or eligibility decision
+// (ADR-0015 D5/D6).
+// ---------------------------------------------------------------------
+
+/// Parses the whole-unit integer portion of a canonical ADR-0001-style
+/// quantity string (e.g. `"2.000000"` → `2`) — used only to bound/display
+/// the refund item-selection stepper; every ticket line in this app is
+/// already a whole-unit quantity in practice (`SaleLine.quantity` is
+/// `int` — see `sale_session.dart`), and the backend remains the real
+/// enforcer of the exact decimal value regardless (ADR-0015 D6).
+int _wholeUnits(String decimal) {
+  final trimmed = decimal.trim();
+  final dot = trimmed.indexOf('.');
+  final wholePart = dot == -1 ? trimmed : trimmed.substring(0, dot);
+  return int.tryParse(wholePart) ?? 0;
+}
+
+/// A short, fixed set of sensible Spanish reason codes for a POS return —
+/// stored verbatim as `reason_code` (the backend has no fixed enum to
+/// match, ADR-0015 §17.1) — never a client-invented eligibility decision.
+const Map<String, String> _refundReasonLabels = {
+  'customer_changed_mind': 'Cliente cambió de opinión',
+  'defective_product': 'Producto defectuoso',
+  'billing_error': 'Error de cobro',
+  'other': 'Otro',
+};
+
+enum _RefundStep { items, reason, result }
+
+/// The "Devolver / Reembolsar" wizard, opened from Sale Detail once E081
+/// has already reported `refundable: true`. Returns `true` from
+/// `Navigator.pop` only once a refund actually reaches `completed` (so the
+/// caller knows to reload the sale's own `refund_state` badge) — any
+/// other outcome (closed early, created-but-not-completed) pops `false`.
+class _RefundFlowDialog extends StatefulWidget {
+  const _RefundFlowDialog({
+    required this.sale,
+    required this.business,
+    required this.cashier,
+    required this.balance,
+    required this.refundsGateway,
+    required this.actorContext,
+    required this.onNavigateToCaja,
+  });
+
+  final PosReceiptSale sale;
+  final PosReceiptBusiness? business;
+  final PosReceiptCashier? cashier;
+  final PosRefundableBalance balance;
+  final PosRefundsGateway refundsGateway;
+  final AuthenticatedContext actorContext;
+  final VoidCallback onNavigateToCaja;
+
+  @override
+  State<_RefundFlowDialog> createState() => _RefundFlowDialogState();
+}
+
+class _RefundFlowDialogState extends State<_RefundFlowDialog> {
+  _RefundStep _step = _RefundStep.items;
+  final Map<String, int> _quantities = {};
+  String _reasonCode = _refundReasonLabels.keys.first;
+  final _noteController = TextEditingController();
+
+  bool _creating = false;
+  String? _createError;
+  PosRefund? _createdRefund;
+
+  bool _completing = false;
+  String? _completeError;
+  bool _cashSessionRequired = false;
+  PosRefund? _completedRefund;
+
+  bool _printing = false;
+  String? _printError;
+
+  @override
+  void dispose() {
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  bool get _hasSelection => _quantities.values.any((quantity) => quantity > 0);
+
+  // Structural bound, not merely a validation message: the `+` stepper
+  // below is disabled outright at the backend-reported
+  // `refundable_quantity` — this app can never even construct a
+  // request that asks for more (ADR-0015 D6/§Constraints).
+  void _setQuantity(PosRefundableLine line, int quantity) {
+    final bounded = quantity.clamp(0, _wholeUnits(line.refundableQuantity));
+    setState(() {
+      if (bounded <= 0) {
+        _quantities.remove(line.saleItemId);
+      } else {
+        _quantities[line.saleItemId] = bounded;
+      }
+    });
+  }
+
+  void _goToReason() {
+    if (!_hasSelection) return;
+    setState(() => _step = _RefundStep.reason);
+  }
+
+  Future<void> _create() async {
+    setState(() {
+      _creating = true;
+      _createError = null;
+    });
+    try {
+      final refund = await widget.refundsGateway.createRefund(
+        saleId: widget.sale.id,
+        reasonCode: _reasonCode,
+        reasonNote: _noteController.text.trim().isEmpty
+            ? null
+            : _noteController.text.trim(),
+        items: [
+          for (final entry in _quantities.entries)
+            if (entry.value > 0)
+              PosCreateRefundItem(
+                saleItemId: entry.key,
+                quantity: '${entry.value}.000000',
+              ),
+        ],
+      );
+      if (!mounted) return;
+      setState(() {
+        _createdRefund = refund;
+        _creating = false;
+        _step = _RefundStep.result;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _creating = false;
+        // `refund_approval_required` lands here exactly like any other
+        // rejection — an honest error, never a silent queue/retry
+        // (ADR-0015 D7).
+        _createError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _creating = false;
+        _createError = 'No fue posible solicitar la devolución.';
+      });
+    }
+  }
+
+  Future<void> _complete() async {
+    final refund = _createdRefund;
+    if (refund == null) return;
+    setState(() {
+      _completing = true;
+      _completeError = null;
+      _cashSessionRequired = false;
+    });
+    try {
+      final completed = await widget.refundsGateway.completeRefund(
+        refundId: refund.id,
+      );
+      if (!mounted) return;
+      setState(() {
+        _completedRefund = completed;
+        _completing = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      final sessionRequired = error.failure.code == 'cash_session_required';
+      setState(() {
+        _completing = false;
+        _cashSessionRequired = sessionRequired;
+        // The task's own exact honest copy — more specific than the
+        // generic cash-sale `cash_session_required` message, since this
+        // is a completion, not a checkout; never a silently-opened
+        // session either way.
+        _completeError = sessionRequired
+            ? 'No hay una caja abierta. Abre una caja en Caja y Finanzas → '
+                  'Corte de Caja antes de completar esta devolución en efectivo.'
+            : error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _completing = false;
+        _completeError = 'No fue posible completar la devolución.';
+      });
+    }
+  }
+
+  Future<void> _print() async {
+    final refund = _completedRefund ?? _createdRefund;
+    if (refund == null || _printing) return;
+    setState(() {
+      _printing = true;
+      _printError = null;
+    });
+    final logoDataUri = await _receiptLogoDataUri();
+    final lineInfo = <String, PosRefundableLine>{
+      for (final line in widget.balance.lines) line.saleItemId: line,
+    };
+    // Read-only by construction, identical guarantee to the sale
+    // receipt's own reprint: never calls the backend, never mutates
+    // anything (ADR-0015 D17).
+    final html = buildRefundReceiptHtml(
+      refund: refund,
+      sale: widget.sale,
+      business: widget.business,
+      cashier: widget.cashier,
+      lineInfoBySaleItemId: lineInfo,
+      logoDataUri: logoDataUri,
+    );
+    final opened = openReceiptPrintWindow(html);
+    if (!mounted) return;
+    setState(() {
+      _printing = false;
+      _printError = opened
+          ? null
+          : 'El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para imprimir.';
+    });
+  }
+
+  // Closes every dialog currently open on the root navigator (this refund
+  // flow's own, plus the Sale Detail dialog underneath it — both were
+  // pushed via `showDialog`'s default root navigator) in one call, then
+  // switches to Caja — never a silently-opened session, just a real,
+  // complete navigation to the existing "Abrir caja" flow the cashier
+  // must use themselves.
+  void _goToCaja() {
+    Navigator.of(
+      context,
+      rootNavigator: true,
+    ).popUntil((route) => route.isFirst);
+    widget.onNavigateToCaja();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 640),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Devolver / Reembolsar',
+                      style: TextStyle(
+                        color: palette.text,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('pos-refund-close'),
+                    onPressed: () =>
+                        Navigator.of(context).pop(_completedRefund != null),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: switch (_step) {
+                    _RefundStep.items => _buildItemsStep(palette),
+                    _RefundStep.reason => _buildReasonStep(palette),
+                    _RefundStep.result => _buildResultStep(palette),
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildItemsStep(PosPalette palette) {
+    final lines = widget.balance.lines
+        .where((line) => _wholeUnits(line.refundableQuantity) > 0)
+        .toList(growable: false);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Selecciona los artículos y cantidades a devolver.',
+          style: TextStyle(color: palette.textSecondary, fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        if (lines.isEmpty)
+          Text(
+            'No quedan artículos disponibles para devolución.',
+            style: TextStyle(color: palette.textSecondary),
+          )
+        else
+          for (final line in lines)
+            _RefundLineRow(
+              line: line,
+              currencyCode: widget.sale.currencyCode,
+              quantity: _quantities[line.saleItemId] ?? 0,
+              onChanged: (value) => _setQuantity(line, value),
+            ),
+        const SizedBox(height: 14),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton(
+            key: const Key('pos-refund-continue'),
+            onPressed: _hasSelection ? _goToReason : null,
+            child: const Text('Continuar'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReasonStep(PosPalette palette) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'MOTIVO DE LA DEVOLUCIÓN',
+          style: TextStyle(
+            color: palette.textSecondary,
+            fontWeight: FontWeight.w800,
+            fontSize: 11,
+          ),
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          key: const Key('pos-refund-reason'),
+          initialValue: _reasonCode,
+          isExpanded: true,
+          decoration: const InputDecoration(isDense: true, labelText: 'Motivo'),
+          items: [
+            for (final entry in _refundReasonLabels.entries)
+              DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+          ],
+          onChanged: (value) =>
+              setState(() => _reasonCode = value ?? _reasonCode),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          key: const Key('pos-refund-note'),
+          controller: _noteController,
+          decoration: const InputDecoration(labelText: 'Nota (opcional)'),
+          maxLines: 2,
+        ),
+        if (_createError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            _createError!,
+            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+          ),
+        ],
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            TextButton(
+              onPressed: _creating
+                  ? null
+                  : () => setState(() => _step = _RefundStep.items),
+              child: const Text('Atrás'),
+            ),
+            const Spacer(),
+            FilledButton(
+              key: const Key('pos-refund-request'),
+              onPressed: _creating ? null : () => unawaited(_create()),
+              child: _creating
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Solicitar devolución'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResultStep(PosPalette palette) {
+    final refund = _createdRefund;
+    if (refund == null) return const SizedBox.shrink();
+    final completed = _completedRefund;
+    final canComplete = widget.actorContext.permissions.contains(
+      'refund.complete',
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _CashSummaryRow(label: 'Folio', value: refund.refundNumber, big: true),
+        const SizedBox(height: 4),
+        _CashSummaryRow(
+          label: 'Total',
+          value: _formatMoney(refund.total, refund.currencyCode),
+          big: true,
+        ),
+        const SizedBox(height: 4),
+        _CashSummaryRow(
+          label: 'Estado',
+          value: (completed ?? refund).status,
+        ),
+        const SizedBox(height: 14),
+        if (completed != null) ...[
+          Row(
+            children: [
+              Icon(Icons.check_circle, color: palette.success, size: 18),
+              const SizedBox(width: 6),
+              Text(
+                'Devolución completada.',
+                style: TextStyle(
+                  color: palette.success,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ] else if (refund.isCash) ...[
+          // TASK 12.8: the E082 response's own computed total — never
+          // recomputed client-side (ADR-0015 D5/D11: the drawer impact is
+          // always the refund's own total, never the original tender).
+          _PosCard(
+            child: Text(
+              'Efectivo a devolver: '
+              '${_formatMoney(refund.total, refund.currencyCode)} — se '
+              'descontará de la caja actualmente abierta.',
+              style: TextStyle(color: palette.text, fontSize: 13),
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (_completeError != null) ...[
+            Text(
+              _completeError!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            if (_cashSessionRequired)
+              OutlinedButton(
+                key: const Key('pos-refund-go-caja'),
+                onPressed: _goToCaja,
+                child: const Text('Ir a Caja'),
+              ),
+            const SizedBox(height: 8),
+          ],
+          if (!canComplete)
+            Text(
+              'Tu sesión no incluye el permiso para completar devoluciones.',
+              style: TextStyle(color: palette.textSecondary, fontSize: 12),
+            )
+          else
+            FilledButton(
+              key: const Key('pos-refund-complete'),
+              onPressed: _completing ? null : () => unawaited(_complete()),
+              child: _completing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Completar devolución'),
+            ),
+        ] else if (refund.isCardTerminal) ...[
+          // TASK 12.8: the task's own exact honest Spanish copy — never a
+          // "complete" action that implies this will actually reverse
+          // money on the card while Mercado Pago stays unconfigured
+          // (ADR-0015 D15). The refund itself already exists (`approved`),
+          // it simply is never attempted-and-faked here.
+          _PosCard(
+            child: Text(
+              'El reembolso con tarjeta requiere la configuración del '
+              'proveedor de pago.',
+              style: TextStyle(
+                color: palette.warning,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'La devolución quedó registrada como aprobada; no se '
+            'intentará reversar el cobro con tarjeta desde aquí.',
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+        ] else ...[
+          Text(
+            'Este método de reembolso no requiere una acción adicional aquí.',
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (_printError != null) ...[
+          Text(
+            _printError!,
+            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+        ],
+        OutlinedButton.icon(
+          key: const Key('pos-refund-print'),
+          onPressed: _printing ? null : () => unawaited(_print()),
+          icon: _printing
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.print_outlined, size: 16),
+          label: const Text('Imprimir comprobante de devolución'),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            key: const Key('pos-refund-done'),
+            onPressed: () => Navigator.of(context).pop(completed != null),
+            child: const Text('Cerrar'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RefundLineRow extends StatelessWidget {
+  const _RefundLineRow({
+    required this.line,
+    required this.currencyCode,
+    required this.quantity,
+    required this.onChanged,
+  });
+  final PosRefundableLine line;
+  final String currencyCode;
+  final int quantity;
+  final ValueChanged<int> onChanged;
+
+  int get _maxUnits => _wholeUnits(line.refundableQuantity);
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  line.nameSnapshot,
+                  style: TextStyle(
+                    color: palette.text,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  'Vendido ${_wholeUnits(line.soldQuantity)} · Disponible '
+                  '$_maxUnits · ${_formatMoney(line.unitPrice, currencyCode)}/u',
+                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            key: Key('pos-refund-qty-minus-${line.saleItemId}'),
+            onPressed: quantity > 0 ? () => onChanged(quantity - 1) : null,
+            icon: const Icon(Icons.remove_circle_outline),
+          ),
+          SizedBox(
+            width: 24,
+            child: Center(
+              child: Text(
+                '$quantity',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          IconButton(
+            key: Key('pos-refund-qty-plus-${line.saleItemId}'),
+            // Structural bound: this can never be tapped past the
+            // backend-reported `refundable_quantity` (ADR-0015 D6).
+            onPressed: quantity < _maxUnits
+                ? () => onChanged(quantity + 1)
+                : null,
+            icon: const Icon(Icons.add_circle_outline),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// TASK 12.8 — Devoluciones (global refund history, `PosModule.returns`).
+// Mirrors `_SalesHistory`'s own self-contained gateway-call/loading-state
+// pattern exactly. `GET /api/v1/refunds?sale_id=...` (E084) is the same
+// endpoint a Sale Detail's own "returns for this sale" would call — this
+// screen is deliberately the global/cross-sale view only, never a second
+// duplicate list (ADR-0015 D14).
+// ---------------------------------------------------------------------
+
+enum _DevolucionesPhase { loading, ready, empty, failure }
+
+class _Devoluciones extends StatefulWidget {
+  const _Devoluciones({
+    required this.context,
+    required this.refundsGateway,
+    required this.salesGateway,
+    required this.onNavigateToCaja,
+  });
+  final AuthenticatedContext context;
+  final PosRefundsGateway refundsGateway;
+  final PosSalesGateway salesGateway;
+  final VoidCallback onNavigateToCaja;
+
+  @override
+  State<_Devoluciones> createState() => _DevolucionesState();
+}
+
+class _DevolucionesState extends State<_Devoluciones> {
+  _DevolucionesPhase _phase = _DevolucionesPhase.loading;
+  List<PosRefund> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+  String? _statusFilter;
+  String? _branchFilter;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  PosRefundListFilter get _filter =>
+      PosRefundListFilter(branchId: _branchFilter, status: _statusFilter);
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _DevolucionesPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.refundsGateway.listRefunds(filter: _filter);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty
+            ? _DevolucionesPhase.empty
+            : _DevolucionesPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DevolucionesPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DevolucionesPhase.failure;
+        _errorMessage = 'No fue posible cargar el historial de devoluciones.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.refundsGateway.listRefunds(
+        filter: _filter,
+        cursor: cursor,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  void _applyFilters() => unawaited(_load());
+
+  Future<void> _openDetail(PosRefund refund) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _RefundDetailDialog(
+        refundId: refund.id,
+        refundsGateway: widget.refundsGateway,
+        salesGateway: widget.salesGateway,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed = widget.context.permissions.contains('refund.read');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Devoluciones',
+          description:
+              'Devoluciones y reembolsos reales registrados por el '
+              'backend, de más reciente a más antigua.',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (!allowed)
+          const _PermissionState()
+        else ...[
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: 200,
+                child: DropdownButtonFormField<String?>(
+                  key: const Key('pos-refunds-status'),
+                  initialValue: _statusFilter,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    labelText: 'Estado',
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: null,
+                      child: Text('Todos los estados'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'requested',
+                      child: Text('Solicitada'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'approved',
+                      child: Text('Aprobada'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'completed',
+                      child: Text('Completada'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'rejected',
+                      child: Text('Rechazada'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'cancelled',
+                      child: Text('Cancelada'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _statusFilter = value);
+                    _applyFilters();
+                  },
+                ),
+              ),
+              if (widget.context.companyWideAccess)
+                SizedBox(
+                  width: 200,
+                  child: DropdownButtonFormField<String?>(
+                    key: const Key('pos-refunds-branch'),
+                    initialValue: _branchFilter,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: 'Sucursal',
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Todas las sucursales'),
+                      ),
+                      for (final branch in widget.context.branches)
+                        DropdownMenuItem(
+                          value: branch.id,
+                          child: Text(branch.name),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      setState(() => _branchFilter = value);
+                      _applyFilters();
+                    },
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          switch (_phase) {
+            _DevolucionesPhase.loading => const _LoadingState(),
+            _DevolucionesPhase.empty => const _EmptyState(
+              message:
+                  'No hay devoluciones que coincidan con los filtros actuales.',
+            ),
+            _DevolucionesPhase.failure => _FailureState(
+              message:
+                  _errorMessage ??
+                  'No fue posible cargar el historial de devoluciones.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _DevolucionesPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _DevolucionesTable(items: _items, onSelect: _openDetail),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-refunds-load-more'),
+                        onPressed: _loadingMore
+                            ? null
+                            : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+        ],
+      ],
+    );
+  }
+}
+
+class _DevolucionesTable extends StatelessWidget {
+  const _DevolucionesTable({required this.items, required this.onSelect});
+  final List<PosRefund> items;
+  final ValueChanged<PosRefund> onSelect;
+
+  String _formatDateTime(DateTime value) {
+    final local = value.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(local.day)}/${two(local.month)}/${local.year} ${two(local.hour)}:${two(local.minute)}';
+  }
+
+  String _methodLabel(String method) => switch (method) {
+    'cash' => 'Efectivo',
+    'card_terminal' => 'Tarjeta',
+    'card_manual' => 'Tarjeta (manual)',
+    _ => method,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _PosCard(
+      padding: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          headingTextStyle: TextStyle(
+            color: palette.textSecondary,
+            fontWeight: FontWeight.w800,
+          ),
+          columns: const [
+            DataColumn(label: Text('Folio')),
+            DataColumn(label: Text('Venta')),
+            DataColumn(label: Text('Fecha / hora')),
+            DataColumn(label: Text('Estado')),
+            DataColumn(label: Text('Motivo')),
+            DataColumn(label: Text('Método')),
+            DataColumn(label: Text('Total'), numeric: true),
+          ],
+          rows: items
+              .map(
+                (item) => DataRow(
+                  key: ValueKey('pos-refunds-row-${item.id}'),
+                  onSelectChanged: (_) => onSelect(item),
+                  cells: [
+                    DataCell(Text(item.refundNumber)),
+                    DataCell(Text(_compactId(item.saleId))),
+                    DataCell(Text(_formatDateTime(item.occurredAt))),
+                    DataCell(_RefundStatusChip(status: item.status)),
+                    DataCell(Text(_refundReasonLabels[item.reasonCode] ?? item.reasonCode)),
+                    DataCell(Text(_methodLabel(item.refundMethod))),
+                    DataCell(
+                      Text(_formatMoney(item.total, item.currencyCode)),
+                    ),
+                  ],
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+  }
+}
+
+/// Represents the canonical `RefundStatus` states honestly — never an
+/// invented status (mirrors `_SaleStatusChip`'s own precedent).
+class _RefundStatusChip extends StatelessWidget {
+  const _RefundStatusChip({required this.status});
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final (label, color) = switch (status) {
+      'completed' => ('Completada', palette.success),
+      'approved' => ('Aprobada', palette.action),
+      'requested' => ('Solicitada', palette.warning),
+      'pending_approval' => ('Pendiente de aprobación', palette.warning),
+      'cancelled' => ('Cancelada', palette.error),
+      'rejected' => ('Rechazada', palette.error),
+      _ => (status, palette.textMuted),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+/// A simple, sufficient refund detail view reached from the Devoluciones
+/// global list (E083, plus a best-effort E081 re-fetch purely to join
+/// each line's own name — `refund_items` itself stores no name snapshot,
+/// see `refund_receipt_html.dart`'s own doc comment). No "view related
+/// sale" pattern exists elsewhere in this app to mirror, so this stays
+/// self-contained instead of reusing `_SaleDetailDialog` (ADR-0015 D14:
+/// "a simple detail view/dialog... is sufficient").
+class _RefundDetailDialog extends StatefulWidget {
+  const _RefundDetailDialog({
+    required this.refundId,
+    required this.refundsGateway,
+    required this.salesGateway,
+  });
+  final String refundId;
+  final PosRefundsGateway refundsGateway;
+  final PosSalesGateway salesGateway;
+
+  @override
+  State<_RefundDetailDialog> createState() => _RefundDetailDialogState();
+}
+
+class _RefundDetailDialogState extends State<_RefundDetailDialog> {
+  PosRefund? _refund;
+  PosReceipt? _saleReceipt;
+  Map<String, PosRefundableLine> _lineInfo = const {};
+  bool _loading = true;
+  String? _errorMessage;
+  bool _printing = false;
+  String? _printError;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+    });
+    try {
+      final refund = await widget.refundsGateway.refund(widget.refundId);
+      PosReceipt? saleReceipt;
+      try {
+        saleReceipt = await widget.salesGateway.receipt(refund.saleId);
+      } on Object {
+        saleReceipt = null; // Best-effort — the refund itself still renders.
+      }
+      Map<String, PosRefundableLine> lineInfo = const {};
+      try {
+        final balance = await widget.refundsGateway.refundableBalance(
+          refund.saleId,
+        );
+        lineInfo = {
+          for (final line in balance.lines) line.saleItemId: line,
+        };
+      } on Object {
+        lineInfo = const {}; // Best-effort — names fall back to "Artículo".
+      }
+      if (!mounted) return;
+      setState(() {
+        _refund = refund;
+        _saleReceipt = saleReceipt;
+        _lineInfo = lineInfo;
+        _loading = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _errorMessage = 'No fue posible cargar el detalle de la devolución.';
+      });
+    }
+  }
+
+  Future<void> _print() async {
+    final refund = _refund;
+    final saleReceipt = _saleReceipt;
+    if (refund == null || saleReceipt == null || _printing) return;
+    setState(() {
+      _printing = true;
+      _printError = null;
+    });
+    final logoDataUri = await _receiptLogoDataUri();
+    final html = buildRefundReceiptHtml(
+      refund: refund,
+      sale: saleReceipt.sale,
+      business: saleReceipt.business,
+      cashier: saleReceipt.cashier,
+      lineInfoBySaleItemId: _lineInfo,
+      logoDataUri: logoDataUri,
+    );
+    final opened = openReceiptPrintWindow(html);
+    if (!mounted) return;
+    setState(() {
+      _printing = false;
+      _printError = opened
+          ? null
+          : 'El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para imprimir.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Detalle de devolución',
+                      style: TextStyle(
+                        color: palette.text,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('pos-refunds-detail-close'),
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: _loading
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 40),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      : _errorMessage != null
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              _errorMessage!,
+                              style: const TextStyle(
+                                color: Colors.redAccent,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            OutlinedButton(
+                              key: const Key('pos-refunds-detail-retry'),
+                              onPressed: () => unawaited(_load()),
+                              child: const Text('Reintentar'),
+                            ),
+                          ],
+                        )
+                      : _RefundDetailBody(
+                          refund: _refund!,
+                          lineInfoBySaleItemId: _lineInfo,
+                        ),
+                ),
+              ),
+              if (_printError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _printError!,
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                ),
+              ],
+              const SizedBox(height: 14),
+              OutlinedButton.icon(
+                key: const Key('pos-refunds-detail-print'),
+                onPressed: (_refund == null || _saleReceipt == null || _printing)
+                    ? null
+                    : () => unawaited(_print()),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: palette.textSecondary,
+                  side: BorderSide(color: palette.border),
+                ),
+                icon: _printing
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.print_outlined, size: 16),
+                label: const Text('Imprimir comprobante'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RefundDetailBody extends StatelessWidget {
+  const _RefundDetailBody({
+    required this.refund,
+    required this.lineInfoBySaleItemId,
+  });
+  final PosRefund refund;
+  final Map<String, PosRefundableLine> lineInfoBySaleItemId;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final items = refund.items ?? const <PosRefundItem>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _CashSummaryRow(label: 'Folio', value: refund.refundNumber, big: true),
+        const SizedBox(height: 4),
+        _CashSummaryRow(label: 'Estado', value: refund.status),
+        const SizedBox(height: 4),
+        _CashSummaryRow(
+          label: 'Motivo',
+          value: _refundReasonLabels[refund.reasonCode] ?? refund.reasonCode,
+        ),
+        if (refund.reasonNote != null && refund.reasonNote!.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(label: 'Nota', value: refund.reasonNote!),
+        ],
+        const SizedBox(height: 14),
+        Text(
+          'ARTÍCULOS',
+          style: TextStyle(
+            color: palette.textSecondary,
+            fontWeight: FontWeight.w800,
+            fontSize: 11,
+          ),
+        ),
+        Divider(color: palette.border, height: 16),
+        for (final item in items)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    lineInfoBySaleItemId[item.saleItemId]?.nameSnapshot ??
+                        'Artículo',
+                    style: TextStyle(color: palette.text, fontSize: 12),
+                  ),
+                ),
+                Text(
+                  _formatMoney(item.lineTotal, refund.currencyCode),
+                  style: TextStyle(
+                    color: palette.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 10),
+        Divider(color: palette.border, height: 16),
+        _CashSummaryRow(
+          label: 'Subtotal',
+          value: _formatMoney(refund.subtotal, refund.currencyCode),
+        ),
+        const SizedBox(height: 4),
+        _CashSummaryRow(
+          label: 'IVA',
+          value: _formatMoney(refund.taxTotal, refund.currencyCode),
+        ),
+        const SizedBox(height: 4),
+        _CashSummaryRow(
+          label: 'Total',
+          value: _formatMoney(refund.total, refund.currencyCode),
+          big: true,
+        ),
       ],
     );
   }
@@ -7053,6 +8486,16 @@ class _StatusChip extends StatelessWidget {
 
 String _compactId(String value) =>
     value.length <= 12 ? value : '${value.substring(0, 8)}…';
+
+/// TASK 12.8: composes a sale's derived `refund_state` (ADR-0015 D14)
+/// onto an existing status label — additive only, e.g. "Completada ·
+/// devolución parcial" — never a replacement for the real `status` value.
+/// `not_refunded`/`null` (a caller that never looked it up) adds nothing.
+String _refundStateSuffix(String? refundState) => switch (refundState) {
+  'partially_refunded' => ' · devolución parcial',
+  'fully_refunded' => ' · reembolsada',
+  _ => '',
+};
 
 // ---------------------------------------------------------------------
 // TASK 12.7 — Caja (cash register operations). Wired into the existing,

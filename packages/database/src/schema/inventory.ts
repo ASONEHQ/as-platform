@@ -274,6 +274,20 @@ export const inventoryMovements = pgTable(
     uniqueIndex('inventory_movements_sale_reference_uq')
       .on(table.companyId, table.referenceId)
       .where(sql`${table.referenceType} = 'sale'`),
+    // TASK 12.8 (Part H/L): the identical durable guarantee for a
+    // completed refund's own restock fact — a second `return` movement
+    // for the same refund is a constraint violation. Deliberately keyed
+    // by `reference_type='refund'`/`reference_id=refund.id`, not
+    // `reversal_of_movement_id` — that column's own uniqueness
+    // (`inventory_movements_reversal_of_posted_uq` immediately above)
+    // permits at most *one* reversal ever against a given original
+    // movement, which would make a second, later, independent partial
+    // return of the same multi-line `sale_consumption` movement a
+    // constraint violation — exactly the "multiple partial returns"
+    // capability Part B requires. See ADR-0015.
+    uniqueIndex('inventory_movements_refund_reference_uq')
+      .on(table.companyId, table.referenceId)
+      .where(sql`${table.referenceType} = 'refund'`),
     foreignKey({
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],

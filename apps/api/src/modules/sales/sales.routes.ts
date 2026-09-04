@@ -94,7 +94,19 @@ function saleItemHttp(value: SaleItemRow): Readonly<Record<string, unknown>> {
     created_at: value.createdAt.toISOString(),
   };
 }
-function saleHttp(value: SaleRow, items?: readonly SaleItemRow[]): Readonly<Record<string, unknown>> {
+// TASK 12.8 Part Q: never a project-invented 6th `sales.status` value —
+// see ADR-0015. `undefined` (the field omitted entirely) means the
+// caller didn't compute it (e.g. the freshly-created-sale response
+// right after `POST /sales`, where no refund could possibly exist yet);
+// it is never fabricated as `'not_refunded'` in that case, to keep this
+// helper honest about what was actually looked up.
+type RefundState = 'not_refunded' | 'partially_refunded' | 'fully_refunded';
+
+function saleHttp(
+  value: SaleRow,
+  items?: readonly SaleItemRow[],
+  refundState?: RefundState,
+): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
     branch_id: value.branchId,
@@ -118,6 +130,7 @@ function saleHttp(value: SaleRow, items?: readonly SaleItemRow[]): Readonly<Reco
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
+    ...(refundState === undefined ? {} : { refund_state: refundState }),
     ...(items === undefined ? {} : { items: items.map(saleItemHttp) }),
   };
 }
@@ -132,6 +145,15 @@ function saleHttp(value: SaleRow, items?: readonly SaleItemRow[]): Readonly<Reco
 function saleSummaryHttp(
   value: SaleRow,
   summary: { branchName: string | null; cashierName: string | null; itemCount: number; paymentMethods: string[] },
+  // TASK 12.8 Part Q: `'not_refunded'` here is a real default, not a
+  // fabricated one — unlike `saleHttp`'s `refundState`, every list row
+  // always has a batched `refundStatesForSales` lookup behind it (see the
+  // `GET /sales` handler below), so "the batch found nothing for this
+  // sale id" and "this sale genuinely has zero refunds" are the same
+  // fact. Composed into the label client-side (e.g. "Completada ·
+  // devolución parcial") — `status` itself is never overwritten, so the
+  // original value is never hidden.
+  refundState: RefundState,
 ): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -149,6 +171,7 @@ function saleSummaryHttp(
     tax_total: value.taxTotal,
     total: value.total,
     payment_methods: summary.paymentMethods,
+    refund_state: refundState,
   };
 }
 
@@ -394,15 +417,17 @@ export function registerSaleRoutes(
           ...(query.sale_number === undefined ? {} : { saleNumber: query.sale_number }),
           ...(query.payment_method === undefined ? {} : { paymentMethod: query.payment_method }),
         });
-        const summaries = await service.listSummaries(
-          auth.companyId,
-          page.items.map((item) => item.id),
-        );
+        const saleIds = page.items.map((item) => item.id);
+        const [summaries, refundStates] = await Promise.all([
+          service.listSummaries(auth.companyId, saleIds),
+          service.refundStatesForSales(auth.companyId, saleIds),
+        ]);
         return reply.send({
           data: page.items.map((item) =>
             saleSummaryHttp(
               item,
               summaries.get(item.id) ?? { branchName: null, cashierName: null, itemCount: 0, paymentMethods: [] },
+              refundStates.get(item.id) ?? 'not_refunded',
             ),
           ),
           meta: {
@@ -427,9 +452,15 @@ export function registerSaleRoutes(
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'sale.read');
         const { sale, items } = await service.sale(auth.companyId, auth.permittedBranchIds, request.params.id);
+        const refundStates = await service.refundStatesForSales(auth.companyId, [sale.id]);
         return reply
           .header('etag', `"${sale.version.toString()}"`)
-          .send(successResponse(saleHttp(sale, items), request.requestContext));
+          .send(
+            successResponse(
+              saleHttp(sale, items, refundStates.get(sale.id) ?? 'not_refunded'),
+              request.requestContext,
+            ),
+          );
       }),
   );
 

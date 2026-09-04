@@ -4,12 +4,16 @@ export const cashSessionStatuses: readonly CashSessionStatus[] = ['open', 'closi
 
 export type CashRegisterStatus = 'active' | 'inactive' | 'retired';
 
-export type CashMovementType = 'opening_float' | 'cash_sale' | 'cash_in' | 'cash_out';
+// TASK 12.8 adds `cash_refund` — system-posted, mirroring `cash_sale`'s
+// own precedent exactly (never client-postable through
+// `POST /cash-sessions/{id}/movements`). See ADR-0015.
+export type CashMovementType = 'opening_float' | 'cash_sale' | 'cash_in' | 'cash_out' | 'cash_refund';
 export const cashMovementTypes: readonly CashMovementType[] = [
   'opening_float',
   'cash_sale',
   'cash_in',
   'cash_out',
+  'cash_refund',
 ];
 /** Direction encodes the ledger's sign; `cash_movements.amount` itself is
  * always stored positive (`amount > 0`, per CORE_DATA_MODEL §6.3). */
@@ -18,6 +22,7 @@ export const cashMovementDirection: Readonly<Record<CashMovementType, 1 | -1>> =
   cash_sale: 1,
   cash_in: 1,
   cash_out: -1,
+  cash_refund: -1,
 };
 
 export interface CashRegisterRow {

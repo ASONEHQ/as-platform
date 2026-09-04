@@ -163,6 +163,8 @@ async function fixture(
         new Map([[saleId, { branchName: 'Main', cashierName: 'Cash Ier', itemCount: 1, paymentMethods: ['cash'] }]]),
       ),
     ),
+    // TASK 12.8 Part Q.
+    refundStatesForSales: vi.fn(() => Promise.resolve(new Map([[saleId, 'not_refunded']]))),
   };
   const paymentService = {
     listPayments: vi.fn(() =>

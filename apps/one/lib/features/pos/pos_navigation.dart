@@ -44,6 +44,12 @@ enum PosModule {
     PosModule.users,
     // TASK 12.6 Part C.
     PosModule.history,
+    // TASK 12.8: Devoluciones — a real, backend-paginated refund history
+    // list (E084), plus the Sale Detail "Devolver / Reembolsar" mutating
+    // action reached from Historial de ventas — mirrors `PosModule.pos`/
+    // `PosModule.cash`, both of which are also "implemented" screens that
+    // contain a mutating action, not merely a read-only view.
+    PosModule.returns,
   }.contains(this);
 }
 

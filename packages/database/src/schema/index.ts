@@ -7,6 +7,7 @@ export * from './identity.js';
 export * from './inventory.js';
 export * from './organizations.js';
 export * from './payments.js';
+export * from './refunds.js';
 export * from './sales.js';
 export * from './settings.js';
 export * from './sessions.js';

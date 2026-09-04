@@ -59,6 +59,14 @@ class PosSaleSummary {
     required this.taxTotal,
     required this.total,
     required this.paymentMethods,
+    // TASK 12.8: `not_refunded` is the same real, never-fabricated default
+    // `saleSummaryHttp` itself uses — every list row always carries a
+    // batched `refundStatesForSales` lookup behind it (ADR-0015 D14), so
+    // "the field was omitted" and "genuinely zero refunds" never need to
+    // be distinguished here. Kept optional/defaulted so every pre-existing
+    // fixture/test that constructs a [PosSaleSummary] directly (without
+    // this field) keeps compiling unchanged.
+    this.refundState = 'not_refunded',
   });
 
   factory PosSaleSummary.fromJson(Map<String, Object?> json) => PosSaleSummary(
@@ -81,6 +89,7 @@ class PosSaleSummary {
     paymentMethods: (json['payment_methods'] as List<Object?>? ?? const [])
         .whereType<String>()
         .toList(growable: false),
+    refundState: json['refund_state'] as String? ?? 'not_refunded',
   );
 
   final String id;
@@ -98,6 +107,12 @@ class PosSaleSummary {
   final String taxTotal;
   final String total;
   final List<String> paymentMethods;
+
+  /// `not_refunded` | `partially_refunded` | `fully_refunded` — derived,
+  /// read-only (ADR-0015 D14). Never replaces [status]; a caller composes
+  /// the two into one display label (e.g. "Completada · reembolsada"),
+  /// never hides the original sale status.
+  final String refundState;
 }
 
 /// A page of [PosSaleSummary] rows plus the opaque cursor for the next

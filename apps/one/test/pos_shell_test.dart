@@ -10,6 +10,7 @@ import 'package:as_one/features/pos/pos_payments_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
 import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:as_one/features/pos/pos_receipt.dart';
+import 'package:as_one/features/pos/pos_refunds_gateway.dart';
 import 'package:as_one/features/pos/pos_sales_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
 import 'package:flutter/material.dart';
@@ -142,6 +143,7 @@ void main() {
             salesGateway: _FakeSalesGateway(),
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
+            refundsGateway: const EmptyPosRefundsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -171,6 +173,7 @@ void main() {
             salesGateway: _FakeSalesGateway(),
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
+            refundsGateway: const EmptyPosRefundsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -194,6 +197,7 @@ void main() {
             salesGateway: _FakeSalesGateway(),
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
+            refundsGateway: const EmptyPosRefundsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -1961,6 +1965,704 @@ void main() {
     );
   });
 
+  group('Returns/refunds (TASK 12.8)', () {
+    PosSaleSummary refundableSummary({
+      String id = 'sale-history-1',
+      String status = 'completed',
+      String refundState = 'not_refunded',
+    }) => PosSaleSummary(
+      id: id,
+      saleNumber: 'SALE-2517abd73ecf44a2b2206f4eadfeee49',
+      status: status,
+      currencyCode: 'MXN',
+      branchId: 'branch-id',
+      branchName: 'Puerta La Victoria',
+      cashierId: 'user-id',
+      cashierName: 'Bryant Aguilera',
+      occurredAt: DateTime.utc(2026, 9, 3, 12),
+      completedAt: status == 'completed'
+          ? DateTime.utc(2026, 9, 3, 12, 1)
+          : null,
+      itemCount: 1,
+      subtotal: '50.0000',
+      taxTotal: '8.0000',
+      total: '58.0000',
+      paymentMethods: const ['cash'],
+      refundState: refundState,
+    );
+
+    Future<void> openSaleDetail(
+      WidgetTester tester, {
+      required PosSalesGateway salesGateway,
+      required PosRefundsGateway refundsGateway,
+      AuthenticatedContext? context,
+    }) async {
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: context ?? _contextWithRefundPermissions,
+        salesGateway: salesGateway,
+        refundsGateway: refundsGateway,
+      );
+      await tester.tap(find.byKey(const Key('nav-history')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('SALE-ADFEEE49'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> navigateToDevoluciones(WidgetTester tester) async {
+      await _openVentasGroupIfNeeded(tester);
+      await tester.tap(find.byKey(const Key('nav-returns')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'the refund action is hidden/disabled when E081 reports the sale is '
+      'not refundable, using the backend own blocked_reason',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          balanceResult: const PosRefundableBalance(
+            saleId: 'sale-history-1',
+            refundable: false,
+            blockedReason: 'La venta ya fue completamente reembolsada.',
+            lines: [],
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        expect(refundsGateway.balanceCalls, ['sale-history-1']);
+        final button = find.byKey(const Key('pos-history-detail-refund'));
+        expect(button, findsOneWidget);
+        expect(
+          tester.widget<OutlinedButton>(button).onPressed,
+          isNull,
+          reason: 'A non-refundable sale must never offer an enabled action.',
+        );
+      },
+    );
+
+    testWidgets(
+      'the refund action is shown and enabled when E081 reports the sale '
+      'is refundable',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway();
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        final button = find.byKey(const Key('pos-history-detail-refund'));
+        expect(button, findsOneWidget);
+        expect(tester.widget<FilledButton>(button).onPressed, isNotNull);
+      },
+    );
+
+    testWidgets(
+      'a permission-less actor never even triggers the E081 call, and sees '
+      'no refund control at all',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway();
+        await openSaleDetail(
+          tester,
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        expect(refundsGateway.balanceCalls, isEmpty);
+        expect(
+          find.byKey(const Key('pos-history-detail-refund')),
+          findsNothing,
+        );
+        expect(find.textContaining('Reembolso'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the item/quantity selection screen never lets the submitted '
+      'quantity exceed the backend-reported refundable_quantity for a line',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          balanceResult: const PosRefundableBalance(
+            saleId: 'sale-history-1',
+            refundable: true,
+            blockedReason: null,
+            lines: [
+              PosRefundableLine(
+                saleItemId: 'sale-item-1',
+                nameSnapshot: 'Fixture Product',
+                soldQuantity: '2.000000',
+                refundedQuantity: '1.000000',
+                refundableQuantity: '1.000000',
+                unitPrice: '50.0000',
+              ),
+            ],
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        // `findsWidgets`, not `findsOneWidget`: the Sale Detail dialog
+        // underneath (still mounted, merely visually covered) also shows
+        // its own "Fixture Product" receipt line.
+        expect(find.text('Fixture Product'), findsWidgets);
+
+        final plusKey = const Key('pos-refund-qty-plus-sale-item-1');
+        await tester.tap(find.byKey(plusKey));
+        await tester.pump();
+        // Structural bound: the stepper is disabled the instant it hits
+        // `refundable_quantity` (1) — it can never be tapped a second time
+        // to reach 2, even though `sold_quantity` is 2.
+        expect(tester.widget<IconButton>(find.byKey(plusKey)).onPressed, isNull);
+
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+
+        expect(refundsGateway.createCalls, hasLength(1));
+        expect(
+          refundsGateway.createCalls.single.items.single.quantity,
+          '1.000000',
+        );
+      },
+    );
+
+    testWidgets(
+      'the cash preview shows the backend own computed total from E082, '
+      'never a client-recomputed one',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        // A total deliberately unrelated to `unit_price * quantity`
+        // (`$50.00`) — if the UI ever recomputed it client-side instead of
+        // trusting this response, this exact figure would never appear.
+        final refundsGateway = _FakeRefundsGateway(
+          createResult: PosRefund(
+            id: 'refund-cash-1',
+            branchId: 'branch-id',
+            saleId: 'sale-history-1',
+            cashSessionId: null,
+            paymentId: null,
+            refundNumber: 'REFUND-cash1',
+            status: 'approved',
+            refundMethod: 'cash',
+            reasonCode: 'customer_changed_mind',
+            reasonNote: null,
+            currencyCode: 'MXN',
+            subtotal: '100.0000',
+            taxTotal: '23.4500',
+            total: '123.4500',
+            occurredAt: DateTime.utc(2026, 9, 3, 12, 5),
+            completedAt: null,
+            createdBy: 'user-id',
+            approvedBy: 'user-id',
+            items: const [
+              PosRefundItem(
+                id: 'ri-1',
+                saleItemId: 'sale-item-1',
+                quantity: '1.000000',
+                subtotal: '100.0000',
+                taxTotal: '23.4500',
+                lineTotal: '123.4500',
+                restockDisposition: 'restock',
+              ),
+            ],
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-refund-qty-plus-sale-item-1')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.textContaining('Efectivo a devolver: \$123.45'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pos-refund-complete')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the card-refund path shows the exact honest message and never '
+      'claims or implies success',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          createResult: _fixtureRefund(
+            saleId: 'sale-history-1',
+            status: 'approved',
+            refundMethod: 'card_terminal',
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-refund-qty-plus-sale-item-1')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'El reembolso con tarjeta requiere la configuración del '
+            'proveedor de pago.',
+          ),
+          findsOneWidget,
+        );
+        // No action anywhere implies this will actually reverse the card
+        // charge, and the completion endpoint is never even called.
+        expect(find.byKey(const Key('pos-refund-complete')), findsNothing);
+        expect(find.text('Devolución completada.'), findsNothing);
+        expect(refundsGateway.completeCalls, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a cash_session_required completion error is surfaced clearly, with '
+      'no silent session creation, and offers real navigation to Caja',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          createResult: _fixtureRefund(
+            saleId: 'sale-history-1',
+            status: 'approved',
+          ),
+          completeFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.validation,
+              'Abre la caja para comenzar a cobrar en efectivo.',
+              code: 'cash_session_required',
+            ),
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-refund-qty-plus-sale-item-1')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-complete')));
+        await tester.pumpAndSettle();
+
+        expect(refundsGateway.completeCalls, hasLength(1));
+        expect(
+          find.textContaining(
+            'No hay una caja abierta. Abre una caja en Caja y Finanzas',
+          ),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pos-refund-go-caja')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-refund-go-caja')));
+        await tester.pumpAndSettle();
+
+        // Every dialog closed and the shell really landed on Caja — not
+        // merely a message claiming it would.
+        expect(find.byKey(const Key('pos-history-detail-refund')), findsNothing);
+        expect(find.text('Caja'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the Sales History and Sale Detail refund-state badge renders for '
+      'all three states, never hiding the original sale status',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [
+              refundableSummary(id: 'sale-a', refundState: 'not_refunded'),
+              refundableSummary(
+                id: 'sale-b',
+                refundState: 'partially_refunded',
+              ),
+              refundableSummary(id: 'sale-c', refundState: 'fully_refunded'),
+            ],
+            nextCursor: null,
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+        );
+        await tester.tap(find.byKey(const Key('nav-history')));
+        await tester.pumpAndSettle();
+
+        // The original `status` text is always present — additive only.
+        expect(find.text('Completada'), findsOneWidget);
+        expect(find.text('Completada · devolución parcial'), findsOneWidget);
+        expect(find.text('Completada · reembolsada'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Devoluciones renders a paginated list from E084',
+      (tester) async {
+        final refundsGateway = _FakeRefundsGateway(
+          listResult: PosRefundPage(
+            items: [
+              _fixtureRefund(
+                saleId: 'sale-history-1',
+                status: 'completed',
+                id: 'refund-1',
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRefundPermissions,
+          refundsGateway: refundsGateway,
+        );
+        await navigateToDevoluciones(tester);
+
+        expect(find.text('Devoluciones'), findsOneWidget);
+        expect(find.text('REFUND-fixture'), findsOneWidget);
+        expect(refundsGateway.listCalls, hasLength(1));
+      },
+    );
+
+    testWidgets('Devoluciones shows an honest empty state', (tester) async {
+      final refundsGateway = _FakeRefundsGateway(
+        listResult: const PosRefundPage(items: [], nextCursor: null),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithRefundPermissions,
+        refundsGateway: refundsGateway,
+      );
+      await navigateToDevoluciones(tester);
+
+      expect(
+        find.text(
+          'No hay devoluciones que coincidan con los filtros actuales.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'Devoluciones shows the real backend error honestly with a retry',
+      (tester) async {
+        final refundsGateway = _FakeRefundsGateway(
+          listFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.unavailable,
+              'No fue posible cargar el historial de devoluciones.',
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRefundPermissions,
+          refundsGateway: refundsGateway,
+        );
+        await navigateToDevoluciones(tester);
+
+        expect(
+          find.text('No fue posible cargar el historial de devoluciones.'),
+          findsOneWidget,
+        );
+        expect(find.text('Reintentar'), findsOneWidget);
+        await tester.tap(find.text('Reintentar'));
+        await tester.pump();
+        expect(refundsGateway.listCalls, hasLength(2));
+      },
+    );
+
+    testWidgets(
+      'a rejected refund request (e.g. refund_approval_required) surfaces '
+      'the real backend error honestly, never a fake success',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          createFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.authorization,
+              'Tu sesión no puede aprobar esta devolución automáticamente.',
+              code: 'refund_approval_required',
+            ),
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-refund-qty-plus-sale-item-1')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Tu sesión no puede aprobar esta devolución automáticamente.',
+          ),
+          findsOneWidget,
+        );
+        // Still on the reason step — never silently queued/retried, never
+        // a fabricated success screen.
+        expect(find.text('Devolución completada.'), findsNothing);
+        expect(find.byKey(const Key('pos-refund-request')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'when E081 itself fails, the refund action stays hidden rather than '
+      'guessing eligibility',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          balanceFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.'),
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        expect(refundsGateway.balanceCalls, ['sale-history-1']);
+        expect(
+          find.byKey(const Key('pos-history-detail-refund')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'completing a cash refund succeeds, shows the completed status, and '
+      'offers to print a return/refund receipt',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [refundableSummary()],
+            nextCursor: null,
+          ),
+        );
+        final refundsGateway = _FakeRefundsGateway(
+          createResult: _fixtureRefund(
+            saleId: 'sale-history-1',
+            status: 'approved',
+            id: 'refund-cash-ok',
+          ),
+          completeResult: _fixtureRefund(
+            saleId: 'sale-history-1',
+            status: 'completed',
+            id: 'refund-cash-ok',
+          ),
+        );
+        await openSaleDetail(
+          tester,
+          salesGateway: salesGateway,
+          refundsGateway: refundsGateway,
+        );
+
+        await tester.tap(find.byKey(const Key('pos-history-detail-refund')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-refund-qty-plus-sale-item-1')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-refund-continue')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-request')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-refund-complete')));
+        await tester.pumpAndSettle();
+
+        expect(refundsGateway.completeCalls, hasLength(1));
+        expect(find.text('Devolución completada.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-refund-print')), findsOneWidget);
+
+        // Closing this dialog reports back that a refund actually
+        // completed, so the caller (Sales History) reloads its own list.
+        await tester.tap(find.byKey(const Key('pos-refund-done')));
+        await tester.pumpAndSettle();
+        expect(salesGateway.listCalls.length, greaterThanOrEqualTo(2));
+      },
+    );
+
+    testWidgets(
+      'tapping a Devoluciones row opens the refund detail dialog via E083',
+      (tester) async {
+        final refundsGateway = _FakeRefundsGateway(
+          listResult: PosRefundPage(
+            items: [
+              _fixtureRefund(
+                saleId: 'sale-history-1',
+                status: 'completed',
+                id: 'refund-detail-1',
+              ),
+            ],
+            nextCursor: null,
+          ),
+          refundResult: _fixtureRefund(
+            saleId: 'sale-history-1',
+            status: 'completed',
+            id: 'refund-detail-1',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRefundPermissions,
+          refundsGateway: refundsGateway,
+        );
+        await navigateToDevoluciones(tester);
+
+        await tester.tap(find.text('REFUND-fixture'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Detalle de devolución'), findsOneWidget);
+        expect(refundsGateway.refundCalls, ['refund-detail-1']);
+      },
+    );
+
+    testWidgets(
+      'a failed refund detail fetch (E083) is shown honestly with a retry',
+      (tester) async {
+        final refundsGateway = _FakeRefundsGateway(
+          listResult: PosRefundPage(
+            items: [
+              _fixtureRefund(
+                saleId: 'sale-history-1',
+                status: 'completed',
+                id: 'refund-detail-2',
+              ),
+            ],
+            nextCursor: null,
+          ),
+          refundFailure: const ApiException(
+            AppFailure(
+              AppErrorKind.unavailable,
+              'No fue posible cargar el detalle de la devolución.',
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRefundPermissions,
+          refundsGateway: refundsGateway,
+        );
+        await navigateToDevoluciones(tester);
+
+        await tester.tap(find.text('REFUND-fixture'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('No fue posible cargar el detalle de la devolución.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pos-refunds-detail-retry')), findsOneWidget);
+      },
+    );
+  });
+
   group('POS operational branch context', () {
     testWidgets(
       '"Todas las sucursales" is not accepted as an operational POS branch — '
@@ -2483,6 +3185,7 @@ void main() {
               salesGateway: _FakeSalesGateway(),
               paymentsGateway: _FakePaymentsGateway(),
               cashGateway: const EmptyPosCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -2515,6 +3218,7 @@ void main() {
               salesGateway: _FakeSalesGateway(),
               paymentsGateway: _FakePaymentsGateway(),
               cashGateway: const EmptyPosCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -3467,6 +4171,7 @@ Future<void> _pump(
   PosSalesGateway? salesGateway,
   PosPaymentsGateway? paymentsGateway,
   PosCashGateway? cashGateway,
+  PosRefundsGateway? refundsGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -3485,6 +4190,12 @@ Future<void> _pump(
         // the dedicated gating tests below inject a closed/`null`-session
         // fake explicitly instead.
         cashGateway: cashGateway ?? _FakeCashGateway(),
+        // TASK 12.8: defaults to a fake that answers `refundable: true`
+        // with real fixture lines, so a test that doesn't care about
+        // refunds specifically still sees Sale Detail's own honest gating
+        // behavior — the dedicated refund-flow tests below inject their
+        // own explicit fake instead.
+        refundsGateway: refundsGateway ?? _FakeRefundsGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -3702,6 +4413,28 @@ final _contextWithCashPermissions = AuthenticatedContext(
   ],
 );
 
+/// TASK 12.8: `_context` plus `sale.read` and the four real refund
+/// permissions the local dev-owner bootstrap actually grants
+/// (`refund.read`/`refund.create`/`refund.approve`/`refund.complete` —
+/// see `bootstrap-owner.service.ts` and ADR-0015 D13) — `refund.cancel`
+/// is deliberately excluded (seeded but unused; no cancellation UI
+/// exists, see ADR-0015 §Deferred).
+final _contextWithRefundPermissions = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._context.permissions,
+    'sale.read',
+    'refund.read',
+    'refund.create',
+    'refund.approve',
+    'refund.complete',
+  ],
+);
+
 /// Same addition, for the company-wide branch filter test.
 final _companyWideContextWithSaleRead = AuthenticatedContext(
   session: _companyWideContext.session,
@@ -3849,6 +4582,7 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     salesGateway: widget.salesGateway ?? _FakeSalesGateway(),
     paymentsGateway: _FakePaymentsGateway(),
     cashGateway: widget.cashGateway ?? _FakeCashGateway(),
+    refundsGateway: const EmptyPosRefundsGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -4521,3 +5255,170 @@ class _FailingPosReadGateway implements PosReadGateway {
   @override
   Future<List<PosUser>> users() async => const [];
 }
+
+/// TASK 12.8: a controllable fake for E081/E082/E083/E084/E086 — see
+/// ADR-0015. Defaults to a real-shaped fixture (`refundable: true`, one
+/// `Fixture Product` line matching `_fixtureReceipt`'s own single item) so
+/// a test that pumps the shell without caring about refunds specifically
+/// still exercises Sale Detail's honest gating path end to end; dedicated
+/// refund-flow tests inject their own explicit fixtures/failures instead.
+class _FakeRefundsGateway implements PosRefundsGateway {
+  _FakeRefundsGateway({
+    this.balanceResult,
+    this.balanceFailure,
+    this.createResult,
+    this.createFailure,
+    this.refundResult,
+    this.refundFailure,
+    this.listResult,
+    this.listFailure,
+    this.completeResult,
+    this.completeFailure,
+  });
+
+  final PosRefundableBalance? balanceResult;
+  final ApiException? balanceFailure;
+  final List<String> balanceCalls = [];
+
+  final PosRefund? createResult;
+  final ApiException? createFailure;
+  final List<
+    ({
+      String saleId,
+      String reasonCode,
+      String? reasonNote,
+      List<PosCreateRefundItem> items,
+    })
+  >
+  createCalls = [];
+
+  final PosRefund? refundResult;
+  final ApiException? refundFailure;
+  final List<String> refundCalls = [];
+
+  final PosRefundPage? listResult;
+  final ApiException? listFailure;
+  final List<({PosRefundListFilter filter, String? cursor})> listCalls = [];
+
+  final PosRefund? completeResult;
+  final ApiException? completeFailure;
+  final List<({String refundId, String? cashRegisterId})> completeCalls = [];
+
+  @override
+  Future<PosRefundableBalance> refundableBalance(String saleId) async {
+    balanceCalls.add(saleId);
+    if (balanceFailure != null) throw balanceFailure!;
+    return balanceResult ?? _fixtureRefundableBalance(saleId);
+  }
+
+  @override
+  Future<PosRefund> createRefund({
+    required String saleId,
+    required String reasonCode,
+    String? reasonNote,
+    required List<PosCreateRefundItem> items,
+  }) async {
+    createCalls.add((
+      saleId: saleId,
+      reasonCode: reasonCode,
+      reasonNote: reasonNote,
+      items: items,
+    ));
+    if (createFailure != null) throw createFailure!;
+    return createResult ?? _fixtureRefund(saleId: saleId, status: 'approved');
+  }
+
+  @override
+  Future<PosRefund> refund(String refundId) async {
+    refundCalls.add(refundId);
+    if (refundFailure != null) throw refundFailure!;
+    return refundResult ??
+        _fixtureRefund(
+          saleId: 'sale-history-1',
+          status: 'completed',
+          id: refundId,
+        );
+  }
+
+  @override
+  Future<PosRefundPage> listRefunds({
+    PosRefundListFilter filter = const PosRefundListFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async {
+    listCalls.add((filter: filter, cursor: cursor));
+    if (listFailure != null) throw listFailure!;
+    return listResult ?? const PosRefundPage(items: [], nextCursor: null);
+  }
+
+  @override
+  Future<PosRefund> completeRefund({
+    required String refundId,
+    String? cashRegisterId,
+  }) async {
+    completeCalls.add((refundId: refundId, cashRegisterId: cashRegisterId));
+    if (completeFailure != null) throw completeFailure!;
+    return completeResult ??
+        _fixtureRefund(
+          saleId: 'sale-history-1',
+          status: 'completed',
+          id: refundId,
+        );
+  }
+}
+
+PosRefundableBalance _fixtureRefundableBalance(String saleId) =>
+    PosRefundableBalance(
+      saleId: saleId,
+      refundable: true,
+      blockedReason: null,
+      lines: const [
+        PosRefundableLine(
+          saleItemId: 'sale-item-1',
+          nameSnapshot: 'Fixture Product',
+          soldQuantity: '1.000000',
+          refundedQuantity: '0.000000',
+          refundableQuantity: '1.000000',
+          unitPrice: '50.0000',
+        ),
+      ],
+    );
+
+PosRefund _fixtureRefund({
+  required String saleId,
+  required String status,
+  String id = 'refund-id',
+  String refundMethod = 'cash',
+}) => PosRefund(
+  id: id,
+  branchId: 'branch-id',
+  saleId: saleId,
+  cashSessionId: null,
+  paymentId: null,
+  refundNumber: 'REFUND-fixture',
+  status: status,
+  refundMethod: refundMethod,
+  reasonCode: 'customer_changed_mind',
+  reasonNote: null,
+  currencyCode: 'MXN',
+  subtotal: '50.0000',
+  taxTotal: '8.0000',
+  total: '58.0000',
+  occurredAt: DateTime.utc(2026, 9, 3, 12, 5),
+  completedAt: status == 'completed'
+      ? DateTime.utc(2026, 9, 3, 12, 6)
+      : null,
+  createdBy: 'user-id',
+  approvedBy: 'user-id',
+  items: const [
+    PosRefundItem(
+      id: 'refund-item-1',
+      saleItemId: 'sale-item-1',
+      quantity: '1.000000',
+      subtotal: '50.0000',
+      taxTotal: '8.0000',
+      lineTotal: '58.0000',
+      restockDisposition: 'restock',
+    ),
+  ],
+);

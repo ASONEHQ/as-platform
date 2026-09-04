@@ -7,6 +7,7 @@ import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
+import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
 import 'router.dart';
 
@@ -19,6 +20,7 @@ class AsOneApp extends StatefulWidget {
     this.posSalesGateway = const EmptyPosSalesGateway(),
     this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
     this.posCashGateway = const EmptyPosCashGateway(),
+    this.posRefundsGateway = const EmptyPosRefundsGateway(),
     super.key,
   });
 
@@ -29,6 +31,9 @@ class AsOneApp extends StatefulWidget {
   final PosSalesGateway posSalesGateway;
   final PosPaymentsGateway posPaymentsGateway;
   final PosCashGateway posCashGateway;
+  // TASK 12.8: refund request/completion/history — see
+  // `pos_refunds_gateway.dart` and ADR-0015.
+  final PosRefundsGateway posRefundsGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -52,6 +57,7 @@ class _AsOneAppState extends State<AsOneApp> {
       posSalesGateway: widget.posSalesGateway,
       posPaymentsGateway: widget.posPaymentsGateway,
       posCashGateway: widget.posCashGateway,
+      posRefundsGateway: widget.posRefundsGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -67,6 +73,7 @@ class PlatformScope extends InheritedWidget {
     this.posSalesGateway = const EmptyPosSalesGateway(),
     this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
     this.posCashGateway = const EmptyPosCashGateway(),
+    this.posRefundsGateway = const EmptyPosRefundsGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -87,6 +94,10 @@ class PlatformScope extends InheritedWidget {
   /// `pos_cash_gateway.dart` and ADR-0014.
   final PosCashGateway posCashGateway;
 
+  /// TASK 12.8: refund request/completion/history — see
+  /// `pos_refunds_gateway.dart` and ADR-0015.
+  final PosRefundsGateway posRefundsGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -104,6 +115,7 @@ class PlatformScope extends InheritedWidget {
       posSalesGateway != oldWidget.posSalesGateway ||
       posPaymentsGateway != oldWidget.posPaymentsGateway ||
       posCashGateway != oldWidget.posCashGateway ||
+      posRefundsGateway != oldWidget.posRefundsGateway ||
       environment != oldWidget.environment;
 }
 

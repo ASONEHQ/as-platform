@@ -44,7 +44,12 @@ export const cashSessionStatuses = ['open', 'closing', 'closed'] as const;
 // closed session's own `discrepancy_amount` field already records the
 // count/expected difference, so a redundant ledger row would duplicate
 // that fact rather than add a new one (see ADR-0014).
-export const cashMovementTypes = ['opening_float', 'cash_sale', 'cash_in', 'cash_out'] as const;
+// TASK 12.8 adds `cash_refund` — system-posted, exactly mirroring
+// `cash_sale`'s own precedent (never client-postable through
+// `POST /cash-sessions/{id}/movements`, which still accepts only
+// `cash_in`/`cash_out`), the drawer-out fact a completed cash refund
+// produces. See ADR-0015.
+export const cashMovementTypes = ['opening_float', 'cash_sale', 'cash_in', 'cash_out', 'cash_refund'] as const;
 
 export const cashRegisters = pgTable(
   'cash_registers',
@@ -263,6 +268,13 @@ export const cashMovements = pgTable(
     uniqueIndex('cash_movements_payment_reference_uq')
       .on(table.companyId, table.referenceId)
       .where(sql`${table.referenceType} = 'payment'`),
+    // TASK 12.8 (Part F/L): the identical durable guarantee for a
+    // completed refund's own cash-out fact — a second `cash_refund`
+    // movement for the same refund is a constraint violation, mirroring
+    // the payment-reference index immediately above.
+    uniqueIndex('cash_movements_refund_reference_uq')
+      .on(table.companyId, table.referenceId)
+      .where(sql`${table.referenceType} = 'refund'`),
     foreignKey({
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],
@@ -299,7 +311,7 @@ export const cashMovements = pgTable(
     ),
     check(
       'cash_movements_type_ck',
-      sql`${table.movementType} in ('opening_float','cash_sale','cash_in','cash_out')`,
+      sql`${table.movementType} in ('opening_float','cash_sale','cash_in','cash_out','cash_refund')`,
     ),
     check('cash_movements_amount_positive_ck', sql`${table.amount} > 0`),
     check('cash_movements_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),

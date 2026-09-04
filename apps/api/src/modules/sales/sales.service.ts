@@ -283,6 +283,13 @@ export class SalesService {
     return this.repository.listSummaries(companyId, saleIds);
   }
 
+  public refundStatesForSales(
+    companyId: string,
+    saleIds: readonly string[],
+  ): ReturnType<SalesRepository['refundStatesForSales']> {
+    return this.repository.refundStatesForSales(companyId, saleIds);
+  }
+
   public async sale(
     companyId: string,
     branchIds: readonly string[],

@@ -134,6 +134,13 @@
       "when": 1788509860188,
       "tag": "0018_glossy_mongu",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788516031177,
+      "tag": "0019_nosy_the_twelve",
+      "breakpoints": true
     }
   ]
 }
