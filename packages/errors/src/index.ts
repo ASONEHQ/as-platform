@@ -108,6 +108,18 @@ export const infrastructureErrorCodes = [
   'sale_not_refundable',
   'refund_limit_exceeded',
   'refund_approval_required',
+  // TASK 12.9: promotions/discounts/coupons — this domain is not
+  // pre-reserved anywhere (see ADR-0016), so these 9 codes are this
+  // task's own addition, none overlapping an existing generic code.
+  'coupon_not_found',
+  'coupon_inactive',
+  'coupon_not_started',
+  'coupon_expired',
+  'coupon_branch_not_eligible',
+  'coupon_usage_exhausted',
+  'coupon_cart_not_eligible',
+  'discount_not_authorized',
+  'discount_invalid',
   'product_not_found',
   'product_not_active',
   'price_not_found',

@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 
 import { ivaBasisPointsForTaxCode, normalizeCurrencyCode } from '@asone/database';
 
+import { evaluatePricing } from '../promotions/pricing.service.js';
+import type { PromotionsRepository } from '../promotions/promotions.repository.js';
+import type { CouponRow, PricingResolvedLine, PromotionRow } from '../promotions/promotions.types.js';
 import type { SalesRepository } from './sales.repository.js';
 import {
   SaleError,
@@ -24,7 +27,6 @@ import {
 // implementations compute identically, not merely similarly.
 const MONEY_SCALE = 10_000n; // numeric(19,4)
 const QUANTITY_SCALE = 1_000_000n; // numeric(19,6)
-const BASIS_POINT_SCALE = 10_000n; // 10000bp = 100%
 
 function moneyUnits(value: string): bigint {
   const [whole = '', fraction = ''] = value.split('.');
@@ -60,10 +62,6 @@ function multiplyMoneyByQuantity(amountUnits: bigint, qtyUnits: bigint): bigint 
   const numerator = amountUnits * qtyUnits;
   return (numerator + QUANTITY_SCALE / 2n) / QUANTITY_SCALE;
 }
-function applyBasisPoints(amountUnits: bigint, basisPoints: number): bigint {
-  const numerator = amountUnits * BigInt(basisPoints);
-  return (numerator + BASIS_POINT_SCALE / 2n) / BASIS_POINT_SCALE;
-}
 
 function hash(value: object): string {
   return createHash('sha256')
@@ -84,23 +82,17 @@ function nonBlank(value: string, field: string): string {
   return clean;
 }
 
-interface LineComputation {
-  lineNumber: number;
-  productId: string;
-  productVariantId: string | null;
-  productVersion: bigint;
-  skuSnapshot: string | null;
-  nameSnapshot: string;
-  quantity: string;
-  unitPrice: string;
-  subtotalUnits: bigint;
-  taxUnits: bigint;
-  taxCode: string;
-  basisPoints: number;
-}
-
 export class SalesService {
-  public constructor(private readonly repository: SalesRepository) {}
+  public constructor(
+    private readonly repository: SalesRepository,
+    // TASK 12.9 — optional, backward-compatible: every pre-existing
+    // caller/test that constructs `SalesService` with only a
+    // `SalesRepository` keeps compiling and behaving identically
+    // (`couponCodes`/`manualDiscount` simply aren't usable without it —
+    // `createSale` throws a clear `validation_error` rather than
+    // silently ignoring them, see below).
+    private readonly promotionsRepository?: PromotionsRepository,
+  ) {}
 
   /**
    * Creates a Sale directly in `pending_payment` (§21.2's
@@ -161,10 +153,12 @@ export class SalesService {
             normalized.branchId,
             productIds,
           );
+          const wantsPricingEngine =
+            (input.couponCodes !== undefined && input.couponCodes.length > 0) || input.manualDiscount !== undefined;
+          if (wantsPricingEngine && this.promotionsRepository === undefined)
+            throw new SaleError('validation_error', 'This deployment is not configured for coupons/discounts.');
           let currencyCode = requestedCurrency;
-          let subtotalUnits = 0n;
-          let taxUnits = 0n;
-          const lines: LineComputation[] = [];
+          const pricingLines: PricingResolvedLine[] = [];
           normalized.items.forEach((item, index) => {
             const product = resolved.get(item.productId);
             if (product === undefined)
@@ -186,29 +180,105 @@ export class SalesService {
                 `items[${String(index)}].product_id's price currency does not match the sale's currency.`,
               );
             const unitPriceUnits = moneyUnits(product.price.amount);
-            const lineSubtotalUnits = multiplyMoneyByQuantity(unitPriceUnits, item.quantityUnits);
+            const grossSubtotalUnits = multiplyMoneyByQuantity(unitPriceUnits, item.quantityUnits);
             const basisPoints = ivaBasisPointsForTaxCode(product.taxCode);
-            const lineTaxUnits = applyBasisPoints(lineSubtotalUnits, basisPoints);
-            subtotalUnits += lineSubtotalUnits;
-            taxUnits += lineTaxUnits;
-            lines.push({
-              lineNumber: index + 1,
+            pricingLines.push({
+              lineIndex: index,
               productId: product.productId,
               productVariantId: product.variantId,
               productVersion: product.productVersion,
+              categoryId: product.categoryId,
               skuSnapshot: product.skuSnapshot,
               nameSnapshot: product.name,
               quantity: item.quantity,
-              unitPrice: product.price.amount,
-              subtotalUnits: lineSubtotalUnits,
-              taxUnits: lineTaxUnits,
+              quantityUnits: item.quantityUnits,
+              unitPriceUnits,
               taxCode: product.taxCode,
-              basisPoints,
+              taxBasisPoints: basisPoints,
+              grossSubtotalUnits,
+              discountUnits: 0n,
+              discountBasisPoints: 0,
+              netSubtotalUnits: grossSubtotalUnits,
+              taxUnits: 0n,
+              lineTotalUnits: grossSubtotalUnits,
             });
           });
           if (currencyCode === null)
             throw new SaleError('validation_error', 'Could not resolve a currency for this sale.');
-          const totalUnits = subtotalUnits + taxUnits;
+
+          // TASK 12.9 — the exact same `evaluatePricing` engine the
+          // standalone quote endpoint uses (ADR-0016): promotions/
+          // coupons/manual discount are ALWAYS independently
+          // re-evaluated here, never trusted from a client-submitted
+          // quote (Part X). Every coupon lookup below is LOCKED
+          // (`lockCouponByNormalizedCode`) inside this same transaction
+          // — the durable, database-level guarantee a coupon with one
+          // remaining redemption cannot be consumed twice by concurrent
+          // checkouts (Part J).
+          const promotionsRepository = this.promotionsRepository;
+          const couponLookups = new Map<
+            string,
+            { coupon: CouponRow; branchEligible: boolean; redeemedCount: number }
+          >();
+          let promotions: PromotionRow[] = [];
+          let timezone = 'UTC';
+          if (promotionsRepository !== undefined) {
+            const resolvedTimezone = await promotionsRepository.branchTimezone(context.companyId, normalized.branchId);
+            if (resolvedTimezone === null)
+              throw new SaleError('validation_error', 'The branch was not found.');
+            timezone = resolvedTimezone;
+            promotions = await promotionsRepository.activePromotions(context.companyId, client);
+            for (const rawCode of input.couponCodes ?? []) {
+              const normalizedCode = rawCode.trim().toUpperCase();
+              if (couponLookups.has(normalizedCode)) continue;
+              const couponRow = await promotionsRepository.lockCouponByNormalizedCode(
+                client,
+                context.companyId,
+                normalizedCode,
+              );
+              if (couponRow === null) continue;
+              const redeemedCount = await promotionsRepository.couponRedemptionCount(
+                client,
+                context.companyId,
+                couponRow.id,
+              );
+              couponLookups.set(normalizedCode, { coupon: couponRow, branchEligible: true, redeemedCount });
+            }
+          }
+          const pricing = evaluatePricing({
+            branchId: normalized.branchId,
+            branchTimezone: timezone,
+            currencyCode,
+            lines: pricingLines,
+            promotionCandidates: promotions.map((promotionRow) => ({
+              promotion: promotionRow,
+              scope: {
+                branchIds: promotionRow.branchIds,
+                productIds: promotionRow.productIds,
+                categoryIds: promotionRow.categoryIds,
+              },
+            })),
+            couponLookup: (normalizedCode) => couponLookups.get(normalizedCode) ?? null,
+            requestedCouponCodes: input.couponCodes ?? [],
+            ...(input.manualDiscount === undefined ? {} : { manualDiscount: input.manualDiscount }),
+            actorPermissions: context.actorPermissions ?? [],
+            now: context.timestamp,
+          });
+          // Unlike the standalone quote endpoint (where an honest
+          // rejection reason is exactly the useful answer — Part I),
+          // real sale creation never silently completes for a different
+          // amount than a cashier explicitly requested: a coupon code
+          // submitted here that turns out invalid/expired/exhausted
+          // fails the whole creation outright, rather than quietly
+          // dropping it — the client is expected to have already
+          // validated it via the quote endpoint moments before.
+          const firstRejectedCoupon = pricing.rejectedCoupons[0];
+          if (firstRejectedCoupon !== undefined)
+            throw new SaleError(
+              'validation_error',
+              `Coupon "${firstRejectedCoupon.code}" could not be applied: ${firstRejectedCoupon.reason}.`,
+            );
+
           const createdSale = await this.repository.insertSale(client, {
             ...context,
             id: normalized.id,
@@ -216,38 +286,78 @@ export class SalesService {
             deviceId: normalized.deviceId,
             saleNumber: `SALE-${normalized.id.replaceAll('-', '').toLowerCase()}`,
             currencyCode,
-            subtotal: formatMoney(subtotalUnits),
-            discountTotal: '0.0000',
-            taxTotal: formatMoney(taxUnits),
-            total: formatMoney(totalUnits),
+            subtotal: formatMoney(pricing.subtotalUnits),
+            discountTotal: formatMoney(pricing.discountTotalUnits),
+            taxTotal: formatMoney(pricing.taxTotalUnits),
+            total: formatMoney(pricing.totalUnits),
           });
-          // Every line writes to a distinct `(sale_id, line_number)` row
-          // with no dependency on any sibling line, so these run
-          // concurrently on the one transaction connection rather than a
-          // sequential loop.
-          const items: SaleItemRow[] = await Promise.all(
-            lines.map((line) =>
-              this.repository.insertSaleItem(client, {
-                id: randomUUID(),
+          // Sequential, never `Promise.all` — every one of these shares
+          // the same transaction `client`, and `pg` does not support two
+          // concurrently in-flight queries on one connection (a real,
+          // pre-existing bug in this exact spot, found and fixed as part
+          // of this task — see ADR-0016).
+          const items: SaleItemRow[] = [];
+          for (const line of pricing.lines) {
+            const item = await this.repository.insertSaleItem(client, {
+              id: randomUUID(),
+              companyId: context.companyId,
+              branchId: normalized.branchId,
+              saleId: createdSale.id,
+              lineNumber: line.lineIndex + 1,
+              productId: line.productId,
+              productVariantId: line.productVariantId,
+              productVersion: line.productVersion,
+              skuSnapshot: line.skuSnapshot,
+              nameSnapshot: line.nameSnapshot,
+              quantity: line.quantity,
+              unitPrice: formatMoney(line.unitPriceUnits),
+              subtotal: formatMoney(line.grossSubtotalUnits),
+              discountTotal: formatMoney(line.discountUnits),
+              discountBasisPoints: line.discountBasisPoints,
+              taxTotal: formatMoney(line.taxUnits),
+              lineTotal: formatMoney(line.lineTotalUnits),
+              taxSnapshot: { tax_code: line.taxCode, basis_points: line.taxBasisPoints },
+              timestamp: context.timestamp,
+            });
+            items.push(item);
+          }
+
+          if (promotionsRepository !== undefined && pricing.appliedDiscounts.length > 0) {
+            const itemIdByLineIndex = new Map(pricing.lines.map((line, index) => [line.lineIndex, items[index]?.id]));
+            await promotionsRepository.insertSaleDiscounts(
+              client,
+              pricing.appliedDiscounts.map((entry) => ({
                 companyId: context.companyId,
                 branchId: normalized.branchId,
                 saleId: createdSale.id,
-                lineNumber: line.lineNumber,
-                productId: line.productId,
-                productVariantId: line.productVariantId,
-                productVersion: line.productVersion,
-                skuSnapshot: line.skuSnapshot,
-                nameSnapshot: line.nameSnapshot,
-                quantity: line.quantity,
-                unitPrice: line.unitPrice,
-                subtotal: formatMoney(line.subtotalUnits),
-                taxTotal: formatMoney(line.taxUnits),
-                lineTotal: formatMoney(line.subtotalUnits + line.taxUnits),
-                taxSnapshot: { tax_code: line.taxCode, basis_points: line.basisPoints },
+                saleItemId: entry.lineIndex === null ? null : (itemIdByLineIndex.get(entry.lineIndex) ?? null),
+                sourceType: entry.sourceType,
+                sourceId: entry.sourceId,
+                labelSnapshot: entry.label,
+                reasonCode: entry.reasonCode,
+                amount: formatMoney(entry.amountUnits),
+                basisPoints: entry.basisPoints,
+                createdBy: context.actorId,
                 timestamp: context.timestamp,
-              }),
-            ),
-          );
+              })),
+            );
+            const couponAmountsById = new Map<string, bigint>();
+            for (const entry of pricing.appliedDiscounts) {
+              if (entry.sourceType !== 'coupon' || entry.sourceId === null) continue;
+              couponAmountsById.set(entry.sourceId, (couponAmountsById.get(entry.sourceId) ?? 0n) + entry.amountUnits);
+            }
+            for (const [couponId, amountUnits] of couponAmountsById) {
+              await promotionsRepository.insertCouponRedemption(client, {
+                companyId: context.companyId,
+                branchId: normalized.branchId,
+                couponId,
+                saleId: createdSale.id,
+                amount: formatMoney(amountUnits),
+                timestamp: context.timestamp,
+              });
+            }
+          }
+
           await this.repository.auditAndPublish(client, context, {
             action: 'sale.created',
             resourceType: 'sale',
@@ -314,6 +424,25 @@ export class SalesService {
     return this.repository.receiptOrganization(companyId, saleId);
   }
 
+  /** TASK 12.9 Part V: "Sale Detail should show exactly which commercial
+   * adjustments were applied" — the immutable, itemized breakdown of
+   * every promotion/coupon/manual discount actually applied at sale
+   * creation (see ADR-0016 D13). Branch authorization is enforced by the
+   * same `sale()` call every other sale-detail read already uses; this
+   * is a thin passthrough, not a second authorization point. Returns an
+   * empty array (never an error) both for a genuinely undiscounted sale
+   * and for a deployment with no `promotionsRepository` configured — an
+   * absent discount history is not itself an error. */
+  public async saleDiscounts(
+    companyId: string,
+    branchIds: readonly string[],
+    saleId: string,
+  ): ReturnType<NonNullable<SalesService['promotionsRepository']>['saleDiscountsForSale']> {
+    await this.sale(companyId, branchIds, saleId);
+    if (this.promotionsRepository === undefined) return [];
+    return this.promotionsRepository.saleDiscountsForSale(companyId, saleId);
+  }
+
   /** Cancellation is only ever allowed from `pending_payment` — this
    * guarantees no payment has captured against the sale yet, since a
    * captured payment already drives the sale to `completed` (see
@@ -358,6 +487,17 @@ export class SalesService {
               reasonCode: cleanReason,
             },
           );
+          // TASK 12.9 (ADR-0016 "Coupon concurrency"): a coupon reserved
+          // by this sale at creation time is released the moment the
+          // sale is cancelled before ever completing — a
+          // pending-payment sale is exactly the "failed/abandoned
+          // payment" case Part J requires never permanently consume a
+          // coupon. A no-op when this sale never redeemed one. Never
+          // touches `sale_discounts` (the immutable applied-discount
+          // audit trail) or the frozen `sale_items.discount_total` —
+          // only the redemption reservation itself is released.
+          if (this.promotionsRepository !== undefined)
+            await this.promotionsRepository.deleteCouponRedemptionsForSale(client, context.companyId, saleId);
           await this.repository.auditAndPublish(client, context, {
             action: 'sale.cancelled',
             resourceType: 'sale',

@@ -100,7 +100,25 @@ interface LineReversal {
  * same `multiplyMoneyByQuantity`/`applyBasisPoints` pair that produced the
  * original line, so a full-quantity return reproduces the original line's
  * own `subtotal`/`tax_total` exactly (no rounding drift between "what was
- * charged" and "what is refunded"). */
+ * charged" and "what is refunded").
+ *
+ * TASK 12.9 (ADR-0016 "Refund compatibility"): a discounted line's
+ * `saleItem.discountBasisPoints` — the exact rate its promotion/coupon/
+ * manual discount was computed at, frozen on the sale item itself — is
+ * reapplied here to the REQUESTED quantity's own gross subtotal before
+ * tax, exactly mirroring how `sales.service.ts`'s own pricing engine
+ * computed the original line (net-of-discount, then taxed). This is
+ * `0` for an undiscounted line, making this branch a mathematical no-op
+ * and reproducing the exact pre-TASK-12.9 behavior for every historical
+ * sale. Never re-reads `sale_discounts`, never re-evaluates whether the
+ * originating promotion/coupon still exists, is active, or has since
+ * changed — a later promotion expiration, coupon deactivation, or
+ * catalog price change can never alter an already-frozen refund amount.
+ * Any rounding from reapplying a rate to a smaller partial quantity
+ * always rounds the DISCOUNT up (never down), which can only ever
+ * shrink — never inflate — the resulting refund; cumulative partial
+ * refunds can therefore never exceed the amount actually paid (proven
+ * directly in `refunds.integration.test.ts`). */
 function computeLineReversal(
   saleItem: RefundableSaleItemRow,
   requestedQuantity: string,
@@ -109,7 +127,9 @@ function computeLineReversal(
   const qtyUnits = quantityUnits(requestedQuantity, `Quantity for "${saleItem.nameSnapshot}"`);
   const unitPriceUnits = moneyUnits(saleItem.unitPrice);
   const basisPoints = saleItem.taxSnapshot?.basis_points ?? 0;
-  const subtotalUnits = multiplyMoneyByQuantity(unitPriceUnits, qtyUnits);
+  const grossSubtotalUnits = multiplyMoneyByQuantity(unitPriceUnits, qtyUnits);
+  const discountUnits = applyBasisPoints(grossSubtotalUnits, saleItem.discountBasisPoints);
+  const subtotalUnits = grossSubtotalUnits - discountUnits;
   const taxUnits = applyBasisPoints(subtotalUnits, basisPoints);
   return {
     saleItem,

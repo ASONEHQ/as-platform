@@ -468,6 +468,17 @@ These events report derived projection freshness. They are not accounting, cash-
 
 The aggregation model, schedule, ranking formula, and final granularity are explicitly outside this task.
 
+### 11.11 Promotions and coupons — 4 events (TASK 12.9)
+
+Not part of any prior domain grouping — §1's own excluded-scope list named "advanced promotions" out of contract until this task. See ADR-0016. No `discount.applied`/`coupon.redeemed` event exists: that fact is visible via the sale's own persisted `discount_total`/`sale_discounts` rows, never a separate event.
+
+| Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
+| --- | --- | --- | --- | --- | --- |
+| `promotion.created` | promotions / `promotion` | company / `promotion.read` | promotion ID, name, active flag, benefit type, version; `P-FIN` | committed promotion creation / `PROMO` | C / CP |
+| `promotion.updated` | promotions / `promotion` | company / `promotion.read` | promotion ID, name, active flag, version; `P-FIN` | committed promotion edit/activation change / `PROMO` | C / CP |
+| `coupon.created` | promotions / `coupon` | company / `coupon.read` | coupon ID, code, active flag, benefit type, version; `P-FIN` | committed coupon creation / `PROMO` | C / CP |
+| `coupon.updated` | promotions / `coupon` | company / `coupon.read` | coupon ID, code, active flag, version; `P-FIN` | committed coupon edit/activation change / `PROMO` | C / CP |
+
 ## 12. Protocol errors
 
 Errors use a safe envelope containing `code`, human-readable `message`, optional bounded `details`, `message_id`, `request_id` where available, and `correlation_id`. They never expose hidden resource or subscription existence.
@@ -533,12 +544,12 @@ These require measured load, deployment evidence, privacy/retention policy, clie
 
 ## 16. Contract inventory
 
-- Unique event types: **70**.
+- Unique event types: **74**.
 - Client-to-server protocol messages: **6**.
 - Server-to-client protocol messages: **11**.
 - Total protocol message types: **17**.
 - Mermaid diagrams: **4**.
-- Unique permission keys used by event delivery: **19**.
+- Unique permission keys used by event delivery: **21**.
 - Open decision areas: **11**.
 
-The 19 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `sync.execute`, `recovery.read`, and `audit.read`.
+The 21 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `promotion.read`, `coupon.read`, `sync.execute`, `recovery.read`, and `audit.read`.

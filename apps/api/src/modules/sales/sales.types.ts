@@ -56,6 +56,12 @@ export interface SaleItemRow {
   unitPrice: string;
   subtotal: string;
   discountTotal: string;
+  // TASK 12.9 — additive. See `sale_items.discount_basis_points`'s own
+  // doc comment (`packages/database/src/schema/sales.ts`) for why this
+  // exists: the exact rate this line's discount was computed at, so
+  // `refunds.service.ts` can recompute an exact proportional amount for
+  // any partial refund quantity without dividing (and drifting).
+  discountBasisPoints: number;
   taxTotal: string;
   lineTotal: string;
   taxSnapshot: Readonly<Record<string, unknown>> | null;
@@ -71,6 +77,11 @@ export interface CreateSaleLineInput {
   quantity: string;
 }
 
+/** TASK 12.9 — client submits INTENT only (which coupon code(s), what
+ * manual discount is requested); the backend independently re-evaluates
+ * every promotion/coupon/discount amount via the exact same
+ * `evaluatePricing` engine the standalone quote endpoint uses (Part A/X
+ * — never trusts a client-submitted amount, eligibility, or total). */
 export interface CreateSaleInput {
   id?: string;
   branchId: string;
@@ -79,11 +90,24 @@ export interface CreateSaleInput {
   currencyCode?: string;
   deviceId?: string;
   items: readonly CreateSaleLineInput[];
+  couponCodes?: readonly string[];
+  manualDiscount?: {
+    scope: 'line' | 'ticket';
+    lineIndex?: number;
+    type: 'percentage' | 'fixed_amount';
+    value: string;
+    reasonCode: string;
+  };
 }
 
 export interface SaleMutationContext {
   companyId: string;
   actorId: string;
+  /** TASK 12.9 — needed only for the optional `manualDiscount` field's
+   * `discount.apply` check (`PromotionsService`'s own pricing engine
+   * call, invoked from inside `createSale`); every other Sale mutation
+   * remains unaffected by this addition. */
+  actorPermissions?: readonly string[];
   requestId: string;
   correlationId: string;
   timestamp: Date;

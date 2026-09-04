@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'money.dart';
 import 'pos_models.dart';
+import 'pos_promotions_gateway.dart';
 
 /// Mexico's standard general IVA rate, as a `double` — retained only for
 /// existing call sites that still want a display-oriented rate constant.
@@ -84,6 +85,28 @@ class SaleLine {
 class SaleSession extends ChangeNotifier {
   final List<SaleLine> _lines = [];
 
+  // TASK 12.9: coupon codes the cashier has successfully applied (i.e.
+  // NOT present in a quote's own `rejected_coupons` — a rejected code is
+  // never persisted here) plus at most one manual-discount request. Both
+  // are plain *intent*, never an authoritative amount — see [quote] below,
+  // the only place a discount figure actually comes from (ADR-0016 D1).
+  List<String> _couponCodes = const [];
+  PosManualDiscountRequest? _manualDiscount;
+
+  /// The most recent successful `POST /sales/pricing-quotes` response for
+  /// the CURRENT cart/coupon/discount combination — `null` whenever the
+  /// cart, coupon list, or manual discount has changed since the last
+  /// quote (see the invalidation in every mutator below), so a caller can
+  /// simply check `quote != null` rather than re-deriving staleness
+  /// itself. Never partially trusted: [displaySubtotal]/
+  /// [displayDiscountTotal]/[displayTaxTotal]/[displayTotal] only ever
+  /// read straight off this value once it exists.
+  PosPricingQuote? _quote;
+
+  List<String> get couponCodes => List.unmodifiable(_couponCodes);
+  PosManualDiscountRequest? get manualDiscount => _manualDiscount;
+  PosPricingQuote? get quote => _quote;
+
   /// The currency of the ticket, taken from the first line added — kept
   /// so `subtotal`/`iva`/`total` have a currency to report even before any
   /// line exists. Every line must share one currency (mixed-currency
@@ -117,6 +140,92 @@ class SaleSession extends ChangeNotifier {
   );
 
   Money get total => subtotal + iva;
+
+  // --- TASK 12.9: backend-quote-derived display totals -----------------
+  //
+  // Never an authoritative computation of this app's own — each getter
+  // reads straight off [_quote] (the backend's own `PricingResult`) once
+  // one exists for the current cart, falling back to the plain
+  // catalog-only [subtotal]/[iva]/[total] above (mathematically identical
+  // to what a discount-free quote would return) only while no quote has
+  // arrived yet. A malformed backend amount falls back the same way
+  // rather than crashing the ticket display.
+
+  Money get displaySubtotal {
+    final quote = _quote;
+    if (quote == null) return subtotal;
+    try {
+      return Money.parse(quote.subtotal, quote.currencyCode);
+    } on MoneyFormatException {
+      return subtotal;
+    }
+  }
+
+  Money get displayDiscountTotal {
+    final quote = _quote;
+    if (quote == null) return Money.zero(_currencyCode);
+    try {
+      return Money.parse(quote.discountTotal, quote.currencyCode);
+    } on MoneyFormatException {
+      return Money.zero(_currencyCode);
+    }
+  }
+
+  Money get displayTaxTotal {
+    final quote = _quote;
+    if (quote == null) return iva;
+    try {
+      return Money.parse(quote.taxTotal, quote.currencyCode);
+    } on MoneyFormatException {
+      return iva;
+    }
+  }
+
+  Money get displayTotal {
+    final quote = _quote;
+    if (quote == null) return total;
+    try {
+      return Money.parse(quote.total, quote.currencyCode);
+    } on MoneyFormatException {
+      return total;
+    }
+  }
+
+  /// Records a fresh quote for the CURRENT cart/coupon/discount
+  /// combination — the caller (the ticket footer) is responsible for
+  /// only calling this with a quote it just fetched for the exact
+  /// present state; every mutator below independently invalidates this
+  /// back to `null` the instant that state changes again, so a stale
+  /// quote can never linger and be displayed as if still current.
+  void setQuote(PosPricingQuote? quote) {
+    _quote = quote;
+    notifyListeners();
+  }
+
+  /// Appends an already-backend-accepted coupon code (never one present
+  /// in a quote's own `rejected_coupons` — the caller checks that first).
+  /// A no-op for an empty/already-applied code.
+  void addCouponCode(String code) {
+    final normalized = code.trim();
+    if (normalized.isEmpty || _couponCodes.contains(normalized)) return;
+    _couponCodes = [..._couponCodes, normalized];
+    _quote = null;
+    notifyListeners();
+  }
+
+  void removeCouponCode(String code) {
+    if (!_couponCodes.contains(code)) return;
+    _couponCodes = _couponCodes.where((existing) => existing != code).toList(growable: false);
+    _quote = null;
+    notifyListeners();
+  }
+
+  /// `null` clears any previously-applied manual discount.
+  void setManualDiscount(PosManualDiscountRequest? discount) {
+    _manualDiscount = discount;
+    _quote = null;
+    notifyListeners();
+  }
 
   /// Adds [product] to the ticket — merges into an existing line for the
   /// same product (increments quantity by 1) instead of creating a
@@ -155,6 +264,10 @@ class SaleSession extends ChangeNotifier {
         quantity: _lines[index].quantity + 1,
       );
     }
+    // TASK 12.9: the cart itself changed — any previously-fetched quote
+    // no longer describes the current ticket (ADR-0016: a quote must
+    // never be displayed once stale).
+    _quote = null;
     notifyListeners();
     return true;
   }
@@ -165,6 +278,7 @@ class SaleSession extends ChangeNotifier {
     _lines[index] = _lines[index].copyWith(
       quantity: _lines[index].quantity + 1,
     );
+    _quote = null;
     notifyListeners();
   }
 
@@ -179,11 +293,13 @@ class SaleSession extends ChangeNotifier {
     } else {
       _lines[index] = _lines[index].copyWith(quantity: next);
     }
+    _quote = null;
     notifyListeners();
   }
 
   void removeLine(String productId) {
     _lines.removeWhere((line) => line.productId == productId);
+    _quote = null;
     notifyListeners();
   }
 
@@ -194,9 +310,18 @@ class SaleSession extends ChangeNotifier {
   /// exactly as it was so the cashier can retry without re-ringing every
   /// item. `_currencyCode` deliberately does not reset — the branch's
   /// catalog currency does not change between sales.
+  ///
+  /// TASK 12.9: also clears any applied coupon codes/manual discount/quote
+  /// — a brand-new ticket never silently inherits the previous customer's
+  /// discount.
   void clearAll() {
-    if (_lines.isEmpty) return;
+    final hadDiscountState =
+        _couponCodes.isNotEmpty || _manualDiscount != null || _quote != null;
+    if (_lines.isEmpty && !hadDiscountState) return;
     _lines.clear();
+    _couponCodes = const [];
+    _manualDiscount = null;
+    _quote = null;
     notifyListeners();
   }
 }

@@ -3,10 +3,12 @@ import 'dart:async';
 import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/money.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_models.dart';
 import 'package:as_one/features/pos/pos_navigation.dart';
 import 'package:as_one/features/pos/pos_payments_gateway.dart';
+import 'package:as_one/features/pos/pos_promotions_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
 import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:as_one/features/pos/pos_receipt.dart';
@@ -144,6 +146,7 @@ void main() {
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
+            promotionsGateway: const EmptyPosPromotionsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -174,6 +177,7 @@ void main() {
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
+            promotionsGateway: const EmptyPosPromotionsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -198,6 +202,7 @@ void main() {
             paymentsGateway: _FakePaymentsGateway(),
             cashGateway: const EmptyPosCashGateway(),
             refundsGateway: const EmptyPosRefundsGateway(),
+            promotionsGateway: const EmptyPosPromotionsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -3186,6 +3191,7 @@ void main() {
               paymentsGateway: _FakePaymentsGateway(),
               cashGateway: const EmptyPosCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -3219,6 +3225,7 @@ void main() {
               paymentsGateway: _FakePaymentsGateway(),
               cashGateway: const EmptyPosCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -4162,6 +4169,536 @@ void main() {
       },
     );
   });
+
+  group('Promotions/discounts/coupons (TASK 12.9)', () {
+    Future<void> navigateToPromotionsAdmin(WidgetTester tester) async {
+      await _openVentasGroupIfNeeded(tester);
+      if (find.byKey(const Key('nav-promotions')).evaluate().isEmpty) {
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(const Key('nav-promotions')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'a valid coupon code shows the backend own quote total and an '
+      'applied state, never a client-recomputed one',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '10.0000',
+            discountTotal: '1.0000',
+            taxTotal: '1.4400',
+            total: '10.4400',
+            lines: [
+              PosPricingQuoteLine(
+                lineIndex: 0,
+                productId: 'product-1',
+                nameSnapshot: 'Producto real',
+                quantity: '1',
+                unitPrice: '10.0000',
+                subtotal: '10.0000',
+                discountTotal: '1.0000',
+                taxTotal: '1.4400',
+                lineTotal: '10.4400',
+              ),
+            ],
+            appliedDiscounts: [
+              PosAppliedDiscount(
+                sourceType: 'coupon',
+                sourceId: 'coupon-1',
+                label: 'SAVE10',
+                reasonCode: null,
+                amount: '1.0000',
+                lineIndex: 0,
+              ),
+            ],
+            rejectedCoupons: [],
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), promotionsGateway: promotionsGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.enterText(find.byKey(const Key('pos-ticket-coupon-input')), 'SAVE10');
+        await tester.tap(find.byKey(const Key('pos-ticket-coupon-apply')));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.quoteCalls, isNotEmpty);
+        expect(promotionsGateway.quoteCalls.last.couponCodes, contains('SAVE10'));
+        expect(find.byKey(const Key('pos-ticket-coupon-chip-SAVE10')), findsOneWidget);
+        // The backend's own $10.44 quote total — never the naive
+        // undiscounted $11.60 a client-side recompute would show.
+        expect(find.textContaining(r'Cobrar — $10.44'), findsOneWidget);
+        expect(find.textContaining(r'Cobrar — $11.60'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'an invalid/expired coupon code shows the backend own honest '
+      'rejection reason, never a generic error or a fake success',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '10.0000',
+            discountTotal: '0.0000',
+            taxTotal: '1.6000',
+            total: '11.6000',
+            lines: [
+              PosPricingQuoteLine(
+                lineIndex: 0,
+                productId: 'product-1',
+                nameSnapshot: 'Producto real',
+                quantity: '1',
+                unitPrice: '10.0000',
+                subtotal: '10.0000',
+                discountTotal: '0.0000',
+                taxTotal: '1.6000',
+                lineTotal: '11.6000',
+              ),
+            ],
+            appliedDiscounts: [],
+            rejectedCoupons: [PosRejectedCoupon(code: 'EXPIRED1', reason: 'expired')],
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), promotionsGateway: promotionsGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.enterText(find.byKey(const Key('pos-ticket-coupon-input')), 'EXPIRED1');
+        await tester.tap(find.byKey(const Key('pos-ticket-coupon-apply')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Cupón vencido.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-coupon-chip-EXPIRED1')), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'the ticket reprices from the backend own quote response — never a '
+      'client-recomputed number — and an automatic promotion (no coupon) '
+      'surfaces via applied_discounts',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '10.0000',
+            discountTotal: '2.0000',
+            taxTotal: '1.2800',
+            total: '9.2800',
+            lines: [
+              PosPricingQuoteLine(
+                lineIndex: 0,
+                productId: 'product-1',
+                nameSnapshot: 'Producto real',
+                quantity: '1',
+                unitPrice: '10.0000',
+                subtotal: '10.0000',
+                discountTotal: '2.0000',
+                taxTotal: '1.2800',
+                lineTotal: '9.2800',
+              ),
+            ],
+            appliedDiscounts: [
+              PosAppliedDiscount(
+                sourceType: 'promotion',
+                sourceId: 'promo-1',
+                label: 'Promoción de prueba',
+                reasonCode: null,
+                amount: '2.0000',
+                lineIndex: 0,
+              ),
+            ],
+            rejectedCoupons: [],
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), promotionsGateway: promotionsGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pumpAndSettle();
+
+        // The genuinely undiscounted local total ($11.60) never appears —
+        // only the backend's own $9.28, and no coupon code was ever typed.
+        expect(find.textContaining(r'Cobrar — $9.28'), findsOneWidget);
+        expect(find.textContaining(r'Cobrar — $11.60'), findsNothing);
+        expect(find.textContaining('Promoción aplicada: Promoción de prueba'), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-line-discount-product-1')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the manual-discount flow requires a real value before previewing, '
+      'and shows the backend own preview before confirming',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '10.0000',
+            discountTotal: '1.0000',
+            taxTotal: '1.4400',
+            total: '10.4400',
+            lines: [],
+            appliedDiscounts: [],
+            rejectedCoupons: [],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithPromotionPermissions,
+          promotionsGateway: promotionsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-ticket-manual-discount')));
+        await tester.pumpAndSettle();
+
+        // The ticket's own automatic re-quote (product-1 alone, no
+        // discount yet) may already have fired in the background by now
+        // — captured here so the next assertion proves specifically that
+        // an invalid preview attempt issues NO additional call, not that
+        // zero calls ever happened at all.
+        final callsBeforeInvalidPreview = promotionsGateway.quoteCalls.length;
+
+        // No value typed yet — "Vista previa" must refuse honestly,
+        // never silently call the backend.
+        await tester.tap(find.byKey(const Key('pos-manual-discount-preview')));
+        await tester.pump();
+        expect(find.text('Escribe un valor y una razón válidos.'), findsOneWidget);
+        expect(promotionsGateway.quoteCalls, hasLength(callsBeforeInvalidPreview));
+
+        await tester.enterText(find.byKey(const Key('pos-manual-discount-value')), '10');
+        await tester.tap(find.byKey(const Key('pos-manual-discount-preview')));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.quoteCalls, hasLength(callsBeforeInvalidPreview + 1));
+        expect(promotionsGateway.quoteCalls.last.manualDiscount?.type, 'percentage');
+        expect(promotionsGateway.quoteCalls.last.manualDiscount?.value, '1000');
+        expect(find.text('Nuevo total'), findsOneWidget);
+        expect(find.textContaining(r'$10.44'), findsWidgets);
+
+        await tester.tap(find.byKey(const Key('pos-manual-discount-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining(r'Cobrar — $10.44'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the manual-discount action is hidden for an actor lacking discount.apply',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        expect(find.byKey(const Key('pos-ticket-manual-discount')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the on-screen receipt shows a discount line when discount_total is '
+      'nonzero, and shows nothing extra when it is zero',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-discount-1',
+            saleNumber: 'SALE-discount1',
+            status: 'pending_payment',
+            total: '9.2800',
+            discountTotal: '2.0000',
+          ),
+          receiptResult: PosReceipt(
+            sale: PosReceiptSale(
+              id: 'sale-discount-1',
+              saleNumber: 'SALE-discount1',
+              status: 'completed',
+              currencyCode: 'MXN',
+              branchId: 'branch-id',
+              occurredAt: DateTime.utc(2026, 9, 4),
+              completedAt: DateTime.utc(2026, 9, 4, 0, 1),
+              subtotal: '10.0000',
+              discountTotal: '2.0000',
+              taxTotal: '1.2800',
+              total: '9.2800',
+            ),
+            business: const PosReceiptBusiness(
+              companyName: 'AS ONE Fixture Co.',
+              branchName: 'Main',
+              branchAddress: null,
+            ),
+            cashier: const PosReceiptCashier(id: 'user-id', displayName: 'Cash Ier'),
+            items: const [
+              PosReceiptItem(
+                lineNumber: 1,
+                nameSnapshot: 'Producto real',
+                skuSnapshot: 'P-001',
+                quantity: '1.000000',
+                unitPrice: '10.0000',
+                discountTotal: '2.0000',
+                taxTotal: '1.2800',
+                lineTotal: '9.2800',
+              ),
+            ],
+            payments: const [
+              PosReceiptPayment(
+                id: 'payment-1',
+                paymentMethod: 'cash',
+                status: 'captured',
+                amount: '9.2800',
+                currencyCode: 'MXN',
+                capturedAt: null,
+                tenderedAmount: '10.0000',
+                changeAmount: '0.7200',
+                provider: null,
+                terminalId: null,
+                providerReference: null,
+              ),
+            ],
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-1',
+            status: 'captured',
+            tenderedAmount: '10.0000',
+            changeAmount: '0.7200',
+            saleId: 'sale-discount-1',
+            saleNumber: 'SALE-discount1',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(find.byKey(const Key('pos-cash-dialog-input')), '10');
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(find.text('Venta completada'), findsOneWidget);
+        expect(find.text('Descuento'), findsOneWidget);
+        expect(
+          find.descendant(of: find.byType(Dialog), matching: find.text(r'-$2.00')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'the admin promotions/coupons screen renders from the backend list '
+      'and handles the empty state honestly, gated on real permissions',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          promotionsPage: PosPromotionPage(
+            items: [
+              PosPromotion(
+                id: 'promo-1',
+                name: 'Promoción de prueba',
+                description: null,
+                active: true,
+                startsAt: null,
+                endsAt: null,
+                daysOfWeek: null,
+                timeFrom: null,
+                timeTo: null,
+                priority: 0,
+                stackable: false,
+                benefitType: 'percentage',
+                benefitPercentageBasisPoints: 1000,
+                benefitFixedAmount: null,
+                benefitNxmBuyQuantity: null,
+                benefitNxmPayQuantity: null,
+                minQuantity: null,
+                minSubtotal: null,
+                usageLimitTotal: null,
+                combinableWithCoupons: true,
+                branchIds: const [],
+                productIds: const [],
+                categoryIds: const [],
+                version: 1,
+              ),
+            ],
+            nextCursor: null,
+          ),
+          couponsPage: const PosCouponPage(items: [], nextCursor: null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithPromotionPermissions,
+          promotionsGateway: promotionsGateway,
+        );
+        await navigateToPromotionsAdmin(tester);
+
+        expect(find.text('Promoción de prueba'), findsOneWidget);
+        expect(find.text('10.00% de descuento'), findsOneWidget);
+        expect(find.byKey(const Key('pos-promotion-new')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-promotions-tab-coupons')));
+        await tester.pumpAndSettle();
+        expect(find.text('No hay cupones registrados.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-coupon-new')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a permission-less actor never sees the create action and sees an '
+      'honest permission state, never a silently-empty list',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          promotionsGateway: promotionsGateway,
+        );
+        await navigateToPromotionsAdmin(tester);
+
+        expect(find.byKey(const Key('pos-promotion-new')), findsNothing);
+        expect(find.text('Acceso no autorizado'), findsWidgets);
+      },
+    );
+
+    testWidgets(
+      'creating a new promotion calls the backend with the real form '
+      'values, and editing an existing coupon calls updateCoupon',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          promotionsPage: const PosPromotionPage(items: [], nextCursor: null),
+          couponsPage: PosCouponPage(items: [_fixtureCoupon(id: 'coupon-9')], nextCursor: null),
+          createPromotionResult: _fixturePromotion(id: 'promotion-new'),
+          updateCouponResult: _fixtureCoupon(id: 'coupon-9'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithPromotionPermissions,
+          promotionsGateway: promotionsGateway,
+        );
+        await navigateToPromotionsAdmin(tester);
+
+        await tester.tap(find.byKey(const Key('pos-promotion-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-promotion-name')), 'Promoción de prueba');
+        await tester.enterText(find.byKey(const Key('pos-promotion-value-percentage')), '15');
+        await tester.tap(find.byKey(const Key('pos-promotion-save')));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.createPromotionCalls, ['Promoción de prueba']);
+
+        await tester.tap(find.byKey(const Key('pos-promotions-tab-coupons')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-coupon-edit-coupon-9')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-coupon-save')));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.updateCouponCalls, ['coupon-9']);
+      },
+    );
+
+    testWidgets(
+      'creating a new coupon calls the backend with the real form '
+      'values, and editing an existing promotion calls updatePromotion',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          promotionsPage: PosPromotionPage(items: [_fixturePromotion(id: 'promotion-9')], nextCursor: null),
+          couponsPage: const PosCouponPage(items: [], nextCursor: null),
+          createCouponResult: _fixtureCoupon(id: 'coupon-new'),
+          updatePromotionResult: _fixturePromotion(id: 'promotion-9'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithPromotionPermissions,
+          promotionsGateway: promotionsGateway,
+        );
+        await navigateToPromotionsAdmin(tester);
+
+        await tester.tap(find.byKey(const Key('pos-promotion-edit-promotion-9')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-promotion-save')));
+        await tester.pumpAndSettle();
+        expect(promotionsGateway.updatePromotionCalls, ['promotion-9']);
+
+        await tester.tap(find.byKey(const Key('pos-promotions-tab-coupons')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-coupon-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-coupon-code')), 'NUEVO10');
+        await tester.enterText(find.byKey(const Key('pos-coupon-value-percentage')), '10');
+        await tester.tap(find.byKey(const Key('pos-coupon-save')));
+        await tester.pumpAndSettle();
+        expect(promotionsGateway.createCouponCalls, ['NUEVO10']);
+      },
+    );
+
+    testWidgets(
+      'a mutation failure while saving surfaces the backend own honest '
+      'error, never a fake success',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          promotionsPage: const PosPromotionPage(items: [], nextCursor: null),
+          couponsPage: const PosCouponPage(items: [], nextCursor: null),
+          mutationFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'El nombre ya está en uso.', code: 'resource_conflict'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithPromotionPermissions,
+          promotionsGateway: promotionsGateway,
+        );
+        await navigateToPromotionsAdmin(tester);
+
+        await tester.tap(find.byKey(const Key('pos-promotion-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-promotion-name')), 'Promoción de prueba');
+        await tester.enterText(find.byKey(const Key('pos-promotion-value-percentage')), '15');
+        await tester.tap(find.byKey(const Key('pos-promotion-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('El nombre ya está en uso.'), findsOneWidget);
+        // The dialog stays open — never a fake success.
+        expect(find.byKey(const Key('pos-promotion-save')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a network/backend failure while validating a coupon surfaces an '
+      'honest message, never a fake success',
+      (tester) async {
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), promotionsGateway: promotionsGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.enterText(find.byKey(const Key('pos-ticket-coupon-input')), 'SAVE10');
+        await tester.tap(find.byKey(const Key('pos-ticket-coupon-apply')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-coupon-chip-SAVE10')), findsNothing);
+      },
+    );
+  });
 }
 
 Future<void> _pump(
@@ -4172,6 +4709,7 @@ Future<void> _pump(
   PosPaymentsGateway? paymentsGateway,
   PosCashGateway? cashGateway,
   PosRefundsGateway? refundsGateway,
+  PosPromotionsGateway? promotionsGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -4196,6 +4734,15 @@ Future<void> _pump(
         // behavior — the dedicated refund-flow tests below inject their
         // own explicit fake instead.
         refundsGateway: refundsGateway ?? _FakeRefundsGateway(),
+        // TASK 12.9: defaults to a fake that echoes the exact catalog-only
+        // (zero-discount) totals `_catalogFixture()`'s own $10.00/
+        // IVA_GENERAL products always price to — so every pre-existing
+        // Subtotal/IVA/Total/Cobrar assertion written before this task
+        // keeps passing byte-for-byte even once the ticket starts
+        // automatically re-quoting on every cart change (ADR-0016). The
+        // dedicated promotions/coupons tests below inject their own
+        // explicit fake instead.
+        promotionsGateway: promotionsGateway ?? _FakePromotionsGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -4435,6 +4982,26 @@ final _contextWithRefundPermissions = AuthenticatedContext(
   ],
 );
 
+/// TASK 12.9: `_context` plus the five real, already-reserved promotions/
+/// coupons/discount permissions (see
+/// `packages/database/src/seeds/technical-permissions.ts` and
+/// `bootstrap-owner.service.ts`) — `_context` itself predates TASK 12.9.
+final _contextWithPromotionPermissions = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._context.permissions,
+    'discount.apply',
+    'promotion.read',
+    'promotion.manage',
+    'coupon.read',
+    'coupon.manage',
+  ],
+);
+
 /// Same addition, for the company-wide branch filter test.
 final _companyWideContextWithSaleRead = AuthenticatedContext(
   session: _companyWideContext.session,
@@ -4583,6 +5150,7 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     paymentsGateway: _FakePaymentsGateway(),
     cashGateway: widget.cashGateway ?? _FakeCashGateway(),
     refundsGateway: const EmptyPosRefundsGateway(),
+    promotionsGateway: const EmptyPosPromotionsGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -4693,7 +5261,14 @@ class _FakeSalesGateway implements PosSalesGateway {
 
   final PosSaleCreated? result;
   final ApiException? failure;
-  final List<({String branchId, List<PosSaleLineRequest> items})> calls = [];
+  final List<
+      ({
+        String branchId,
+        List<PosSaleLineRequest> items,
+        List<String>? couponCodes,
+        PosManualDiscountRequest? manualDiscount,
+      })>
+  calls = [];
 
   // TASK 12.5B.
   final PosReceipt? receiptResult;
@@ -4709,8 +5284,15 @@ class _FakeSalesGateway implements PosSalesGateway {
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
+    List<String>? couponCodes,
+    PosManualDiscountRequest? manualDiscount,
   }) async {
-    calls.add((branchId: branchId, items: items));
+    calls.add((
+      branchId: branchId,
+      items: items,
+      couponCodes: couponCodes,
+      manualDiscount: manualDiscount,
+    ));
     if (failure != null) throw failure!;
     return result ??
         const PosSaleCreated(
@@ -5366,6 +5948,209 @@ class _FakeRefundsGateway implements PosRefundsGateway {
         );
   }
 }
+
+/// TASK 12.9: a controllable fake for `POST /sales/pricing-quotes` plus the
+/// promotions/coupons admin CRUD — see ADR-0016.
+///
+/// The default `quote()` behavior (when [quoteResult]/[quoteFailure] are
+/// both omitted) deterministically echoes the exact catalog-only totals
+/// `_catalogFixture()`'s own $10.00/`IVA_GENERAL` products always price to
+/// — zero discount, no promotion/coupon applied — computed from the
+/// SAME items the ticket actually sent, so every pre-existing Subtotal/
+/// IVA/Total/Cobrar assertion written before this task keeps passing
+/// byte-for-byte even once the ticket starts automatically re-quoting on
+/// every cart change (`_TicketFooterState`'s debounce fires during
+/// `pumpAndSettle()` regardless of whether a test cares about it).
+class _FakePromotionsGateway implements PosPromotionsGateway {
+  _FakePromotionsGateway({
+    this.quoteResult,
+    this.quoteFailure,
+    this.promotionsPage,
+    this.couponsPage,
+    this.createPromotionResult,
+    this.createCouponResult,
+    this.updatePromotionResult,
+    this.updateCouponResult,
+    this.mutationFailure,
+  });
+
+  final PosPricingQuote? quoteResult;
+  final ApiException? quoteFailure;
+  final List<
+    ({
+      String branchId,
+      List<PosPricingQuoteItem> items,
+      List<String> couponCodes,
+      PosManualDiscountRequest? manualDiscount,
+    })
+  >
+  quoteCalls = [];
+
+  final PosPromotionPage? promotionsPage;
+  final PosCouponPage? couponsPage;
+  final PosPromotion? createPromotionResult;
+  final PosCoupon? createCouponResult;
+  final PosPromotion? updatePromotionResult;
+  final PosCoupon? updateCouponResult;
+  final ApiException? mutationFailure;
+  final List<String> createPromotionCalls = [];
+  final List<String> createCouponCalls = [];
+  final List<String> updatePromotionCalls = [];
+  final List<String> updateCouponCalls = [];
+
+  @override
+  Future<PosPricingQuote> quote({
+    required String branchId,
+    required List<PosPricingQuoteItem> items,
+    List<String> couponCodes = const [],
+    PosManualDiscountRequest? manualDiscount,
+  }) async {
+    quoteCalls.add((
+      branchId: branchId,
+      items: items,
+      couponCodes: couponCodes,
+      manualDiscount: manualDiscount,
+    ));
+    if (quoteFailure != null) throw quoteFailure!;
+    if (quoteResult != null) return quoteResult!;
+    return _echoUndiscountedQuote(items);
+  }
+
+  @override
+  Future<PosPromotion> createPromotion(PosPromotionInput input) async {
+    createPromotionCalls.add(input.name ?? '');
+    if (mutationFailure != null) throw mutationFailure!;
+    return createPromotionResult ?? _fixturePromotion();
+  }
+
+  @override
+  Future<PosPromotionPage> listPromotions({String? cursor, int limit = 50, bool? active}) async {
+    return promotionsPage ?? const PosPromotionPage(items: [], nextCursor: null);
+  }
+
+  @override
+  Future<PosPromotion> promotion(String id) async {
+    return _fixturePromotion(id: id);
+  }
+
+  @override
+  Future<PosPromotion> updatePromotion(String id, PosPromotionInput input, {required int version}) async {
+    updatePromotionCalls.add(id);
+    if (mutationFailure != null) throw mutationFailure!;
+    return updatePromotionResult ?? _fixturePromotion(id: id);
+  }
+
+  @override
+  Future<PosCoupon> createCoupon(PosCouponInput input) async {
+    createCouponCalls.add(input.code ?? '');
+    if (mutationFailure != null) throw mutationFailure!;
+    return createCouponResult ?? _fixtureCoupon();
+  }
+
+  @override
+  Future<PosCouponPage> listCoupons({String? cursor, int limit = 50, bool? active}) async {
+    return couponsPage ?? const PosCouponPage(items: [], nextCursor: null);
+  }
+
+  @override
+  Future<PosCoupon> coupon(String id) async {
+    return _fixtureCoupon(id: id);
+  }
+
+  @override
+  Future<PosCoupon> updateCoupon(String id, PosCouponUpdateInput input, {required int version}) async {
+    updateCouponCalls.add(id);
+    if (mutationFailure != null) throw mutationFailure!;
+    return updateCouponResult ?? _fixtureCoupon(id: id);
+  }
+}
+
+/// Every product in `_catalogFixture()` is `$10.00 MXN`/`IVA_GENERAL`
+/// (16%) — see `_pricedProduct`'s own default `amount`/`taxCode` — so this
+/// mirrors `SaleSession`'s own local (zero-discount) math exactly, giving
+/// `_FakePromotionsGateway`'s default quote the identical totals every
+/// pre-existing ticket test already asserts.
+PosPricingQuote _echoUndiscountedQuote(List<PosPricingQuoteItem> items) {
+  final lines = <PosPricingQuoteLine>[];
+  for (var index = 0; index < items.length; index++) {
+    final item = items[index];
+    final quantity = int.tryParse(item.quantity.split('.').first) ?? 0;
+    final lineSubtotal = Money.parse('10.0000', 'MXN') * quantity;
+    final lineTax = lineSubtotal.multiplyByRateBasisPoints(1600);
+    lines.add(
+      PosPricingQuoteLine(
+        lineIndex: index,
+        productId: item.productId,
+        nameSnapshot: '',
+        quantity: item.quantity,
+        unitPrice: '10.0000',
+        subtotal: lineSubtotal.toApiString(),
+        discountTotal: '0.0000',
+        taxTotal: lineTax.toApiString(),
+        lineTotal: (lineSubtotal + lineTax).toApiString(),
+      ),
+    );
+  }
+  final subtotal = items.fold(Money.zero('MXN'), (sum, item) {
+    final quantity = int.tryParse(item.quantity.split('.').first) ?? 0;
+    return sum + Money.parse('10.0000', 'MXN') * quantity;
+  });
+  final tax = subtotal.multiplyByRateBasisPoints(1600);
+  final total = subtotal + tax;
+  return PosPricingQuote(
+    currencyCode: 'MXN',
+    subtotal: subtotal.toApiString(),
+    discountTotal: '0.0000',
+    taxTotal: tax.toApiString(),
+    total: total.toApiString(),
+    lines: lines,
+    appliedDiscounts: const [],
+    rejectedCoupons: const [],
+  );
+}
+
+PosPromotion _fixturePromotion({String id = 'promotion-1'}) => PosPromotion(
+  id: id,
+  name: 'Fixture Promotion',
+  description: null,
+  active: true,
+  startsAt: null,
+  endsAt: null,
+  daysOfWeek: null,
+  timeFrom: null,
+  timeTo: null,
+  priority: 0,
+  stackable: false,
+  benefitType: 'percentage',
+  benefitPercentageBasisPoints: 1000,
+  benefitFixedAmount: null,
+  benefitNxmBuyQuantity: null,
+  benefitNxmPayQuantity: null,
+  minQuantity: null,
+  minSubtotal: null,
+  usageLimitTotal: null,
+  combinableWithCoupons: true,
+  branchIds: const [],
+  productIds: const [],
+  categoryIds: const [],
+  version: 1,
+);
+
+PosCoupon _fixtureCoupon({String id = 'coupon-1'}) => PosCoupon(
+  id: id,
+  code: 'FIXTURE10',
+  description: null,
+  benefitType: 'percentage',
+  benefitPercentageBasisPoints: 1000,
+  benefitFixedAmount: null,
+  active: true,
+  startsAt: null,
+  endsAt: null,
+  minSubtotal: null,
+  usageLimitTotal: null,
+  promotionId: null,
+  version: 1,
+);
 
 PosRefundableBalance _fixtureRefundableBalance(String saleId) =>
     PosRefundableBalance(

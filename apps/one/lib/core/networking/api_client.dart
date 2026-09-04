@@ -62,6 +62,25 @@ class ApiClient {
     idempotencyKey: idempotencyKey,
   );
 
+  /// TASK 12.9: the first Flutter caller of a `PUT` update — promotions/
+  /// coupons admin edits (`promotions.routes.ts`'s `PUT .../:id`), each
+  /// requiring the resource's own strong `If-Match` version header (never
+  /// an `Idempotency-Key` — the backend route schema for these endpoints
+  /// carries no such requirement, unlike `postJson`'s creation calls).
+  Future<Map<String, Object?>> putJson(
+    String path, {
+    Map<String, Object?> body = const {},
+    String? ifMatch,
+    bool authenticated = true,
+  }) => _send(
+    'PUT',
+    path,
+    body: body,
+    authenticated: authenticated,
+    retryAfterRefresh: false,
+    ifMatch: ifMatch,
+  );
+
   Future<Map<String, Object?>> _send(
     String method,
     String path, {
@@ -70,6 +89,7 @@ class ApiClient {
     required bool authenticated,
     required bool retryAfterRefresh,
     String? idempotencyKey,
+    String? ifMatch,
   }) async {
     final response = await _perform(
       method,
@@ -78,6 +98,7 @@ class ApiClient {
       csrfToken: csrfToken,
       authenticated: authenticated,
       idempotencyKey: idempotencyKey,
+      ifMatch: ifMatch,
     );
     if (response.statusCode == 401 &&
         authenticated &&
@@ -92,6 +113,7 @@ class ApiClient {
           csrfToken: csrfToken,
           authenticated: authenticated,
           idempotencyKey: idempotencyKey,
+          ifMatch: ifMatch,
         ),
       );
     }
@@ -105,6 +127,7 @@ class ApiClient {
     String? csrfToken,
     required bool authenticated,
     String? idempotencyKey,
+    String? ifMatch,
   }) async {
     final token = authenticated ? readAccessToken() : null;
     final request = http.Request(method, baseUrl.resolve(path))
@@ -115,6 +138,7 @@ class ApiClient {
         ...token == null ? const {} : {'Authorization': 'Bearer $token'},
         ...csrfToken == null ? const {} : {'X-CSRF-Token': csrfToken},
         ...idempotencyKey == null ? const {} : {'Idempotency-Key': idempotencyKey},
+        ...ifMatch == null ? const {} : {'If-Match': ifMatch},
       })
       ..body = body == null ? '' : jsonEncode(body);
     try {

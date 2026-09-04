@@ -135,6 +135,24 @@ export const ownerPermissionCodes = Object.freeze([
   'refund.create',
   'refund.approve',
   'refund.complete',
+  // TASK 12.9: the local dev owner also exercises the promotions/
+  // discounts/coupons QA scenarios end to end (create a promotion,
+  // create a coupon, apply a manual discount at checkout), so it needs
+  // exactly the five reserved codes that flow touches — no more:
+  //   - `promotion.read`/`promotion.manage`: the promotions admin
+  //     management screen (Part U) — list, create/edit, activate.
+  //   - `coupon.read`/`coupon.manage`: the coupons admin management
+  //     screen — same shape.
+  //   - `discount.apply`: `POST /sales`'s optional `manual_discount`
+  //     field (Part K/T) — without it, a manual discount request is
+  //     honestly rejected, never silently ignored or fabricated.
+  // Deliberately NOT added: nothing further exists in this pass — no
+  // separate "override" tier was invented (see ADR-0016).
+  'promotion.read',
+  'promotion.manage',
+  'coupon.read',
+  'coupon.manage',
+  'discount.apply',
 ]);
 
 export interface BootstrapEnvironment {

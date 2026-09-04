@@ -113,6 +113,7 @@ interface SaleItemDb {
   unit_price: string;
   subtotal: string;
   discount_total: string;
+  discount_basis_points: number;
   tax_total: string;
   line_total: string;
   tax_snapshot: Readonly<Record<string, unknown>> | null;
@@ -124,6 +125,7 @@ interface IdempotencyDb {
 }
 interface ProductLookupDb {
   product_id: string;
+  category_id: string | null;
   variant_id: string | null;
   tax_code: ProductTaxCode;
   status: string;
@@ -140,7 +142,7 @@ interface PriceLookupDb {
 const SALE_COLUMNS =
   'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,created_by,version,created_at,updated_at';
 const SALE_ITEM_COLUMNS =
-  'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,tax_total,line_total,tax_snapshot,created_at';
+  'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,tax_total,line_total,tax_snapshot,created_at';
 
 function sale(row: SaleDb): SaleRow {
   return {
@@ -187,6 +189,7 @@ function saleItem(row: SaleItemDb): SaleItemRow {
     unitPrice: row.unit_price,
     subtotal: row.subtotal,
     discountTotal: row.discount_total,
+    discountBasisPoints: row.discount_basis_points,
     taxTotal: row.tax_total,
     lineTotal: row.line_total,
     taxSnapshot: row.tax_snapshot,
@@ -195,6 +198,12 @@ function saleItem(row: SaleItemDb): SaleItemRow {
 }
 export interface ResolvedProductLine {
   productId: string;
+  // TASK 12.9 — additive: the product's own `category_id`, needed for
+  // category-scoped promotion eligibility (`pricing.service.ts`). Never
+  // used for anything display-facing on the frozen sale-item snapshot
+  // itself (`sale_items` has no `category_id` column — a later category
+  // reassignment never rewrites history).
+  categoryId: string | null;
   // TASK 12.6: the default variant resolved *at sale-creation time* —
   // see sales.ts's `saleItems.productVariantId` doc comment for why this
   // is captured now rather than re-derived later. `null` only when the
@@ -346,7 +355,7 @@ export class SalesRepository {
     // only look parallel).
     const [productsResult, pricesResult] = await Promise.all([
       client.query(
-        `select p.id as product_id, p.tax_code, p.status, p.version, p.name,
+        `select p.id as product_id, p.category_id, p.tax_code, p.status, p.version, p.name,
                 pv.id as variant_id, pv.sku as variant_sku
          from products p
          left join product_variants pv
@@ -378,6 +387,7 @@ export class SalesRepository {
         row.product_id,
         {
           productId: row.product_id,
+          categoryId: row.category_id,
           variantId: row.variant_id,
           productVersion: BigInt(row.version),
           name: row.name,
@@ -450,6 +460,12 @@ export class SalesRepository {
       quantity: string;
       unitPrice: string;
       subtotal: string;
+      // TASK 12.9 — additive, both default to "no discount" when omitted
+      // so every pre-existing call site (a sale with no eligible
+      // promotion/coupon/manual discount) keeps compiling and behaving
+      // identically to before this task.
+      discountTotal?: string;
+      discountBasisPoints?: number;
       taxTotal: string;
       lineTotal: string;
       taxSnapshot: Readonly<Record<string, unknown>> | null;
@@ -460,9 +476,9 @@ export class SalesRepository {
       await client.query(
         `insert into sale_items
          (id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,
-          sku_snapshot,name_snapshot,quantity,unit_price,subtotal,tax_total,line_total,
-          tax_snapshot,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)
+          sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,
+          tax_total,line_total,tax_snapshot,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)
          returning ${SALE_ITEM_COLUMNS}`,
         [
           input.id,
@@ -478,6 +494,8 @@ export class SalesRepository {
           input.quantity,
           input.unitPrice,
           input.subtotal,
+          input.discountTotal ?? '0.0000',
+          input.discountBasisPoints ?? 0,
           input.taxTotal,
           input.lineTotal,
           input.taxSnapshot === null ? null : JSON.stringify(input.taxSnapshot),

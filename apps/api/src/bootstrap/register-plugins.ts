@@ -58,6 +58,9 @@ import { PaymentService } from '../modules/payments/payments.service.js';
 import { MercadoPagoClient } from '../modules/payments/providers/mercado-pago.client.js';
 import { MercadoPagoPointProvider } from '../modules/payments/providers/mercado-pago.provider.js';
 import { registerMercadoPagoWebhookRoutes } from '../modules/payments/providers/mercado-pago.webhook.routes.js';
+import { PromotionsRepository } from '../modules/promotions/promotions.repository.js';
+import { registerPromotionRoutes } from '../modules/promotions/promotions.routes.js';
+import { PromotionsService } from '../modules/promotions/promotions.service.js';
 import { RefundsRepository } from '../modules/refunds/refunds.repository.js';
 import { registerRefundRoutes } from '../modules/refunds/refunds.routes.js';
 import { RefundsService } from '../modules/refunds/refunds.service.js';
@@ -198,7 +201,14 @@ export async function registerPlugins(
         new InventoryRepairService(new InventoryRepairRepository(options.infrastructure.database)),
       );
       const salesRepository = new SalesRepository(options.infrastructure.database);
-      const salesService = new SalesService(salesRepository);
+      // TASK 12.9: constructed before `salesService` — real sale
+      // creation independently re-evaluates promotions/coupons/manual
+      // discounts through the exact same pricing engine the standalone
+      // quote endpoint uses (never trusts a client-submitted quote —
+      // see ADR-0016), so `SalesService` needs this repository directly.
+      const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
+      const promotionsService = new PromotionsService(promotionsRepository);
+      const salesService = new SalesService(salesRepository, promotionsRepository);
       const paymentRepository = new PaymentRepository(options.infrastructure.database);
       // TASK 12.7: constructed before `paymentService` — a cash payment
       // confirmation now requires it (open-session enforcement + drawer
@@ -237,6 +247,7 @@ export async function registerPlugins(
       registerPaymentRoutes(app, authentication, paymentService, salesService);
       registerCashRoutes(app, authentication, cashService);
       registerRefundRoutes(app, authentication, refundsService);
+      registerPromotionRoutes(app, authentication, promotionsService);
       registerMercadoPagoWebhookRoutes(app, {
         paymentService,
         mercadoPagoProvider,

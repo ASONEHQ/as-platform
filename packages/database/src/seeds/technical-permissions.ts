@@ -59,6 +59,19 @@ export const technicalPermissionCodes = [
   'refund.approve',
   'refund.complete',
   'refund.cancel',
+  // TASK 12.9 — the promotions/discounts/coupons engine. `promotion.*`/
+  // `coupon.*` gate the admin management surface (list/create/edit/
+  // activate); `discount.apply` gates the checkout-time manual-discount
+  // action, deliberately separate from `promotion.manage`/`coupon.manage`
+  // since a cashier authorized to apply a discount at the register is not
+  // automatically someone who should be editing the promotions catalog
+  // (mirrors `cash_movement.create` vs `cash_register.manage`'s own
+  // separation — TASK 12.7).
+  'promotion.read',
+  'promotion.manage',
+  'coupon.read',
+  'coupon.manage',
+  'discount.apply',
   'sync.execute',
   'audit.read',
   'recovery.read',

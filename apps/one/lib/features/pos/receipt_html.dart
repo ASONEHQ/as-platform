@@ -21,6 +21,18 @@ String _escape(String value) => value
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 
+// TASK 12.9: a plain decimal-string nonzero check — never parses through
+// `Money` just to compare against zero, and never crashes the receipt over
+// a malformed value (falls back to "show nothing" rather than "show a
+// garbled discount row").
+bool _isNonZeroAmount(String amount) {
+  try {
+    return !Money.parse(amount, 'MXN').isZero;
+  } on MoneyFormatException {
+    return false;
+  }
+}
+
 String _money(String amount, String currencyCode) {
   try {
     return '\$${Money.parse(amount, currencyCode).toDisplayString()}';
@@ -75,16 +87,28 @@ String buildReceiptHtml({
   ];
   final branchLineHtml = branchLineParts.isEmpty ? '' : _escape(branchLineParts.join(' · '));
 
+  // TASK 12.9: a per-line "PROMO/CUPÓN/DESC." discount row directly under
+  // the item it reduced — only ever rendered when that line's own
+  // `discount_total` (real since this task; always `"0.0000"` before it)
+  // is nonzero, so a legacy/undiscounted receipt renders byte-identical
+  // to before (ADR-0016 D14).
   final itemsRowsHtml = receipt.items.isEmpty
       ? '<tr><td colspan="2" class="muted">Sin artículos</td></tr>'
       : receipt.items
             .map((item) {
               final qty = item.quantity;
               final qtySuffix = qty == '1.000000' ? '' : ' x$qty';
+              final discountRow = _isNonZeroAmount(item.discountTotal)
+                  ? '<tr class="discount-row">'
+                        '<td class="item-name muted">Descuento</td>'
+                        '<td class="amount muted">-${_money(item.discountTotal, currency)}</td>'
+                        '</tr>'
+                  : '';
               return '<tr>'
-                  '<td class="item-name">${_escape(item.nameSnapshot)}$qtySuffix</td>'
-                  '<td class="amount">${_money(item.lineTotal, currency)}</td>'
-                  '</tr>';
+                      '<td class="item-name">${_escape(item.nameSnapshot)}$qtySuffix</td>'
+                      '<td class="amount">${_money(item.lineTotal, currency)}</td>'
+                      '</tr>' +
+                  discountRow;
             })
             .join();
 
@@ -144,6 +168,7 @@ String buildReceiptHtml({
       'table{width:100%;border-collapse:collapse}'
       'td{padding:2px 0;vertical-align:top}'
       '.item-name{word-break:break-word;padding-right:6px}'
+      '.discount-row td{font-size:11px}'
       '.amount{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'
       '.totals td{padding:1px 0}'
       '.total-row td{font-size:14px;font-weight:700;padding-top:4px;border-top:1px solid #000;'
@@ -186,6 +211,10 @@ String buildReceiptHtml({
       '<hr class="divider">'
       '<table class="totals">'
       '<tr><td>Subtotal</td><td class="amount">${_money(sale.subtotal, currency)}</td></tr>'
+      // TASK 12.9: only ever shown for a real, nonzero discount — a
+      // legacy sale (`discount_total = '0.0000'`, ADR-0016 D14) renders
+      // this exact table unchanged from before this task.
+      '${_isNonZeroAmount(sale.discountTotal) ? '<tr><td>Descuentos</td><td class="amount">-${_money(sale.discountTotal, currency)}</td></tr>' : ''}'
       '<tr><td>IVA</td><td class="amount">${_money(sale.taxTotal, currency)}</td></tr>'
       '<tr class="total-row"><td>TOTAL</td><td class="amount">${_money(sale.total, currency)}</td></tr>'
       '</table>'

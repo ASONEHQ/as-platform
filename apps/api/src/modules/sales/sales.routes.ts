@@ -34,12 +34,21 @@ interface SaleItemBody {
   product_id: string;
   quantity: string;
 }
+interface ManualDiscountBody {
+  scope: 'line' | 'ticket';
+  line_index?: number;
+  type: 'percentage' | 'fixed_amount';
+  value: string;
+  reason_code: string;
+}
 interface SaleBody {
   id?: string;
   branch_id: string;
   currency_code?: string;
   device_id?: string;
   items: SaleItemBody[];
+  coupon_codes?: string[];
+  manual_discount?: ManualDiscountBody;
 }
 interface ReasonBody {
   reason_code: string;
@@ -64,10 +73,12 @@ function mutationContext(
   request: FastifyRequest,
   companyId: string,
   actorId: string,
+  actorPermissions?: readonly string[],
 ): SaleMutationContext {
   return {
     companyId,
     actorId,
+    ...(actorPermissions === undefined ? {} : { actorPermissions }),
     requestId: request.requestContext.requestId,
     correlationId: request.requestContext.correlationId,
     timestamp: new Date(),
@@ -319,6 +330,23 @@ export function registerSaleRoutes(
                 },
               },
             },
+            // TASK 12.9 — client submits intent only; the backend
+            // independently re-derives every discount amount through the
+            // exact same pricing engine the standalone quote endpoint
+            // uses (never trusts a client-submitted total — Part X).
+            coupon_codes: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 40 }, maxItems: 5 },
+            manual_discount: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['scope', 'type', 'value', 'reason_code'],
+              properties: {
+                scope: { type: 'string', enum: ['line', 'ticket'] },
+                line_index: { type: 'integer', minimum: 0 },
+                type: { type: 'string', enum: ['percentage', 'fixed_amount'] },
+                value: { type: 'string', minLength: 1, maxLength: 20 },
+                reason_code: { type: 'string', minLength: 1, maxLength: 200 },
+              },
+            },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -329,13 +357,18 @@ export function registerSaleRoutes(
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'sale.create');
         requireBranchAccess(authentication, auth, request.body.branch_id);
+        // A manual discount is a distinct, separately-authorized action
+        // (Part K/L) — gated independently of `sale.create`, never
+        // silently accepted from just any actor who can start a sale.
+        if (request.body.manual_discount !== undefined) requirePermission(authentication, auth, 'discount.apply');
         // No `device_id` in the request body falls back to the
         // authenticated session's own bound device, when it has one (see
         // sales.ts's schema doc — most CAJERO sessions today are an
         // unbound browser session, so this is commonly still undefined).
         const deviceId = request.body.device_id ?? auth.deviceId;
+        const manualDiscount = request.body.manual_discount;
         const created = await service.createSale(
-          mutationContext(request, auth.companyId, auth.userId),
+          mutationContext(request, auth.companyId, auth.userId, auth.permissions),
           auth.permittedBranchIds,
           idempotencyKey(request.headers['idempotency-key']),
           {
@@ -344,6 +377,18 @@ export function registerSaleRoutes(
             ...(request.body.currency_code === undefined ? {} : { currencyCode: request.body.currency_code }),
             ...(deviceId === undefined ? {} : { deviceId }),
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
+            ...(request.body.coupon_codes === undefined ? {} : { couponCodes: request.body.coupon_codes }),
+            ...(manualDiscount === undefined
+              ? {}
+              : {
+                  manualDiscount: {
+                    scope: manualDiscount.scope,
+                    ...(manualDiscount.line_index === undefined ? {} : { lineIndex: manualDiscount.line_index }),
+                    type: manualDiscount.type,
+                    value: manualDiscount.value,
+                    reasonCode: manualDiscount.reason_code,
+                  },
+                }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -513,6 +558,43 @@ export function registerSaleRoutes(
               request.requestContext,
             ),
           );
+      }),
+  );
+
+  // TASK 12.9 Part V: "Sale Detail should show exactly which commercial
+  // adjustments were applied" — the immutable, itemized breakdown of
+  // every promotion/coupon/manual discount actually applied at sale
+  // creation (see ADR-0016 D13). Same permission/authorization as every
+  // other sale-detail read; a pure read, never mutates anything.
+  app.get<{ Params: Params }>(
+    '/api/v1/sales/:id/discounts',
+    {
+      schema: {
+        tags: ['sales'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withSaleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'sale.read');
+        const discounts = await service.saleDiscounts(auth.companyId, auth.permittedBranchIds, request.params.id);
+        return reply.send(
+          successResponse(
+            discounts.map((entry) => ({
+              id: entry.id,
+              sale_item_id: entry.saleItemId,
+              source_type: entry.sourceType,
+              source_id: entry.sourceId,
+              label: entry.labelSnapshot,
+              reason_code: entry.reasonCode,
+              amount: entry.amount,
+              basis_points: entry.basisPoints,
+            })),
+            request.requestContext,
+          ),
+        );
       }),
   );
 

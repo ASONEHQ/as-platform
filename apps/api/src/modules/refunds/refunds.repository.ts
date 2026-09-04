@@ -150,6 +150,14 @@ export interface RefundableSaleItemRow {
   nameSnapshot: string;
   quantity: string;
   unitPrice: string;
+  // TASK 12.9 — additive. The exact rate this line's own discount (if
+  // any — promotion/coupon/manual, all folded into one combined rate at
+  // sale-creation time) was computed at, so `computeLineReversal` can
+  // recompute an exact, proportional refund amount for any partial
+  // quantity without ever re-reading `sale_discounts` or dividing
+  // (see ADR-0016 "Refund compatibility"). `0` for an undiscounted line
+  // — mathematically a no-op, identical to every pre-TASK-12.9 sale.
+  discountBasisPoints: number;
   taxSnapshot: { tax_code?: string; basis_points?: number } | null;
 }
 
@@ -391,10 +399,12 @@ export class RefundsRepository {
       name_snapshot: string;
       quantity: string;
       unit_price: string;
+      discount_basis_points: number;
       tax_snapshot: { tax_code?: string; basis_points?: number } | null;
     }>(
       await this.database.pool.query(
-        `select id,sale_id,product_variant_id,name_snapshot,quantity::text,unit_price::text,tax_snapshot
+        `select id,sale_id,product_variant_id,name_snapshot,quantity::text,unit_price::text,
+                discount_basis_points,tax_snapshot
          from sale_items where company_id=$1 and sale_id=$2 order by line_number asc`,
         [companyId, saleId],
       ),
@@ -406,6 +416,7 @@ export class RefundsRepository {
       nameSnapshot: row.name_snapshot,
       quantity: row.quantity,
       unitPrice: row.unit_price,
+      discountBasisPoints: row.discount_basis_points,
       taxSnapshot: row.tax_snapshot,
     }));
   }

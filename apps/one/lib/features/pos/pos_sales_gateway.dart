@@ -1,16 +1,25 @@
 import '../../core/networking/api_client.dart';
+import 'pos_promotions_gateway.dart';
 import 'pos_receipt.dart';
 
 /// TASK 12.4A.1: the backend-authoritative result of `POST /api/v1/sales`
 /// — only what the caller needs to know a sale now exists and what it is
 /// legitimately worth. The server independently resolved price and tax;
 /// this never re-derives them from the client's own ticket.
+///
+/// TASK 12.9: [discountTotal] is the same real, backend-derived
+/// `sale.discount_total` `saleHttp` now returns (previously always
+/// `"0.0000"`) — defaults to `'0.0000'` so every pre-existing
+/// fixture/test that constructs a [PosSaleCreated] without this field
+/// keeps compiling and behaving exactly as before (ADR-0016 D14: a legacy/
+/// undiscounted sale is unaffected).
 class PosSaleCreated {
   const PosSaleCreated({
     required this.id,
     required this.saleNumber,
     required this.status,
     required this.total,
+    this.discountTotal = '0.0000',
   });
 
   factory PosSaleCreated.fromJson(Map<String, Object?> json) => PosSaleCreated(
@@ -18,12 +27,14 @@ class PosSaleCreated {
     saleNumber: json['sale_number']! as String,
     status: json['status']! as String,
     total: json['total']! as String,
+    discountTotal: json['discount_total'] as String? ?? '0.0000',
   );
 
   final String id;
   final String saleNumber;
   final String status;
   final String total;
+  final String discountTotal;
 }
 
 /// One line of the ticket as the backend needs it — `productId` and a raw
@@ -149,9 +160,19 @@ abstract interface class PosSalesGateway {
   /// Never a fake/local success: throws [ApiException] on any rejection
   /// (missing price, inactive product, unauthorized branch, etc.), which
   /// the caller must surface honestly, never paper over.
+  ///
+  /// TASK 12.9: [couponCodes]/[manualDiscount] are the same optional
+  /// intent a prior `POST /sales/pricing-quotes` call already previewed
+  /// (see `pos_promotions_gateway.dart`) — the backend independently
+  /// re-derives every discount amount through the identical pricing
+  /// engine, never trusting whatever that earlier quote returned
+  /// (ADR-0016 D1/D10). Omitting both reproduces the exact pre-TASK-12.9
+  /// request shape.
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
+    List<String>? couponCodes,
+    PosManualDiscountRequest? manualDiscount,
   });
 
   /// `GET /api/v1/sales/{sale_id}/receipt` — TASK 12.5B. A plain,
@@ -185,6 +206,8 @@ class ApiPosSalesGateway implements PosSalesGateway {
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
+    List<String>? couponCodes,
+    PosManualDiscountRequest? manualDiscount,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales',
@@ -195,6 +218,8 @@ class ApiPosSalesGateway implements PosSalesGateway {
           for (final item in items)
             {'product_id': item.productId, 'quantity': item.quantity},
         ],
+        if (couponCodes != null && couponCodes.isNotEmpty) 'coupon_codes': couponCodes,
+        if (manualDiscount != null) 'manual_discount': manualDiscount.toJson(),
       },
     );
     final data = envelope['data'];
@@ -253,6 +278,8 @@ class EmptyPosSalesGateway implements PosSalesGateway {
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
+    List<String>? couponCodes,
+    PosManualDiscountRequest? manualDiscount,
   }) => Future.error(StateError('No sales gateway is configured.'));
 
   @override

@@ -202,6 +202,18 @@ export const saleItems = pgTable(
     unitPrice: numeric('unit_price', { precision: 19, scale: 4 }).notNull(),
     subtotal: numeric('subtotal', { precision: 19, scale: 4 }).notNull(),
     discountTotal: numeric('discount_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 12.9 — additive. Never re-derived by dividing `discount_total`
+    // by `quantity` (that drifts under repeated partial refunds); this is
+    // the exact rate this line's discount was actually computed at
+    // (percentage/fixed_price/fixed_amount/quantity_nxm all reduce to an
+    // equivalent basis-points rate against this line's own gross
+    // `subtotal` — see ADR-0016 "NxM refund allocation"), so
+    // `refunds.service.ts`'s `computeLineReversal` can recompute an
+    // exact, proportional amount for ANY requested partial quantity by
+    // reapplying it fresh, the same way `tax_snapshot.basis_points`
+    // already lets tax be recomputed for any quantity. Zero (the
+    // default) for an undiscounted line — mathematically a no-op.
+    discountBasisPoints: integer('discount_basis_points').notNull().default(0),
     taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull(),
     lineTotal: numeric('line_total', { precision: 19, scale: 4 }).notNull(),
     taxSnapshot: jsonb('tax_snapshot').$type<Readonly<Record<string, unknown>>>(),
@@ -236,6 +248,22 @@ export const saleItems = pgTable(
     check(
       'sale_items_tax_snapshot_object_ck',
       sql`${table.taxSnapshot} is null or jsonb_typeof(${table.taxSnapshot}) = 'object'`,
+    ),
+    // TASK 12.9 — additive integrity, mirroring `sales`'s own
+    // `sales_discount_total_ck`/`sales_arithmetic_ck` at the line level
+    // (never added before now because `discount_total` was always
+    // `'0.0000'`, so the omission was harmless until this task). A
+    // discount can never exceed the line's own gross subtotal — the
+    // "never negative" floor Part E requires.
+    check('sale_items_discount_total_ck', sql`${table.discountTotal} >= 0`),
+    check('sale_items_discount_not_exceed_subtotal_ck', sql`${table.discountTotal} <= ${table.subtotal}`),
+    check(
+      'sale_items_discount_basis_points_ck',
+      sql`${table.discountBasisPoints} >= 0 and ${table.discountBasisPoints} <= 10000`,
+    ),
+    check(
+      'sale_items_line_arithmetic_ck',
+      sql`${table.lineTotal} = ${table.subtotal} - ${table.discountTotal} + ${table.taxTotal}`,
     ),
   ],
 );

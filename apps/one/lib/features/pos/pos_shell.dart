@@ -13,6 +13,7 @@ import 'pos_cash_gateway.dart';
 import 'pos_models.dart';
 import 'pos_navigation.dart';
 import 'pos_payments_gateway.dart';
+import 'pos_promotions_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
 import 'pos_refunds_gateway.dart';
@@ -32,6 +33,7 @@ class PosShell extends StatefulWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.refundsGateway,
+    required this.promotionsGateway,
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -49,6 +51,9 @@ class PosShell extends StatefulWidget {
   // TASK 12.8: refund request/completion/history — see
   // `pos_refunds_gateway.dart` and ADR-0015.
   final PosRefundsGateway refundsGateway;
+  // TASK 12.9: pricing-quote preview plus promotions/coupons admin
+  // management — see `pos_promotions_gateway.dart` and ADR-0016.
+  final PosPromotionsGateway promotionsGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -242,6 +247,7 @@ class _PosShellState extends State<PosShell> {
                             paymentsGateway: widget.paymentsGateway,
                             cashGateway: widget.cashGateway,
                             refundsGateway: widget.refundsGateway,
+                            promotionsGateway: widget.promotionsGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -1204,6 +1210,12 @@ Future<void> _submitSaleForPayment(
             quantity: line.quantity.toString(),
           ),
       ],
+      // TASK 12.9: the SAME coupon/manual-discount intent the last
+      // successful quote already previewed — the backend independently
+      // re-validates and re-derives the real amounts here, never trusting
+      // that quote blindly (ADR-0016 D1/D10).
+      couponCodes: saleSession.couponCodes,
+      manualDiscount: saleSession.manualDiscount,
     );
     if (!context.mounted) return;
 
@@ -1318,6 +1330,9 @@ Future<void> _submitCashSaleForPayment(
             quantity: line.quantity.toString(),
           ),
       ],
+      // TASK 12.9: same rationale as `_submitSaleForPayment` above.
+      couponCodes: saleSession.couponCodes,
+      manualDiscount: saleSession.manualDiscount,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1727,6 +1742,16 @@ class _ReceiptDetail extends StatelessWidget {
           label: 'Subtotal',
           value: _money(Money.parse(sale.subtotal, sale.currencyCode)),
         ),
+        // TASK 12.9: only ever shown for a real, nonzero
+        // `sale.discount_total` — a legacy/undiscounted sale (ADR-0016
+        // D14) renders exactly as before.
+        if (Money.parse(sale.discountTotal, sale.currencyCode).isPositive) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(
+            label: 'Descuento',
+            value: '-${_money(Money.parse(sale.discountTotal, sale.currencyCode))}',
+          ),
+        ],
         const SizedBox(height: 4),
         _CashSummaryRow(
           label: 'IVA',
@@ -2226,6 +2251,7 @@ class _Content extends StatelessWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     required this.refundsGateway,
+    required this.promotionsGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2239,6 +2265,9 @@ class _Content extends StatelessWidget {
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
   final PosRefundsGateway refundsGateway;
+  // TASK 12.9: promotion/coupon quoting and admin management — see
+  // `pos_promotions_gateway.dart` and ADR-0016.
+  final PosPromotionsGateway promotionsGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2284,6 +2313,7 @@ class _Content extends StatelessWidget {
                         salesGateway: salesGateway,
                         paymentsGateway: paymentsGateway,
                         cashGateway: cashGateway,
+                        promotionsGateway: promotionsGateway,
                         onEnterCliente: onEnterCliente,
                       ),
               )
@@ -2340,6 +2370,15 @@ class _Content extends StatelessWidget {
                     salesGateway: salesGateway,
                     onNavigateToCaja: () =>
                         onNavigateToModule(PosModule.cash),
+                  ),
+                  // TASK 12.9: the pre-reserved `PosModule.promotions` slot
+                  // ("Cupones / Promos") — minimum operational admin
+                  // management (list/create/edit promotions and coupons),
+                  // never a marketing analytics dashboard (ADR-0016 D15) —
+                  // mirrors `PosModule.returns`/`PosModule.cash` exactly.
+                  PosModule.promotions => _PromotionsAdmin(
+                    context: this.context,
+                    promotionsGateway: promotionsGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -2398,6 +2437,7 @@ class _PosCard extends StatelessWidget {
   const _PosCard({
     required this.child,
     this.padding = const EdgeInsets.all(14),
+    super.key,
   });
   final Widget child;
   final EdgeInsets padding;
@@ -2599,6 +2639,7 @@ class _PosSale extends StatefulWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.promotionsGateway,
     required this.onEnterCliente,
   });
   final AuthenticatedContext context;
@@ -2611,6 +2652,7 @@ class _PosSale extends StatefulWidget {
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  final PosPromotionsGateway promotionsGateway;
   final VoidCallback onEnterCliente;
 
   @override
@@ -2657,7 +2699,9 @@ class _PosSaleState extends State<_PosSale> {
                     salesGateway: widget.salesGateway,
                     paymentsGateway: widget.paymentsGateway,
                     cashGateway: widget.cashGateway,
+                    promotionsGateway: widget.promotionsGateway,
                     branchId: widget.context.session.branchId,
+                    permissions: widget.context.permissions,
                     selectedCategoryId: selectedCategoryId,
                     onSelectCategory: (id) =>
                         setState(() => selectedCategoryId = id),
@@ -2709,7 +2753,9 @@ class _PosSaleBody extends StatelessWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.promotionsGateway,
     required this.branchId,
+    required this.permissions,
     required this.selectedCategoryId,
     required this.onSelectCategory,
     required this.query,
@@ -2723,7 +2769,9 @@ class _PosSaleBody extends StatelessWidget {
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  final PosPromotionsGateway promotionsGateway;
   final String? branchId;
+  final List<String> permissions;
   final String? selectedCategoryId;
   final ValueChanged<String?> onSelectCategory;
   final String query;
@@ -2779,7 +2827,9 @@ class _PosSaleBody extends StatelessWidget {
       salesGateway: salesGateway,
       paymentsGateway: paymentsGateway,
       cashGateway: cashGateway,
+      promotionsGateway: promotionsGateway,
       branchId: branchId,
+      permissions: permissions,
     );
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -3466,13 +3516,19 @@ class _TicketPanel extends StatelessWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.promotionsGateway,
     required this.branchId,
+    required this.permissions,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  // TASK 12.9: coupon/manual-discount quoting — see
+  // `pos_promotions_gateway.dart` and ADR-0016.
+  final PosPromotionsGateway promotionsGateway;
   final String? branchId;
+  final List<String> permissions;
 
   @override
   Widget build(BuildContext context) {
@@ -3569,7 +3625,9 @@ class _TicketPanel extends StatelessWidget {
               salesGateway: salesGateway,
               paymentsGateway: paymentsGateway,
               cashGateway: cashGateway,
+              promotionsGateway: promotionsGateway,
               branchId: branchId,
+              permissions: permissions,
             ),
           ],
         ),
@@ -3782,16 +3840,21 @@ class _ClienteTicketFooter extends StatelessWidget {
         children: [
           _TicketTotalRow(
             label: 'Subtotal',
-            value: _money(saleSession.subtotal),
+            value: _money(saleSession.displaySubtotal),
           ),
+          if (saleSession.displayDiscountTotal.isPositive)
+            _TicketTotalRow(
+              label: 'Descuento',
+              value: '-${_money(saleSession.displayDiscountTotal)}',
+            ),
           _TicketTotalRow(
             label: 'IVA incluido',
-            value: _money(saleSession.iva),
+            value: _money(saleSession.displayTaxTotal),
             muted: true,
           ),
           _TicketTotalRow(
             label: 'Total',
-            value: _money(saleSession.total),
+            value: _money(saleSession.displayTotal),
             big: true,
           ),
           const SizedBox(height: 8),
@@ -3899,7 +3962,7 @@ class _ClienteCardPaymentButtonState extends State<_ClienteCardPaymentButton> {
                     fit: BoxFit.scaleDown,
                     child: Text(
                       _statusMessage ??
-                          'Pagar con tarjeta — ${_money(widget.saleSession.total)}',
+                          'Pagar con tarjeta — ${_money(widget.saleSession.displayTotal)}',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
@@ -4923,13 +4986,17 @@ class _TicketFooter extends StatefulWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    required this.promotionsGateway,
     required this.branchId,
+    required this.permissions,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  final PosPromotionsGateway promotionsGateway;
   final String? branchId;
+  final List<String> permissions;
 
   @override
   State<_TicketFooter> createState() => _TicketFooterState();
@@ -4942,10 +5009,177 @@ class _TicketFooterState extends State<_TicketFooter> {
   // here, not just a visual one.
   String _selectedMethod = 'cash';
 
+  final _couponController = TextEditingController();
+  bool _couponBusy = false;
+  String? _couponError;
+
+  // TASK 12.9: the automatic re-quote debounce — fires
+  // `POST /sales/pricing-quotes` a short beat after the cart/coupon/
+  // manual-discount state actually changes (ADR-0016: automatic
+  // promotions apply without any coupon code, so this must fire on a
+  // plain cart change too, not only when a coupon/discount is present).
+  Timer? _quoteDebounce;
+  String? _lastQuotedSignature;
+  bool _quoting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.saleSession.addListener(_onSaleSessionChanged);
+    _onSaleSessionChanged();
+  }
+
+  @override
+  void dispose() {
+    widget.saleSession.removeListener(_onSaleSessionChanged);
+    _quoteDebounce?.cancel();
+    _couponController.dispose();
+    super.dispose();
+  }
+
+  String _cartSignature() {
+    final saleSession = widget.saleSession;
+    final lines = saleSession.lines.map((line) => '${line.productId}:${line.quantity}').join(',');
+    final coupons = saleSession.couponCodes.join(',');
+    final manual = saleSession.manualDiscount?.toJson().toString() ?? '';
+    return '$lines|$coupons|$manual|${widget.branchId}';
+  }
+
+  void _onSaleSessionChanged() {
+    final saleSession = widget.saleSession;
+    // Always cancel any pending timer first — including when the
+    // signature already matches `_lastQuotedSignature` (e.g. a caller
+    // just applied a fresh quote for exactly this state itself, as
+    // `_applyCoupon`/`_openManualDiscountDialog` do) — otherwise a
+    // still-pending timer from an earlier, now-superseded notification
+    // would fire later and issue a redundant re-quote call.
+    _quoteDebounce?.cancel();
+    if (saleSession.isEmpty) {
+      _lastQuotedSignature = null;
+      return;
+    }
+    final signature = _cartSignature();
+    if (signature == _lastQuotedSignature) return;
+    _quoteDebounce = Timer(const Duration(milliseconds: 350), () {
+      unawaited(_fetchQuote(signature));
+    });
+  }
+
+  Future<void> _fetchQuote(String signature) async {
+    final saleSession = widget.saleSession;
+    final branchId = widget.branchId;
+    if (branchId == null || saleSession.isEmpty) return;
+    if (mounted) setState(() => _quoting = true);
+    try {
+      final quote = await widget.promotionsGateway.quote(
+        branchId: branchId,
+        items: [
+          for (final line in saleSession.lines)
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+        ],
+        couponCodes: saleSession.couponCodes,
+        manualDiscount: saleSession.manualDiscount,
+      );
+      if (!mounted) return;
+      // The cart may have changed again while this call was in flight —
+      // never apply a now-stale quote to a different cart (this
+      // effectively re-triggers `_onSaleSessionChanged` for the newer
+      // state, since `_lastQuotedSignature` is only updated on a match).
+      if (_cartSignature() != signature) return;
+      _lastQuotedSignature = signature;
+      saleSession.setQuote(quote);
+    } on Object {
+      // A failed automatic re-quote must never fabricate a total or block
+      // the ticket — it simply leaves the previous (or catalog-only)
+      // display in place; the cashier can still retry via the coupon/
+      // discount actions, and Cobrar always re-derives for real anyway.
+    } finally {
+      if (mounted) setState(() => _quoting = false);
+    }
+  }
+
+  Future<void> _applyCoupon() async {
+    final code = _couponController.text.trim();
+    if (code.isEmpty) return;
+    final saleSession = widget.saleSession;
+    final branchId = widget.branchId;
+    if (branchId == null || saleSession.isEmpty) {
+      setState(() => _couponError = 'Agrega al menos un producto al ticket.');
+      return;
+    }
+    setState(() {
+      _couponBusy = true;
+      _couponError = null;
+    });
+    final candidateCodes = [...saleSession.couponCodes, code];
+    try {
+      final quote = await widget.promotionsGateway.quote(
+        branchId: branchId,
+        items: [
+          for (final line in saleSession.lines)
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+        ],
+        couponCodes: candidateCodes,
+        manualDiscount: saleSession.manualDiscount,
+      );
+      if (!mounted) return;
+      final rejection = quote.rejectionFor(code);
+      if (rejection != null) {
+        setState(() {
+          _couponBusy = false;
+          _couponError = posCouponRejectionMessage(rejection.reason);
+        });
+        // The already-applied coupons/promotions may still be worth
+        // refreshing from this same honest response — never silently
+        // pretend the new code applied.
+        _lastQuotedSignature = _cartSignature();
+        saleSession.setQuote(quote);
+        return;
+      }
+      _couponController.clear();
+      saleSession.addCouponCode(code);
+      _lastQuotedSignature = _cartSignature();
+      saleSession.setQuote(quote);
+      setState(() => _couponBusy = false);
+      if (mounted) _showNotice(context, 'Cupón aplicado.');
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = 'No fue posible validar el cupón.';
+      });
+    }
+  }
+
+  void _removeCoupon(String code) => widget.saleSession.removeCouponCode(code);
+
+  Future<void> _openManualDiscountDialog() async {
+    final result = await showDialog<_ManualDiscountOutcome>(
+      context: context,
+      builder: (dialogContext) => _ManualDiscountDialog(
+        saleSession: widget.saleSession,
+        promotionsGateway: widget.promotionsGateway,
+        branchId: widget.branchId,
+      ),
+    );
+    if (result == null || !mounted) return;
+    widget.saleSession.setManualDiscount(result.request);
+    _lastQuotedSignature = _cartSignature();
+    widget.saleSession.setQuote(result.quote);
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     final saleSession = widget.saleSession;
+    final quote = saleSession.quote;
+    final canApplyDiscount = widget.permissions.contains('discount.apply');
     // `.t-foot{border-top:1px solid var(--border)}` in the canonical CSS.
     return Container(
       padding: const EdgeInsets.all(10),
@@ -4956,22 +5190,57 @@ class _TicketFooterState extends State<_TicketFooter> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // TASK 12.9: automatic promotions surface on their own, no
+          // coupon code required (ADR-0016) — the quote's own label,
+          // never a hardcoded business name.
+          if (quote != null && quote.appliedPromotions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _PromotionBanner(labels: quote.appliedPromotions.map((entry) => entry.label).toSet().toList()),
+            ),
+          if (saleSession.couponCodes.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final code in saleSession.couponCodes)
+                    _CouponChip(code: code, onRemove: () => _removeCoupon(code)),
+                ],
+              ),
+            ),
           _TicketTotalRow(
             label: 'Subtotal',
-            value: _money(saleSession.subtotal),
+            value: _money(saleSession.displaySubtotal),
           ),
+          // TASK 12.9: a subtle, honest "still computing" hint while the
+          // automatic re-quote is in flight — the totals below simply
+          // keep showing the last-known values until it resolves, never
+          // a blocking spinner over the whole ticket.
+          if (_quoting)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                'Actualizando precios…',
+                key: const Key('pos-ticket-quoting-indicator'),
+                style: TextStyle(color: palette.textMuted, fontSize: 10),
+              ),
+            ),
           const SizedBox(height: 4),
           Row(
             children: [
               Expanded(
                 child: TextField(
                   key: const Key('pos-ticket-coupon-input'),
-                  readOnly: true,
-                  onTap: () => _showReadOnlyNotice(context),
+                  controller: _couponController,
+                  enabled: !_couponBusy,
                   style: const TextStyle(fontSize: 12),
+                  textCapitalization: TextCapitalization.characters,
+                  onSubmitted: (_) => unawaited(_applyCoupon()),
                   decoration: const InputDecoration(
                     isDense: true,
-                    hintText: 'Código de cupón',
+                    hintText: '¿Tienes un cupón?',
                     contentPadding: EdgeInsets.symmetric(
                       horizontal: 10,
                       vertical: 8,
@@ -4981,8 +5250,11 @@ class _TicketFooterState extends State<_TicketFooter> {
               ),
               const SizedBox(width: 6),
               OutlinedButton.icon(
-                onPressed: () => _showReadOnlyNotice(context),
-                icon: const Icon(Icons.confirmation_num_outlined, size: 15),
+                key: const Key('pos-ticket-coupon-apply'),
+                onPressed: _couponBusy ? null : () => unawaited(_applyCoupon()),
+                icon: _couponBusy
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.confirmation_num_outlined, size: 15),
                 label: const Text('Aplicar'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: palette.textSecondary,
@@ -4993,15 +5265,29 @@ class _TicketFooterState extends State<_TicketFooter> {
               ),
             ],
           ),
+          if (_couponError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                _couponError!,
+                key: const Key('pos-ticket-coupon-error'),
+                style: TextStyle(color: palette.error, fontSize: 11),
+              ),
+            ),
           const SizedBox(height: 4),
+          if (saleSession.displayDiscountTotal.isPositive)
+            _TicketTotalRow(
+              label: 'Descuento',
+              value: '-${_money(saleSession.displayDiscountTotal)}',
+            ),
           _TicketTotalRow(
             label: 'IVA incluido',
-            value: _money(saleSession.iva),
+            value: _money(saleSession.displayTaxTotal),
             muted: true,
           ),
           _TicketTotalRow(
             label: 'Total',
-            value: _money(saleSession.total),
+            value: _money(saleSession.displayTotal),
             big: true,
           ),
           const SizedBox(height: 6),
@@ -5028,18 +5314,21 @@ class _TicketFooterState extends State<_TicketFooter> {
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
-              OutlinedButton.icon(
-                onPressed: () => _showReadOnlyNotice(context),
-                icon: const Icon(Icons.sell_outlined, size: 15),
-                label: const Text('Desc.'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: palette.textSecondary,
-                  side: BorderSide(color: palette.border),
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  textStyle: const TextStyle(fontSize: 12),
+              if (canApplyDiscount) ...[
+                const SizedBox(width: 6),
+                OutlinedButton.icon(
+                  key: const Key('pos-ticket-manual-discount'),
+                  onPressed: () => unawaited(_openManualDiscountDialog()),
+                  icon: const Icon(Icons.sell_outlined, size: 15),
+                  label: const Text('Desc.'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: palette.textSecondary,
+                    side: BorderSide(color: palette.border),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    textStyle: const TextStyle(fontSize: 12),
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           const SizedBox(height: 8),
@@ -5053,6 +5342,379 @@ class _TicketFooterState extends State<_TicketFooter> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// TASK 12.9: "Promoción aplicada: <label>" — surfaces an automatic
+/// promotion even when the cashier never typed a coupon code (ADR-0016).
+class _PromotionBanner extends StatelessWidget {
+  const _PromotionBanner({required this.labels});
+  final List<String> labels;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      key: const Key('pos-ticket-promotion-banner'),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.action.withValues(alpha: .1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.local_offer_outlined, size: 14, color: palette.action),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Promoción aplicada: ${labels.join(', ')}',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.action),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouponChip extends StatelessWidget {
+  const _CouponChip({required this.code, required this.onRemove});
+  final String code;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      key: Key('pos-ticket-coupon-chip-$code'),
+      padding: const EdgeInsets.only(left: 8, right: 2, top: 2, bottom: 2),
+      decoration: BoxDecoration(
+        color: palette.actionTint,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.confirmation_num_outlined, size: 12, color: palette.action),
+          const SizedBox(width: 4),
+          Text(code, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.text)),
+          IconButton(
+            key: Key('pos-ticket-coupon-remove-$code'),
+            tooltip: 'Quitar cupón',
+            onPressed: onRemove,
+            icon: Icon(Icons.close, size: 13, color: palette.textMuted),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 12.9: the fixed, short "reason" list ADR-0016 asks for
+/// (`{code, label}`) — `'other'` reveals a free-text field instead of
+/// being submitted literally, so the backend's own `reason_code` is
+/// always a real, specific reason, never the literal string "Otro".
+const List<(String, String)> _manualDiscountReasons = [
+  ('customer_dissatisfied', 'Cliente inconforme'),
+  ('defective_product', 'Producto defectuoso'),
+  ('courtesy', 'Cortesía'),
+  ('other', 'Otro'),
+];
+
+/// What [_ManualDiscountDialog] resolves with on a confirmed discount —
+/// both the exact request the cashier previewed AND the backend's own
+/// preview quote for it, so the caller never has to re-derive or
+/// re-fetch anything to display it immediately.
+class _ManualDiscountOutcome {
+  const _ManualDiscountOutcome(this.request, this.quote);
+  final PosManualDiscountRequest request;
+  final PosPricingQuote quote;
+}
+
+/// TASK 12.9: "Aplicar descuento" — a manual, authorized discount
+/// (`discount.apply`, already gated before this dialog ever opens — see
+/// `_TicketFooterState`). Ticket-scope only for this pass (ADR-0016/the
+/// task's own v1 allowance: line-scope needs a "select this line" UI this
+/// app doesn't have yet). Every amount shown here comes from a real
+/// `POST /sales/pricing-quotes` preview — never computed locally — and
+/// confirming only records the *request*; `Cobrar` still re-submits it for
+/// the backend to independently re-validate (never trusted blindly).
+class _ManualDiscountDialog extends StatefulWidget {
+  const _ManualDiscountDialog({
+    required this.saleSession,
+    required this.promotionsGateway,
+    required this.branchId,
+  });
+  final SaleSession saleSession;
+  final PosPromotionsGateway promotionsGateway;
+  final String? branchId;
+
+  @override
+  State<_ManualDiscountDialog> createState() => _ManualDiscountDialogState();
+}
+
+class _ManualDiscountDialogState extends State<_ManualDiscountDialog> {
+  String _type = 'percentage';
+  final _valueController = TextEditingController();
+  String _reasonCode = _manualDiscountReasons.first.$1;
+  final _customReasonController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  PosPricingQuote? _preview;
+
+  @override
+  void dispose() {
+    _valueController.dispose();
+    _customReasonController.dispose();
+    super.dispose();
+  }
+
+  String get _resolvedReasonCode =>
+      _reasonCode == 'other' ? _customReasonController.text.trim() : _reasonCode;
+
+  PosManualDiscountRequest? _buildRequest() {
+    final rawValue = _valueController.text.trim();
+    if (rawValue.isEmpty) return null;
+    final reason = _resolvedReasonCode;
+    if (reason.isEmpty) return null;
+    if (_type == 'percentage') {
+      final percent = double.tryParse(rawValue);
+      if (percent == null || percent <= 0 || percent > 100) return null;
+      final basisPoints = (percent * 100).round();
+      return PosManualDiscountRequest(
+        scope: 'ticket',
+        type: 'percentage',
+        value: '$basisPoints',
+        reasonCode: reason,
+      );
+    }
+    try {
+      final amount = Money.parse(rawValue, widget.saleSession.quote?.currencyCode ?? 'MXN');
+      if (!amount.isPositive) return null;
+      return PosManualDiscountRequest(
+        scope: 'ticket',
+        type: 'fixed_amount',
+        value: amount.toApiString(),
+        reasonCode: reason,
+      );
+    } on MoneyFormatException {
+      return null;
+    }
+  }
+
+  Future<void> _fetchPreview() async {
+    final branchId = widget.branchId;
+    final request = _buildRequest();
+    if (branchId == null) {
+      setState(() => _error = 'Esta sesión no tiene una sucursal asignada.');
+      return;
+    }
+    if (request == null) {
+      setState(() => _error = 'Escribe un valor y una razón válidos.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _preview = null;
+    });
+    try {
+      final quote = await widget.promotionsGateway.quote(
+        branchId: branchId,
+        items: [
+          for (final line in widget.saleSession.lines)
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+        ],
+        couponCodes: widget.saleSession.couponCodes,
+        manualDiscount: request,
+      );
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _preview = quote;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible calcular el descuento.';
+      });
+    }
+  }
+
+  void _confirm() {
+    final request = _buildRequest();
+    final preview = _preview;
+    if (request == null || preview == null) return;
+    Navigator.of(context).pop(_ManualDiscountOutcome(request, preview));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final preview = _preview;
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Aplicar descuento',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DiscountTypeOption(
+                      buttonKey: const Key('pos-manual-discount-percentage'),
+                      label: 'Porcentaje',
+                      active: _type == 'percentage',
+                      onTap: () => setState(() {
+                        _type = 'percentage';
+                        _preview = null;
+                      }),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _DiscountTypeOption(
+                      buttonKey: const Key('pos-manual-discount-fixed'),
+                      label: 'Monto fijo',
+                      active: _type == 'fixed_amount',
+                      onTap: () => setState(() {
+                        _type = 'fixed_amount';
+                        _preview = null;
+                      }),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-manual-discount-value'),
+                controller: _valueController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                onChanged: (_) => setState(() => _preview = null),
+                decoration: InputDecoration(
+                  isDense: true,
+                  labelText: _type == 'percentage' ? 'Porcentaje (%)' : 'Monto (\$)',
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                key: const Key('pos-manual-discount-reason'),
+                initialValue: _reasonCode,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Razón'),
+                items: [
+                  for (final reason in _manualDiscountReasons)
+                    DropdownMenuItem(value: reason.$1, child: Text(reason.$2)),
+                ],
+                onChanged: (value) => setState(() {
+                  _reasonCode = value ?? _manualDiscountReasons.first.$1;
+                  _preview = null;
+                }),
+              ),
+              if (_reasonCode == 'other') ...[
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-manual-discount-reason-custom'),
+                  controller: _customReasonController,
+                  onChanged: (_) => setState(() => _preview = null),
+                  decoration: const InputDecoration(isDense: true, labelText: 'Especifica la razón'),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              if (preview != null) ...[
+                const SizedBox(height: 12),
+                _TicketTotalRow(label: 'Descuento', value: '-${_money(Money.parse(preview.discountTotal, preview.currencyCode))}'),
+                _TicketTotalRow(label: 'Nuevo total', value: _money(Money.parse(preview.total, preview.currencyCode)), big: true),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: palette.textSecondary,
+                        side: BorderSide(color: palette.border),
+                      ),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: preview == null
+                        ? FilledButton(
+                            key: const Key('pos-manual-discount-preview'),
+                            onPressed: _busy ? null : () => unawaited(_fetchPreview()),
+                            style: FilledButton.styleFrom(backgroundColor: palette.action),
+                            child: _busy
+                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Text('Vista previa'),
+                          )
+                        : FilledButton(
+                            key: const Key('pos-manual-discount-confirm'),
+                            onPressed: _confirm,
+                            style: FilledButton.styleFrom(backgroundColor: palette.action),
+                            child: const Text('Aplicar'),
+                          ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DiscountTypeOption extends StatelessWidget {
+  const _DiscountTypeOption({
+    required this.buttonKey,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+  final Key buttonKey;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return OutlinedButton(
+      key: buttonKey,
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        backgroundColor: active ? palette.action : null,
+        foregroundColor: active ? Colors.white : palette.textSecondary,
+        side: BorderSide(color: active ? palette.action : palette.border),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12)),
     );
   }
 }
@@ -5357,7 +6019,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
                       // terminal" / "Procesando" / "Pago aprobado" / ...)
                       // — never a fabricated one.
                       _statusMessage ??
-                          'Cobrar — ${_money(widget.saleSession.total)}',
+                          'Cobrar — ${_money(widget.saleSession.displayTotal)}',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
@@ -5426,20 +6088,63 @@ class _TicketLineList extends StatelessWidget {
       itemCount: lines.length,
       separatorBuilder: (context, index) =>
           Divider(height: 1, color: palette.border),
-      itemBuilder: (context, index) =>
-          _TicketLineRow(line: lines[index], saleSession: saleSession),
+      itemBuilder: (context, index) => _TicketLineRow(
+        line: lines[index],
+        saleSession: saleSession,
+        lineIndex: index,
+      ),
     );
   }
 }
 
+/// TASK 12.9: one applied-discount tag for a single ticket line, derived
+/// purely from [SaleSession.quote] (never computed locally) — `null` when
+/// no quote exists yet or this line's own quoted `discount_total` is zero.
+class _LineDiscountBadge {
+  const _LineDiscountBadge(this.label, this.amount);
+  final String label;
+  final Money amount;
+}
+
+_LineDiscountBadge? _lineDiscountBadgeFor(SaleSession saleSession, int lineIndex) {
+  final quote = saleSession.quote;
+  if (quote == null) return null;
+  if (lineIndex < 0 || lineIndex >= quote.lines.length) return null;
+  final quoteLine = quote.lines[lineIndex];
+  final Money discount;
+  try {
+    discount = Money.parse(quoteLine.discountTotal, quote.currencyCode);
+  } on MoneyFormatException {
+    return null;
+  }
+  if (!discount.isPositive) return null;
+  var label = 'DESC.';
+  for (final applied in quote.appliedDiscounts) {
+    if (applied.lineIndex != lineIndex) continue;
+    label = switch (applied.sourceType) {
+      'promotion' => 'PROMO',
+      'coupon' => 'CUPÓN',
+      _ => 'DESC.',
+    };
+    break;
+  }
+  return _LineDiscountBadge(label, discount);
+}
+
 class _TicketLineRow extends StatelessWidget {
-  const _TicketLineRow({required this.line, required this.saleSession});
+  const _TicketLineRow({
+    required this.line,
+    required this.saleSession,
+    required this.lineIndex,
+  });
   final SaleLine line;
   final SaleSession saleSession;
+  final int lineIndex;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final badge = _lineDiscountBadgeFor(saleSession, lineIndex);
     return Padding(
       key: Key('pos-ticket-line-${line.productId}'),
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 9),
@@ -5451,15 +6156,25 @@ class _TicketLineRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  line.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: palette.text,
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        line.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: palette.text,
+                        ),
+                      ),
+                    ),
+                    if (badge != null) ...[
+                      const SizedBox(width: 5),
+                      _DiscountBadgeChip(key: Key('pos-ticket-line-discount-${line.productId}'), badge: badge),
+                    ],
+                  ],
                 ),
                 Text(
                   '${line.sku} · ${_money(line.unitPrice)}/u',
@@ -5496,6 +6211,35 @@ class _TicketLineRow extends StatelessWidget {
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// TASK 12.9: a small "PROMO"/"CUPÓN"/"DESC." tag next to a discounted
+/// line's name — the backend's own per-line `discount_total`/
+/// `applied_discounts`, never a client-invented label.
+class _DiscountBadgeChip extends StatelessWidget {
+  const _DiscountBadgeChip({super.key, required this.badge});
+  final _LineDiscountBadge badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: palette.action.withValues(alpha: .14),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        badge.label,
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          color: palette.action,
+          letterSpacing: .3,
+        ),
       ),
     );
   }
@@ -5704,7 +6448,7 @@ class _TicketBar extends StatelessWidget {
                       ? 'Ticket (vacío)'
                       : 'Ticket · ${saleSession.totalUnits} '
                             '${saleSession.totalUnits == 1 ? 'artículo' : 'artículos'} · '
-                            '${_money(saleSession.total)}',
+                            '${_money(saleSession.displayTotal)}',
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: palette.text,
@@ -6896,6 +7640,16 @@ class _SaleDetailBody extends StatelessWidget {
           label: 'Subtotal',
           value: _money(Money.parse(sale.subtotal, sale.currencyCode)),
         ),
+        // TASK 12.9: `sale.discount_total` is now real (previously always
+        // `"0.0000"`) — surfaced honestly whenever it is nonzero, never
+        // hidden (ADR-0016 D13).
+        if (Money.parse(sale.discountTotal, sale.currencyCode).isPositive) ...[
+          const SizedBox(height: 4),
+          _CashSummaryRow(
+            label: 'Descuento',
+            value: '-${_money(Money.parse(sale.discountTotal, sale.currencyCode))}',
+          ),
+        ],
         const SizedBox(height: 4),
         _CashSummaryRow(
           label: 'IVA',
@@ -8224,6 +8978,1037 @@ class _RefundDetailBody extends StatelessWidget {
           big: true,
         ),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// TASK 12.9 — Cupones / Promos admin (`PosModule.promotions`). Minimum
+// operational management only (list/create/edit/activate) — never a
+// marketing analytics/usage-ranking dashboard (ADR-0016 D15/Part U).
+// Mirrors `_Devoluciones`'s own self-contained gateway-call/loading-state
+// pattern. Never hardcodes a specific business promotion/coupon name —
+// generic CRUD over whatever data the backend returns.
+// ---------------------------------------------------------------------
+
+String _formatShortDate(DateTime value) {
+  final local = value.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(local.day)}/${two(local.month)}/${local.year}';
+}
+
+enum _AdminListPhase { loading, ready, empty, failure }
+
+class _PromotionsAdmin extends StatefulWidget {
+  const _PromotionsAdmin({required this.context, required this.promotionsGateway});
+  final AuthenticatedContext context;
+  final PosPromotionsGateway promotionsGateway;
+
+  @override
+  State<_PromotionsAdmin> createState() => _PromotionsAdminState();
+}
+
+class _PromotionsAdminState extends State<_PromotionsAdmin> {
+  String _tab = 'promotions';
+
+  _AdminListPhase _promotionsPhase = _AdminListPhase.loading;
+  List<PosPromotion> _promotions = const [];
+  String? _promotionsNextCursor;
+  bool _promotionsLoadingMore = false;
+  String? _promotionsError;
+
+  _AdminListPhase _couponsPhase = _AdminListPhase.loading;
+  List<PosCoupon> _coupons = const [];
+  String? _couponsNextCursor;
+  bool _couponsLoadingMore = false;
+  String? _couponsError;
+
+  bool get _canReadPromotions => widget.context.permissions.contains('promotion.read');
+  bool get _canManagePromotions => widget.context.permissions.contains('promotion.manage');
+  bool get _canReadCoupons => widget.context.permissions.contains('coupon.read');
+  bool get _canManageCoupons => widget.context.permissions.contains('coupon.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPromotions());
+    unawaited(_loadCoupons());
+  }
+
+  Future<void> _loadPromotions() async {
+    if (!_canReadPromotions) return;
+    setState(() {
+      _promotionsPhase = _AdminListPhase.loading;
+      _promotionsError = null;
+    });
+    try {
+      final page = await widget.promotionsGateway.listPromotions();
+      if (!mounted) return;
+      setState(() {
+        _promotions = page.items;
+        _promotionsNextCursor = page.nextCursor;
+        _promotionsPhase = _promotions.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _promotionsPhase = _AdminListPhase.failure;
+        _promotionsError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _promotionsPhase = _AdminListPhase.failure;
+        _promotionsError = 'No fue posible cargar las promociones.';
+      });
+    }
+  }
+
+  Future<void> _loadMorePromotions() async {
+    final cursor = _promotionsNextCursor;
+    if (cursor == null || _promotionsLoadingMore) return;
+    setState(() => _promotionsLoadingMore = true);
+    try {
+      final page = await widget.promotionsGateway.listPromotions(cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _promotions = [..._promotions, ...page.items];
+        _promotionsNextCursor = page.nextCursor;
+        _promotionsLoadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _promotionsLoadingMore = false);
+    }
+  }
+
+  Future<void> _loadCoupons() async {
+    if (!_canReadCoupons) return;
+    setState(() {
+      _couponsPhase = _AdminListPhase.loading;
+      _couponsError = null;
+    });
+    try {
+      final page = await widget.promotionsGateway.listCoupons();
+      if (!mounted) return;
+      setState(() {
+        _coupons = page.items;
+        _couponsNextCursor = page.nextCursor;
+        _couponsPhase = _coupons.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _couponsPhase = _AdminListPhase.failure;
+        _couponsError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _couponsPhase = _AdminListPhase.failure;
+        _couponsError = 'No fue posible cargar los cupones.';
+      });
+    }
+  }
+
+  Future<void> _loadMoreCoupons() async {
+    final cursor = _couponsNextCursor;
+    if (cursor == null || _couponsLoadingMore) return;
+    setState(() => _couponsLoadingMore = true);
+    try {
+      final page = await widget.promotionsGateway.listCoupons(cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _coupons = [..._coupons, ...page.items];
+        _couponsNextCursor = page.nextCursor;
+        _couponsLoadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _couponsLoadingMore = false);
+    }
+  }
+
+  Future<void> _openPromotionForm({PosPromotion? existing}) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) =>
+          _PromotionFormDialog(promotionsGateway: widget.promotionsGateway, existing: existing),
+    );
+    if (saved == true) unawaited(_loadPromotions());
+  }
+
+  Future<void> _openCouponForm({PosCoupon? existing}) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _CouponFormDialog(promotionsGateway: widget.promotionsGateway, existing: existing),
+    );
+    if (saved == true) unawaited(_loadCoupons());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Cupones / Promos',
+          description: 'Promociones automáticas y cupones — administración mínima: '
+              'listar, crear, editar y activar/desactivar.',
+          action: _ReadOnlyButton(
+            onPressed: () {
+              unawaited(_loadPromotions());
+              unawaited(_loadCoupons());
+            },
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: _AdminTabButton(
+                buttonKey: const Key('pos-promotions-tab-promotions'),
+                label: 'Promociones',
+                active: _tab == 'promotions',
+                onTap: () => setState(() => _tab = 'promotions'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _AdminTabButton(
+                buttonKey: const Key('pos-promotions-tab-coupons'),
+                label: 'Cupones',
+                active: _tab == 'coupons',
+                onTap: () => setState(() => _tab = 'coupons'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (_tab == 'promotions') ...[
+          if (_canManagePromotions)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: FilledButton.icon(
+                  key: const Key('pos-promotion-new'),
+                  onPressed: () => unawaited(_openPromotionForm()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Nueva promoción'),
+                ),
+              ),
+            ),
+          if (!_canReadPromotions)
+            const _PermissionState()
+          else
+            switch (_promotionsPhase) {
+              _AdminListPhase.loading => const _LoadingState(),
+              _AdminListPhase.empty => const _EmptyState(message: 'No hay promociones registradas.'),
+              _AdminListPhase.failure => _FailureState(
+                message: _promotionsError ?? 'No fue posible cargar las promociones.',
+                onRetry: () => unawaited(_loadPromotions()),
+              ),
+              _AdminListPhase.ready => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final promotion in _promotions)
+                    _PromotionRow(
+                      promotion: promotion,
+                      canManage: _canManagePromotions,
+                      onEdit: () => unawaited(_openPromotionForm(existing: promotion)),
+                    ),
+                  if (_promotionsNextCursor != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Center(
+                        child: OutlinedButton.icon(
+                          key: const Key('pos-promotions-load-more'),
+                          onPressed: _promotionsLoadingMore ? null : () => unawaited(_loadMorePromotions()),
+                          icon: _promotionsLoadingMore
+                              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.expand_more),
+                          label: const Text('Cargar más'),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            },
+        ] else ...[
+          if (_canManageCoupons)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: FilledButton.icon(
+                  key: const Key('pos-coupon-new'),
+                  onPressed: () => unawaited(_openCouponForm()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Nuevo cupón'),
+                ),
+              ),
+            ),
+          if (!_canReadCoupons)
+            const _PermissionState()
+          else
+            switch (_couponsPhase) {
+              _AdminListPhase.loading => const _LoadingState(),
+              _AdminListPhase.empty => const _EmptyState(message: 'No hay cupones registrados.'),
+              _AdminListPhase.failure => _FailureState(
+                message: _couponsError ?? 'No fue posible cargar los cupones.',
+                onRetry: () => unawaited(_loadCoupons()),
+              ),
+              _AdminListPhase.ready => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final coupon in _coupons)
+                    _CouponRow(
+                      coupon: coupon,
+                      canManage: _canManageCoupons,
+                      onEdit: () => unawaited(_openCouponForm(existing: coupon)),
+                    ),
+                  if (_couponsNextCursor != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Center(
+                        child: OutlinedButton.icon(
+                          key: const Key('pos-coupons-load-more'),
+                          onPressed: _couponsLoadingMore ? null : () => unawaited(_loadMoreCoupons()),
+                          icon: _couponsLoadingMore
+                              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.expand_more),
+                          label: const Text('Cargar más'),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            },
+        ],
+      ],
+    );
+  }
+}
+
+class _AdminTabButton extends StatelessWidget {
+  const _AdminTabButton({
+    required this.buttonKey,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+  final Key buttonKey;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return OutlinedButton(
+      key: buttonKey,
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        backgroundColor: active ? palette.action : null,
+        foregroundColor: active ? Colors.white : palette.textSecondary,
+        side: BorderSide(color: active ? palette.action : palette.border),
+      ),
+      child: Text(label),
+    );
+  }
+}
+
+class _PromotionRow extends StatelessWidget {
+  const _PromotionRow({required this.promotion, required this.canManage, required this.onEdit});
+  final PosPromotion promotion;
+  final bool canManage;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final validity = [
+      if (promotion.startsAt != null) 'Desde ${_formatShortDate(promotion.startsAt!)}',
+      if (promotion.endsAt != null) 'Hasta ${_formatShortDate(promotion.endsAt!)}',
+    ].join(' · ');
+    return _PosCard(
+      key: Key('pos-promotion-row-${promotion.id}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(promotion.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 2),
+                  Text(promotion.benefitSummary, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                  if (validity.isNotEmpty)
+                    Text(validity, style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                ],
+              ),
+            ),
+            _StatusChip(label: promotion.active ? 'active' : 'inactive'),
+            if (canManage)
+              IconButton(
+                key: Key('pos-promotion-edit-${promotion.id}'),
+                tooltip: 'Editar promoción',
+                onPressed: onEdit,
+                icon: Icon(Icons.edit_outlined, size: 18, color: palette.blueDeep),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CouponRow extends StatelessWidget {
+  const _CouponRow({required this.coupon, required this.canManage, required this.onEdit});
+  final PosCoupon coupon;
+  final bool canManage;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final validity = [
+      if (coupon.startsAt != null) 'Desde ${_formatShortDate(coupon.startsAt!)}',
+      if (coupon.endsAt != null) 'Hasta ${_formatShortDate(coupon.endsAt!)}',
+      // Only the configured limit, never a fabricated usage count (no GET
+      // response exposes one today — ADR-0016 Part U).
+      if (coupon.usageLimitTotal != null) 'Límite: ${coupon.usageLimitTotal}',
+    ].join(' · ');
+    return _PosCard(
+      key: Key('pos-coupon-row-${coupon.id}'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(coupon.code, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 2),
+                  Text(coupon.benefitSummary, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                  if (validity.isNotEmpty)
+                    Text(validity, style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                ],
+              ),
+            ),
+            _StatusChip(label: coupon.active ? 'active' : 'inactive'),
+            if (canManage)
+              IconButton(
+                key: Key('pos-coupon-edit-${coupon.id}'),
+                tooltip: 'Editar cupón',
+                onPressed: onEdit,
+                icon: Icon(Icons.edit_outlined, size: 18, color: palette.blueDeep),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 12.9: the shared create/edit form fields (name-or-code,
+/// description, benefit type + conditional value, active toggle, optional
+/// validity dates) — never anything beyond ADR-0016 Part U's "minimum
+/// operational management" scope.
+class _PromotionFormDialog extends StatefulWidget {
+  const _PromotionFormDialog({required this.promotionsGateway, this.existing});
+  final PosPromotionsGateway promotionsGateway;
+  final PosPromotion? existing;
+
+  @override
+  State<_PromotionFormDialog> createState() => _PromotionFormDialogState();
+}
+
+class _PromotionFormDialogState extends State<_PromotionFormDialog> {
+  late final _nameController = TextEditingController(text: widget.existing?.name ?? '');
+  late final _descriptionController = TextEditingController(text: widget.existing?.description ?? '');
+  late String _benefitType = widget.existing?.benefitType ?? 'percentage';
+  late final _percentController = TextEditingController(
+    text: widget.existing?.benefitPercentageBasisPoints == null
+        ? ''
+        : (widget.existing!.benefitPercentageBasisPoints! / 100).toString(),
+  );
+  late final _fixedAmountController = TextEditingController(text: widget.existing?.benefitFixedAmount ?? '');
+  late final _nxmBuyController =
+      TextEditingController(text: widget.existing?.benefitNxmBuyQuantity?.toString() ?? '');
+  late final _nxmPayController =
+      TextEditingController(text: widget.existing?.benefitNxmPayQuantity?.toString() ?? '');
+  late bool _active = widget.existing?.active ?? true;
+  DateTime? _startsAt;
+  DateTime? _endsAt;
+  bool _busy = false;
+  String? _error;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _startsAt = widget.existing?.startsAt;
+    _endsAt = widget.existing?.endsAt;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _percentController.dispose();
+    _fixedAmountController.dispose();
+    _nxmBuyController.dispose();
+    _nxmPayController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate({required bool isStart}) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: (isStart ? _startsAt : _endsAt) ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isStart) {
+        _startsAt = picked;
+      } else {
+        _endsAt = picked;
+      }
+    });
+  }
+
+  PosPromotionInput? _buildInput() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return null;
+    int? basisPoints;
+    String? fixedAmount;
+    int? nxmBuy;
+    int? nxmPay;
+    if (_benefitType == 'percentage') {
+      final percent = double.tryParse(_percentController.text.trim());
+      if (percent == null || percent <= 0 || percent > 100) return null;
+      basisPoints = (percent * 100).round();
+    } else if (_benefitType == 'fixed_amount' || _benefitType == 'fixed_price') {
+      try {
+        final amount = Money.parse(_fixedAmountController.text.trim(), 'MXN');
+        if (!amount.isPositive) return null;
+        fixedAmount = amount.toApiString();
+      } on MoneyFormatException {
+        return null;
+      }
+    } else if (_benefitType == 'quantity_nxm') {
+      nxmBuy = int.tryParse(_nxmBuyController.text.trim());
+      nxmPay = int.tryParse(_nxmPayController.text.trim());
+      if (nxmBuy == null || nxmPay == null || nxmBuy <= 0 || nxmPay <= 0 || nxmPay >= nxmBuy) {
+        return null;
+      }
+    }
+    return PosPromotionInput(
+      name: name,
+      description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
+      active: _active,
+      startsAt: _startsAt,
+      endsAt: _endsAt,
+      benefitType: _benefitType,
+      benefitPercentageBasisPoints: basisPoints,
+      benefitFixedAmount: fixedAmount,
+      benefitNxmBuyQuantity: nxmBuy,
+      benefitNxmPayQuantity: nxmPay,
+    );
+  }
+
+  Future<void> _submit() async {
+    final input = _buildInput();
+    if (input == null) {
+      setState(() => _error = 'Revisa los campos del formulario.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (_isEdit) {
+        await widget.promotionsGateway.updatePromotion(widget.existing!.id, input, version: widget.existing!.version);
+      } else {
+        await widget.promotionsGateway.createPromotion(input);
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar la promoción.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 620),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  _isEdit ? 'Editar promoción' : 'Nueva promoción',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  key: const Key('pos-promotion-name'),
+                  controller: _nameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _descriptionController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Descripción (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  key: const Key('pos-promotion-benefit-type'),
+                  initialValue: _benefitType,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Tipo de beneficio'),
+                  items: const [
+                    DropdownMenuItem(value: 'percentage', child: Text('Porcentaje')),
+                    DropdownMenuItem(value: 'fixed_amount', child: Text('Monto fijo')),
+                    DropdownMenuItem(value: 'fixed_price', child: Text('Precio fijo')),
+                    DropdownMenuItem(value: 'quantity_nxm', child: Text('Nxm (ej. 2x1)')),
+                  ],
+                  onChanged: (value) => setState(() => _benefitType = value ?? 'percentage'),
+                ),
+                const SizedBox(height: 10),
+                if (_benefitType == 'percentage')
+                  TextField(
+                    key: const Key('pos-promotion-value-percentage'),
+                    controller: _percentController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Porcentaje (%)'),
+                  ),
+                if (_benefitType == 'fixed_amount' || _benefitType == 'fixed_price')
+                  TextField(
+                    key: const Key('pos-promotion-value-fixed'),
+                    controller: _fixedAmountController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Monto (\$)'),
+                  ),
+                if (_benefitType == 'quantity_nxm')
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          key: const Key('pos-promotion-nxm-buy'),
+                          controller: _nxmBuyController,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(isDense: true, labelText: 'Compra (N)'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          key: const Key('pos-promotion-nxm-pay'),
+                          controller: _nxmPayController,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(isDense: true, labelText: 'Paga (M)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 6),
+                SwitchListTile(
+                  key: const Key('pos-promotion-active'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Activa'),
+                  value: _active,
+                  onChanged: (value) => setState(() => _active = value),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('pos-promotion-starts-at'),
+                        onPressed: () => unawaited(_pickDate(isStart: true)),
+                        child: Text(_startsAt == null ? 'Inicio (opcional)' : _formatShortDate(_startsAt!)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('pos-promotion-ends-at'),
+                        onPressed: () => unawaited(_pickDate(isStart: false)),
+                        child: Text(_endsAt == null ? 'Fin (opcional)' : _formatShortDate(_endsAt!)),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-promotion-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.textSecondary,
+                          side: BorderSide(color: palette.border),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-promotion-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 12.9: coupon create/edit — `code`/`benefit_type`/value are only
+/// editable at creation (the backend's own `PUT /coupons/{id}` body never
+/// accepts them, see `promotions.routes.ts`) — shown read-only while
+/// editing rather than silently ignored.
+class _CouponFormDialog extends StatefulWidget {
+  const _CouponFormDialog({required this.promotionsGateway, this.existing});
+  final PosPromotionsGateway promotionsGateway;
+  final PosCoupon? existing;
+
+  @override
+  State<_CouponFormDialog> createState() => _CouponFormDialogState();
+}
+
+class _CouponFormDialogState extends State<_CouponFormDialog> {
+  late final _codeController = TextEditingController(text: widget.existing?.code ?? '');
+  late final _descriptionController = TextEditingController(text: widget.existing?.description ?? '');
+  late String _benefitType = widget.existing?.benefitType ?? 'percentage';
+  late final _percentController = TextEditingController(
+    text: widget.existing?.benefitPercentageBasisPoints == null
+        ? ''
+        : (widget.existing!.benefitPercentageBasisPoints! / 100).toString(),
+  );
+  late final _fixedAmountController = TextEditingController(text: widget.existing?.benefitFixedAmount ?? '');
+  late bool _active = widget.existing?.active ?? true;
+  DateTime? _startsAt;
+  DateTime? _endsAt;
+  bool _busy = false;
+  String? _error;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _startsAt = widget.existing?.startsAt;
+    _endsAt = widget.existing?.endsAt;
+  }
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _descriptionController.dispose();
+    _percentController.dispose();
+    _fixedAmountController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate({required bool isStart}) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: (isStart ? _startsAt : _endsAt) ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isStart) {
+        _startsAt = picked;
+      } else {
+        _endsAt = picked;
+      }
+    });
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    if (_isEdit) {
+      final input = PosCouponUpdateInput(
+        description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
+        active: _active,
+        startsAt: _startsAt,
+        endsAt: _endsAt,
+      );
+      try {
+        await widget.promotionsGateway.updateCoupon(widget.existing!.id, input, version: widget.existing!.version);
+        if (!mounted) return;
+        Navigator.of(context).pop(true);
+      } on ApiException catch (error) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _error = error.failure.message;
+        });
+      } on Object {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _error = 'No fue posible guardar el cupón.';
+        });
+      }
+      return;
+    }
+    final code = _codeController.text.trim();
+    if (code.isEmpty) {
+      setState(() {
+        _busy = false;
+        _error = 'Escribe un código.';
+      });
+      return;
+    }
+    int? basisPoints;
+    String? fixedAmount;
+    if (_benefitType == 'percentage') {
+      final percent = double.tryParse(_percentController.text.trim());
+      if (percent == null || percent <= 0 || percent > 100) {
+        setState(() {
+          _busy = false;
+          _error = 'Porcentaje inválido.';
+        });
+        return;
+      }
+      basisPoints = (percent * 100).round();
+    } else {
+      try {
+        final amount = Money.parse(_fixedAmountController.text.trim(), 'MXN');
+        if (!amount.isPositive) {
+          setState(() {
+            _busy = false;
+            _error = 'Monto inválido.';
+          });
+          return;
+        }
+        fixedAmount = amount.toApiString();
+      } on MoneyFormatException {
+        setState(() {
+          _busy = false;
+          _error = 'Monto inválido.';
+        });
+        return;
+      }
+    }
+    final input = PosCouponInput(
+      code: code,
+      description: _descriptionController.text.trim().isEmpty ? null : _descriptionController.text.trim(),
+      benefitType: _benefitType,
+      benefitPercentageBasisPoints: basisPoints,
+      benefitFixedAmount: fixedAmount,
+      active: _active,
+      startsAt: _startsAt,
+      endsAt: _endsAt,
+    );
+    try {
+      await widget.promotionsGateway.createCoupon(input);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar el cupón.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 620),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  _isEdit ? 'Editar cupón' : 'Nuevo cupón',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  key: const Key('pos-coupon-code'),
+                  controller: _codeController,
+                  readOnly: _isEdit,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Código'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _descriptionController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Descripción (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                if (_isEdit)
+                  Text(
+                    'Beneficio: ${widget.existing!.benefitSummary} (no editable)',
+                    style: TextStyle(color: palette.textMuted, fontSize: 12),
+                  )
+                else ...[
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-coupon-benefit-type'),
+                    initialValue: _benefitType,
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Tipo de beneficio'),
+                    items: const [
+                      DropdownMenuItem(value: 'percentage', child: Text('Porcentaje')),
+                      DropdownMenuItem(value: 'fixed_amount', child: Text('Monto fijo')),
+                    ],
+                    onChanged: (value) => setState(() => _benefitType = value ?? 'percentage'),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_benefitType == 'percentage')
+                    TextField(
+                      key: const Key('pos-coupon-value-percentage'),
+                      controller: _percentController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(isDense: true, labelText: 'Porcentaje (%)'),
+                    )
+                  else
+                    TextField(
+                      key: const Key('pos-coupon-value-fixed'),
+                      controller: _fixedAmountController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(isDense: true, labelText: 'Monto (\$)'),
+                    ),
+                ],
+                const SizedBox(height: 6),
+                SwitchListTile(
+                  key: const Key('pos-coupon-active'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Activo'),
+                  value: _active,
+                  onChanged: (value) => setState(() => _active = value),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('pos-coupon-starts-at'),
+                        onPressed: () => unawaited(_pickDate(isStart: true)),
+                        child: Text(_startsAt == null ? 'Inicio (opcional)' : _formatShortDate(_startsAt!)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('pos-coupon-ends-at'),
+                        onPressed: () => unawaited(_pickDate(isStart: false)),
+                        child: Text(_endsAt == null ? 'Fin (opcional)' : _formatShortDate(_endsAt!)),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-coupon-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.textSecondary,
+                          side: BorderSide(color: palette.border),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-coupon-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

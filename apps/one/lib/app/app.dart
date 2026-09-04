@@ -6,6 +6,7 @@ import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
+import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
@@ -21,6 +22,7 @@ class AsOneApp extends StatefulWidget {
     this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
     this.posCashGateway = const EmptyPosCashGateway(),
     this.posRefundsGateway = const EmptyPosRefundsGateway(),
+    this.posPromotionsGateway = const EmptyPosPromotionsGateway(),
     super.key,
   });
 
@@ -34,6 +36,9 @@ class AsOneApp extends StatefulWidget {
   // TASK 12.8: refund request/completion/history — see
   // `pos_refunds_gateway.dart` and ADR-0015.
   final PosRefundsGateway posRefundsGateway;
+  // TASK 12.9: pricing-quote preview plus promotions/coupons admin
+  // management — see `pos_promotions_gateway.dart` and ADR-0016.
+  final PosPromotionsGateway posPromotionsGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -58,6 +63,7 @@ class _AsOneAppState extends State<AsOneApp> {
       posPaymentsGateway: widget.posPaymentsGateway,
       posCashGateway: widget.posCashGateway,
       posRefundsGateway: widget.posRefundsGateway,
+      posPromotionsGateway: widget.posPromotionsGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -74,6 +80,7 @@ class PlatformScope extends InheritedWidget {
     this.posPaymentsGateway = const EmptyPosPaymentsGateway(),
     this.posCashGateway = const EmptyPosCashGateway(),
     this.posRefundsGateway = const EmptyPosRefundsGateway(),
+    this.posPromotionsGateway = const EmptyPosPromotionsGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -98,6 +105,10 @@ class PlatformScope extends InheritedWidget {
   /// `pos_refunds_gateway.dart` and ADR-0015.
   final PosRefundsGateway posRefundsGateway;
 
+  /// TASK 12.9: pricing-quote preview plus promotions/coupons admin
+  /// management — see `pos_promotions_gateway.dart` and ADR-0016.
+  final PosPromotionsGateway posPromotionsGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -116,6 +127,7 @@ class PlatformScope extends InheritedWidget {
       posPaymentsGateway != oldWidget.posPaymentsGateway ||
       posCashGateway != oldWidget.posCashGateway ||
       posRefundsGateway != oldWidget.posRefundsGateway ||
+      posPromotionsGateway != oldWidget.posPromotionsGateway ||
       environment != oldWidget.environment;
 }
 

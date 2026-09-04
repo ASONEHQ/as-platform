@@ -50,6 +50,12 @@ enum PosModule {
     // `PosModule.cash`, both of which are also "implemented" screens that
     // contain a mutating action, not merely a read-only view.
     PosModule.returns,
+    // TASK 12.9: Cupones / Promos — real, backend-paginated promotion/
+    // coupon admin management (list/create/edit) — mirrors
+    // `PosModule.returns`/`PosModule.cash` exactly, both of which are also
+    // "implemented" screens containing a mutating action, not merely a
+    // read-only view.
+    PosModule.promotions,
   }.contains(this);
 }
 

@@ -174,6 +174,68 @@ void main() {
     expect(html, contains('&amp;'));
   });
 
+  group('TASK 12.9 — discount lines', () {
+    test('never renders a Descuento line for a zero-discount sale (legacy/undiscounted, ADR-0016 D14)', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      expect(html, isNot(contains('Descuento')));
+    });
+
+    test('renders a Descuento total row and a per-line discount row for a real, nonzero discount', () {
+      final discounted = PosReceipt(
+        sale: PosReceiptSale(
+          id: 'sale-1',
+          saleNumber: 'SALE-discount',
+          status: 'completed',
+          currencyCode: 'MXN',
+          branchId: 'branch-1',
+          occurredAt: DateTime.utc(2026, 9, 4),
+          completedAt: DateTime.utc(2026, 9, 4, 0, 1),
+          subtotal: '100.0000',
+          discountTotal: '10.0000',
+          taxTotal: '14.4000',
+          total: '104.4000',
+        ),
+        business: const PosReceiptBusiness(
+          companyName: 'AS ONE Demo Co.',
+          branchName: 'Sucursal Centro',
+          branchAddress: null,
+        ),
+        cashier: const PosReceiptCashier(id: 'user-1', displayName: 'Ana Cajera'),
+        items: const [
+          PosReceiptItem(
+            lineNumber: 1,
+            nameSnapshot: 'Entrada General',
+            skuSnapshot: 'SKU-1',
+            quantity: '1.000000',
+            unitPrice: '100.0000',
+            discountTotal: '10.0000',
+            taxTotal: '14.4000',
+            lineTotal: '104.4000',
+          ),
+        ],
+        payments: const [
+          PosReceiptPayment(
+            id: 'payment-1',
+            paymentMethod: 'cash',
+            status: 'captured',
+            amount: '104.4000',
+            currencyCode: 'MXN',
+            capturedAt: null,
+            tenderedAmount: '110.0000',
+            changeAmount: '5.6000',
+            provider: null,
+            terminalId: null,
+            providerReference: null,
+          ),
+        ],
+      );
+      final html = buildReceiptHtml(receipt: discounted);
+      expect(html, contains('Descuento'));
+      expect(html, contains(r'-$10.00'));
+      expect(html, contains(r'$104.40')); // TOTAL, never recomputed
+    });
+  });
+
   group('TASK 12.5B.1 — folio and 80mm polish', () {
     PosReceipt realQaReceipt() => PosReceipt(
       sale: PosReceiptSale(
