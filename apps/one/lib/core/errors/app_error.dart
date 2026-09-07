@@ -179,6 +179,38 @@ class AppFailure {
       'Esta membresía no está activa.',
       code: 'membership_not_active',
     ),
+    // TASK 13.1: reward entitlements/redemption — see ADR-0018 and
+    // `packages/errors/src/index.ts`'s own reservation of these six codes.
+    'reward_not_available' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta recompensa no está disponible para canjear.',
+      code: 'reward_not_available',
+    ),
+    'reward_expired' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta recompensa ya venció.',
+      code: 'reward_expired',
+    ),
+    'reward_already_redeemed' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta recompensa ya fue canjeada.',
+      code: 'reward_already_redeemed',
+    ),
+    'reward_already_revoked' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta recompensa ya fue revocada.',
+      code: 'reward_already_revoked',
+    ),
+    'reward_branch_not_eligible' => const AppFailure(
+      AppErrorKind.validation,
+      'Esta recompensa no puede canjearse en esta sucursal.',
+      code: 'reward_branch_not_eligible',
+    ),
+    'reward_token_invalid' => const AppFailure(
+      AppErrorKind.validation,
+      'El código de la recompensa no es válido.',
+      code: 'reward_token_invalid',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

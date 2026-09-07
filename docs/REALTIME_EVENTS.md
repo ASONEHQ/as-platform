@@ -24,7 +24,7 @@ PostgreSQL and its transactional outbox are authoritative. WebSocket connections
 
 Excluded: push notifications, webhooks, Kafka, detailed provider/library selection, Redis configuration, consumers/workers, parties/events, advanced analytics, and offline authentication.
 
-Customers, membership plans/entitlements, and the AS Rewards+ loyalty-ledger foundation are no longer excluded — see §11.12 and ADR-0017. Reward-entitlement issuance, loyalty redemption, and Wallet-pass events remain excluded/deferred.
+Customers, membership plans/entitlements, and the AS Rewards+ loyalty-ledger foundation are no longer excluded — see §11.12 and ADR-0017. Reward-entitlement issuance and redemption events are no longer excluded either — see §11.13 and ADR-0018. Loyalty redemption (points-for-catalog-benefit) and Wallet-pass events remain excluded/deferred.
 
 ## 3. Architecture and publication
 
@@ -255,7 +255,7 @@ The catalogue defines **85 unique event types**. Every row inherits the normativ
 | `P-SEC` | access/refresh tokens, credentials, detection internals, IP/device fingerprint detail |
 | `P-CEO` | raw transactions, customer/PII data, accounting claims, unrestricted cross-branch detail |
 
-Recovery codes: `ORG` = organization/settings REST routes; `IAM` = users/roles/permissions/branch-access routes; `DEV` = devices/registers; `CASH` = cash sessions/movements; `CAT` = categories/products/prices/availability; `INV` = inventory locations/balances/movements; `SALE` = sales/payments; `REF` = refunds; `PROMO` = promotions/coupons routes; `CUST` = customers/membership-plans/customer-memberships/loyalty-programs routes; `SYNC` = sync operations/checkpoints/changes; `REC` = `/recovery/changes` plus authoritative resource route; `AUTH` = `/auth/session`, `/auth/me`, `/auth/permissions` after reauthentication. Collection route details remain authoritative in [API_CONTRACTS.md](API_CONTRACTS.md).
+Recovery codes: `ORG` = organization/settings REST routes; `IAM` = users/roles/permissions/branch-access routes; `DEV` = devices/registers; `CASH` = cash sessions/movements; `CAT` = categories/products/prices/availability; `INV` = inventory locations/balances/movements; `SALE` = sales/payments; `REF` = refunds; `PROMO` = promotions/coupons routes; `CUST` = customers/membership-plans/customer-memberships/loyalty-programs/reward-entitlements routes; `SYNC` = sync operations/checkpoints/changes; `REC` = `/recovery/changes` plus authoritative resource route; `AUTH` = `/auth/session`, `/auth/me`, `/auth/permissions` after reauthentication. Collection route details remain authoritative in [API_CONTRACTS.md](API_CONTRACTS.md).
 
 For all rows, duplicates are ignored by `event_id`. `V` order means contiguous `aggregate_version` is expected; `C` means checkpoint traversal only. Retention is `CP` (recoverable only within configured checkpoint/event retention) unless stated `SEC` (security retention policy). Retention durations remain open.
 
@@ -483,7 +483,7 @@ Not part of any prior domain grouping — §1's own excluded-scope list named "a
 
 ### 11.12 Customers, memberships, and AS Rewards+ — 11 events (TASK 13.0)
 
-Not part of any prior domain grouping — §1's own excluded-scope list named "Rewards, parties/events, memberships, customers" out of contract until this task. See ADR-0017. Every payload reuses `P-FIN`'s existing "unnecessary customer/PII data" prohibition — never a name/email/phone/birth date, only ids and non-sensitive status fields. No reward-entitlement-issuance, loyalty-redemption, or Wallet-pass event exists — none of those facts are implemented yet (ADR-0017's own Deferred section).
+Not part of any prior domain grouping — §1's own excluded-scope list named "Rewards, parties/events, memberships, customers" out of contract until this task. See ADR-0017. Every payload reuses `P-FIN`'s existing "unnecessary customer/PII data" prohibition — never a name/email/phone/birth date, only ids and non-sensitive status fields. Reward-entitlement issuance/redemption events are now built — see §11.13/ADR-0018. No loyalty-redemption (points-for-catalog-benefit) or Wallet-pass event exists yet — neither fact is implemented (ADR-0017's own Deferred section, and ADR-0018's).
 
 | Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
@@ -498,6 +498,18 @@ Not part of any prior domain grouping — §1's own excluded-scope list named "R
 | `loyalty_program.updated` | loyalty / `loyalty_program` | company / `loyalty.read` | program ID, active flag; `P-FIN` | committed program edit/activation change / `CUST` | C / CP |
 | `loyalty.earned` | loyalty / `loyalty_ledger_entry` | company / `loyalty.read` | customer ID, source sale ID, quantity, unit type; `P-FIN` | automatic earning on Sale settlement / `CUST` | C / CP |
 | `loyalty.adjusted` | loyalty / `loyalty_ledger_entry` | company / `loyalty.read` | customer ID, quantity, unit type (never the reason text); `P-FIN` | manual ledger correction / `CUST` | C / CP |
+
+### 11.13 Reward entitlements and redemption — 5 events (TASK 13.1)
+
+§11.12's own note named reward-entitlement issuance as not yet implemented; this is that work. See ADR-0018. Same `P-FIN` payload discipline as §11.12 — never a name/email/phone, never the raw presentation-token value, never reward metadata beyond an id and status.
+
+| Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
+| --- | --- | --- | --- | --- | --- |
+| `reward.issued` | rewards / `reward_entitlement` | company (or branch, when the settling Sale had one) / `reward.read` | entitlement ID, customer ID, loyalty program ID, status; `P-FIN` | automatic threshold-crossing issuance on Sale settlement, or manual admin issuance / `CUST` | C / CP |
+| `reward.redeemed` | rewards / `reward_entitlement` | branch (redemption branch, if supplied) or company / `reward.read` | entitlement ID, customer ID, status; `P-FIN` | committed redemption / `CUST` | C / CP |
+| `reward.expired` | rewards / `reward_entitlement` | branch (redemption branch, if supplied) or company / `reward.read` | entitlement ID, customer ID, status; `P-FIN` | lazy `available → expired` transition, discovered and persisted the moment someone attempts to redeem a stale entitlement / `CUST` | C / CP |
+| `reward.revoked` | rewards / `reward_entitlement` | company / `reward.read` | entitlement ID, customer ID, status; `P-FIN`, never the revocation reason text | committed revocation / `CUST` | C / CP |
+| `reward.token_issued` | rewards / `reward_entitlement_token` | company / `reward.read` | entitlement ID (never the token value itself); `P-FIN` | presentation token issued/rotated / `CUST` | C / CP |
 
 ## 12. Protocol errors
 
@@ -564,12 +576,12 @@ These require measured load, deployment evidence, privacy/retention policy, clie
 
 ## 16. Contract inventory
 
-- Unique event types: **85**.
+- Unique event types: **90**.
 - Client-to-server protocol messages: **6**.
 - Server-to-client protocol messages: **11**.
 - Total protocol message types: **17**.
 - Mermaid diagrams: **4**.
-- Unique permission keys used by event delivery: **24**.
+- Unique permission keys used by event delivery: **25**.
 - Open decision areas: **11**.
 
-The 24 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `promotion.read`, `coupon.read`, `customer.read`, `membership.read`, `loyalty.read`, `sync.execute`, `recovery.read`, and `audit.read`.
+The 25 permission keys are: `company.read`, `company_settings.read`, `branch.read`, `branch_settings.read`, `user.read`, `role.read`, `permission.read`, `device.read`, `cash_register.read`, `cash_session.read`, `catalog.read`, `inventory.read`, `inventory.cost.read`, `sale.read`, `payment.read`, `refund.read`, `promotion.read`, `coupon.read`, `customer.read`, `membership.read`, `loyalty.read`, `reward.read`, `sync.execute`, `recovery.read`, and `audit.read`.

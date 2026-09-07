@@ -30,6 +30,39 @@ function moneyUnits(value: string): bigint {
   return BigInt(wholeDigits) * 10_000n + BigInt(fractionDigits.length === 0 ? '0' : fractionDigits);
 }
 
+// TASK 13.1A — real idempotent-replay decoders, replacing the bare
+// `as ...Row` casts these two `idempotent()` calls used before. A
+// replayed value is decoded from `idempotency_keys.response_body` (real
+// JSON, from a prior `JSON.stringify`), where every `Date` field is
+// already an ISO STRING and `version` a decimal string — a bare cast
+// left the declared `Date`/`bigint` types lying about the runtime
+// shape, and the first `.toISOString()` call downstream (`programHttp`)
+// would throw on any replayed program create. Mirrors `program()`'s/
+// `ledgerEntry()`'s own DB-row reconstruction in `loyalty.repository.ts`
+// — `new Date(...)` is correct whether fed a `Date` instance or an ISO
+// string. See ADR-0018 (rewards) for the identical bug/fix; this is the
+// same class, fixed across every other affected module in TASK 13.1A.
+function decodeProgram(value: unknown): LoyaltyProgramRow {
+  const row = value as Omit<LoyaltyProgramRow, 'version' | 'createdAt' | 'updatedAt'> & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+function decodeLedgerEntry(value: unknown): LoyaltyLedgerEntryRow {
+  const row = value as Omit<LoyaltyLedgerEntryRow, 'occurredAt' | 'createdAt'> & {
+    occurredAt: string;
+    createdAt: string;
+  };
+  return { ...row, occurredAt: new Date(row.occurredAt), createdAt: new Date(row.createdAt) };
+}
+
 export class LoyaltyService {
   public constructor(private readonly repository: LoyaltyRepository) {}
 
@@ -42,6 +75,13 @@ export class LoyaltyService {
   ): Promise<{ value: LoyaltyProgramRow; replayed: boolean }> {
     requirePermission(context, 'loyalty.manage');
     const id = input.id ?? randomUUID();
+    // TASK 13.1 (ADR-0018) — a threshold with no reward type would be an
+    // "eligible for nothing" dead configuration; a type with no threshold
+    // has no crossing to ever trigger it. Validated here (not only by the
+    // DB's own `loyalty_programs_reward_pair_ck`) so the caller gets a
+    // clean `validation_error`, not a raw constraint violation.
+    if ((input.rewardThreshold === undefined) !== (input.rewardType === undefined))
+      throw new LoyaltyError('validation_error', 'reward_threshold and reward_type must be set together.');
     // Stable across a genuine retry — see the identical reasoning in
     // `MembershipsService.createPlan`.
     const requestHash = hash(input);
@@ -52,7 +92,7 @@ export class LoyaltyService {
         'loyalty_program.create',
         key,
         requestHash,
-        (value) => value as LoyaltyProgramRow,
+        decodeProgram,
         async () => {
           const created = await this.repository.insertProgram(client, {
             id,
@@ -70,6 +110,14 @@ export class LoyaltyService {
               input.rewardDescription?.trim() === undefined || input.rewardDescription.trim().length === 0
                 ? null
                 : input.rewardDescription.trim(),
+            rewardType: input.rewardType ?? null,
+            rewardExpirationDays: input.rewardExpirationDays ?? null,
+            // TASK 13.1 — defaults `true`: absent an explicit business
+            // decision, treating each new threshold crossing as its own
+            // qualifying cycle is the more useful default for a repeating
+            // loyalty program; a company that wants a one-time reward sets
+            // this `false` explicitly.
+            rewardRepeatable: input.rewardRepeatable ?? true,
             createdBy: context.actorId,
             timestamp: context.timestamp,
           });
@@ -105,6 +153,9 @@ export class LoyaltyService {
         ...(input.rewardDescription === undefined
           ? {}
           : { rewardDescription: input.rewardDescription.trim().length === 0 ? null : input.rewardDescription.trim() }),
+        ...(input.rewardType === undefined ? {} : { rewardType: input.rewardType }),
+        ...(input.rewardExpirationDays === undefined ? {} : { rewardExpirationDays: input.rewardExpirationDays }),
+        ...(input.rewardRepeatable === undefined ? {} : { rewardRepeatable: input.rewardRepeatable }),
         updatedBy: context.actorId,
         timestamp: context.timestamp,
       });
@@ -142,7 +193,7 @@ export class LoyaltyService {
     customerId: string,
   ): Promise<LoyaltySummary> {
     requirePermission(context as LoyaltyMutationContext, 'loyalty.read');
-    const account = await this.repository.accountByCustomerId(context.companyId, customerId);
+    const account = await this.repository.accountByCustomerId(null, context.companyId, customerId);
     if (account === null) return { account: null, balances: [], ledger: [] };
     const [balances, ledger] = await Promise.all([
       this.repository.balances(context.companyId, account.id),
@@ -172,7 +223,7 @@ export class LoyaltyService {
         'loyalty_ledger.adjust',
         key,
         requestHash,
-        (value) => value as LoyaltyLedgerEntryRow,
+        decodeLedgerEntry,
         async () => {
           const account = await this.repository.getOrCreateAccount(client, context.companyId, input.customerId, context.timestamp);
           const entry = await this.repository.insertLedgerEntry(client, {

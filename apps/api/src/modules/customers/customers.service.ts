@@ -37,6 +37,35 @@ function requirePermission(context: CustomerMutationContext, permission: string)
     throw new CustomerError('validation_error', `This actor is not authorized (${permission}).`);
 }
 
+/** TASK 13.1A — `idempotent()`'s own persisted `response_body` is real
+ * JSON: a prior `JSON.stringify(value)` already turned `createdAt`/
+ * `updatedAt` into ISO strings and `version` into a decimal string,
+ * since JSON has neither type. A REPLAYED call must reconstruct a real
+ * `CustomerRow` from that shape — a bare `as CustomerRow` cast (this
+ * call's previous shorthand) left those two fields STRINGS at runtime
+ * despite their declared `Date` type, so the first `.toISOString()`
+ * call downstream (`customerHttp`) would throw on any replayed
+ * `POST /customers`. Mirrors `customer()`'s own DB-row reconstruction in
+ * `customers.repository.ts` — `new Date(...)` is correct whether the
+ * input is already a `Date` instance or an ISO string, so this is safe
+ * to apply uniformly regardless of source. See ADR-0018 "Idempotent
+ * replay decoding" (rewards) for the identical fix and reasoning; this
+ * is the same class of bug, found and fixed here across every other
+ * affected module (TASK 13.1A). */
+function decodeCustomer(value: unknown): CustomerRow {
+  const row = value as Omit<CustomerRow, 'version' | 'createdAt' | 'updatedAt'> & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
 export class CustomersService {
   public constructor(private readonly repository: CustomersRepository) {}
 
@@ -140,7 +169,7 @@ export class CustomersService {
         'customer.create',
         key,
         requestHash,
-        (value) => value as CustomerRow,
+        decodeCustomer,
         async () => {
           const created = await this.repository.insertCustomer(client, {
             id,

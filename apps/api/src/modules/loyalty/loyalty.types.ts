@@ -1,12 +1,17 @@
 /** TASK 13.0 — AS Rewards+ foundation. See `packages/database/src/schema/
  * customers.ts` (`loyalty_programs`/`loyalty_accounts`/`loyalty_ledger`)
- * and ADR-0017. Genuinely new module — smallest coherent foundation only
- * (Part O): no reward-entitlement issuance, no redemption route, no QR/
- * Wallet integration here (all explicitly deferred and documented). */
+ * and ADR-0017.
+ *
+ * TASK 13.1 extends `LoyaltyProgramRow`/`CreateLoyaltyProgramInput` with
+ * `rewardType`/`rewardExpirationDays`/`rewardRepeatable` — the minimum
+ * typed data needed to actually ISSUE a `reward_entitlements` row (see
+ * `../rewards/rewards.types.ts` and ADR-0018). Everything else in this
+ * file is unchanged from TASK 13.0. */
 
 export type LoyaltyUnitType = 'stamp' | 'point';
 export type LoyaltyEntryType = 'earn' | 'redeem' | 'adjustment' | 'expiration';
 export type LoyaltyEntrySourceType = 'sale' | 'manual' | 'expiration_job';
+export type LoyaltyRewardType = 'vip_pass';
 
 export interface LoyaltyProgramRow {
   id: string;
@@ -19,6 +24,12 @@ export interface LoyaltyProgramRow {
   minimumSaleTotal: string | null;
   rewardThreshold: number | null;
   rewardDescription: string | null;
+  /** `null` for a program that only tracks progress display without ever
+   * issuing anything — automatic issuance is gated on this being
+   * non-null, never inferred from `rewardThreshold` alone (ADR-0018). */
+  rewardType: LoyaltyRewardType | null;
+  rewardExpirationDays: number | null;
+  rewardRepeatable: boolean;
   createdBy: string;
   updatedBy: string;
   version: bigint;
@@ -35,6 +46,9 @@ export interface CreateLoyaltyProgramInput {
   minimumSaleTotal?: string;
   rewardThreshold?: number;
   rewardDescription?: string;
+  rewardType?: LoyaltyRewardType;
+  rewardExpirationDays?: number;
+  rewardRepeatable?: boolean;
 }
 
 export interface LoyaltyAccountRow {

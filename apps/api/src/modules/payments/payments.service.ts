@@ -7,6 +7,7 @@ import type { CashRepository } from '../cash/cash.repository.js';
 import { CashError, type CashSessionRow } from '../cash/cash.types.js';
 import type { LoyaltyService } from '../loyalty/loyalty.service.js';
 import type { MembershipsService } from '../memberships/memberships.service.js';
+import type { RewardsService } from '../rewards/rewards.service.js';
 import type { SalesRepository } from '../sales/sales.repository.js';
 import type { SaleRow } from '../sales/sales.types.js';
 import type { PaymentRepository, PaymentTransaction } from './payments.repository.js';
@@ -151,6 +152,12 @@ export class PaymentService {
     // as a deployment that never configured the modules at all.
     private readonly membershipsService?: MembershipsService,
     private readonly loyaltyService?: LoyaltyService,
+    // TASK 13.1 — same optional/backward-compatible reasoning as the two
+    // above. Evaluated AFTER `loyaltyService.earnFromSale` in the same
+    // transaction (ADR-0018 "Issuance transaction boundary") — it reads
+    // the ledger's own just-updated cumulative total, never a stale
+    // pre-earn snapshot.
+    private readonly rewardsService?: RewardsService,
   ) {}
 
   /** Called ONLY at the exact moment `SalesRepository.trySettleSale`
@@ -166,7 +173,7 @@ export class PaymentService {
     context: PaymentMutationContext,
     settledSale: SaleRow,
   ): Promise<void> {
-    if (this.membershipsService === undefined && this.loyaltyService === undefined) return;
+    if (this.membershipsService === undefined && this.loyaltyService === undefined && this.rewardsService === undefined) return;
     const items = await this.salesRepository.saleItems(context.companyId, settledSale.id);
     const productIds = [...new Set(items.map((item) => item.productId).filter((id): id is string => id !== null))];
     if (this.membershipsService !== undefined) {
@@ -188,6 +195,17 @@ export class PaymentService {
         saleId: settledSale.id,
         customerId: settledSale.customerId,
         saleTotal: settledSale.total,
+        actorId: context.actorId,
+        correlationId: context.correlationId,
+        timestamp: context.timestamp,
+      });
+    }
+    if (this.rewardsService !== undefined) {
+      await this.rewardsService.evaluateAutomaticIssuance(client, {
+        companyId: context.companyId,
+        branchId: settledSale.branchId,
+        saleId: settledSale.id,
+        customerId: settledSale.customerId,
         actorId: context.actorId,
         correlationId: context.correlationId,
         timestamp: context.timestamp,

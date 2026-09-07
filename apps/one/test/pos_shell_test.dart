@@ -16,6 +16,7 @@ import 'package:as_one/features/pos/pos_read_controller.dart';
 import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:as_one/features/pos/pos_receipt.dart';
 import 'package:as_one/features/pos/pos_refunds_gateway.dart';
+import 'package:as_one/features/pos/pos_rewards_gateway.dart';
 import 'package:as_one/features/pos/pos_sales_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
 import 'package:flutter/material.dart';
@@ -153,6 +154,7 @@ void main() {
             customersGateway: const EmptyPosCustomersGateway(),
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
+            rewardsGateway: const EmptyPosRewardsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -187,6 +189,7 @@ void main() {
             customersGateway: const EmptyPosCustomersGateway(),
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
+            rewardsGateway: const EmptyPosRewardsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -215,6 +218,7 @@ void main() {
             customersGateway: const EmptyPosCustomersGateway(),
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
+            rewardsGateway: const EmptyPosRewardsGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -3207,6 +3211,7 @@ void main() {
               customersGateway: const EmptyPosCustomersGateway(),
               membershipsGateway: const EmptyPosMembershipsGateway(),
               loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -3244,6 +3249,7 @@ void main() {
               customersGateway: const EmptyPosCustomersGateway(),
               membershipsGateway: const EmptyPosMembershipsGateway(),
               loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -5481,6 +5487,800 @@ void main() {
       expect(workingGateway.updatePlanCalls, ['plan-1']);
     });
   });
+
+  group('Reward entitlements (TASK 13.1/13.1A)', () {
+    // `entitlement(id)` (`GET /reward-entitlements/{id}`) is part of the
+    // full `PosRewardsGateway` contract but `pos_shell.dart` never calls
+    // it (every surface in this file reads the list endpoint instead —
+    // see `pos_rewards_gateway.dart`'s own doc comment). Exercised here
+    // directly against the fake, mirroring how the rest of this contract
+    // is exercised through the real UI.
+    test(
+      '_FakeRewardsGateway.entitlement honors a canned result/failure, '
+      "matching this gateway's own default-fixture-when-unset contract",
+      () async {
+        final entitlement = _fixtureRewardEntitlement(id: 'reward-1', status: 'available');
+        final gateway = _FakeRewardsGateway(entitlementResult: entitlement);
+        expect(await gateway.entitlement('reward-1'), same(entitlement));
+
+        final defaultGateway = _FakeRewardsGateway();
+        final fallback = await defaultGateway.entitlement('reward-2');
+        expect(fallback.id, 'reward-2');
+
+        final failingGateway = _FakeRewardsGateway(
+          entitlementFailure: ApiException(AppFailure.fromCode('reward_expired')),
+        );
+        await expectLater(
+          () => failingGateway.entitlement('reward-1'),
+          throwsA(isA<ApiException>()),
+        );
+      },
+    );
+
+    Future<void> navigateToCustomersAdmin(WidgetTester tester) async {
+      if (find.byKey(const Key('nav-customers')).evaluate().isEmpty) {
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(const Key('nav-customers')));
+      await tester.pumpAndSettle();
+    }
+
+    /// Attaches `customer-1` ("Ana Pérez") to the in-progress CAJERO
+    /// ticket via the same real UI flow the TASK 13.0 group's own ticket-
+    /// customer-selector test uses — never a shortcut that bypasses the
+    /// actual selector widget.
+    Future<void> attachCustomerInCajero(WidgetTester tester) async {
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-ticket-customer-select')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-customer-selector-search')), 'Ana');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-customer-selector-result-customer-1')));
+      await tester.pumpAndSettle();
+    }
+
+    PosCustomersGateway attachableCustomersGateway() => _FakeCustomersGateway(
+      listResult: PosCustomerPage(
+        items: [
+          PosCustomerSummary(
+            id: 'customer-1',
+            displayName: 'Ana Pérez',
+            status: 'active',
+            version: 1,
+            createdAt: DateTime.utc(2026, 9, 1),
+          ),
+        ],
+        nextCursor: null,
+      ),
+      customerResult: _fixtureCustomer(id: 'customer-1', displayName: 'Ana Pérez'),
+    );
+
+    testWidgets(
+      'Customer Detail shows an available reward entitlement with the real '
+      'reward-type and status labels',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-reward-1')), findsOneWidget);
+        expect(find.text('Pase VIP'), findsOneWidget);
+        expect(find.text('Disponible'), findsOneWidget);
+        expect(find.text('Disponibles'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail shows a redeemed entitlement under Historial, '
+      'visually distinguished from Disponibles',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [
+            _fixtureRewardEntitlement(
+              id: 'reward-1',
+              status: 'redeemed',
+              effectiveStatus: 'redeemed',
+              redeemedAt: DateTime.utc(2026, 9, 3),
+            ),
+          ],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-reward-1')), findsOneWidget);
+        expect(find.text('Canjeado'), findsOneWidget);
+        expect(find.text('Historial'), findsOneWidget);
+        // The list has one entitlement and it's not available — the
+        // section renders the honest "no rewards available right now"
+        // line rather than a "Disponibles" header with nothing under it.
+        expect(find.text('Sin recompensas disponibles actualmente.'), findsOneWidget);
+        expect(find.text('Disponibles'), findsNothing);
+        // A redeemed row never gets a "Revocar" action (only rows in the
+        // Disponibles list do — see `showRevoke` in `pos_shell.dart`).
+        expect(find.byKey(const Key('pos-customer-reward-revoke-reward-1')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail shows the honest empty Recompensas state for a '
+      'customer with zero entitlements, and renders no reward row',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: _FakeRewardsGateway(entitlementsForCustomerResult: const []),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('No hay recompensas disponibles.'), findsOneWidget);
+        expect(find.text('Disponibles'), findsNothing);
+        expect(find.text('Historial'), findsNothing);
+        expect(find.textContaining('Pase VIP'), findsNothing);
+        // No loyalty programs are configured in this fixture, so the
+        // "Agregar recompensa" action stays hidden regardless of
+        // `reward.issue` (`_programs.isNotEmpty` gate) — confirming no
+        // stray reward key of any kind renders here.
+        expect(find.byKey(const Key('pos-customer-reward-issue')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: a failed reward-entitlements fetch surfaces the '
+      "backend's own honest error, never a fake empty state",
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: _FakeRewardsGateway(
+            entitlementsForCustomerFailure: const ApiException(
+              AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+            ),
+          ),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+        expect(find.text('No hay recompensas disponibles.'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: "Recompensas disponibles" only appears once the attached '
+      'customer has an available entitlement',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardReadOnly,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+
+        expect(find.byKey(const Key('pos-ticket-rewards-open')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: "Recompensas disponibles" never appears for a customer with '
+      'only a redeemed/expired/revoked entitlement',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [
+            _fixtureRewardEntitlement(id: 'reward-1', status: 'redeemed', effectiveStatus: 'redeemed'),
+            _fixtureRewardEntitlement(id: 'reward-2', status: 'expired', effectiveStatus: 'expired'),
+            _fixtureRewardEntitlement(id: 'reward-3', status: 'revoked', effectiveStatus: 'revoked'),
+          ],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardReadOnly,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+
+        expect(find.byKey(const Key('pos-ticket-rewards-open')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: the "Canjear" button in the rewards dialog only renders for '
+      'an actor with reward.redeem',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardReadOnly,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-reward-reward-1')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: the "Canjear" button renders for an actor with reward.redeem',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: a successful redeem calls the gateway with the right '
+      'entitlement id, and closing the dialog refreshes the list',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          // An explicit `redeemResult` — proves the dialog's own row
+          // reflects the backend's real returned entitlement, never a
+          // client-guessed "redeemed" state.
+          redeemResult: _fixtureRewardEntitlement(
+            id: 'reward-1',
+            status: 'redeemed',
+            effectiveStatus: 'redeemed',
+            redeemedAt: DateTime.utc(2026, 9, 5),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        // One fetch from `_loadRewards()` firing on the attach itself.
+        expect(rewardsGateway.entitlementsForCustomerCalls, ['customer-1']);
+
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')));
+        await tester.pumpAndSettle();
+
+        expect(rewardsGateway.redeemCalls, ['reward-1']);
+        expect(find.text('Recompensa canjeada.'), findsOneWidget);
+        // The row now reflects the gateway's own returned entitlement —
+        // "Canjeado", and the "Canjear" action is gone for that row.
+        expect(find.text('Canjeado'), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')), findsNothing);
+
+        // Closing the dialog after a successful redeem re-fetches.
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-close')));
+        await tester.pumpAndSettle();
+        expect(rewardsGateway.entitlementsForCustomerCalls, ['customer-1', 'customer-1']);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: an already-redeemed conflict on redeem surfaces the '
+      "backend's own honest error, never a fake success",
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          redeemFailure: ApiException(AppFailure.fromCode('reward_already_redeemed')),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Esta recompensa ya fue canjeada.'), findsOneWidget);
+        // The button stays for that same (still-available, per the
+        // fake's own unmutated list) row — never a fabricated success.
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      "CAJERO: an expired-reward response on redeem surfaces the backend's "
+      'own honest error',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          redeemFailure: ApiException(AppFailure.fromCode('reward_expired')),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Esta recompensa ya venció.'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: "Agregar recompensa" is visible only with '
+      'reward.issue',
+      (tester) async {
+        final loyaltyGateway = _FakeLoyaltyGateway(
+          programsResult: const [
+            PosLoyaltyProgram(
+              id: 'program-1',
+              name: 'AS Rewards+',
+              active: true,
+              unitType: 'point',
+              earnQuantityPerSale: 1,
+              minimumSaleTotal: null,
+              rewardThreshold: null,
+              rewardDescription: null,
+              version: 1,
+            ),
+          ],
+          summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardReadOnly,
+          customersGateway: attachableCustomersGateway(),
+          loyaltyGateway: loyaltyGateway,
+          rewardsGateway: _FakeRewardsGateway(entitlementsForCustomerResult: const []),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-issue')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: "Agregar recompensa" renders for an actor with '
+      'reward.issue',
+      (tester) async {
+        final loyaltyGateway = _FakeLoyaltyGateway(
+          programsResult: const [
+            PosLoyaltyProgram(
+              id: 'program-1',
+              name: 'AS Rewards+',
+              active: true,
+              unitType: 'point',
+              earnQuantityPerSale: 1,
+              minimumSaleTotal: null,
+              rewardThreshold: null,
+              rewardDescription: null,
+              version: 1,
+            ),
+          ],
+          summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          loyaltyGateway: loyaltyGateway,
+          rewardsGateway: _FakeRewardsGateway(entitlementsForCustomerResult: const []),
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-issue')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: "Revocar" is visible only with reward.revoke',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardReadOnly,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-reward-1')), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-reward-revoke-reward-1')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: "Revocar" renders for an actor with reward.revoke',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-revoke-reward-1')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: issuing a manual reward calls the gateway with the '
+      'real form values',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: const [],
+          // An explicit `issueManualResult` — proves nothing crashes on
+          // the backend's own returned entitlement shape once issued
+          // (the dialog itself only cares about the boolean pop; the
+          // follow-up `_loadRewards()` re-fetch is what actually refreshes
+          // Customer Detail's list).
+          issueManualResult: _fixtureRewardEntitlement(
+            id: 'reward-new-1',
+            customerId: 'customer-1',
+            loyaltyProgramId: 'program-1',
+          ),
+        );
+        final loyaltyGateway = _FakeLoyaltyGateway(
+          programsResult: const [
+            PosLoyaltyProgram(
+              id: 'program-1',
+              name: 'AS Rewards+',
+              active: true,
+              unitType: 'point',
+              earnQuantityPerSale: 1,
+              minimumSaleTotal: null,
+              rewardThreshold: null,
+              rewardDescription: null,
+              version: 1,
+            ),
+          ],
+          summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          loyaltyGateway: loyaltyGateway,
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-reward-issue')));
+        await tester.pumpAndSettle();
+        // The dialog validates a required reason before submitting —
+        // mirrors `_IssueMembershipDialog`'s own precedent.
+        await tester.tap(find.byKey(const Key('pos-issue-reward-save')));
+        await tester.pump();
+        expect(find.text('Escribe un motivo.'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-issue-reward-reason')), 'Cumpleaños del cliente');
+        await tester.tap(find.byKey(const Key('pos-issue-reward-save')));
+        await tester.pumpAndSettle();
+
+        expect(rewardsGateway.issueManualCalls, [
+          {
+            'customerId': 'customer-1',
+            'loyaltyProgramId': 'program-1',
+            'reasonCode': 'Cumpleaños del cliente',
+            'expiresAt': null,
+          },
+        ]);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: revoking a reward calls the gateway with the real '
+      'form values, including a required reason',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [
+            _fixtureRewardEntitlement(id: 'reward-1', status: 'available', version: 4),
+          ],
+          // An explicit `revokeResult` — proves nothing crashes on the
+          // backend's own returned entitlement shape once revoked.
+          revokeResult: _fixtureRewardEntitlement(
+            id: 'reward-1',
+            status: 'revoked',
+            effectiveStatus: 'revoked',
+            revokedAt: DateTime.utc(2026, 9, 5),
+            version: 5,
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-reward-revoke-reward-1')));
+        await tester.pumpAndSettle();
+        // A required reason — mirrors `_CancelMembershipDialog`'s own
+        // precedent.
+        await tester.tap(find.byKey(const Key('pos-revoke-reward-confirm')));
+        await tester.pump();
+        expect(find.text('Escribe un motivo.'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-revoke-reward-reason')), 'Solicitud del cliente');
+        await tester.tap(find.byKey(const Key('pos-revoke-reward-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(rewardsGateway.revokeCalls, [
+          {'id': 'reward-1', 'reason': 'Solicitud del cliente', 'version': 4},
+        ]);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: a failed manual issuance keeps the dialog open with '
+      "the backend's own honest error, never a fake success",
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: const [],
+          issueManualFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'Este plan de membresía no está activo.', code: 'membership_plan_inactive'),
+          ),
+        );
+        final loyaltyGateway = _FakeLoyaltyGateway(
+          programsResult: const [
+            PosLoyaltyProgram(
+              id: 'program-1',
+              name: 'AS Rewards+',
+              active: true,
+              unitType: 'point',
+              earnQuantityPerSale: 1,
+              minimumSaleTotal: null,
+              rewardThreshold: null,
+              rewardDescription: null,
+              version: 1,
+            ),
+          ],
+          summaryResult: const PosLoyaltySummary(accountId: null, balances: [], ledger: []),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          loyaltyGateway: loyaltyGateway,
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-reward-issue')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-issue-reward-reason')), 'Cumpleaños del cliente');
+        await tester.tap(find.byKey(const Key('pos-issue-reward-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Este plan de membresía no está activo.'), findsOneWidget);
+        // The dialog stays open — never a fake success.
+        expect(find.byKey(const Key('pos-issue-reward-save')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: a failed revoke keeps the dialog open with the '
+      "backend's own honest error, never a fake success",
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [
+            _fixtureRewardEntitlement(id: 'reward-1', status: 'available', version: 4),
+          ],
+          revokeFailure: ApiException(AppFailure.fromCode('reward_already_revoked')),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-reward-revoke-reward-1')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-revoke-reward-reason')), 'Solicitud del cliente');
+        await tester.tap(find.byKey(const Key('pos-revoke-reward-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Esta recompensa ya fue revocada.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-revoke-reward-confirm')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      "CLIENTE mode: the reward status banner shows the attached customer's "
+      'own available entitlement, with no redeem button of any kind',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-ticket-reward-status')), findsOneWidget);
+        expect(find.text('Tienes 1 recompensa disponible.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-1')), findsNothing);
+        // No button of any kind lives inside the reward-status banner
+        // itself — scoped to its own subtree rather than a global
+        // assertion, since the rest of the CLIENTE screen legitimately
+        // has its own buttons (e.g. "Pagar con tarjeta").
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-cliente-ticket-reward-status')),
+            matching: find.byType(ElevatedButton),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-cliente-ticket-reward-status')),
+            matching: find.byType(TextButton),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-cliente-ticket-reward-status')),
+            matching: find.byType(OutlinedButton),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-cliente-ticket-reward-status')),
+            matching: find.byType(FilledButton),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-cliente-ticket-reward-status')),
+            matching: find.byType(IconButton),
+          ),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'CLIENTE mode: no reward administration controls ever render — '
+      'confirming CLIENTE has no Customer Detail admin surface at all',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-reward-issue')), findsNothing);
+        expect(find.byKey(const Key('pos-customer-reward-revoke-reward-1')), findsNothing);
+        expect(find.byKey(const Key('pos-customer-detail-close')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'no fake VIP badge renders anywhere reward status could show when '
+      'the backend returns zero entitlements, in both CAJERO and CLIENTE',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(entitlementsForCustomerResult: const []);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        expect(find.byKey(const Key('pos-ticket-rewards-open')), findsNothing);
+
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-cliente-ticket-reward-status')), findsNothing);
+      },
+    );
+  });
 }
 
 Future<void> _pump(
@@ -5495,6 +6295,7 @@ Future<void> _pump(
   PosCustomersGateway? customersGateway,
   PosMembershipsGateway? membershipsGateway,
   PosLoyaltyGateway? loyaltyGateway,
+  PosRewardsGateway? rewardsGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -5535,6 +6336,11 @@ Future<void> _pump(
         customersGateway: customersGateway ?? _FakeCustomersGateway(),
         membershipsGateway: membershipsGateway ?? _FakeMembershipsGateway(),
         loyaltyGateway: loyaltyGateway ?? _FakeLoyaltyGateway(),
+        // TASK 13.1: defaults to an empty-but-successful fake — every
+        // pre-existing test keeps seeing an honest empty Recompensas
+        // state; the dedicated reward tests inject their own explicit
+        // fake instead.
+        rewardsGateway: rewardsGateway ?? const EmptyPosRewardsGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -5831,6 +6637,38 @@ final _contextWithCustomerReadOnly = AuthenticatedContext(
   permissions: [..._context.permissions, 'customer.read'],
 );
 
+/// TASK 13.1: `_contextWithCustomerPermissions` plus every real reward
+/// permission (see `packages/database/src/seeds/technical-permissions.ts`
+/// TASK 13.1 addition) — the full-featured reward entitlement tests
+/// (Customer Detail admin issue/revoke, CAJERO redeem) use this instead of
+/// widening the shared TASK 13.0 fixture.
+final _contextWithRewardPermissions = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._contextWithCustomerPermissions.permissions,
+    'reward.read',
+    'reward.redeem',
+    'reward.issue',
+    'reward.revoke',
+  ],
+);
+
+/// Same base, but only `reward.read` — proves the redeem/issue/revoke
+/// actions stay hidden for a read-only actor (mirrors
+/// `_contextWithCustomerReadOnly`'s own precedent).
+final _contextWithRewardReadOnly = AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [..._contextWithCustomerPermissions.permissions, 'reward.read'],
+);
+
 /// Same addition, for the company-wide branch filter test.
 final _companyWideContextWithSaleRead = AuthenticatedContext(
   session: _companyWideContext.session,
@@ -5983,6 +6821,7 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     customersGateway: const EmptyPosCustomersGateway(),
     membershipsGateway: const EmptyPosMembershipsGateway(),
     loyaltyGateway: const EmptyPosLoyaltyGateway(),
+    rewardsGateway: const EmptyPosRewardsGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -7357,3 +8196,123 @@ class _FakeLoyaltyGateway implements PosLoyaltyGateway {
         );
   }
 }
+
+/// TASK 13.1A Part G: a controllable fake for reward entitlements —
+/// mirrors `_FakeLoyaltyGateway`'s own shape exactly (canned per-method
+/// results/failures, plus a recorded-calls list per mutating method so a
+/// test can assert what was actually sent to the gateway).
+class _FakeRewardsGateway implements PosRewardsGateway {
+  _FakeRewardsGateway({
+    this.entitlementsForCustomerResult,
+    this.entitlementsForCustomerFailure,
+    this.entitlementResult,
+    this.entitlementFailure,
+    this.redeemResult,
+    this.redeemFailure,
+    this.issueManualResult,
+    this.issueManualFailure,
+    this.revokeResult,
+    this.revokeFailure,
+  });
+
+  final List<PosRewardEntitlement>? entitlementsForCustomerResult;
+  final ApiException? entitlementsForCustomerFailure;
+  final List<String> entitlementsForCustomerCalls = [];
+
+  final PosRewardEntitlement? entitlementResult;
+  final ApiException? entitlementFailure;
+
+  final PosRewardEntitlement? redeemResult;
+  final ApiException? redeemFailure;
+  final List<String> redeemCalls = [];
+
+  final PosRewardEntitlement? issueManualResult;
+  final ApiException? issueManualFailure;
+  final List<Map<String, Object?>> issueManualCalls = [];
+
+  final PosRewardEntitlement? revokeResult;
+  final ApiException? revokeFailure;
+  final List<Map<String, Object?>> revokeCalls = [];
+
+  @override
+  Future<List<PosRewardEntitlement>> entitlementsForCustomer(String customerId) async {
+    entitlementsForCustomerCalls.add(customerId);
+    if (entitlementsForCustomerFailure != null) throw entitlementsForCustomerFailure!;
+    return entitlementsForCustomerResult ?? const [];
+  }
+
+  @override
+  Future<PosRewardEntitlement> entitlement(String id) async {
+    if (entitlementFailure != null) throw entitlementFailure!;
+    return entitlementResult ?? _fixtureRewardEntitlement(id: id);
+  }
+
+  @override
+  Future<PosRewardEntitlement> redeem(String id, {String? branchId}) async {
+    redeemCalls.add(id);
+    if (redeemFailure != null) throw redeemFailure!;
+    return redeemResult ??
+        _fixtureRewardEntitlement(
+          id: id,
+          status: 'redeemed',
+          effectiveStatus: 'redeemed',
+          redeemedAt: DateTime.utc(2026, 9, 5),
+        );
+  }
+
+  @override
+  Future<PosRewardEntitlement> issueManual({
+    required String customerId,
+    required String loyaltyProgramId,
+    required String reasonCode,
+    DateTime? expiresAt,
+  }) async {
+    issueManualCalls.add({
+      'customerId': customerId,
+      'loyaltyProgramId': loyaltyProgramId,
+      'reasonCode': reasonCode,
+      'expiresAt': expiresAt,
+    });
+    if (issueManualFailure != null) throw issueManualFailure!;
+    return issueManualResult ??
+        _fixtureRewardEntitlement(id: 'reward-new', customerId: customerId, loyaltyProgramId: loyaltyProgramId);
+  }
+
+  @override
+  Future<PosRewardEntitlement> revoke(String id, {required String reason, required int version}) async {
+    revokeCalls.add({'id': id, 'reason': reason, 'version': version});
+    if (revokeFailure != null) throw revokeFailure!;
+    return revokeResult ??
+        _fixtureRewardEntitlement(id: id, status: 'revoked', effectiveStatus: 'revoked', revokedAt: DateTime.utc(2026, 9, 5));
+  }
+}
+
+PosRewardEntitlement _fixtureRewardEntitlement({
+  required String id,
+  String customerId = 'customer-1',
+  String loyaltyProgramId = 'program-1',
+  String rewardType = 'vip_pass',
+  String status = 'available',
+  String? effectiveStatus,
+  DateTime? issuedAt,
+  DateTime? expiresAt,
+  DateTime? redeemedAt,
+  DateTime? revokedAt,
+  String sourceType = 'manual',
+  int? cycleNumber,
+  int version = 1,
+}) => PosRewardEntitlement(
+  id: id,
+  customerId: customerId,
+  loyaltyProgramId: loyaltyProgramId,
+  rewardType: rewardType,
+  status: status,
+  effectiveStatus: effectiveStatus ?? status,
+  issuedAt: issuedAt ?? DateTime.utc(2026, 9, 1),
+  expiresAt: expiresAt,
+  redeemedAt: redeemedAt,
+  revokedAt: revokedAt,
+  sourceType: sourceType,
+  cycleNumber: cycleNumber,
+  version: version,
+);

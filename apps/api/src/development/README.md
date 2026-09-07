@@ -69,3 +69,24 @@ Example first-run output:
 ```
 
 Re-running it prints the same shape with `registers` reported `existing` and nothing duplicated.
+
+## Loyalty rewards dev seed (TASK 13.1 Part M)
+
+`dev:seed-loyalty-rewards` creates exactly one active loyalty program, "Sellos VIP (5+1)" (`stamp` unit, `earn_quantity_per_sale: 1`, `reward_threshold: 5`, `reward_type: 'vip_pass'`, `reward_repeatable: true`), for the `inflapark-group` development company. It exists so the reward-entitlement engine (automatic threshold-crossing issuance, redemption, the Real Local QA VIP Pass walkthrough) can be exercised against a real, active program instead of only unit-tested in isolation.
+
+This is business **configuration**, not engine behavior: the "5 stamps → 1 VIP Pass" shape is plain data written through the real `LoyaltyService.createProgram`, never a hardcoded special case anywhere in `rewards.service.ts`/`loyalty.service.ts`. It targets only the fixed `inflapark-group` company created by `dev:bootstrap-owner`, resolved by slug, and refuses to run if that company doesn't exist yet. Guarded identically to the sibling dev seeds: `development`/`test` only, loopback PostgreSQL, allowlisted database name — it refuses production, staging, demo, or any other target.
+
+It does **not** activate any customer's loyalty account (an account is created lazily, the first time a real sale earns against the program) and it does **not** issue any reward entitlement itself — an entitlement is only ever issued by a real settled Sale crossing the threshold. Created through the real `LoyaltyService.createProgram` with a deterministic idempotency key, so re-running the command replays instead of duplicating.
+
+```powershell
+pnpm.cmd --filter @asone/api dev:bootstrap-owner
+pnpm.cmd --filter @asone/api dev:seed-loyalty-rewards
+```
+
+Example first-run output:
+
+```json
+{"company":"inflapark-group","program":{"id":"<uuid>","name":"Sellos VIP (5+1)","created":true},"success":true}
+```
+
+Re-running it prints the same shape with `"created":false` and nothing duplicated.

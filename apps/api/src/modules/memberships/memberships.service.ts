@@ -29,6 +29,57 @@ function addDays(start: Date, days: number): Date {
   return result;
 }
 
+// TASK 13.1A — real idempotent-replay decoders, replacing the bare
+// `as ...Row` casts these three `idempotent()` calls used before. A
+// replayed value is decoded from `idempotency_keys.response_body` (real
+// JSON), where every `Date` field is already an ISO STRING and
+// `version` a decimal string — a bare cast left the declared
+// `Date`/`bigint` types lying about the runtime shape, and the first
+// `.toISOString()` call downstream (`planHttp`/`membershipHttp`) would
+// throw on any replayed plan-create/issue/renew call. Mirrors `plan()`'s/
+// `membership()`'s own DB-row reconstruction in
+// `memberships.repository.ts` — `new Date(...)` is correct whether fed a
+// `Date` instance or an ISO string. See ADR-0018 (rewards) for the
+// identical bug/fix; same class, fixed across every affected module in
+// TASK 13.1A.
+function decodePlan(value: unknown): MembershipPlanRow {
+  const row = value as Omit<MembershipPlanRow, 'version' | 'createdAt' | 'updatedAt'> & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+function decodeMembership(value: unknown): CustomerMembershipRow {
+  const row = value as Omit<
+    CustomerMembershipRow,
+    'version' | 'createdAt' | 'updatedAt' | 'startsAt' | 'expiresAt' | 'issuedAt' | 'cancelledAt'
+  > & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+    startsAt: string;
+    expiresAt: string | null;
+    issuedAt: string;
+    cancelledAt: string | null;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+    startsAt: new Date(row.startsAt),
+    expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt),
+    issuedAt: new Date(row.issuedAt),
+    cancelledAt: row.cancelledAt === null ? null : new Date(row.cancelledAt),
+  };
+}
+
 export class MembershipsService {
   public constructor(private readonly repository: MembershipsRepository) {}
 
@@ -54,7 +105,7 @@ export class MembershipsService {
         'membership_plan.create',
         key,
         requestHash,
-        (value) => value as MembershipPlanRow,
+        decodePlan,
         async () => {
           const created = await this.repository.insertPlan(client, {
             id,
@@ -167,7 +218,7 @@ export class MembershipsService {
         'customer_membership.issue',
         key,
         requestHash,
-        (value) => value as CustomerMembershipRow,
+        decodeMembership,
         async () => {
           const plan = await this.repository.plan(client, context.companyId, input.membershipPlanId);
           if (plan === null) throw new MembershipError('resource_not_found', 'The membership plan was not found.');
@@ -258,7 +309,7 @@ export class MembershipsService {
         'customer_membership.renew',
         key,
         requestHash,
-        (value) => value as CustomerMembershipRow,
+        decodeMembership,
         async () => {
           const existing = await this.repository.membership(client, context.companyId, membershipId);
           if (existing === null) throw new MembershipError('resource_not_found', 'The membership was not found.');

@@ -58,6 +58,22 @@ const BRAND_COLUMNS =
 function result<T>(value: unknown): QueryResult<T> {
   return value as QueryResult<T>;
 }
+// TASK 13.1A — `createdAt`/`updatedAt`/`deletedAt` are wrapped in
+// `new Date(...)` rather than passed through directly. This mapper is
+// used for BOTH a fresh row from `pg` (already a real `Date` instance —
+// `new Date(aDate)` is a correct, cheap no-op there) AND — via
+// `idempotent()`'s own `category(existing.response_body as CategoryRow)`/
+// `brand(...)` replay path below — a value decoded from
+// `idempotency_keys.response_body`, real JSON where every `Date` field
+// is actually an ISO STRING despite the `CategoryRow`/`BrandRow` type
+// declaring `Date`. The previous direct pass-through worked for the
+// first case and silently lied about the second: a replayed
+// category/brand create's `.toISOString()` call downstream
+// (`categoryHttp`/`brandHttp`) would throw. `new Date(...)` is correct
+// for both inputs, so one mapper safely serves both call sites — no
+// separate decoder needed, matching `inventory.repository.ts`'s own
+// `location()` mapper, which already does exactly this. See ADR-0018
+// (rewards) for the original bug/fix this generalizes.
 function category(row: CategoryRow): Category {
   return {
     id: row.id,
@@ -69,9 +85,9 @@ function category(row: CategoryRow): Category {
     sortOrder: row.sort_order,
     status: row.status,
     version: BigInt(row.version),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    deletedAt: row.deleted_at,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at),
   };
 }
 function brand(row: BrandRow): Brand {
@@ -83,9 +99,9 @@ function brand(row: BrandRow): Brand {
     description: row.description,
     status: row.status,
     version: BigInt(row.version),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    deletedAt: row.deleted_at,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+    deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at),
   };
 }
 function pgConstraint(error: unknown): string | undefined {

@@ -12,6 +12,7 @@ import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
+import '../features/pos/pos_rewards_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
 import 'router.dart';
 
@@ -29,6 +30,7 @@ class AsOneApp extends StatefulWidget {
     this.posCustomersGateway = const EmptyPosCustomersGateway(),
     this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
     this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
+    this.posRewardsGateway = const EmptyPosRewardsGateway(),
     super.key,
   });
 
@@ -52,6 +54,9 @@ class AsOneApp extends StatefulWidget {
   final PosCustomersGateway posCustomersGateway;
   final PosMembershipsGateway posMembershipsGateway;
   final PosLoyaltyGateway posLoyaltyGateway;
+  // TASK 13.1: reward entitlements/redemption, layered on the TASK 13.0
+  // foundation above — see `pos_rewards_gateway.dart` and ADR-0018.
+  final PosRewardsGateway posRewardsGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -80,6 +85,7 @@ class _AsOneAppState extends State<AsOneApp> {
       posCustomersGateway: widget.posCustomersGateway,
       posMembershipsGateway: widget.posMembershipsGateway,
       posLoyaltyGateway: widget.posLoyaltyGateway,
+      posRewardsGateway: widget.posRewardsGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -100,6 +106,7 @@ class PlatformScope extends InheritedWidget {
     this.posCustomersGateway = const EmptyPosCustomersGateway(),
     this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
     this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
+    this.posRewardsGateway = const EmptyPosRewardsGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -140,6 +147,10 @@ class PlatformScope extends InheritedWidget {
   /// `pos_loyalty_gateway.dart` and ADR-0017.
   final PosLoyaltyGateway posLoyaltyGateway;
 
+  /// TASK 13.1: reward entitlement list/redeem/manual-issue/revoke — see
+  /// `pos_rewards_gateway.dart` and ADR-0018.
+  final PosRewardsGateway posRewardsGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -162,6 +173,7 @@ class PlatformScope extends InheritedWidget {
       posCustomersGateway != oldWidget.posCustomersGateway ||
       posMembershipsGateway != oldWidget.posMembershipsGateway ||
       posLoyaltyGateway != oldWidget.posLoyaltyGateway ||
+      posRewardsGateway != oldWidget.posRewardsGateway ||
       environment != oldWidget.environment;
 }
 

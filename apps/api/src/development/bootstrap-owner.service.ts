@@ -166,6 +166,16 @@ export const ownerPermissionCodes = Object.freeze([
   'loyalty.read',
   'loyalty.manage',
   'loyalty.adjust',
+  // TASK 13.1: reward entitlements/redemption — the owner seed exercises
+  // QA for the full VIP Pass 5+1 flow (issue via threshold crossing,
+  // manual issue, redeem, revoke), so it needs every reserved code this
+  // task added; a real cashier role only ever gets `reward.read`/
+  // `reward.redeem` (see technical-permissions.ts), but the dev owner is
+  // the admin identity this QA runs as.
+  'reward.read',
+  'reward.redeem',
+  'reward.issue',
+  'reward.revoke',
 ]);
 
 export interface BootstrapEnvironment {

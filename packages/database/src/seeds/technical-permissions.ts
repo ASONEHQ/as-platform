@@ -92,6 +92,17 @@ export const technicalPermissionCodes = [
   'loyalty.read',
   'loyalty.manage',
   'loyalty.adjust',
+  // TASK 13.1 — Reward entitlements/redemption/VIP Pass engine. `reward.
+  // read` is the cashier's own day-to-day lookup (Customer Detail/POS
+  // reward status); `reward.redeem` is the checkout-time consuming
+  // action; `reward.issue`/`reward.revoke` are admin-only (manual grant,
+  // fraud/correction) — a cashier gets `read`+`redeem` only, mirroring
+  // `discount.apply`/`membership.issue`'s own established "separate the
+  // checkout action from the admin action" shape.
+  'reward.read',
+  'reward.redeem',
+  'reward.issue',
+  'reward.revoke',
   'sync.execute',
   'audit.read',
   'recovery.read',

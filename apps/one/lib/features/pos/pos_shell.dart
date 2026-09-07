@@ -20,6 +20,7 @@ import 'pos_promotions_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
 import 'pos_refunds_gateway.dart';
+import 'pos_rewards_gateway.dart';
 import 'pos_sales_gateway.dart';
 import 'pos_tokens.dart';
 import 'receipt_html.dart';
@@ -40,6 +41,7 @@ class PosShell extends StatefulWidget {
     required this.customersGateway,
     required this.membershipsGateway,
     required this.loyaltyGateway,
+    required this.rewardsGateway,
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -66,6 +68,9 @@ class PosShell extends StatefulWidget {
   final PosCustomersGateway customersGateway;
   final PosMembershipsGateway membershipsGateway;
   final PosLoyaltyGateway loyaltyGateway;
+  // TASK 13.1: reward entitlements/redemption, layered on the foundation
+  // above — see `pos_rewards_gateway.dart` and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -208,6 +213,7 @@ class _PosShellState extends State<PosShell> {
             saleSession: saleSession,
             salesGateway: widget.salesGateway,
             paymentsGateway: widget.paymentsGateway,
+            rewardsGateway: widget.rewardsGateway,
             onRequestCajeroReturn: _requestCajeroReturn,
           );
         }
@@ -263,6 +269,7 @@ class _PosShellState extends State<PosShell> {
                             customersGateway: widget.customersGateway,
                             membershipsGateway: widget.membershipsGateway,
                             loyaltyGateway: widget.loyaltyGateway,
+                            rewardsGateway: widget.rewardsGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -2303,6 +2310,7 @@ class _Content extends StatelessWidget {
     required this.customersGateway,
     required this.membershipsGateway,
     required this.loyaltyGateway,
+    required this.rewardsGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2324,6 +2332,9 @@ class _Content extends StatelessWidget {
   final PosCustomersGateway customersGateway;
   final PosMembershipsGateway membershipsGateway;
   final PosLoyaltyGateway loyaltyGateway;
+  // TASK 13.1: reward entitlements/redemption — see
+  // `pos_rewards_gateway.dart` and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2371,6 +2382,7 @@ class _Content extends StatelessWidget {
                         cashGateway: cashGateway,
                         promotionsGateway: promotionsGateway,
                         customersGateway: customersGateway,
+                        rewardsGateway: rewardsGateway,
                         onEnterCliente: onEnterCliente,
                       ),
               )
@@ -2446,6 +2458,7 @@ class _Content extends StatelessWidget {
                     customersGateway: customersGateway,
                     membershipsGateway: membershipsGateway,
                     loyaltyGateway: loyaltyGateway,
+                    rewardsGateway: rewardsGateway,
                     salesGateway: salesGateway,
                   ),
                   // TASK 13.0: the pre-reserved `PosModule.memberships`
@@ -2717,6 +2730,7 @@ class _PosSale extends StatefulWidget {
     required this.cashGateway,
     required this.promotionsGateway,
     required this.customersGateway,
+    required this.rewardsGateway,
     required this.onEnterCliente,
   });
   final AuthenticatedContext context;
@@ -2732,6 +2746,9 @@ class _PosSale extends StatefulWidget {
   final PosPromotionsGateway promotionsGateway;
   // TASK 13.0: the CAJERO-only customer selector — see `_TicketFooter`.
   final PosCustomersGateway customersGateway;
+  // TASK 13.1: the CAJERO-only reward lookup/redeem affordance — see
+  // `_TicketFooter` and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final VoidCallback onEnterCliente;
 
   @override
@@ -2780,6 +2797,7 @@ class _PosSaleState extends State<_PosSale> {
                     cashGateway: widget.cashGateway,
                     promotionsGateway: widget.promotionsGateway,
                     customersGateway: widget.customersGateway,
+                    rewardsGateway: widget.rewardsGateway,
                     branchId: widget.context.session.branchId,
                     permissions: widget.context.permissions,
                     selectedCategoryId: selectedCategoryId,
@@ -2835,6 +2853,7 @@ class _PosSaleBody extends StatelessWidget {
     required this.cashGateway,
     required this.promotionsGateway,
     required this.customersGateway,
+    required this.rewardsGateway,
     required this.branchId,
     required this.permissions,
     required this.selectedCategoryId,
@@ -2852,6 +2871,7 @@ class _PosSaleBody extends StatelessWidget {
   final PosCashGateway cashGateway;
   final PosPromotionsGateway promotionsGateway;
   final PosCustomersGateway customersGateway;
+  final PosRewardsGateway rewardsGateway;
   final String? branchId;
   final List<String> permissions;
   final String? selectedCategoryId;
@@ -2911,6 +2931,7 @@ class _PosSaleBody extends StatelessWidget {
       cashGateway: cashGateway,
       promotionsGateway: promotionsGateway,
       customersGateway: customersGateway,
+      rewardsGateway: rewardsGateway,
       branchId: branchId,
       permissions: permissions,
     );
@@ -3601,6 +3622,7 @@ class _TicketPanel extends StatelessWidget {
     required this.cashGateway,
     required this.promotionsGateway,
     required this.customersGateway,
+    required this.rewardsGateway,
     required this.branchId,
     required this.permissions,
   });
@@ -3613,6 +3635,9 @@ class _TicketPanel extends StatelessWidget {
   final PosPromotionsGateway promotionsGateway;
   // TASK 13.0: the CAJERO-only customer selector — see `_TicketFooter`.
   final PosCustomersGateway customersGateway;
+  // TASK 13.1: the CAJERO-only reward lookup/redeem affordance — see
+  // `_TicketFooter` and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -3713,6 +3738,7 @@ class _TicketPanel extends StatelessWidget {
               cashGateway: cashGateway,
               promotionsGateway: promotionsGateway,
               customersGateway: customersGateway,
+              rewardsGateway: rewardsGateway,
               branchId: branchId,
               permissions: permissions,
             ),
@@ -3737,11 +3763,13 @@ class _ClienteTicketPreview extends StatelessWidget {
     required this.saleSession,
     required this.salesGateway,
     required this.paymentsGateway,
+    required this.rewardsGateway,
     required this.branchId,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
+  final PosRewardsGateway rewardsGateway;
   final String? branchId;
 
   @override
@@ -3824,6 +3852,7 @@ class _ClienteTicketPreview extends StatelessWidget {
               saleSession: saleSession,
               salesGateway: salesGateway,
               paymentsGateway: paymentsGateway,
+              rewardsGateway: rewardsGateway,
               branchId: branchId,
             ),
           ],
@@ -3906,11 +3935,13 @@ class _ClienteTicketFooter extends StatelessWidget {
     required this.saleSession,
     required this.salesGateway,
     required this.paymentsGateway,
+    required this.rewardsGateway,
     required this.branchId,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
+  final PosRewardsGateway rewardsGateway;
   final String? branchId;
 
   @override
@@ -3949,6 +3980,20 @@ class _ClienteTicketFooter extends StatelessWidget {
                 ],
               ),
             ),
+          // TASK 13.1 (Part W): the attached customer's OWN reward status
+          // — display-only, mirroring the read-only customer name above
+          // exactly (same "CLIENTE never gains a new privacy/action
+          // surface" rule). No redeem button here: an actual redemption
+          // always goes through the cashier-gated CAJERO path (Part V) —
+          // see `_ClienteRewardStatus`'s own doc comment.
+          if (saleSession.customerId != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _ClienteRewardStatus(
+                rewardsGateway: rewardsGateway,
+                customerId: saleSession.customerId!,
+              ),
+            ),
           _TicketTotalRow(
             label: 'Subtotal',
             value: _money(saleSession.displaySubtotal),
@@ -3974,6 +4019,84 @@ class _ClienteTicketFooter extends StatelessWidget {
             salesGateway: salesGateway,
             paymentsGateway: paymentsGateway,
             branchId: branchId,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 13.1 (Part W): CLIENTE's OWN read-only reward status — the
+/// customer already attached to the in-progress transaction, and never
+/// anyone/anything else: no directory, no other customer's data, no full
+/// historical ledger (Customer Detail's own history stays a staff-only
+/// surface — see `_CustomerDetailDialog`), and no manual issue/revoke
+/// control ever renders here. Deliberately renders NO button at all — a
+/// customer may SEE that a reward is available, but actually redeeming it
+/// always goes through the cashier-gated CAJERO path (`_TicketFooter`'s
+/// "Recompensas disponibles" affordance, gated on `reward.redeem`), never
+/// a self-service action from this locked surface. A failed/empty lookup
+/// renders nothing, matching this same file's "no empty-state clutter
+/// outside Customer Detail" rule for the CAJERO reward affordance above.
+class _ClienteRewardStatus extends StatefulWidget {
+  const _ClienteRewardStatus({required this.rewardsGateway, required this.customerId});
+  final PosRewardsGateway rewardsGateway;
+  final String customerId;
+
+  @override
+  State<_ClienteRewardStatus> createState() => _ClienteRewardStatusState();
+}
+
+class _ClienteRewardStatusState extends State<_ClienteRewardStatus> {
+  List<PosRewardEntitlement> _entitlements = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ClienteRewardStatus oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.customerId != oldWidget.customerId) unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final customerId = widget.customerId;
+    try {
+      final entitlements = await widget.rewardsGateway.entitlementsForCustomer(customerId);
+      if (!mounted || widget.customerId != customerId) return;
+      setState(() => _entitlements = entitlements);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _entitlements = const []);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final available = _entitlements.where((entitlement) => entitlement.isAvailable).length;
+    if (available == 0) return const SizedBox.shrink();
+    final palette = PosPalette.of(context);
+    return Container(
+      key: const Key('pos-cliente-ticket-reward-status'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.success.withValues(alpha: .12),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.card_giftcard_outlined, size: 14, color: palette.success),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              available == 1 ? 'Tienes 1 recompensa disponible.' : 'Tienes $available recompensas disponibles.',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: palette.success, fontSize: 11, fontWeight: FontWeight.w700),
+            ),
           ),
         ],
       ),
@@ -4115,6 +4238,7 @@ class _ClienteLockedShell extends StatelessWidget {
     required this.saleSession,
     required this.salesGateway,
     required this.paymentsGateway,
+    required this.rewardsGateway,
     required this.onRequestCajeroReturn,
   });
 
@@ -4123,6 +4247,9 @@ class _ClienteLockedShell extends StatelessWidget {
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
+  // TASK 13.1 (Part W): the attached customer's OWN reward status,
+  // display-only — see `_ClienteRewardStatus` and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final VoidCallback onRequestCajeroReturn;
 
   @override
@@ -4149,6 +4276,7 @@ class _ClienteLockedShell extends StatelessWidget {
                   saleSession: saleSession,
                   salesGateway: salesGateway,
                   paymentsGateway: paymentsGateway,
+                  rewardsGateway: rewardsGateway,
                   branchId: this.context.session.branchId,
                 );
                 if (wide) {
@@ -5099,6 +5227,7 @@ class _TicketFooter extends StatefulWidget {
     required this.cashGateway,
     required this.promotionsGateway,
     required this.customersGateway,
+    required this.rewardsGateway,
     required this.branchId,
     required this.permissions,
   });
@@ -5110,6 +5239,9 @@ class _TicketFooter extends StatefulWidget {
   // TASK 13.0: "Buscar cliente"/"Nuevo cliente" — see
   // `_CustomerSelectorDialog` and ADR-0017 Part H/I.
   final PosCustomersGateway customersGateway;
+  // TASK 13.1: the attached customer's reward lookup/redeem affordance —
+  // see `_TicketRewardsDialog` and ADR-0018 Part V.
+  final PosRewardsGateway rewardsGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -5137,6 +5269,21 @@ class _TicketFooterState extends State<_TicketFooter> {
   String? _lastQuotedSignature;
   bool _quoting = false;
 
+  // TASK 13.1 (Part V): the attached customer's own reward entitlements —
+  // re-fetched whenever the attached customer changes (never on every
+  // cart mutation, unlike the quote above). `_lastRewardsCustomerId`
+  // tracks which customer this list actually belongs to, so a stale
+  // fetch that resolves after the customer changed again is never
+  // applied (mirrors `_fetchQuote`'s own staleness guard).
+  List<PosRewardEntitlement> _rewardEntitlements = const [];
+  String? _lastRewardsCustomerId;
+
+  bool get _canReadReward => widget.permissions.contains('reward.read');
+  bool get _canRedeemReward => widget.permissions.contains('reward.redeem');
+
+  List<PosRewardEntitlement> get _availableRewards =>
+      _rewardEntitlements.where((entitlement) => entitlement.isAvailable).toList(growable: false);
+
   @override
   void initState() {
     super.initState();
@@ -5162,6 +5309,13 @@ class _TicketFooterState extends State<_TicketFooter> {
 
   void _onSaleSessionChanged() {
     final saleSession = widget.saleSession;
+    // TASK 13.1 (Part V): the reward lookup depends only on which
+    // customer is attached, never on the cart itself — checked
+    // independently of the quote debounce below (which short-circuits on
+    // an empty cart; a customer can be attached before any line exists).
+    if (saleSession.customerId != _lastRewardsCustomerId) {
+      unawaited(_loadRewards());
+    }
     // Always cancel any pending timer first — including when the
     // signature already matches `_lastQuotedSignature` (e.g. a caller
     // just applied a fresh quote for exactly this state itself, as
@@ -5178,6 +5332,43 @@ class _TicketFooterState extends State<_TicketFooter> {
     _quoteDebounce = Timer(const Duration(milliseconds: 350), () {
       unawaited(_fetchQuote(signature));
     });
+  }
+
+  // TASK 13.1 (Part V): re-fetched on every attached-customer change —
+  // never on a plain cart mutation. A permission-less actor, no attached
+  // customer, or a failed lookup all resolve to the same empty list, so
+  // the compact affordance below simply renders nothing rather than an
+  // error banner cluttering the main checkout flow.
+  Future<void> _loadRewards() async {
+    final customerId = widget.saleSession.customerId;
+    _lastRewardsCustomerId = customerId;
+    if (customerId == null || !_canReadReward) {
+      if (mounted) setState(() => _rewardEntitlements = const []);
+      return;
+    }
+    try {
+      final entitlements = await widget.rewardsGateway.entitlementsForCustomer(customerId);
+      // The attached customer may have changed again while this call was
+      // in flight — never apply a now-stale list to a different customer.
+      if (!mounted || widget.saleSession.customerId != customerId) return;
+      setState(() => _rewardEntitlements = entitlements);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _rewardEntitlements = const []);
+    }
+  }
+
+  Future<void> _openRewardsDialog() async {
+    final redeemed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _TicketRewardsDialog(
+        rewardsGateway: widget.rewardsGateway,
+        entitlements: _rewardEntitlements,
+        canRedeem: _canRedeemReward,
+        branchId: widget.branchId,
+      ),
+    );
+    if (redeemed == true) unawaited(_loadRewards());
   }
 
   Future<void> _fetchQuote(String signature) async {
@@ -5330,6 +5521,27 @@ class _TicketFooterState extends State<_TicketFooter> {
               onRemove: _removeCustomer,
             ),
           ),
+          // TASK 13.1 (Part V): a compact, collapsed-by-default reward
+          // affordance — only rendered once the attached customer has at
+          // least one entitlement whose backend-computed
+          // `effective_status` is `available`; never an empty-state
+          // placeholder cluttering the main checkout flow (that honest-
+          // empty-state requirement belongs to Customer Detail only, per
+          // ADR-0018 Part U/V).
+          if (_availableRewards.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const Key('pos-ticket-rewards-open'),
+                  onPressed: () => unawaited(_openRewardsDialog()),
+                  icon: const Icon(Icons.card_giftcard_outlined, size: 15),
+                  label: Text('Recompensas disponibles (${_availableRewards.length})'),
+                  style: OutlinedButton.styleFrom(foregroundColor: palette.blueDeep, side: BorderSide(color: palette.border)),
+                ),
+              ),
+            ),
           // TASK 12.9: automatic promotions surface on their own, no
           // coupon code required (ADR-0016) — the quote's own label,
           // never a hardcoded business name.
@@ -12380,12 +12592,16 @@ class _CustomersAdmin extends StatefulWidget {
     required this.customersGateway,
     required this.membershipsGateway,
     required this.loyaltyGateway,
+    required this.rewardsGateway,
     required this.salesGateway,
   });
   final AuthenticatedContext context;
   final PosCustomersGateway customersGateway;
   final PosMembershipsGateway membershipsGateway;
   final PosLoyaltyGateway loyaltyGateway;
+  // TASK 13.1: reward entitlements — see `_CustomerDetailDialog`'s
+  // Recompensas section and ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final PosSalesGateway salesGateway;
 
   @override
@@ -12489,6 +12705,7 @@ class _CustomersAdminState extends State<_CustomersAdmin> {
         customersGateway: widget.customersGateway,
         membershipsGateway: widget.membershipsGateway,
         loyaltyGateway: widget.loyaltyGateway,
+        rewardsGateway: widget.rewardsGateway,
         salesGateway: widget.salesGateway,
       ),
     );
@@ -12818,6 +13035,7 @@ class _CustomerDetailDialog extends StatefulWidget {
     required this.customersGateway,
     required this.membershipsGateway,
     required this.loyaltyGateway,
+    required this.rewardsGateway,
     required this.salesGateway,
   });
   final String customerId;
@@ -12825,6 +13043,8 @@ class _CustomerDetailDialog extends StatefulWidget {
   final PosCustomersGateway customersGateway;
   final PosMembershipsGateway membershipsGateway;
   final PosLoyaltyGateway loyaltyGateway;
+  // TASK 13.1: reward entitlements (Recompensas) — see ADR-0018.
+  final PosRewardsGateway rewardsGateway;
   final PosSalesGateway salesGateway;
 
   @override
@@ -12854,6 +13074,11 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
   List<PosSaleSummary> _sales = const [];
   String? _salesError;
 
+  // TASK 13.1: reward entitlements (Recompensas) — see ADR-0018.
+  bool _rewardsLoaded = false;
+  List<PosRewardEntitlement> _rewards = const [];
+  String? _rewardsError;
+
   // Whether the caller's own list should reload (e.g. after an edit
   // changes this customer's `display_name`/`status`).
   bool _changed = false;
@@ -12866,6 +13091,9 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
   bool get _canReadLoyalty => widget.context.permissions.contains('loyalty.read');
   bool get _canAdjustLoyalty => widget.context.permissions.contains('loyalty.adjust');
   bool get _canReadSales => widget.context.permissions.contains('sale.read');
+  bool get _canReadReward => widget.context.permissions.contains('reward.read');
+  bool get _canIssueReward => widget.context.permissions.contains('reward.issue');
+  bool get _canRevokeReward => widget.context.permissions.contains('reward.revoke');
 
   @override
   void initState() {
@@ -12874,6 +13102,7 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
     unawaited(_loadMemberships());
     unawaited(_loadLoyalty());
     unawaited(_loadSales());
+    unawaited(_loadRewards());
   }
 
   Future<void> _loadCustomer() async {
@@ -13009,6 +13238,37 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
     }
   }
 
+  // TASK 13.1 (Part U): reward entitlements — backend truth only, exactly
+  // like `_loadLoyalty`/`_loadMemberships` above; never derives
+  // availability locally (ADR-0018).
+  Future<void> _loadRewards() async {
+    if (!_canReadReward) {
+      setState(() => _rewardsLoaded = true);
+      return;
+    }
+    setState(() => _rewardsError = null);
+    try {
+      final rewards = await widget.rewardsGateway.entitlementsForCustomer(widget.customerId);
+      if (!mounted) return;
+      setState(() {
+        _rewards = rewards;
+        _rewardsLoaded = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _rewardsLoaded = true;
+        _rewardsError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _rewardsLoaded = true;
+        _rewardsError = 'No fue posible cargar las recompensas.';
+      });
+    }
+  }
+
   Future<void> _openEdit() async {
     final customer = _customer;
     if (customer == null) return;
@@ -13111,6 +13371,32 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
       ),
     );
     if (adjusted == true) unawaited(_loadLoyalty());
+  }
+
+  // TASK 13.1 (Part U): manual issuance — mirrors `_openIssueMembership`
+  // exactly (never the automatic loyalty-threshold path, which happens
+  // server-side — see `pos_rewards_gateway.dart`).
+  Future<void> _openIssueReward() async {
+    final issued = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _IssueRewardDialog(
+        rewardsGateway: widget.rewardsGateway,
+        customerId: widget.customerId,
+        programs: _programs,
+      ),
+    );
+    if (issued == true) unawaited(_loadRewards());
+  }
+
+  Future<void> _openRevokeReward(PosRewardEntitlement entitlement) async {
+    final revoked = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _RevokeRewardDialog(
+        rewardsGateway: widget.rewardsGateway,
+        entitlement: entitlement,
+      ),
+    );
+    if (revoked == true) unawaited(_loadRewards());
   }
 
   @override
@@ -13252,9 +13538,21 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
         Divider(color: palette.border, height: 16),
         _buildMembershipsSection(palette),
         const SizedBox(height: 16),
-        sectionTitle('REWARDS'),
+        // TASK 13.0: the loyalty points/stamps ledger — renamed from the
+        // bare "REWARDS" heading to "AS REWARDS+" (matching this same
+        // file's own `_loyaltyError` copy: "No fue posible cargar AS
+        // Rewards+.") now that TASK 13.1 adds a second, DISTINCT
+        // "RECOMPENSAS" section right below for actual reward
+        // entitlements — the two must never be visually or conceptually
+        // conflated (ADR-0018 Part L/X's same "never conflate" rule,
+        // applied here to two sections instead of two QR concepts).
+        sectionTitle('AS REWARDS+'),
         Divider(color: palette.border, height: 16),
         _buildLoyaltySection(palette),
+        const SizedBox(height: 16),
+        sectionTitle('RECOMPENSAS'),
+        Divider(color: palette.border, height: 16),
+        _buildRewardsSection(palette),
         const SizedBox(height: 16),
         sectionTitle('VENTAS RECIENTES'),
         Divider(color: palette.border, height: 16),
@@ -13445,6 +13743,97 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
     );
   }
 
+  // TASK 13.1 (Part U): reward entitlements — Disponibles (redeemable
+  // right now) plus Historial (redeemed/expired/revoked), clearly
+  // separated. Every "is this redeemable" decision reads
+  // `entitlement.effectiveStatus` straight from the backend response
+  // already fetched — never recomputed from `status` plus a locally-
+  // parsed `expiresAt` (ADR-0018 Part N). An empty list renders one
+  // honest "No hay recompensas disponibles." line, never a fabricated
+  // placeholder reward.
+  Widget _buildRewardsSection(PosPalette palette) {
+    if (!_canReadReward) {
+      return Text('Sin permiso para ver recompensas.', style: TextStyle(color: palette.textMuted, fontSize: 12));
+    }
+    if (!_rewardsLoaded) {
+      return const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    if (_rewardsError != null) {
+      return Text(_rewardsError!, style: TextStyle(color: palette.error, fontSize: 12));
+    }
+    final available = _rewards.where((entitlement) => entitlement.isAvailable).toList(growable: false);
+    final history = _rewards.where((entitlement) => !entitlement.isAvailable).toList(growable: false);
+    Widget rewardRow(PosRewardEntitlement entitlement, {bool showRevoke = false}) => Padding(
+      key: Key('pos-customer-reward-${entitlement.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _rewardTypeLabel(entitlement.rewardType),
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+                Text(
+                  entitlement.expiresAt == null
+                      ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
+                      : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
+                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          _RewardStatusChip(status: entitlement.effectiveStatus),
+          if (showRevoke && _canRevokeReward) ...[
+            const SizedBox(width: 8),
+            OutlinedButton(
+              key: Key('pos-customer-reward-revoke-${entitlement.id}'),
+              onPressed: () => unawaited(_openRevokeReward(entitlement)),
+              style: OutlinedButton.styleFrom(foregroundColor: palette.error, side: BorderSide(color: palette.border)),
+              child: const Text('Revocar'),
+            ),
+          ],
+        ],
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_rewards.isEmpty)
+          Text('No hay recompensas disponibles.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+        else ...[
+          if (available.isEmpty)
+            Text('Sin recompensas disponibles actualmente.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+          else ...[
+            Text('Disponibles', style: TextStyle(color: palette.textMuted, fontSize: 10, fontWeight: FontWeight.w700)),
+            for (final entitlement in available) rewardRow(entitlement, showRevoke: true),
+          ],
+          if (history.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('Historial', style: TextStyle(color: palette.textMuted, fontSize: 10, fontWeight: FontWeight.w700)),
+            for (final entitlement in history) rewardRow(entitlement),
+          ],
+        ],
+        if (_canIssueReward && _programs.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('pos-customer-reward-issue'),
+              onPressed: () => unawaited(_openIssueReward()),
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('Agregar recompensa'),
+              style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildSalesSection(PosPalette palette) {
     if (!_canReadSales) {
       return Text('Sin permiso para ver ventas.', style: TextStyle(color: palette.textMuted, fontSize: 12));
@@ -13489,6 +13878,489 @@ String _entryTypeLabel(String entryType) => switch (entryType) {
   'expiration' => 'Expiración',
   _ => entryType,
 };
+
+// ---------------------------------------------------------------------
+// TASK 13.1 — Reward entitlements (Recompensas): Customer Detail's own
+// Disponibles/Historial list, the CAJERO checkout redeem affordance
+// (`_TicketFooter`/`_TicketRewardsDialog`), and CLIENTE's read-only
+// status (`_ClienteRewardStatus`) — see `pos_rewards_gateway.dart` and
+// ADR-0018. Every status shown anywhere in this section reads
+// `effectiveStatus`, the backend's own live-computed value — never
+// `status` plus a locally-parsed `expiresAt` (Part N).
+// ---------------------------------------------------------------------
+
+/// `RewardType` is currently always `vip_pass` — kept a plain string
+/// lookup (never a closed Dart enum) so a future backend-added type
+/// displays honestly without a Flutter release, matching
+/// `_entryTypeLabel`'s own fallback-to-raw-value convention above.
+String _rewardTypeLabel(String rewardType) => switch (rewardType) {
+  'vip_pass' => 'Pase VIP',
+  _ => rewardType,
+};
+
+/// `RewardEntitlementStatus`, in Spanish — the exact vocabulary this task
+/// specifies (Disponible/Canjeado/Vencido/Revocado), consistent across
+/// every reward surface in this file.
+String _rewardStatusLabel(String effectiveStatus) => switch (effectiveStatus) {
+  'available' => 'Disponible',
+  'redeemed' => 'Canjeado',
+  'expired' => 'Vencido',
+  'revoked' => 'Revocado',
+  _ => effectiveStatus,
+};
+
+class _RewardStatusChip extends StatelessWidget {
+  const _RewardStatusChip({required this.status});
+
+  /// The entitlement's `effectiveStatus` — never its raw `status`.
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = switch (status) {
+      'available' => palette.success,
+      'redeemed' => palette.blueDeep,
+      'expired' => palette.warning,
+      'revoked' => palette.error,
+      _ => palette.textSecondary,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(
+        _rewardStatusLabel(status),
+        style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+}
+
+/// `POST /customers/{customerId}/reward-entitlements` — MANUAL admin
+/// issuance only (`reward.issue`), mirroring `_IssueMembershipDialog`
+/// exactly. `reason_code` is required by the backend schema (`minLength:
+/// 1`), so this dialog validates it the same way `_CancelMembershipDialog`
+/// validates its own reason field.
+class _IssueRewardDialog extends StatefulWidget {
+  const _IssueRewardDialog({
+    required this.rewardsGateway,
+    required this.customerId,
+    required this.programs,
+  });
+  final PosRewardsGateway rewardsGateway;
+  final String customerId;
+  final List<PosLoyaltyProgram> programs;
+
+  @override
+  State<_IssueRewardDialog> createState() => _IssueRewardDialogState();
+}
+
+class _IssueRewardDialogState extends State<_IssueRewardDialog> {
+  late String? _programId = widget.programs.isEmpty ? null : widget.programs.first.id;
+  final _reasonController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final programId = _programId;
+    final reason = _reasonController.text.trim();
+    if (programId == null) {
+      setState(() => _error = 'Selecciona un programa.');
+      return;
+    }
+    if (reason.isEmpty) {
+      setState(() => _error = 'Escribe un motivo.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.rewardsGateway.issueManual(
+        customerId: widget.customerId,
+        loyaltyProgramId: programId,
+        reasonCode: reason,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible emitir la recompensa.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Agregar recompensa',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                key: const Key('pos-issue-reward-program'),
+                initialValue: _programId,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Programa'),
+                items: [
+                  for (final program in widget.programs)
+                    DropdownMenuItem(value: program.id, child: Text(program.name)),
+                ],
+                onChanged: (value) => setState(() => _programId = value),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-issue-reward-reason'),
+                controller: _reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-issue-reward-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-issue-reward-save'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Emitir'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `POST /reward-entitlements/{id}/revoke` — a manual remedy only
+/// (`reward.revoke`), mirroring `_CancelMembershipDialog` exactly,
+/// including its `If-Match`/`version` handling.
+class _RevokeRewardDialog extends StatefulWidget {
+  const _RevokeRewardDialog({required this.rewardsGateway, required this.entitlement});
+  final PosRewardsGateway rewardsGateway;
+  final PosRewardEntitlement entitlement;
+
+  @override
+  State<_RevokeRewardDialog> createState() => _RevokeRewardDialogState();
+}
+
+class _RevokeRewardDialogState extends State<_RevokeRewardDialog> {
+  final _reasonController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _error = 'Escribe un motivo.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.rewardsGateway.revoke(
+        widget.entitlement.id,
+        reason: reason,
+        version: widget.entitlement.version,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible revocar la recompensa.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Revocar recompensa',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-revoke-reward-reason'),
+                controller: _reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, key: const Key('pos-revoke-reward-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Regresar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-revoke-reward-confirm'),
+                      onPressed: _busy ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.error),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Revocar recompensa'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 13.1 (Part V): the CAJERO checkout reward-lookup/redeem dialog —
+/// opened from `_TicketFooter`'s compact "Recompensas disponibles"
+/// affordance. Shows every entitlement already fetched for the attached
+/// customer (available AND history, for context), but only ever renders
+/// a "Canjear" action for a row whose `effectiveStatus` is `available`
+/// AND [canRedeem] (`reward.redeem`) is true — mirrors `refund.create`'s
+/// own "hide the control entirely for a permission-less actor, never a
+/// disabled placeholder" precedent (see `_refundActionWidget` above).
+/// Deliberately distinct from `_CustomerSelectorDialog`'s customer-QR
+/// flow — never the same component, never a shared token concept (Part
+/// L/X).
+class _TicketRewardsDialog extends StatefulWidget {
+  const _TicketRewardsDialog({
+    required this.rewardsGateway,
+    required this.entitlements,
+    required this.canRedeem,
+    required this.branchId,
+  });
+  final PosRewardsGateway rewardsGateway;
+  final List<PosRewardEntitlement> entitlements;
+  final bool canRedeem;
+  final String? branchId;
+
+  @override
+  State<_TicketRewardsDialog> createState() => _TicketRewardsDialogState();
+}
+
+class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
+  late List<PosRewardEntitlement> _entitlements = widget.entitlements;
+  String? _busyId;
+  String? _error;
+  bool _anyRedeemed = false;
+
+  Future<void> _redeem(PosRewardEntitlement entitlement) async {
+    setState(() {
+      _busyId = entitlement.id;
+      _error = null;
+    });
+    try {
+      final updated = await widget.rewardsGateway.redeem(entitlement.id, branchId: widget.branchId);
+      if (!mounted) return;
+      setState(() {
+        _entitlements = [
+          for (final item in _entitlements) if (item.id == updated.id) updated else item,
+        ];
+        _busyId = null;
+        _anyRedeemed = true;
+      });
+      _showNotice(context, 'Recompensa canjeada.');
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busyId = null;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busyId = null;
+        _error = 'No fue posible canjear la recompensa.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 480),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Recompensas',
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('pos-ticket-rewards-close'),
+                    onPressed: () => Navigator.of(context).pop(_anyRedeemed),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_error != null) ...[
+                Text(_error!, style: TextStyle(color: palette.error, fontSize: 12)),
+                const SizedBox(height: 6),
+              ],
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final entitlement in _entitlements)
+                        Padding(
+                          key: Key('pos-ticket-reward-${entitlement.id}'),
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _rewardTypeLabel(entitlement.rewardType),
+                                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                                    ),
+                                    Text(
+                                      entitlement.expiresAt == null
+                                          ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
+                                          : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
+                                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              _RewardStatusChip(status: entitlement.effectiveStatus),
+                              if (entitlement.isAvailable && widget.canRedeem) ...[
+                                const SizedBox(width: 8),
+                                _busyId == entitlement.id
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : OutlinedButton(
+                                        key: Key('pos-ticket-reward-redeem-${entitlement.id}'),
+                                        onPressed: () => unawaited(_redeem(entitlement)),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: palette.action,
+                                          side: BorderSide(color: palette.border),
+                                        ),
+                                        child: const Text('Canjear'),
+                                      ),
+                              ],
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// Manual admin issuance only (ADR-0017 D9) — never the POS-purchase
 /// path, which happens automatically server-side on payment settlement.

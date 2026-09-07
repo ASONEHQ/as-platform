@@ -14,6 +14,7 @@
     "dev:bootstrap-owner": "node --env-file-if-exists=../../.env --import tsx src/development/bootstrap-owner.cli.ts",
     "dev:seed-pos-catalog": "node --env-file-if-exists=../../.env --import tsx src/development/seed-pos-catalog.cli.ts",
     "dev:seed-cash-registers": "node --env-file-if-exists=../../.env --import tsx src/development/seed-cash-registers.cli.ts",
+    "dev:seed-loyalty-rewards": "node --env-file-if-exists=../../.env --import tsx src/development/seed-loyalty-rewards.cli.ts",
     "ops": "tsx src/operations/cli.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },

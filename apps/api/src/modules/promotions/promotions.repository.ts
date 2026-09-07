@@ -168,15 +168,6 @@ function coupon(row: CouponDb): CouponRow {
     updatedAt: new Date(row.updated_at),
   };
 }
-function decodePromotion(value: unknown): PromotionRow {
-  const row = value as PromotionDb;
-  return promotion(row);
-}
-function decodeCoupon(value: unknown): CouponRow {
-  const row = value as CouponDb;
-  return coupon(row);
-}
-
 export interface ResolvedPricingProduct {
   productId: string;
   categoryId: string | null;
@@ -1037,8 +1028,6 @@ export class PromotionsRepository {
     }
   }
 }
-
-export { decodePromotion, decodeCoupon };
 
 export function encodePromotionCursor(createdAt: Date, id: string): string {
   return Buffer.from(JSON.stringify([createdAt.toISOString(), id]), 'utf8').toString('base64url');

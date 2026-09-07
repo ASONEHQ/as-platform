@@ -155,6 +155,13 @@
       "when": 1788534168629,
       "tag": "0021_powerful_ezekiel_stane",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788545597288,
+      "tag": "0022_cheerful_scrambler",
+      "breakpoints": true
     }
   ]
 }

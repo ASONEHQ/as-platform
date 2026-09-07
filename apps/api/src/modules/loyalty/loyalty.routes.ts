@@ -50,6 +50,9 @@ function programHttp(value: LoyaltyProgramRow): Readonly<Record<string, unknown>
     minimum_sale_total: value.minimumSaleTotal,
     reward_threshold: value.rewardThreshold,
     reward_description: value.rewardDescription,
+    reward_type: value.rewardType,
+    reward_expiration_days: value.rewardExpirationDays,
+    reward_repeatable: value.rewardRepeatable,
     version: Number(value.version),
   };
 }
@@ -89,6 +92,9 @@ const programSchema = {
     minimum_sale_total: { type: 'string', pattern: '^\\d+(\\.\\d{1,4})?$' },
     reward_threshold: { type: 'integer', minimum: 1 },
     reward_description: { type: 'string', maxLength: 500 },
+    reward_type: { type: 'string', enum: ['vip_pass'] },
+    reward_expiration_days: { type: 'integer', minimum: 1 },
+    reward_repeatable: { type: 'boolean' },
   },
 } as const;
 
@@ -109,6 +115,9 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
           minimum_sale_total?: string;
           reward_threshold?: number;
           reward_description?: string;
+          reward_type?: 'vip_pass';
+          reward_expiration_days?: number;
+          reward_repeatable?: boolean;
         };
         const created = await service.createProgram(
           mutationContext(request, auth.companyId, auth.userId, auth.permissions),
@@ -122,6 +131,9 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
             ...(body.minimum_sale_total === undefined ? {} : { minimumSaleTotal: body.minimum_sale_total }),
             ...(body.reward_threshold === undefined ? {} : { rewardThreshold: body.reward_threshold }),
             ...(body.reward_description === undefined ? {} : { rewardDescription: body.reward_description }),
+            ...(body.reward_type === undefined ? {} : { rewardType: body.reward_type }),
+            ...(body.reward_expiration_days === undefined ? {} : { rewardExpirationDays: body.reward_expiration_days }),
+            ...(body.reward_repeatable === undefined ? {} : { rewardRepeatable: body.reward_repeatable }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -173,6 +185,9 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
           minimum_sale_total: string;
           reward_threshold: number;
           reward_description: string;
+          reward_type: 'vip_pass';
+          reward_expiration_days: number;
+          reward_repeatable: boolean;
         }>;
         const updated = await service.updateProgram(
           mutationContext(request, auth.companyId, auth.userId, auth.permissions),
@@ -186,6 +201,9 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
             ...(body.minimum_sale_total === undefined ? {} : { minimumSaleTotal: body.minimum_sale_total }),
             ...(body.reward_threshold === undefined ? {} : { rewardThreshold: body.reward_threshold }),
             ...(body.reward_description === undefined ? {} : { rewardDescription: body.reward_description }),
+            ...(body.reward_type === undefined ? {} : { rewardType: body.reward_type }),
+            ...(body.reward_expiration_days === undefined ? {} : { rewardExpirationDays: body.reward_expiration_days }),
+            ...(body.reward_repeatable === undefined ? {} : { rewardRepeatable: body.reward_repeatable }),
           },
         );
         return reply.header('etag', `"${updated.version.toString()}"`).send(successResponse(programHttp(updated), request.requestContext));

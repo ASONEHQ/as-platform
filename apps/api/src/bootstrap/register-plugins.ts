@@ -67,6 +67,9 @@ import { PaymentService } from '../modules/payments/payments.service.js';
 import { MercadoPagoClient } from '../modules/payments/providers/mercado-pago.client.js';
 import { MercadoPagoPointProvider } from '../modules/payments/providers/mercado-pago.provider.js';
 import { registerMercadoPagoWebhookRoutes } from '../modules/payments/providers/mercado-pago.webhook.routes.js';
+import { RewardsRepository } from '../modules/rewards/rewards.repository.js';
+import { registerRewardRoutes } from '../modules/rewards/rewards.routes.js';
+import { RewardsService } from '../modules/rewards/rewards.service.js';
 import { PromotionsRepository } from '../modules/promotions/promotions.repository.js';
 import { registerPromotionRoutes } from '../modules/promotions/promotions.routes.js';
 import { PromotionsService } from '../modules/promotions/promotions.service.js';
@@ -239,6 +242,15 @@ export async function registerPlugins(
       const membershipsService = new MembershipsService(membershipsRepository);
       const loyaltyRepository = new LoyaltyRepository(options.infrastructure.database);
       const loyaltyService = new LoyaltyService(loyaltyRepository);
+      // TASK 13.1: constructed before `paymentService` too — automatic
+      // reward-entitlement issuance evaluates threshold-crossing inside
+      // the SAME transaction `loyaltyService.earnFromSale` just ran in
+      // (see `PaymentService.applyPostSettlementHooks` and ADR-0018
+      // "Issuance transaction boundary"). Depends on `loyaltyRepository`
+      // (read-only, cross-module) and `customersRepository` (Part Q —
+      // redemption checks the customer is still active).
+      const rewardsRepository = new RewardsRepository(options.infrastructure.database);
+      const rewardsService = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
       // TASK 12.4B.1: constructed unconditionally, even with no
       // MERCADO_PAGO_ACCESS_TOKEN set — see MercadoPagoClient's own doc
       // comment for why this is the correct "fail safely" boundary.
@@ -255,6 +267,7 @@ export async function registerPlugins(
         cashRepository,
         membershipsService,
         loyaltyService,
+        rewardsService,
       );
       // TASK 12.8: constructed after payments/cash — a refund completion
       // reverses the original payment and, for a cash refund, posts to
@@ -282,6 +295,7 @@ export async function registerPlugins(
       registerCustomerRoutes(app, authentication, customersService);
       registerMembershipRoutes(app, authentication, membershipsService);
       registerLoyaltyRoutes(app, authentication, loyaltyService);
+      registerRewardRoutes(app, authentication, rewardsService);
       registerMercadoPagoWebhookRoutes(app, {
         paymentService,
         mercadoPagoProvider,

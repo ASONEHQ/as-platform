@@ -358,11 +358,21 @@ export const customerMemberships = pgTable(
  * executable JSON — Part S is explicit about this). `earning_rule_type`
  * has exactly one implemented value today (`'per_completed_sale'`),
  * reserved-but-extensible the same way `products.product_type='kit'`
- * already is in this codebase. `reward_threshold`/`reward_description` are
- * informational/progress-display only (Part T: no durable reward
- * entitlement is issued by this task — deliberately deferred, documented
- * in ADR-0017). No company has automatic earning unless it explicitly
- * creates AND activates a program — "no invisible business rule" (Part R). */
+ * already is in this codebase. No company has automatic earning unless it
+ * explicitly creates AND activates a program — "no invisible business
+ * rule" (Part R).
+ *
+ * TASK 13.1 adds `reward_type`/`reward_expiration_days`/
+ * `reward_repeatable` — the minimum typed data needed to actually ISSUE a
+ * durable `reward_entitlements` row once `reward_threshold` (already
+ * reserved by TASK 13.0) is crossed. `reward_type` is `null` for a program
+ * that only tracks progress display (`reward_threshold`/
+ * `reward_description`) without ever issuing anything — automatic
+ * issuance is gated on `reward_type is not null`, never inferred from
+ * `reward_threshold` alone. See ADR-0018 "Reward definitions"/"Threshold
+ * semantics". */
+export const rewardTypes = ['vip_pass'] as const;
+
 export const loyaltyPrograms = pgTable(
   'loyalty_programs',
   {
@@ -376,6 +386,10 @@ export const loyaltyPrograms = pgTable(
     minimumSaleTotal: numeric('minimum_sale_total', { precision: 19, scale: 4 }),
     rewardThreshold: integer('reward_threshold'),
     rewardDescription: text('reward_description'),
+    // TASK 13.1 additions.
+    rewardType: text('reward_type'),
+    rewardExpirationDays: integer('reward_expiration_days'),
+    rewardRepeatable: boolean('reward_repeatable').notNull().default(true),
     createdBy: uuid('created_by').notNull(),
     updatedBy: uuid('updated_by').notNull(),
     version: bigint('version', { mode: 'bigint' }).notNull().default(sql`1`),
@@ -409,6 +423,19 @@ export const loyaltyPrograms = pgTable(
     check(
       'loyalty_programs_reward_threshold_ck',
       sql`${table.rewardThreshold} is null or ${table.rewardThreshold} > 0`,
+    ),
+    check('loyalty_programs_reward_type_ck', sql`${table.rewardType} is null or ${table.rewardType} in ('vip_pass')`),
+    check(
+      'loyalty_programs_reward_expiration_days_ck',
+      sql`${table.rewardExpirationDays} is null or ${table.rewardExpirationDays} > 0`,
+    ),
+    // Automatic issuance needs BOTH a threshold and a reward type — never
+    // one without the other (a threshold with no type would be an
+    // "eligible for nothing" dead configuration; a type with no threshold
+    // has no crossing to trigger it).
+    check(
+      'loyalty_programs_reward_pair_ck',
+      sql`(${table.rewardThreshold} is null) = (${table.rewardType} is null)`,
     ),
     check('loyalty_programs_version_ck', sql`${table.version} >= 1`),
   ],
@@ -470,6 +497,9 @@ export const loyaltyLedger = pgTable(
     createdAt: createdAtColumn(),
   },
   (table) => [
+    // TASK 13.1 — lets `reward_entitlements.source_ledger_entry_id` carry
+    // a real composite FK into this table (never a fabricated reference).
+    unique('loyalty_ledger_company_id_id_uq').on(table.companyId, table.id),
     // One automatic 'earn' per (program, sale) — a retried/replayed sale
     // settlement can never double-earn.
     unique('loyalty_ledger_company_program_sale_uq').on(
@@ -523,6 +553,189 @@ export const loyaltyLedger = pgTable(
   ],
 );
 
+/**
+ * TASK 13.1 — the durable, historical reward entitlement (ADR-0018
+ * "Reward entitlement vs loyalty balance"). Never inferred from the
+ * ledger's current balance, never a `customer.hasVipPass = true` flag —
+ * an issued reward is its own permanent row, exactly like
+ * `customer_memberships` is its own row separate from `membership_plans`
+ * (Part J's identical "definition vs. issued fact" shape, reused here).
+ *
+ * `available|redeemed|expired|revoked` only (Part B) — no transition back
+ * to `available`. `expired` is set LAZILY (Part N): never a scheduled
+ * job; `RewardsService.redeem` transitions a past-`expires_at` row to
+ * `expired` at the moment someone actually tries to redeem it (the one
+ * place a stale status would cause a real problem), and read paths
+ * compute an "effective status" for display without ever persisting a
+ * write on a mere read — see ADR-0018.
+ *
+ * `cycle_number` is the durable THRESHOLD-CYCLE identity (Part D/G) —
+ * `floor(cumulative_qualifying_earn_units / reward_threshold)` — computed
+ * fresh from `loyalty_ledger`'s own append-only `entry_type='earn'` sum
+ * every time, never a separately-tracked running counter that could
+ * desync from the ledger it's supposed to describe. `null` for a MANUAL
+ * issuance (`source_type='manual'`) — Postgres treats every `NULL` as
+ * distinct in the unique constraint below, so manual issuances never
+ * collide with each other or with automatic ones; a non-null
+ * `cycle_number` can only ever back ONE entitlement per
+ * (account, program) — the exact database-level guarantee Part G
+ * requires. */
+export const rewardEntitlementStatuses = ['available', 'redeemed', 'expired', 'revoked'] as const;
+export const rewardEntitlementSourceTypes = ['loyalty_threshold', 'manual'] as const;
+
+export const rewardEntitlements = pgTable(
+  'reward_entitlements',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    customerId: uuid('customer_id').notNull(),
+    loyaltyAccountId: uuid('loyalty_account_id').notNull(),
+    loyaltyProgramId: uuid('loyalty_program_id').notNull(),
+    rewardType: text('reward_type').notNull(),
+    status: text('status').notNull().default('available'),
+    issuedAt: timestamp('issued_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true, mode: 'date' }),
+    redeemedBy: uuid('redeemed_by'),
+    redeemedBranchId: uuid('redeemed_branch_id'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+    revokedBy: uuid('revoked_by'),
+    revokedReason: text('revoked_reason'),
+    sourceType: text('source_type').notNull(),
+    // Deliberately NOT the row that "caused" issuance in a strict 1:1
+    // sense (a single large earn event can complete more than one cycle
+    // — see ADR-0018's threshold-crossing loop) — an informational
+    // pointer to the earn entry active at issuance time, real FK since
+    // both tables live in this same file (no circular-dependency
+    // constraint applies here, unlike the `sales`-referencing columns
+    // elsewhere in this file).
+    sourceLedgerEntryId: uuid('source_ledger_entry_id'),
+    cycleNumber: integer('cycle_number'),
+    createdBy: uuid('created_by').notNull(),
+    version: bigint('version', { mode: 'bigint' }).notNull().default(sql`1`),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    unique('reward_entitlements_company_id_id_uq').on(table.companyId, table.id),
+    // The database-level idempotent-issuance guarantee (Part G) — a
+    // retried/replayed settlement, or two concurrent qualifying
+    // transactions, can never issue two entitlements for the same
+    // (account, program, cycle). Manual issuances (`cycle_number` null)
+    // never collide with this constraint at all.
+    unique('reward_entitlements_company_account_program_cycle_uq').on(
+      table.companyId,
+      table.loyaltyAccountId,
+      table.loyaltyProgramId,
+      table.cycleNumber,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.customerId],
+      foreignColumns: [customers.companyId, customers.id],
+      name: 'reward_entitlements_customer_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.loyaltyAccountId],
+      foreignColumns: [loyaltyAccounts.companyId, loyaltyAccounts.id],
+      name: 'reward_entitlements_account_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.loyaltyProgramId],
+      foreignColumns: [loyaltyPrograms.companyId, loyaltyPrograms.id],
+      name: 'reward_entitlements_program_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.sourceLedgerEntryId],
+      foreignColumns: [loyaltyLedger.companyId, loyaltyLedger.id],
+      name: 'reward_entitlements_source_ledger_entry_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.redeemedBranchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'reward_entitlements_redeemed_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.redeemedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'reward_entitlements_redeemed_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.revokedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'reward_entitlements_revoked_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.createdBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'reward_entitlements_created_by_membership_fk',
+    }).onDelete('restrict'),
+    index('reward_entitlements_customer_idx').on(table.companyId, table.customerId),
+    index('reward_entitlements_company_status_idx').on(table.companyId, table.status),
+    check('reward_entitlements_reward_type_ck', sql`${table.rewardType} in ('vip_pass')`),
+    check(
+      'reward_entitlements_status_ck',
+      sql`${table.status} in ('available', 'redeemed', 'expired', 'revoked')`,
+    ),
+    check(
+      'reward_entitlements_source_type_ck',
+      sql`${table.sourceType} in ('loyalty_threshold', 'manual')`,
+    ),
+    // Threshold-cycle identity is required for (and only for) an
+    // automatic issuance — a manual grant has no cycle to belong to.
+    check(
+      'reward_entitlements_cycle_pair_ck',
+      sql`(${table.sourceType} = 'loyalty_threshold') = (${table.cycleNumber} is not null)`,
+    ),
+    check('reward_entitlements_cycle_number_ck', sql`${table.cycleNumber} is null or ${table.cycleNumber} > 0`),
+    check(
+      'reward_entitlements_redeemed_ck',
+      sql`(${table.status} = 'redeemed') = (${table.redeemedAt} is not null and ${table.redeemedBy} is not null)`,
+    ),
+    check(
+      'reward_entitlements_revoked_ck',
+      sql`(${table.status} = 'revoked') = (${table.revokedAt} is not null and ${table.revokedBy} is not null and ${table.revokedReason} is not null and length(btrim(${table.revokedReason})) > 0)`,
+    ),
+    check('reward_entitlements_version_ck', sql`${table.version} >= 1`),
+  ],
+);
+
+/** Part L/X — the entitlement's OWN opaque presentation token, deliberately
+ * a SEPARATE table/concept from `customer_qr_tokens` (Part L: "Customer QR
+ * identifies CUSTOMER. Reward QR identifies ENTITLEMENT. Keep those
+ * concepts distinct") — mirrors `customer_qr_tokens`'s exact shape
+ * (opaque, revocable, at most one active at a time) for the identical
+ * reasons. Never encodes customer PII or reward metadata (Part X). */
+export const rewardEntitlementTokens = pgTable(
+  'reward_entitlement_tokens',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    rewardEntitlementId: uuid('reward_entitlement_id').notNull(),
+    token: text('token').notNull(),
+    status: text('status').notNull().default('active'),
+    createdAt: createdAtColumn(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    unique('reward_entitlement_tokens_token_uq').on(table.token),
+    foreignKey({
+      columns: [table.companyId, table.rewardEntitlementId],
+      foreignColumns: [rewardEntitlements.companyId, rewardEntitlements.id],
+      name: 'reward_entitlement_tokens_entitlement_scope_fk',
+    }).onDelete('restrict'),
+    index('reward_entitlement_tokens_entitlement_idx').on(table.companyId, table.rewardEntitlementId),
+    uniqueIndex('reward_entitlement_tokens_company_entitlement_active_uq')
+      .on(table.companyId, table.rewardEntitlementId)
+      .where(sql`${table.status} = 'active'`),
+    check('reward_entitlement_tokens_token_nonblank_ck', sql`length(btrim(${table.token})) >= 16`),
+    check('reward_entitlement_tokens_status_ck', sql`${table.status} in ('active', 'revoked')`),
+    check(
+      'reward_entitlement_tokens_revoked_at_ck',
+      sql`(${table.status} = 'revoked') = (${table.revokedAt} is not null)`,
+    ),
+  ],
+);
+
 export type Customer = typeof customers.$inferSelect;
 export type CustomerQrToken = typeof customerQrTokens.$inferSelect;
 export type MembershipPlan = typeof membershipPlans.$inferSelect;
@@ -531,3 +744,5 @@ export type CustomerMembership = typeof customerMemberships.$inferSelect;
 export type LoyaltyProgram = typeof loyaltyPrograms.$inferSelect;
 export type LoyaltyAccount = typeof loyaltyAccounts.$inferSelect;
 export type LoyaltyLedgerEntry = typeof loyaltyLedger.$inferSelect;
+export type RewardEntitlement = typeof rewardEntitlements.$inferSelect;
+export type RewardEntitlementToken = typeof rewardEntitlementTokens.$inferSelect;

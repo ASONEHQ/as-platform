@@ -11,6 +11,7 @@ import {
   type LoyaltyLedgerEntryRow,
   type LoyaltyMutationContext,
   type LoyaltyProgramRow,
+  type LoyaltyRewardType,
   type LoyaltyUnitType,
 } from './loyalty.types.js';
 
@@ -30,6 +31,11 @@ function result<T>(value: unknown): QueryResult<T> {
 function jsonValue(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;
 }
+function constraint(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'constraint' in error
+    ? String((error as { constraint?: unknown }).constraint)
+    : undefined;
+}
 interface IdempotencyDb {
   request_hash: string;
   response_body: unknown;
@@ -37,7 +43,8 @@ interface IdempotencyDb {
 
 const PROGRAM_COLUMNS =
   'id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,' +
-  'reward_threshold,reward_description,created_by,updated_by,version,created_at,updated_at';
+  'reward_threshold,reward_description,reward_type,reward_expiration_days,reward_repeatable,' +
+  'created_by,updated_by,version,created_at,updated_at';
 interface ProgramDb {
   id: string;
   company_id: string;
@@ -49,6 +56,9 @@ interface ProgramDb {
   minimum_sale_total: string | null;
   reward_threshold: number | null;
   reward_description: string | null;
+  reward_type: LoyaltyRewardType | null;
+  reward_expiration_days: number | null;
+  reward_repeatable: boolean;
   created_by: string;
   updated_by: string;
   version: string;
@@ -95,6 +105,9 @@ function program(row: ProgramDb): LoyaltyProgramRow {
     minimumSaleTotal: row.minimum_sale_total,
     rewardThreshold: row.reward_threshold,
     rewardDescription: row.reward_description,
+    rewardType: row.reward_type,
+    rewardExpirationDays: row.reward_expiration_days,
+    rewardRepeatable: row.reward_repeatable,
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     version: BigInt(row.version),
@@ -141,6 +154,9 @@ export interface InsertProgramInput {
   minimumSaleTotal: string | null;
   rewardThreshold: number | null;
   rewardDescription: string | null;
+  rewardType: LoyaltyRewardType | null;
+  rewardExpirationDays: number | null;
+  rewardRepeatable: boolean;
   createdBy: string;
   timestamp: Date;
 }
@@ -152,6 +168,9 @@ export interface UpdateProgramFields {
   minimumSaleTotal?: string | null;
   rewardThreshold?: number | null;
   rewardDescription?: string | null;
+  rewardType?: LoyaltyRewardType | null;
+  rewardExpirationDays?: number | null;
+  rewardRepeatable?: boolean;
   updatedBy: string;
   timestamp: Date;
 }
@@ -183,10 +202,22 @@ export class LoyaltyRepository {
       return value;
     } catch (error) {
       await client.query('rollback');
-      throw error;
+      throw this.mapDatabaseError(error);
     } finally {
       client.release();
     }
+  }
+
+  // TASK 13.1 — `updateProgram`'s partial-update path cannot always know
+  // ahead of time whether a caller's new field combination still
+  // satisfies `loyalty_programs_reward_pair_ck` (that would require
+  // reading the current row first); this is the clean fallback so a
+  // genuinely inconsistent partial update still surfaces as an honest
+  // `validation_error`, never a raw constraint-violation message.
+  private mapDatabaseError(error: unknown): unknown {
+    if (constraint(error) === 'loyalty_programs_reward_pair_ck')
+      return new LoyaltyError('validation_error', 'reward_threshold and reward_type must be set together.');
+    return error;
   }
 
   public async idempotent<T>(
@@ -280,8 +311,9 @@ export class LoyaltyRepository {
     await client.query(
       `insert into loyalty_programs
        (id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,
-        reward_threshold,reward_description,created_by,updated_by,created_at,updated_at)
-       values ($1,$2,$3,$4,$5,'per_completed_sale',$6,$7,$8,$9,$10,$10,$11,$11)`,
+        reward_threshold,reward_description,reward_type,reward_expiration_days,reward_repeatable,
+        created_by,updated_by,created_at,updated_at)
+       values ($1,$2,$3,$4,$5,'per_completed_sale',$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$14)`,
       [
         input.id,
         input.companyId,
@@ -292,6 +324,9 @@ export class LoyaltyRepository {
         input.minimumSaleTotal,
         input.rewardThreshold,
         input.rewardDescription,
+        input.rewardType,
+        input.rewardExpirationDays,
+        input.rewardRepeatable,
         input.createdBy,
         input.timestamp,
       ],
@@ -323,6 +358,9 @@ export class LoyaltyRepository {
     if (fields.minimumSaleTotal !== undefined) set('minimum_sale_total', fields.minimumSaleTotal);
     if (fields.rewardThreshold !== undefined) set('reward_threshold', fields.rewardThreshold);
     if (fields.rewardDescription !== undefined) set('reward_description', fields.rewardDescription);
+    if (fields.rewardType !== undefined) set('reward_type', fields.rewardType);
+    if (fields.rewardExpirationDays !== undefined) set('reward_expiration_days', fields.rewardExpirationDays);
+    if (fields.rewardRepeatable !== undefined) set('reward_repeatable', fields.rewardRepeatable);
     set('updated_by', fields.updatedBy);
     set('updated_at', fields.timestamp);
     set('version', (expectedVersion + 1n).toString());
@@ -385,9 +423,18 @@ export class LoyaltyRepository {
 
   // --- Accounts (Part P) ---------------------------------------------------
 
-  public async accountByCustomerId(companyId: string, customerId: string): Promise<LoyaltyAccountRow | null> {
+  /** TASK 13.1 — `client` accepted (and defaults to the pool when `null`)
+   * so `RewardsService` can read an account that may have been created
+   * moments earlier in the SAME uncommitted transaction (`getOrCreateAccount`
+   * below), mirroring `CustomersRepository.customer`'s identical
+   * client-or-pool convention. */
+  public async accountByCustomerId(
+    client: LoyaltyTransaction | null,
+    companyId: string,
+    customerId: string,
+  ): Promise<LoyaltyAccountRow | null> {
     const row = result<AccountDb>(
-      await this.database.pool.query(
+      await (client ?? this.database.pool).query(
         `select id,company_id,customer_id,status,created_at,updated_at
          from loyalty_accounts where company_id=$1 and customer_id=$2`,
         [companyId, customerId],
@@ -510,5 +557,28 @@ export class LoyaltyRepository {
       unitType: row.unit_type,
       balance: Number(row.balance),
     }));
+  }
+
+  /** TASK 13.1 (ADR-0018 "Threshold semantics") — the durable input to
+   * cycle-crossing math: the CUMULATIVE `entry_type='earn'` sum for one
+   * (account, program), deliberately excluding adjustments/redemptions/
+   * expirations (Part E: reward issuance leaves the earned-unit balance
+   * untouched — a manual credit is not a "qualifying earn"). `client`
+   * accepted so this reads the just-inserted earn row within the SAME
+   * settlement transaction, never a stale pre-commit snapshot. */
+  public async cumulativeEarnedUnits(
+    client: LoyaltyTransaction,
+    companyId: string,
+    loyaltyAccountId: string,
+    loyaltyProgramId: string,
+  ): Promise<number> {
+    const row = result<{ total: string | null }>(
+      await client.query(
+        `select sum(quantity)::text as total from loyalty_ledger
+         where company_id=$1 and loyalty_account_id=$2 and loyalty_program_id=$3 and entry_type='earn'`,
+        [companyId, loyaltyAccountId, loyaltyProgramId],
+      ),
+    ).rows[0];
+    return row?.total === null || row?.total === undefined ? 0 : Number(row.total);
   }
 }

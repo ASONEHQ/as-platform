@@ -357,4 +357,50 @@ integration('PostgreSQL loyalty ledger (TASK 13.0)', { concurrent: false }, () =
       });
     });
   });
+
+  // TASK 13.1 — the reward-bearing extension to program configuration
+  // (`reward_threshold`/`reward_type`/`reward_expiration_days`/
+  // `reward_repeatable`). See `loyalty.service.ts#createProgram`'s own
+  // pre-check comment and the DB's `loyalty_programs_reward_pair_ck`: a
+  // program is either NOT reward-bearing at all (both null — a plain
+  // earn-only program, unchanged from TASK 13.0) or has BOTH a threshold
+  // and a type, never just one. The actual issuance behavior this unlocks
+  // (automatic/manual issuance, redemption, revocation, tokens) is
+  // exercised end to end in `../rewards/rewards.integration.test.ts`, not
+  // here — this block only covers program CONFIGURATION.
+  describe('reward-bearing program configuration (TASK 13.1)', () => {
+    it('rejects a reward_threshold set without a reward_type (an "eligible for nothing" dead configuration)', async () => {
+      await expect(
+        loyalty.createProgram(context, 'prog-rewardpair-mismatch-1', {
+          name: 'Mismatch',
+          unitType: 'stamp',
+          rewardThreshold: 5,
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+
+    it('accepts a reward_threshold and reward_type set together', async () => {
+      const created = await createProgram('prog-rewardpair-both-1', {
+        rewardThreshold: 5,
+        rewardType: 'vip_pass',
+        rewardExpirationDays: 30,
+        rewardRepeatable: false,
+      });
+      expect(created.rewardThreshold).toBe(5);
+      expect(created.rewardType).toBe('vip_pass');
+      expect(created.rewardExpirationDays).toBe(30);
+      expect(created.rewardRepeatable).toBe(false);
+    });
+
+    it('accepts neither reward_threshold nor reward_type — a plain earn-only program with nothing configured', async () => {
+      const created = await createProgram('prog-rewardpair-neither-1');
+      expect(created.rewardThreshold).toBeNull();
+      expect(created.rewardType).toBeNull();
+      expect(created.rewardExpirationDays).toBeNull();
+      // Defaults `true` even for a non-reward-bearing program — see
+      // `createProgram`'s own doc comment; the column simply goes unread
+      // unless `reward_type` is also set.
+      expect(created.rewardRepeatable).toBe(true);
+    });
+  });
 });

@@ -29,6 +29,63 @@ function nonBlank(value: string, field: string): string {
   return clean;
 }
 
+// TASK 13.1A — real idempotent-replay decoders, replacing the bare
+// `as ...Row` casts these two `idempotent()` calls used before. A
+// replayed value is decoded from `idempotency_keys.response_body` (real
+// JSON, from a prior `JSON.stringify(value)` of the exact camelCase
+// `PromotionRow`/`CouponRow` `create()` returned), where every `Date`
+// field is already an ISO STRING and `version` a decimal string — a
+// bare cast left the declared `Date`/`bigint` types lying about the
+// runtime shape, and the first `.toISOString()` call downstream
+// (`promotionHttp`/`couponHttp`) would throw on any replayed create.
+// `promotions.repository.ts` had its own unused, dead `decodePromotion`/
+// `decodeCoupon` pair already — removed here rather than wired in: they
+// cast to the snake_case `PromotionDb`/`CouponDb` DB-row shape, which is
+// NOT what `idempotent()` actually persists (the camelCase Row `create()`
+// returns), so using them as-is would have silently produced a
+// mis-mapped row (e.g. `companyId: undefined`) instead of merely
+// leaving Dates as strings — a different, worse bug. These two below
+// decode the ACTUAL persisted (camelCase) shape correctly, mirroring
+// every sibling module's own local decoder in this same pass
+// (`customers.service.ts`, `loyalty.service.ts`,
+// `memberships.service.ts`) and `promotion()`'s/`coupon()`'s own
+// `new Date(...)` DB-row reconstruction. See ADR-0018 (rewards) for the
+// original bug/fix this generalizes.
+function decodePromotion(value: unknown): PromotionRow {
+  const row = value as Omit<PromotionRow, 'version' | 'createdAt' | 'updatedAt' | 'startsAt' | 'endsAt'> & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+    startsAt: string | null;
+    endsAt: string | null;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+    startsAt: row.startsAt === null ? null : new Date(row.startsAt),
+    endsAt: row.endsAt === null ? null : new Date(row.endsAt),
+  };
+}
+function decodeCoupon(value: unknown): CouponRow {
+  const row = value as Omit<CouponRow, 'version' | 'createdAt' | 'updatedAt' | 'startsAt' | 'endsAt'> & {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+    startsAt: string | null;
+    endsAt: string | null;
+  };
+  return {
+    ...row,
+    version: BigInt(row.version),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+    startsAt: row.startsAt === null ? null : new Date(row.startsAt),
+    endsAt: row.endsAt === null ? null : new Date(row.endsAt),
+  };
+}
+
 export interface PromotionScopeInput {
   branchIds?: readonly string[];
   productIds?: readonly string[];
@@ -96,7 +153,17 @@ export class PromotionsService {
     if (!context.actorPermissions.includes('promotion.manage'))
       throw new PromotionError('validation_error', 'This actor is not authorized to manage promotions.');
     const id = input.id ?? randomUUID();
-    const requestHash = hash({ id, input });
+    // TASK 13.1A — hash the CALLER-supplied `id` (`input.id ?? null`),
+    // never the server-RESOLVED one: `id` above is a fresh random UUID
+    // on every call whenever the caller omits `id`, so hashing it made a
+    // genuine same-key replay of the identical logical request look like
+    // a brand-new, "different" request every time — a real idempotency
+    // bug (found via TASK 13.1A's own HTTP replay test), matching the
+    // exact class ADR-0017 D14 already found and fixed once in this
+    // codebase's `customers`/`memberships`/`loyalty` services; this call
+    // was missed then. Mirrors `SalesService.createSale`'s own already-
+    // correct `hash({ ..., id: input.id ?? null })` convention.
+    const requestHash = hash({ id: input.id ?? null, input });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -104,7 +171,7 @@ export class PromotionsService {
         'promotion.create',
         key,
         requestHash,
-        (value) => value as PromotionRow,
+        decodePromotion,
         async () => {
           const created = await this.repository.insertPromotion(client, {
             id,
@@ -232,7 +299,10 @@ export class PromotionsService {
       throw new PromotionError('validation_error', 'This actor is not authorized to manage coupons.');
     const id = input.id ?? randomUUID();
     const normalizedCode = this.normalizeCode(input.code);
-    const requestHash = hash({ id, input });
+    // TASK 13.1A — see the identical fix/comment on `createPromotion`
+    // above: hash the caller-supplied `id` (`input.id ?? null`), never
+    // the server-resolved one.
+    const requestHash = hash({ id: input.id ?? null, input });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -240,7 +310,7 @@ export class PromotionsService {
         'coupon.create',
         key,
         requestHash,
-        (value) => value as CouponRow,
+        decodeCoupon,
         async () => {
           const created = await this.repository.insertCoupon(client, {
             id,

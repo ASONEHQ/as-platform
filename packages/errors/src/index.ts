@@ -131,6 +131,16 @@ export const infrastructureErrorCodes = [
   'membership_plan_inactive',
   'membership_not_active',
   'qr_token_invalid',
+  // TASK 13.1: reward entitlements/redemption — this domain is not
+  // pre-reserved anywhere (see ADR-0018); reused generics
+  // (`resource_not_found`/`resource_conflict`/`validation_error`) cover
+  // everything else, these six are genuinely new semantic concepts.
+  'reward_not_available',
+  'reward_expired',
+  'reward_already_redeemed',
+  'reward_already_revoked',
+  'reward_branch_not_eligible',
+  'reward_token_invalid',
   'product_not_found',
   'product_not_active',
   'price_not_found',
