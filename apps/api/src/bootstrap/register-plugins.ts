@@ -213,20 +213,36 @@ export async function registerPlugins(
         new InventoryRepairService(new InventoryRepairRepository(options.infrastructure.database)),
       );
       const salesRepository = new SalesRepository(options.infrastructure.database);
-      // TASK 12.9: constructed before `salesService` — real sale
-      // creation independently re-evaluates promotions/coupons/manual
-      // discounts through the exact same pricing engine the standalone
-      // quote endpoint uses (never trusts a client-submitted quote —
-      // see ADR-0016), so `SalesService` needs this repository directly.
-      const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
-      const promotionsService = new PromotionsService(promotionsRepository);
-      // TASK 13.0: constructed before `salesService` too — `createSale`
-      // resolves/validates an optional `customer_id` (Part G) through
-      // this repository directly, the same cross-module shape
-      // `promotionsRepository` above already established.
+      // TASK 13.0: constructed before `promotionsService`/`salesService`
+      // — both now resolve/validate a `customer_id` (Part G) through
+      // this repository directly.
       const customersRepository = new CustomersRepository(options.infrastructure.database);
       const customersService = new CustomersService(customersRepository);
-      const salesService = new SalesService(salesRepository, promotionsRepository, customersRepository);
+      // TASK 13.1: constructed before `rewardsService`, which needs it
+      // to read a program's reward config (ADR-0018).
+      const loyaltyRepository = new LoyaltyRepository(options.infrastructure.database);
+      const loyaltyService = new LoyaltyService(loyaltyRepository);
+      // TASK 13.2: constructed before `promotionsService`/`salesService`
+      // now too — `evaluatePricing`'s new reward-benefit step (ADR-0019)
+      // needs `RewardsService.resolveCheckoutBenefit` to preview/re-
+      // validate an attached entitlement, and `PaymentService`'s own
+      // settlement hook (below) needs `consumeAppliedUsagesForSale`.
+      // Depends on `loyaltyRepository` (read-only, cross-module) and
+      // `customersRepository` (Part Q — redemption checks the customer
+      // is still active).
+      const rewardsRepository = new RewardsRepository(options.infrastructure.database);
+      const rewardsService = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
+      // TASK 12.9: constructed before `salesService` — real sale
+      // creation independently re-evaluates promotions/coupons/manual
+      // discounts/reward benefit through the exact same pricing engine
+      // the standalone quote endpoint uses (never trusts a client-
+      // submitted quote — see ADR-0016/ADR-0019), so `SalesService`
+      // needs this repository directly. `promotionsService` itself now
+      // also takes `rewardsService` (TASK 13.2) for the quote endpoint's
+      // own reward-benefit preview.
+      const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
+      const promotionsService = new PromotionsService(promotionsRepository, rewardsService);
+      const salesService = new SalesService(salesRepository, promotionsRepository, customersRepository, rewardsService);
       const paymentRepository = new PaymentRepository(options.infrastructure.database);
       // TASK 12.7: constructed before `paymentService` — a cash payment
       // confirmation now requires it (open-session enforcement + drawer
@@ -234,23 +250,12 @@ export async function registerPlugins(
       const cashRepository = new CashRepository(options.infrastructure.database);
       const cashService = new CashService(cashRepository);
       // TASK 13.0: constructed before `paymentService` — membership
-      // activation and loyalty earning happen inside the SAME
-      // transaction `SalesRepository.trySettleSale` uses to newly settle
-      // a Sale (see `PaymentService.applyPostSettlementHooks` and
-      // ADR-0017 "Activation boundary"/"Automatic earning").
+      // activation happens inside the SAME transaction
+      // `SalesRepository.trySettleSale` uses to newly settle a Sale (see
+      // `PaymentService.applyPostSettlementHooks` and ADR-0017
+      // "Activation boundary").
       const membershipsRepository = new MembershipsRepository(options.infrastructure.database);
       const membershipsService = new MembershipsService(membershipsRepository);
-      const loyaltyRepository = new LoyaltyRepository(options.infrastructure.database);
-      const loyaltyService = new LoyaltyService(loyaltyRepository);
-      // TASK 13.1: constructed before `paymentService` too — automatic
-      // reward-entitlement issuance evaluates threshold-crossing inside
-      // the SAME transaction `loyaltyService.earnFromSale` just ran in
-      // (see `PaymentService.applyPostSettlementHooks` and ADR-0018
-      // "Issuance transaction boundary"). Depends on `loyaltyRepository`
-      // (read-only, cross-module) and `customersRepository` (Part Q —
-      // redemption checks the customer is still active).
-      const rewardsRepository = new RewardsRepository(options.infrastructure.database);
-      const rewardsService = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
       // TASK 12.4B.1: constructed unconditionally, even with no
       // MERCADO_PAGO_ACCESS_TOKEN set — see MercadoPagoClient's own doc
       // comment for why this is the correct "fail safely" boundary.

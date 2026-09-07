@@ -1,6 +1,8 @@
 import { AppError } from '@asone/errors';
 
 import { SaleInventoryPostingError } from '../inventory/sale-consumption.js';
+import { mapRewardError } from '../rewards/rewards.http-errors.js';
+import { RewardError } from '../rewards/rewards.types.js';
 import { SaleError } from './sales.types.js';
 
 const statusCodeByCode: Readonly<Record<string, number>> = {
@@ -26,6 +28,12 @@ const inventoryPostingStatus: Readonly<Record<string, number>> = {
 };
 
 export function mapSaleError(error: unknown): Error {
+  // TASK 13.2 — `createSale` now optionally resolves a reward benefit via
+  // `RewardsService.resolveCheckoutBenefit`, which throws its OWN
+  // `RewardError` codes — checked first so those specific reasons reach
+  // the caller, mirroring `SaleInventoryPostingError`'s own established
+  // "chain multiple error families through one mapper" shape.
+  if (error instanceof RewardError) return mapRewardError(error);
   if (error instanceof SaleInventoryPostingError)
     return new AppError({
       code: error.code,

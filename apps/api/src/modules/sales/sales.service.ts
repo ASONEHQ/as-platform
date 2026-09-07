@@ -6,7 +6,8 @@ import { ivaBasisPointsForTaxCode, normalizeCurrencyCode } from '@asone/database
 import type { CustomersRepository } from '../customers/customers.repository.js';
 import { evaluatePricing } from '../promotions/pricing.service.js';
 import type { PromotionsRepository } from '../promotions/promotions.repository.js';
-import type { CouponRow, PricingResolvedLine, PromotionRow } from '../promotions/promotions.types.js';
+import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from '../promotions/promotions.types.js';
+import type { RewardsService } from '../rewards/rewards.service.js';
 import type { SalesRepository } from './sales.repository.js';
 import {
   SaleError,
@@ -97,6 +98,9 @@ export class SalesService {
     // `promotionsRepository` above): only needed when `CreateSaleInput.
     // customerId` is actually supplied.
     private readonly customersRepository?: CustomersRepository,
+    // TASK 13.2 — optional, backward-compatible: only needed when
+    // `CreateSaleInput.rewardEntitlementId` is actually supplied.
+    private readonly rewardsService?: RewardsService,
   ) {}
 
   /**
@@ -142,6 +146,7 @@ export class SalesService {
       currencyCode: requestedCurrency,
       items: normalized.items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
       id: input.id ?? null,
+      rewardEntitlementId: input.rewardEntitlementId ?? null,
     });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
@@ -231,6 +236,29 @@ export class SalesService {
             customerDisplayName = customer.displayName;
           }
 
+          // TASK 13.2 (ADR-0019 "Quote vs Sale creation") — re-validated
+          // fresh here, NEVER trusted from whatever the standalone quote
+          // endpoint returned moments earlier (Part X, identical
+          // reasoning to promotions/coupons above). Read-only: no lock,
+          // no status transition (`resolveCheckoutBenefit`'s own doc
+          // comment) — creation only ever FREEZES a snapshot and records
+          // intent (`sale_reward_usages`, status `applied`); the
+          // entitlement itself is untouched until settlement.
+          let rewardCandidate: RewardBenefitCandidate | null = null;
+          if (input.rewardEntitlementId !== undefined) {
+            if (customerId === null)
+              throw new SaleError('validation_error', 'reward_entitlement_id requires a customer_id.');
+            if (this.rewardsService === undefined)
+              throw new SaleError('validation_error', 'This deployment is not configured for reward benefits.');
+            const resolved = await this.rewardsService.resolveCheckoutBenefit(
+              { companyId: context.companyId, actorPermissions: context.actorPermissions ?? [] },
+              customerId,
+              input.rewardEntitlementId,
+              context.timestamp,
+            );
+            rewardCandidate = resolved.candidate;
+          }
+
           // TASK 12.9 — the exact same `evaluatePricing` engine the
           // standalone quote endpoint uses (ADR-0016): promotions/
           // coupons/manual discount are ALWAYS independently
@@ -285,6 +313,7 @@ export class SalesService {
             })),
             couponLookup: (normalizedCode) => couponLookups.get(normalizedCode) ?? null,
             requestedCouponCodes: input.couponCodes ?? [],
+            rewardCandidate,
             ...(input.manualDiscount === undefined ? {} : { manualDiscount: input.manualDiscount }),
             actorPermissions: context.actorPermissions ?? [],
             now: context.timestamp,
@@ -349,8 +378,9 @@ export class SalesService {
             items.push(item);
           }
 
+          const itemIdByLineIndex = new Map(pricing.lines.map((line, index) => [line.lineIndex, items[index]?.id]));
+
           if (promotionsRepository !== undefined && pricing.appliedDiscounts.length > 0) {
-            const itemIdByLineIndex = new Map(pricing.lines.map((line, index) => [line.lineIndex, items[index]?.id]));
             await promotionsRepository.insertSaleDiscounts(
               client,
               pricing.appliedDiscounts.map((entry) => ({
@@ -380,6 +410,36 @@ export class SalesService {
                 couponId,
                 saleId: createdSale.id,
                 amount: formatMoney(amountUnits),
+                timestamp: context.timestamp,
+              });
+            }
+          }
+
+          // TASK 13.2 (ADR-0019 "Sale reward snapshot") — records the
+          // Sale's INTENT to consume this entitlement (`status: 'applied'`)
+          // from the SAME pricing computation `sale_discounts` (source_type
+          // 'reward') just froze. Deliberately does NOT touch
+          // `reward_entitlements` — settlement is the only place that ever
+          // happens (Part E). `sourceId`/`lineIndex` are the entitlement id/
+          // scoped line `evaluatePricing`'s own reward step (`pricing.
+          // service.ts`) already resolved; at most one such entry ever
+          // exists (Part O "cashier can select one").
+          const rewardDiscount = pricing.appliedDiscounts.find((entry) => entry.sourceType === 'reward');
+          if (rewardCandidate !== null && rewardDiscount !== undefined && this.rewardsService !== undefined) {
+            const saleItemId =
+              rewardDiscount.lineIndex === null ? undefined : itemIdByLineIndex.get(rewardDiscount.lineIndex);
+            if (saleItemId !== undefined) {
+              await this.rewardsService.recordSaleRewardUsage(client, {
+                id: randomUUID(),
+                companyId: context.companyId,
+                branchId: normalized.branchId,
+                saleId: createdSale.id,
+                saleItemId,
+                rewardEntitlementId: rewardCandidate.rewardEntitlementId,
+                loyaltyProgramId: rewardCandidate.loyaltyProgramId,
+                rewardType: rewardCandidate.rewardType,
+                benefitType: rewardCandidate.benefitType,
+                benefitAmountSnapshot: formatMoney(rewardDiscount.amountUnits),
                 timestamp: context.timestamp,
               });
             }
@@ -525,6 +585,16 @@ export class SalesService {
           // only the redemption reservation itself is released.
           if (this.promotionsRepository !== undefined)
             await this.promotionsRepository.deleteCouponRedemptionsForSale(client, context.companyId, saleId);
+          // TASK 13.2 (ADR-0019 "Settlement-only consumption") — a reward
+          // attached by this sale at creation time is released the
+          // moment the sale is cancelled before ever settling, the
+          // identical reasoning as the coupon release just above: the
+          // entitlement itself was NEVER locked/touched (Part D), so
+          // this only ever needs to flip the `sale_reward_usages` row
+          // from `applied` to `released` — a no-op when this sale never
+          // attached one.
+          if (this.rewardsService !== undefined)
+            await this.rewardsService.releaseSaleRewardUsage(client, context.companyId, saleId, context.timestamp);
           await this.repository.auditAndPublish(client, context, {
             action: 'sale.cancelled',
             resourceType: 'sale',

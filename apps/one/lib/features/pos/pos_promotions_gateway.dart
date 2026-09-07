@@ -136,7 +136,10 @@ class PosAppliedDiscount {
         lineIndex: json['line_index'] as int?,
       );
 
-  /// `'promotion'` | `'coupon'` | `'manual'`.
+  /// `'promotion'` | `'coupon'` | `'manual'` | `'reward'` (TASK 13.2 —
+  /// ADR-0019: an attached, backend-validated reward entitlement, e.g. a
+  /// VIP Pass; `sourceId` is the entitlement id, `label` is always the
+  /// backend's own `'Recompensa'`, never a fabricated business name).
   final String sourceType;
   final String? sourceId;
   final String label;
@@ -149,6 +152,7 @@ class PosAppliedDiscount {
   bool get isPromotion => sourceType == 'promotion';
   bool get isCoupon => sourceType == 'coupon';
   bool get isManual => sourceType == 'manual';
+  bool get isReward => sourceType == 'reward';
 }
 
 /// One requested coupon code the backend could not apply — an honest
@@ -236,6 +240,12 @@ class PosPricingQuote {
   /// promotions apply on their own).
   List<PosAppliedDiscount> get appliedPromotions =>
       appliedDiscounts.where((entry) => entry.isPromotion).toList(growable: false);
+
+  /// TASK 13.2: the reward-entitlement subset of [appliedDiscounts] —
+  /// empty unless a `reward_entitlement_id` was supplied on this quote and
+  /// the backend accepted it (ADR-0019). Never guessed client-side.
+  List<PosAppliedDiscount> get appliedRewards =>
+      appliedDiscounts.where((entry) => entry.isReward).toList(growable: false);
 
   PosRejectedCoupon? rejectionFor(String code) {
     final normalized = code.trim().toUpperCase();
@@ -580,11 +590,19 @@ abstract interface class PosPromotionsGateway {
   /// (`sale.create`); never consumes a coupon redemption, never mutates
   /// anything (ADR-0016 D1). Throws [ApiException] honestly on rejection
   /// — a caller must surface the real error, never a fabricated total.
+  ///
+  /// TASK 13.2: [customerId]/[rewardEntitlementId] preview an already-
+  /// attached customer's reward entitlement being applied (ADR-0019) —
+  /// required together by the backend (supplying one without the other is
+  /// a 400); omitting both reproduces the exact pre-TASK-13.2 request
+  /// shape.
   Future<PosPricingQuote> quote({
     required String branchId,
     required List<PosPricingQuoteItem> items,
     List<String> couponCodes = const [],
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
+    String? rewardEntitlementId,
   });
 
   /// `POST /api/v1/promotions` (`promotion.manage`).
@@ -625,6 +643,8 @@ class ApiPosPromotionsGateway implements PosPromotionsGateway {
     required List<PosPricingQuoteItem> items,
     List<String> couponCodes = const [],
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
+    String? rewardEntitlementId,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales/pricing-quotes',
@@ -633,6 +653,8 @@ class ApiPosPromotionsGateway implements PosPromotionsGateway {
         'items': [for (final item in items) {'product_id': item.productId, 'quantity': item.quantity}],
         if (couponCodes.isNotEmpty) 'coupon_codes': couponCodes,
         if (manualDiscount != null) 'manual_discount': manualDiscount.toJson(),
+        if (customerId != null) 'customer_id': customerId,
+        if (rewardEntitlementId != null) 'reward_entitlement_id': rewardEntitlementId,
       },
     );
     final data = envelope['data'];
@@ -775,6 +797,8 @@ class EmptyPosPromotionsGateway implements PosPromotionsGateway {
     required List<PosPricingQuoteItem> items,
     List<String> couponCodes = const [],
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
+    String? rewardEntitlementId,
   }) => Future.error(StateError('No promotions gateway is configured.'));
 
   @override

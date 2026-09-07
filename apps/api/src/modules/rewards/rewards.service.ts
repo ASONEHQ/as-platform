@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { CustomersRepository } from '../customers/customers.repository.js';
 import type { LoyaltyRepository, LoyaltyTransaction } from '../loyalty/loyalty.repository.js';
+import type { RewardBenefitCandidate } from '../promotions/promotions.types.js';
 import type { RewardsRepository, RewardTransaction } from './rewards.repository.js';
 import {
   RewardError,
+  effectiveStatus,
   type ManualIssueRewardInput,
   type RewardEntitlementRow,
   type RewardEntitlementTokenRow,
@@ -243,6 +245,77 @@ export class RewardsService {
     return row;
   }
 
+  // --- Checkout benefit resolution (TASK 13.2, Part D) -----------------------
+
+  /** The ONE place a reward entitlement's checkout BENEFIT is resolved —
+   * called from BOTH `PromotionsService.quote()` (preview, read-only)
+   * AND `SalesService.createSale` (re-validated fresh at creation time,
+   * still read-only — Part D: creation never locks or mutates the
+   * entitlement). Read-only by design: no row lock, no status
+   * transition, nothing committed — the only place this entitlement is
+   * EVER actually mutated is settlement (`consumeAppliedUsagesForSale`
+   * above). Throws the SAME specific `RewardError` codes `redeem()`
+   * itself would (`resource_not_found`/`reward_not_available`/
+   * `reward_expired`/etc.) — never a generic failure — so a caller one
+   * or two modules away (`PromotionsService`/`SalesService`, whose OWN
+   * `mapPromotionError`/`mapSaleError` both check for `RewardError`
+   * first and delegate to `mapRewardError`, see `rewards.http-errors.ts`)
+   * still surfaces the honest, specific reason (Part O). */
+  public async resolveCheckoutBenefit(
+    context: { companyId: string; actorPermissions: readonly string[] },
+    customerId: string,
+    rewardEntitlementId: string,
+    now: Date,
+  ): Promise<{ candidate: RewardBenefitCandidate; entitlement: RewardEntitlementRow }> {
+    requirePermission(context as RewardMutationContext, 'reward.redeem');
+    const entitlement = await this.repository.entitlement(null, context.companyId, rewardEntitlementId);
+    if (entitlement === null) throw new RewardError('resource_not_found', 'The reward entitlement was not found.');
+    if (entitlement.customerId !== customerId)
+      throw new RewardError('reward_not_available', 'This reward does not belong to the attached customer.');
+    const status = effectiveStatus(entitlement, now);
+    if (status === 'redeemed') throw new RewardError('reward_already_redeemed', 'This reward was already redeemed.');
+    if (status === 'revoked') throw new RewardError('reward_not_available', 'This reward was revoked.');
+    if (status === 'expired') throw new RewardError('reward_expired', 'This reward has expired.');
+    const program = await this.loyaltyRepository.program(null, context.companyId, entitlement.loyaltyProgramId);
+    if (program === null) throw new RewardError('reward_not_available', 'This reward has no checkout benefit configured.');
+    if (program.rewardBenefitType === null)
+      throw new RewardError('reward_not_available', 'This reward has no checkout benefit configured.');
+    return {
+      entitlement,
+      candidate: {
+        rewardEntitlementId: entitlement.id,
+        loyaltyProgramId: program.id,
+        rewardType: entitlement.rewardType,
+        benefitType: program.rewardBenefitType,
+        benefitPercentageBasisPoints: program.rewardBenefitPercentageBasisPoints,
+        benefitFixedAmount: program.rewardBenefitFixedAmount,
+        scope: { productIds: program.rewardScopeProductIds, categoryIds: program.rewardScopeCategoryIds },
+      },
+    };
+  }
+
+  /** Thin passthrough so `SalesService.createSale` — which already
+   * depends on `RewardsService`, never on `RewardsRepository` directly
+   * (Part D/G) — can record the Sale's own reward-usage INTENT row
+   * inside its own transaction, right after freezing the `sale_discounts`
+   * snapshot from the SAME pricing computation. Still does not touch
+   * `reward_entitlements` at all. */
+  public recordSaleRewardUsage(
+    client: RewardTransaction,
+    input: Parameters<RewardsRepository['insertSaleRewardUsage']>[1],
+  ): ReturnType<RewardsRepository['insertSaleRewardUsage']> {
+    return this.repository.insertSaleRewardUsage(client, input);
+  }
+
+  /** Thin passthrough for `SalesService.cancelSale` — mirrors
+   * `PromotionsRepository.deleteCouponRedemptionsForSale`'s identical
+   * "release the reservation on cancellation, never touch the frozen
+   * arithmetic snapshot" shape (ADR-0019 "Refund policy"/D above): a
+   * no-op when this Sale never attached a reward. */
+  public releaseSaleRewardUsage(client: RewardTransaction, companyId: string, saleId: string, timestamp: Date): Promise<void> {
+    return this.repository.releaseAppliedUsagesForSale(client, companyId, saleId, timestamp);
+  }
+
   // --- Redemption (Part I/J) ------------------------------------------------
 
   public async redeem(
@@ -330,6 +403,81 @@ export class RewardsService {
     // result lands here identically every time.
     if (outcome.value.status === 'expired') throw new RewardError('reward_expired', 'This reward has expired.');
     return outcome;
+  }
+
+  // --- Sale settlement consumption (TASK 13.2, Part E/F/G) -------------------
+
+  /** Called from `PaymentService.applyPostSettlementHooks`, inside the
+   * SAME transaction a Sale genuinely, newly settles in — never on
+   * creation, never on a still-`pending_payment` Sale (those states
+   * simply never reach this call at all; see `PaymentService`'s own
+   * settlement-hook doc comment). For every `status='applied'` usage
+   * row this Sale attached, re-validates and redeems the underlying
+   * entitlement via the EXACT SAME row-locked, exactly-once mechanism
+   * `redeem()` already uses (`lockEntitlement` + `markRedeemed`) — no
+   * parallel concurrency primitive, no new lock (ADR-0019 "Concurrency
+   * strategy"): whichever of two Sales attached to the SAME entitlement
+   * settles FIRST wins the lock and finds `status='available'`;
+   * whichever settles second finds `status='redeemed'` already and this
+   * method THROWS — propagating straight up through
+   * `applyPostSettlementHooks` and rolling back that Sale's entire
+   * payment-settlement transaction (Part F: "no payment irreversibility
+   * risk" — the payment is never captured, the Sale never completes,
+   * for a reward it can no longer honor).
+   *
+   * Deliberately simpler than `redeem()`'s own lazy-expiry persistence
+   * trick: if the entitlement turns out expired here, this throws
+   * `reward_expired` immediately WITHOUT attempting to also persist the
+   * `available → expired` transition (doing so would require breaking
+   * this transaction's own atomicity to commit that side-effect before
+   * rolling back the rest). The persisted transition simply happens the
+   * next time anyone actually acts on this entitlement through the
+   * standalone `redeem()` path; `effectiveStatus()` already reports the
+   * correct LIVE answer everywhere regardless of whether the DB column
+   * has caught up yet. */
+  public async consumeAppliedUsagesForSale(
+    client: RewardTransaction,
+    context: { companyId: string; branchId: string; saleId: string; actorId: string; correlationId: string; timestamp: Date },
+  ): Promise<void> {
+    const usages = await this.repository.lockAppliedUsagesForSale(client, context.companyId, context.saleId);
+    for (const usage of usages) {
+      const locked = await this.repository.lockEntitlement(client, context.companyId, usage.rewardEntitlementId);
+      if (locked === null) throw new RewardError('resource_not_found', 'The reward entitlement was not found.');
+      const customer = await this.customersRepository.customer(client, context.companyId, locked.customerId);
+      if (customer?.status !== 'active') throw new RewardError('reward_not_available', 'The customer is not active.');
+      if (locked.status === 'redeemed') throw new RewardError('reward_already_redeemed', 'This reward was already redeemed.');
+      if (locked.status === 'revoked') throw new RewardError('reward_not_available', 'This reward was revoked.');
+      if (locked.status === 'expired' || (locked.expiresAt !== null && locked.expiresAt.getTime() <= context.timestamp.getTime()))
+        throw new RewardError('reward_expired', 'This reward has expired.');
+      const updated = await this.repository.markRedeemed(client, context.companyId, usage.rewardEntitlementId, locked.version, {
+        redeemedBy: context.actorId,
+        redeemedBranchId: context.branchId,
+        timestamp: context.timestamp,
+      });
+      await this.repository.markSaleRewardUsageConsumed(client, context.companyId, usage.id, context.timestamp);
+      await this.repository.auditAndPublish(
+        client,
+        {
+          companyId: context.companyId,
+          actorId: context.actorId,
+          actorPermissions: [],
+          requestId: randomUUID(),
+          correlationId: context.correlationId,
+          timestamp: context.timestamp,
+        },
+        {
+          action: 'reward_entitlement.redeemed',
+          resourceType: 'reward_entitlement',
+          resourceId: updated.id,
+          eventType: 'reward.redeemed',
+          version: updated.version,
+          // Part T — ids/status only, never PII, never the sale's own
+          // commercial detail beyond its id.
+          payload: { reward_entitlement_id: updated.id, customer_id: updated.customerId, status: updated.status, sale_id: context.saleId },
+          branchId: context.branchId,
+        },
+      );
+    }
   }
 
   // --- Revocation (Part O) ---------------------------------------------------

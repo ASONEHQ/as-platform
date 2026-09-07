@@ -554,6 +554,41 @@ export function registerPaymentRoutes(
       }),
   );
 
+  // TASK 13.2 (Part I "Zero-total Sale design") — the dedicated
+  // completion path for a Sale whose reward benefit already reduced its
+  // `total` to exactly zero. Deliberately NOT `/cash-payments` with a
+  // `tendered_amount` of `"0.00"` (that would still fabricate a
+  // `payments` row and a `cash_movements` posting for money that never
+  // moved) — this creates neither. `reward.redeem` (never a new
+  // `reward.apply` — Part S), since completing this Sale is what
+  // actually consumes the attached reward.
+  app.post<{ Params: { sale_id: string } }>(
+    '/api/v1/sales/:sale_id/zero-total-completion',
+    {
+      schema: {
+        tags: ['payments'],
+        params: {
+          type: 'object',
+          required: ['sale_id'],
+          properties: { sale_id: { type: 'string', format: 'uuid' } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPaymentErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'reward.redeem');
+        const { sale } = await service.completeZeroTotalSale(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.sale_id,
+        );
+        const { items } = await salesService.sale(auth.companyId, auth.permittedBranchIds, sale.id);
+        return reply.send(successResponse(saleReceiptHttp(sale, items), request.requestContext));
+      }),
+  );
+
   app.get<{ Params: Params }>(
     '/api/v1/payments/:id',
     {

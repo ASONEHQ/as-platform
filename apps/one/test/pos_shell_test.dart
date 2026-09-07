@@ -1299,6 +1299,127 @@ void main() {
     });
   });
 
+  group('Zero-total sale completion (TASK 13.2, ADR-0019)', () {
+    testWidgets(
+      'a sale whose backend-quoted total is exactly zero settles via the '
+      'dedicated zero-total-completion endpoint — no cash dialog, no card '
+      'terminal lookup, and the ticket resets exactly like a normal sale',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-zero-1',
+            saleNumber: 'SALE-zero1',
+            status: 'pending_payment',
+            total: '0.0000',
+          ),
+          zeroTotalResult: const PosSaleCreated(
+            id: 'sale-zero-1',
+            saleNumber: 'SALE-zero1',
+            status: 'completed',
+            total: '0.0000',
+          ),
+        );
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '100.0000',
+            discountTotal: '100.0000',
+            taxTotal: '0.0000',
+            total: '0.0000',
+            lines: [],
+            appliedDiscounts: [
+              PosAppliedDiscount(
+                sourceType: 'reward',
+                sourceId: 'entitlement-1',
+                label: 'Recompensa',
+                reasonCode: null,
+                amount: '100.0000',
+                lineIndex: null,
+              ),
+            ],
+            rejectedCoupons: [],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          promotionsGateway: promotionsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        // Lets the automatic re-quote debounce (350ms) fire and settle —
+        // `saleSession.quote` now reports the zero total above.
+        await tester.pumpAndSettle(const Duration(milliseconds: 500));
+        expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // Neither the cash dialog nor a card-terminal lookup ever ran —
+        // the zero-total path is a dedicated third branch, never a
+        // fabricated `$0` cash tender.
+        expect(find.byKey(const Key('pos-cash-dialog-input')), findsNothing);
+        expect(salesGateway.calls, hasLength(1));
+        expect(salesGateway.zeroTotalCalls, ['sale-zero-1']);
+        expect(find.text('Venta completada'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-receipt-new-sale')));
+        await tester.pumpAndSettle();
+        expect(find.text('Venta completada'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a backend rejection from zero-total-completion is shown honestly and '
+      'never clears the ticket',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-zero-2',
+            saleNumber: 'SALE-zero2',
+            status: 'pending_payment',
+            total: '0.0000',
+          ),
+          zeroTotalFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'La recompensa ya fue canjeada.'),
+          ),
+        );
+        final promotionsGateway = _FakePromotionsGateway(
+          quoteResult: const PosPricingQuote(
+            currencyCode: 'MXN',
+            subtotal: '100.0000',
+            discountTotal: '100.0000',
+            taxTotal: '0.0000',
+            total: '0.0000',
+            lines: [],
+            appliedDiscounts: [],
+            rejectedCoupons: [],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          promotionsGateway: promotionsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.pumpAndSettle(const Duration(milliseconds: 500));
+
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(find.text('La recompensa ya fue canjeada.'), findsOneWidget);
+        expect(find.text('Venta completada'), findsNothing);
+      },
+    );
+  });
+
   group('Sale receipt and printing (TASK 12.5B)', () {
     testWidgets(
       'the completed-sale dialog loads the canonical receipt from the backend — folio, items, '
@@ -6928,6 +7049,8 @@ class _FakeSalesGateway implements PosSalesGateway {
     this.receiptFailure,
     this.listResult,
     this.listFailure,
+    this.zeroTotalResult,
+    this.zeroTotalFailure,
   });
 
   final PosSaleCreated? result;
@@ -6939,6 +7062,7 @@ class _FakeSalesGateway implements PosSalesGateway {
         List<String>? couponCodes,
         PosManualDiscountRequest? manualDiscount,
         String? customerId,
+        String? rewardEntitlementId,
       })>
   calls = [];
 
@@ -6952,6 +7076,11 @@ class _FakeSalesGateway implements PosSalesGateway {
   final ApiException? listFailure;
   final List<({PosSaleHistoryFilter filter, String? cursor})> listCalls = [];
 
+  // TASK 13.2.
+  final PosSaleCreated? zeroTotalResult;
+  final ApiException? zeroTotalFailure;
+  final List<String> zeroTotalCalls = [];
+
   @override
   Future<PosSaleCreated> createSale({
     required String branchId,
@@ -6959,6 +7088,7 @@ class _FakeSalesGateway implements PosSalesGateway {
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
+    String? rewardEntitlementId,
   }) async {
     calls.add((
       branchId: branchId,
@@ -6966,6 +7096,7 @@ class _FakeSalesGateway implements PosSalesGateway {
       couponCodes: couponCodes,
       manualDiscount: manualDiscount,
       customerId: customerId,
+      rewardEntitlementId: rewardEntitlementId,
     ));
     if (failure != null) throw failure!;
     return result ??
@@ -6982,6 +7113,19 @@ class _FakeSalesGateway implements PosSalesGateway {
     receiptCalls.add(saleId);
     if (receiptFailure != null) throw receiptFailure!;
     return receiptResult ?? _fixtureReceipt(saleId);
+  }
+
+  @override
+  Future<PosSaleCreated> completeZeroTotalSale(String saleId) async {
+    zeroTotalCalls.add(saleId);
+    if (zeroTotalFailure != null) throw zeroTotalFailure!;
+    return zeroTotalResult ??
+        const PosSaleCreated(
+          id: 'sale-id',
+          saleNumber: 'SALE-fixture',
+          status: 'completed',
+          total: '0.0000',
+        );
   }
 
   @override
@@ -7656,6 +7800,8 @@ class _FakePromotionsGateway implements PosPromotionsGateway {
       List<PosPricingQuoteItem> items,
       List<String> couponCodes,
       PosManualDiscountRequest? manualDiscount,
+      String? customerId,
+      String? rewardEntitlementId,
     })
   >
   quoteCalls = [];
@@ -7678,12 +7824,16 @@ class _FakePromotionsGateway implements PosPromotionsGateway {
     required List<PosPricingQuoteItem> items,
     List<String> couponCodes = const [],
     PosManualDiscountRequest? manualDiscount,
+    String? customerId,
+    String? rewardEntitlementId,
   }) async {
     quoteCalls.add((
       branchId: branchId,
       items: items,
       couponCodes: couponCodes,
       manualDiscount: manualDiscount,
+      customerId: customerId,
+      rewardEntitlementId: rewardEntitlementId,
     ));
     if (quoteFailure != null) throw quoteFailure!;
     if (quoteResult != null) return quoteResult!;

@@ -1242,6 +1242,11 @@ Future<void> _submitSaleForPayment(
       // the ticket, if any (ADR-0017 D6) — `null` reproduces "Venta sin
       // cliente" exactly.
       customerId: saleSession.customerId,
+      // TASK 13.2: the SAME reward-entitlement intent the last successful
+      // quote already previewed — the backend independently re-validates
+      // and only actually consumes it once the sale genuinely settles
+      // (ADR-0019).
+      rewardEntitlementId: saleSession.rewardEntitlementId,
     );
     if (!context.mounted) return;
 
@@ -1361,6 +1366,8 @@ Future<void> _submitCashSaleForPayment(
       manualDiscount: saleSession.manualDiscount,
       // TASK 13.0: same rationale as `_submitSaleForPayment` above.
       customerId: saleSession.customerId,
+      // TASK 13.2: same rationale as `_submitSaleForPayment` above.
+      rewardEntitlementId: saleSession.rewardEntitlementId,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1430,6 +1437,105 @@ Future<void> _submitCashSaleForPayment(
       saleNumber: sale.saleNumber,
       total: total,
       change: change,
+      salesGateway: salesGateway,
+      customerDisplayName: customerDisplayName,
+    ),
+  );
+}
+
+/// TASK 13.2 (ADR-0019 "Zero-total Sale design"): a reward benefit can
+/// reduce a sale's own backend-computed total to exactly zero — no
+/// payment method applies at all. Deliberately NOT a `"0.00"` cash tender
+/// through [_submitCashSaleForPayment] (that would fabricate a
+/// `payments` row and a `cash_movements` posting for money that never
+/// moved); this instead creates the sale exactly like the cash/card paths
+/// do, then calls the dedicated `zero-total-completion` endpoint, which is
+/// also the one call that actually consumes the attached reward
+/// entitlement. Same "never clear the ticket on any failure" contract as
+/// [_submitCashSaleForPayment].
+Future<void> _submitZeroTotalSale(
+  BuildContext context, {
+  required SaleSession saleSession,
+  required PosSalesGateway salesGateway,
+  required String? branchId,
+  required VoidCallback onBeforeReceiptDialog,
+}) async {
+  if (saleSession.isEmpty) {
+    _showNotice(context, 'Agrega al menos un producto al ticket.');
+    return;
+  }
+  if (branchId == null) {
+    _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
+    return;
+  }
+  final PosSaleCreated sale;
+  try {
+    sale = await salesGateway.createSale(
+      branchId: branchId,
+      items: [
+        for (final line in saleSession.lines)
+          PosSaleLineRequest(
+            productId: line.productId,
+            quantity: line.quantity.toString(),
+          ),
+      ],
+      couponCodes: saleSession.couponCodes,
+      manualDiscount: saleSession.manualDiscount,
+      customerId: saleSession.customerId,
+      rewardEntitlementId: saleSession.rewardEntitlementId,
+    );
+  } on ApiException catch (error) {
+    if (!context.mounted) return;
+    _showNotice(context, error.failure.message);
+    return;
+  } on Object {
+    if (!context.mounted) return;
+    _showNotice(context, 'No fue posible preparar la venta.');
+    return;
+  }
+  if (!context.mounted) return;
+
+  final PosSaleCreated completed;
+  try {
+    completed = await salesGateway.completeZeroTotalSale(sale.id);
+  } on ApiException catch (error) {
+    if (!context.mounted) return;
+    // The sale itself was already created (`pending_payment`) — same
+    // orphaned-row characteristic as every other checkout path's own
+    // failure case (ADR-0009); the ticket is left completely untouched so
+    // the cashier can see the honest rejection and retry.
+    _showNotice(context, error.failure.message);
+    return;
+  } on Object {
+    if (!context.mounted) return;
+    _showNotice(context, 'No fue posible completar la venta.');
+    return;
+  }
+  if (!context.mounted) return;
+
+  final Money total;
+  try {
+    total = Money.parse(completed.total, 'MXN');
+  } on MoneyFormatException {
+    if (!context.mounted) return;
+    _showNotice(context, 'No fue posible calcular el total de la venta.');
+    return;
+  }
+  final customerDisplayName = saleSession.customerDisplayName;
+  saleSession.clearAll();
+  // Mirrors `_submitCashSaleForPayment`'s own `onDialogAboutToOpen`: the
+  // Cobrar button's busy/spinner state covers only the two network calls
+  // above, never however long the cashier leaves the completed-sale
+  // dialog open — that dialog is modal on its own.
+  onBeforeReceiptDialog();
+  await showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => _ReceiptSuccessDialog(
+      saleId: completed.id,
+      saleNumber: completed.saleNumber,
+      total: total,
+      change: Money.zero('MXN'),
       salesGateway: salesGateway,
       customerDisplayName: customerDisplayName,
     ),
@@ -3994,6 +4100,16 @@ class _ClienteTicketFooter extends StatelessWidget {
                 customerId: saleSession.customerId!,
               ),
             ),
+          // TASK 13.2: display-only "reward applied to THIS transaction"
+          // indicator — distinct from `_ClienteRewardStatus` above (which
+          // only ever shows a generic available-count, never tied to the
+          // in-progress sale). No admin action, no directory, no history:
+          // the same CLIENTE restraint as everything else in this footer.
+          if (saleSession.rewardEntitlementId != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _ClienteAppliedRewardBanner(quote: saleSession.quote),
+            ),
           _TicketTotalRow(
             label: 'Subtotal',
             value: _money(saleSession.displaySubtotal),
@@ -4093,6 +4209,62 @@ class _ClienteRewardStatusState extends State<_ClienteRewardStatus> {
           Expanded(
             child: Text(
               available == 1 ? 'Tienes 1 recompensa disponible.' : 'Tienes $available recompensas disponibles.',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: palette.success, fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 13.2: CLIENTE's OWN read-only "reward applied to THIS sale"
+/// indicator — distinct from [_ClienteRewardStatus] above (a generic
+/// available-entitlements count that never reflects whether anything was
+/// actually attached to the in-progress transaction). Renders only once
+/// `SaleSession.rewardEntitlementId` is set AND a fresh quote confirms the
+/// `'reward'`-sourced [PosAppliedDiscount] (never a fabricated amount
+/// while a re-quote is still in flight) — the exact same "backend-derived,
+/// display-only, no admin action" contract every other CLIENTE surface in
+/// this file follows. The label reads the quote's own `'Recompensa'`,
+/// never a hardcoded business name like "VIP Pass".
+class _ClienteAppliedRewardBanner extends StatelessWidget {
+  const _ClienteAppliedRewardBanner({required this.quote});
+  final PosPricingQuote? quote;
+
+  @override
+  Widget build(BuildContext context) {
+    final quote = this.quote;
+    if (quote == null) {
+      return const SizedBox.shrink();
+    }
+    final applied = quote.appliedRewards;
+    if (applied.isEmpty) return const SizedBox.shrink();
+    var total = Money.zero(quote.currencyCode);
+    for (final entry in applied) {
+      try {
+        total = total + Money.parse(entry.amount, quote.currencyCode);
+      } on MoneyFormatException {
+        // A malformed single entry never blocks the whole banner.
+      }
+    }
+    final palette = PosPalette.of(context);
+    return Container(
+      key: const Key('pos-cliente-applied-reward-banner'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.success.withValues(alpha: .12),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.card_giftcard, size: 14, color: palette.success),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              total.isPositive ? 'Recompensa aplicada — -${_money(total)}' : 'Recompensa aplicada',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: palette.success, fontSize: 11, fontWeight: FontWeight.w700),
@@ -5304,7 +5476,12 @@ class _TicketFooterState extends State<_TicketFooter> {
     final lines = saleSession.lines.map((line) => '${line.productId}:${line.quantity}').join(',');
     final coupons = saleSession.couponCodes.join(',');
     final manual = saleSession.manualDiscount?.toJson().toString() ?? '';
-    return '$lines|$coupons|$manual|${widget.branchId}';
+    // TASK 13.2: the attached reward entitlement is part of the same
+    // pricing intent as coupons/manual discount — a change here must
+    // invalidate the previous quote and trigger a fresh one exactly like
+    // those do.
+    final reward = saleSession.rewardEntitlementId ?? '';
+    return '$lines|$coupons|$manual|$reward|${widget.branchId}';
   }
 
   void _onSaleSessionChanged() {
@@ -5366,10 +5543,62 @@ class _TicketFooterState extends State<_TicketFooter> {
         entitlements: _rewardEntitlements,
         canRedeem: _canRedeemReward,
         branchId: widget.branchId,
+        // TASK 13.2: lets the cashier attach one of these SAME
+        // entitlements to the current sale for pricing (ADR-0019) —
+        // distinct from "Canjear" above, which stays the pre-existing
+        // TASK 13.1 standalone redemption and is unchanged.
+        appliedEntitlementId: widget.saleSession.rewardEntitlementId,
+        onApply: _applyReward,
+        onRemove: _removeReward,
       ),
     );
     if (redeemed == true) unawaited(_loadRewards());
   }
+
+  /// TASK 13.2: previews [entitlement] as this ticket's reward benefit via
+  /// the SAME quote endpoint the coupon flow already uses (mirrors
+  /// [_applyCoupon] exactly) — only actually attaches it to [SaleSession]
+  /// once the backend accepts it, so an invalid selection (wrong customer,
+  /// already redeemed, expired, revoked, or a program with no configured
+  /// benefit) never silently applies. Returns `null` on success or an
+  /// honest, backend-driven message on rejection — the caller (the
+  /// dialog) surfaces it, never a crash or a silently-ignored selection.
+  Future<String?> _applyReward(PosRewardEntitlement entitlement) async {
+    final saleSession = widget.saleSession;
+    final branchId = widget.branchId;
+    final customerId = saleSession.customerId;
+    if (customerId == null) return 'Selecciona un cliente para esta venta primero.';
+    if (branchId == null) return 'Esta sesión no tiene una sucursal asignada.';
+    if (saleSession.isEmpty) return 'Agrega al menos un producto al ticket.';
+    try {
+      final quote = await widget.promotionsGateway.quote(
+        branchId: branchId,
+        items: [
+          for (final line in saleSession.lines)
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+        ],
+        couponCodes: saleSession.couponCodes,
+        manualDiscount: saleSession.manualDiscount,
+        customerId: customerId,
+        rewardEntitlementId: entitlement.id,
+      );
+      if (!mounted) return null;
+      saleSession.setRewardEntitlement(entitlement.id);
+      _lastQuotedSignature = _cartSignature();
+      saleSession.setQuote(quote);
+      return null;
+    } on ApiException catch (error) {
+      return error.failure.message;
+    } on Object {
+      return 'No fue posible aplicar la recompensa.';
+    }
+  }
+
+  /// Deselects the currently-attached reward entitlement — a plain local
+  /// state change (mirrors [_removeCoupon]); the next automatic re-quote
+  /// (triggered by [SaleSession.clearRewardEntitlement] itself) reflects
+  /// its removal.
+  void _removeReward() => widget.saleSession.clearRewardEntitlement();
 
   Future<void> _fetchQuote(String signature) async {
     final saleSession = widget.saleSession;
@@ -5385,6 +5614,11 @@ class _TicketFooterState extends State<_TicketFooter> {
         ],
         couponCodes: saleSession.couponCodes,
         manualDiscount: saleSession.manualDiscount,
+        // TASK 13.2: only ever sent together — `customerId` is omitted
+        // here whenever no reward is attached, reproducing the exact
+        // pre-TASK-13.2 request shape for the common "no reward" case.
+        customerId: saleSession.rewardEntitlementId == null ? null : saleSession.customerId,
+        rewardEntitlementId: saleSession.rewardEntitlementId,
       );
       if (!mounted) return;
       // The cart may have changed again while this call was in flight —
@@ -5560,6 +5794,18 @@ class _TicketFooterState extends State<_TicketFooter> {
                   for (final code in saleSession.couponCodes)
                     _CouponChip(code: code, onRemove: () => _removeCoupon(code)),
                 ],
+              ),
+            ),
+          // TASK 13.2: the reward entitlement attached to THIS sale, if
+          // any — the quote's own `'reward'`-sourced label/amount (never a
+          // hardcoded "VIP Pass"), removable exactly like a coupon chip.
+          if (saleSession.rewardEntitlementId != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _RewardAppliedChip(
+                appliedDiscounts: quote?.appliedRewards ?? const [],
+                currencyCode: quote?.currencyCode,
+                onRemove: _removeReward,
               ),
             ),
           _TicketTotalRow(
@@ -5755,6 +6001,70 @@ class _CouponChip extends StatelessWidget {
           IconButton(
             key: Key('pos-ticket-coupon-remove-$code'),
             tooltip: 'Quitar cupón',
+            onPressed: onRemove,
+            icon: Icon(Icons.close, size: 13, color: palette.textMuted),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 13.2: the reward entitlement currently attached to THIS sale —
+/// mirrors [_CouponChip] exactly (same shape, same removable affordance),
+/// but reads its label/amount straight off the quote's own `'reward'`-
+/// sourced [PosAppliedDiscount] entries (never a hardcoded "VIP Pass"),
+/// same as [_PromotionBanner]'s own "backend's own label, nothing
+/// fabricated" rule. While no quote has confirmed the reward yet (e.g. the
+/// cart just changed and a re-quote is still in flight), shows a plain
+/// "Recompensa aplicada" placeholder rather than inventing an amount.
+class _RewardAppliedChip extends StatelessWidget {
+  const _RewardAppliedChip({
+    required this.appliedDiscounts,
+    required this.currencyCode,
+    required this.onRemove,
+  });
+  final List<PosAppliedDiscount> appliedDiscounts;
+  final String? currencyCode;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final currency = currencyCode;
+    Money? total;
+    if (currency != null && appliedDiscounts.isNotEmpty) {
+      var sum = Money.zero(currency);
+      for (final entry in appliedDiscounts) {
+        try {
+          sum = sum + Money.parse(entry.amount, currency);
+        } on MoneyFormatException {
+          // A malformed single entry never blocks the whole chip — falls
+          // back to the plain label-only display below.
+        }
+      }
+      total = sum;
+    }
+    final label = total == null ? 'Recompensa aplicada' : 'Recompensa aplicada · -${_money(total)}';
+    return Container(
+      key: const Key('pos-ticket-reward-chip'),
+      padding: const EdgeInsets.only(left: 8, right: 2, top: 2, bottom: 2),
+      decoration: BoxDecoration(
+        color: palette.success.withValues(alpha: .14),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.card_giftcard_outlined, size: 12, color: palette.success),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.text)),
+          IconButton(
+            key: const Key('pos-ticket-reward-chip-remove'),
+            tooltip: 'Quitar recompensa',
             onPressed: onRemove,
             icon: Icon(Icons.close, size: 13, color: palette.textMuted),
             padding: EdgeInsets.zero,
@@ -6263,6 +6573,25 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
       _busy = true;
       _statusMessage = null;
     });
+    // TASK 13.2 (ADR-0019): a reward benefit already reduced this ticket's
+    // own backend-derived total to exactly zero — neither Efectivo nor
+    // Tarjeta applies; a `$0` cash tender is never fabricated through the
+    // cash UI for this case. Checked before either branch below, exactly
+    // like the cash session check that already runs before the cash
+    // path's own network call.
+    if (widget.saleSession.isNotEmpty && widget.saleSession.displayTotal.isZero) {
+      await _submitZeroTotalSale(
+        context,
+        saleSession: widget.saleSession,
+        salesGateway: widget.salesGateway,
+        branchId: widget.branchId,
+        onBeforeReceiptDialog: () {
+          if (mounted) setState(() => _busy = false);
+        },
+      );
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
     if (widget.selectedMethod == 'cash') {
       // TASK 12.7 Part N: checked as early as possible — before the sale
       // is even created, not only discovered from the eventual
@@ -6476,6 +6805,7 @@ _LineDiscountBadge? _lineDiscountBadgeFor(SaleSession saleSession, int lineIndex
     label = switch (applied.sourceType) {
       'promotion' => 'PROMO',
       'coupon' => 'CUPÓN',
+      'reward' => 'RECOMPENSA',
       _ => 'DESC.',
     };
     break;
@@ -14212,17 +14542,40 @@ class _RevokeRewardDialogState extends State<_RevokeRewardDialog> {
 /// Deliberately distinct from `_CustomerSelectorDialog`'s customer-QR
 /// flow — never the same component, never a shared token concept (Part
 /// L/X).
+///
+/// TASK 13.2: also the one place a cashier attaches an available
+/// entitlement to the CURRENT sale for pricing (ADR-0019) — a separate
+/// "Usar en esta venta"/"Quitar" affordance from "Canjear" above, which
+/// stays the pre-existing TASK 13.1 standalone redemption, unchanged.
+/// [onApply] does the real work (a quote preview via [_TicketFooterState.
+/// _applyReward]) and returns an honest rejection message on failure,
+/// which this dialog surfaces inline — never a crash, never a silently
+/// ignored selection.
 class _TicketRewardsDialog extends StatefulWidget {
   const _TicketRewardsDialog({
     required this.rewardsGateway,
     required this.entitlements,
     required this.canRedeem,
     required this.branchId,
+    required this.appliedEntitlementId,
+    required this.onApply,
+    required this.onRemove,
   });
   final PosRewardsGateway rewardsGateway;
   final List<PosRewardEntitlement> entitlements;
   final bool canRedeem;
   final String? branchId;
+
+  /// The entitlement id already attached to the current sale, if any —
+  /// `null` for "no reward applied yet".
+  final String? appliedEntitlementId;
+
+  /// Previews+attaches [PosRewardEntitlement] to the current sale;
+  /// returns `null` on success or a message to display on rejection.
+  final Future<String?> Function(PosRewardEntitlement entitlement) onApply;
+
+  /// Detaches whichever entitlement is currently applied.
+  final VoidCallback onRemove;
 
   @override
   State<_TicketRewardsDialog> createState() => _TicketRewardsDialogState();
@@ -14230,13 +14583,15 @@ class _TicketRewardsDialog extends StatefulWidget {
 
 class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
   late List<PosRewardEntitlement> _entitlements = widget.entitlements;
-  String? _busyId;
+  late String? _appliedEntitlementId = widget.appliedEntitlementId;
+  String? _redeemBusyId;
+  String? _applyBusyId;
   String? _error;
   bool _anyRedeemed = false;
 
   Future<void> _redeem(PosRewardEntitlement entitlement) async {
     setState(() {
-      _busyId = entitlement.id;
+      _redeemBusyId = entitlement.id;
       _error = null;
     });
     try {
@@ -14246,23 +14601,49 @@ class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
         _entitlements = [
           for (final item in _entitlements) if (item.id == updated.id) updated else item,
         ];
-        _busyId = null;
+        _redeemBusyId = null;
         _anyRedeemed = true;
       });
       _showNotice(context, 'Recompensa canjeada.');
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
-        _busyId = null;
+        _redeemBusyId = null;
         _error = error.failure.message;
       });
     } on Object {
       if (!mounted) return;
       setState(() {
-        _busyId = null;
+        _redeemBusyId = null;
         _error = 'No fue posible canjear la recompensa.';
       });
     }
+  }
+
+  Future<void> _apply(PosRewardEntitlement entitlement) async {
+    setState(() {
+      _applyBusyId = entitlement.id;
+      _error = null;
+    });
+    final error = await widget.onApply(entitlement);
+    if (!mounted) return;
+    if (error != null) {
+      setState(() {
+        _applyBusyId = null;
+        _error = error;
+      });
+      return;
+    }
+    setState(() {
+      _applyBusyId = null;
+      _appliedEntitlementId = entitlement.id;
+    });
+    _showNotice(context, 'Recompensa aplicada a esta venta.');
+  }
+
+  void _remove() {
+    widget.onRemove();
+    setState(() => _appliedEntitlementId = null);
   }
 
   @override
@@ -14308,45 +14689,89 @@ class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
                         Padding(
                           key: Key('pos-ticket-reward-${entitlement.id}'),
                           padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Row(
+                          child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _rewardTypeLabel(entitlement.rewardType),
-                                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
-                                    ),
-                                    Text(
-                                      entitlement.expiresAt == null
-                                          ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
-                                          : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
-                                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              _RewardStatusChip(status: entitlement.effectiveStatus),
-                              if (entitlement.isAvailable && widget.canRedeem) ...[
-                                const SizedBox(width: 8),
-                                _busyId == entitlement.id
-                                    ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
-                                      )
-                                    : OutlinedButton(
-                                        key: Key('pos-ticket-reward-redeem-${entitlement.id}'),
-                                        onPressed: () => unawaited(_redeem(entitlement)),
-                                        style: OutlinedButton.styleFrom(
-                                          foregroundColor: palette.action,
-                                          side: BorderSide(color: palette.border),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _rewardTypeLabel(entitlement.rewardType),
+                                          style: TextStyle(
+                                            color: palette.text,
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 12,
+                                          ),
                                         ),
-                                        child: const Text('Canjear'),
-                                      ),
-                              ],
+                                        Text(
+                                          entitlement.expiresAt == null
+                                              ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
+                                              : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
+                                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  _RewardStatusChip(status: entitlement.effectiveStatus),
+                                  if (entitlement.isAvailable && widget.canRedeem) ...[
+                                    const SizedBox(width: 8),
+                                    _redeemBusyId == entitlement.id
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          )
+                                        : OutlinedButton(
+                                            key: Key('pos-ticket-reward-redeem-${entitlement.id}'),
+                                            onPressed: () => unawaited(_redeem(entitlement)),
+                                            style: OutlinedButton.styleFrom(
+                                              foregroundColor: palette.action,
+                                              side: BorderSide(color: palette.border),
+                                            ),
+                                            child: const Text('Canjear'),
+                                          ),
+                                  ],
+                                ],
+                              ),
+                              // TASK 13.2: attaches this entitlement to the
+                              // CURRENT sale for pricing — distinct from
+                              // "Canjear" above (the pre-existing TASK 13.1
+                              // standalone redemption). Only ever rendered
+                              // for the same available+permitted rows.
+                              if (entitlement.isAvailable && widget.canRedeem)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: _appliedEntitlementId == entitlement.id
+                                      ? OutlinedButton.icon(
+                                          key: Key('pos-ticket-reward-remove-${entitlement.id}'),
+                                          onPressed: _remove,
+                                          icon: Icon(Icons.check_circle, size: 14, color: palette.success),
+                                          label: const Text('Aplicada a esta venta — Quitar'),
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: palette.success,
+                                            side: BorderSide(color: palette.success),
+                                          ),
+                                        )
+                                      : _applyBusyId == entitlement.id
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(strokeWidth: 2),
+                                        )
+                                      : OutlinedButton(
+                                          key: Key('pos-ticket-reward-apply-${entitlement.id}'),
+                                          onPressed: () => unawaited(_apply(entitlement)),
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: palette.success,
+                                            side: BorderSide(color: palette.border),
+                                          ),
+                                          child: const Text('Usar en esta venta'),
+                                        ),
+                                ),
                             ],
                           ),
                         ),

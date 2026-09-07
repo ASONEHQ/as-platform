@@ -5,6 +5,7 @@ import type {
   PricingResolvedLine,
   PricingResult,
   PromotionRow,
+  RewardBenefitCandidate,
 } from './promotions.types.js';
 import { PromotionError } from './promotions.types.js';
 
@@ -353,6 +354,67 @@ function couponDiscountUnits(coupon: CouponRow, remainingUnits: bigint): bigint 
   return requested > remainingUnits ? remainingUnits : requested;
 }
 
+// --- Reward benefit (TASK 13.2, ADR-0019 "Pricing pipeline placement") ----
+
+/** Part B — deliberately the INVERSE of `isLineEligibleForPromotion`'s
+ * both-empty-means-everything default: a reward's scope is never treated
+ * as "applies to everything" — an empty scope matches NOTHING. A reward
+ * program's scope is enforced non-empty at the service layer whenever a
+ * benefit is configured (`LoyaltyService`), but this engine never assumes
+ * that was actually true — it fails safe (no benefit) rather than fail
+ * open (unrestricted benefit) if it somehow wasn't. */
+function isLineEligibleForReward(line: PricingResolvedLine, scope: RewardBenefitCandidate['scope']): boolean {
+  if (scope.productIds.includes(line.productId)) return true;
+  return line.categoryId !== null && scope.categoryIds.includes(line.categoryId);
+}
+
+/** Part J "Partial benefit" — ONE entitlement produces ONE benefit
+ * event, on exactly ONE scoped line (the eligible line with the LARGEST
+ * remaining amount — the most beneficial to the customer, and a
+ * deterministic pick when several qualify), never silently discounting
+ * every matching line in the cart. This is deliberately uniform across
+ * all four benefit types (a `percentage_discount`/`fixed_price`/
+ * `fixed_amount_discount` reward is exactly as single-use as a
+ * `free_eligible_item` one) — see ADR-0019 for the full reasoning. */
+function computeRewardBenefit(
+  reward: RewardBenefitCandidate,
+  lines: readonly PricingResolvedLine[],
+  remainingUnits: readonly bigint[],
+): { lineIndex: number; amountUnits: bigint } | null {
+  const eligible = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => isLineEligibleForReward(line, reward.scope));
+  if (eligible.length === 0) return null;
+  let best = eligible[0];
+  for (const candidate of eligible) {
+    const bestRemaining = best === undefined ? -1n : (remainingUnits[best.index] ?? 0n);
+    const candidateRemaining = remainingUnits[candidate.index] ?? 0n;
+    if (candidateRemaining > bestRemaining) best = candidate;
+  }
+  if (best === undefined) return null;
+  const remaining = remainingUnits[best.index] ?? 0n;
+  if (remaining <= 0n) return null;
+
+  let amountUnits: bigint;
+  if (reward.benefitType === 'free_eligible_item') {
+    amountUnits = remaining;
+  } else if (reward.benefitType === 'percentage_discount') {
+    amountUnits = applyBasisPoints(remaining, reward.benefitPercentageBasisPoints ?? 0);
+  } else if (reward.benefitType === 'fixed_price') {
+    // A promotional per-item PRICE — the discount is however much
+    // `remaining` exceeds that price, never negative (a "price" above
+    // what's left grants no discount at all).
+    const priceUnits = moneyUnits(reward.benefitFixedAmount ?? '0');
+    amountUnits = remaining > priceUnits ? remaining - priceUnits : 0n;
+  } else {
+    // 'fixed_amount_discount' — a flat amount off, capped at what's left.
+    const requestedUnits = moneyUnits(reward.benefitFixedAmount ?? '0');
+    amountUnits = requestedUnits > remaining ? remaining : requestedUnits;
+  }
+  if (amountUnits <= 0n) return null;
+  return { lineIndex: best.line.lineIndex, amountUnits };
+}
+
 // --- Manual discount ------------------------------------------------------
 
 function manualDiscountUnits(
@@ -383,6 +445,11 @@ export interface EvaluatePricingInput {
     normalizedCode: string,
   ) => { coupon: CouponRow; branchEligible: boolean; redeemedCount: number } | null;
   requestedCouponCodes: readonly string[];
+  /** TASK 13.2 — at most one, already resolved/validated by the caller
+   * (Part D "quote/sale creation re-validate, this engine never looks
+   * anything up itself"). `null`/`undefined` are both "no reward
+   * attached". */
+  rewardCandidate?: RewardBenefitCandidate | null;
   manualDiscount?: PricingManualDiscountInput;
   actorPermissions: readonly string[];
   now: Date;
@@ -503,8 +570,43 @@ export function evaluatePricing(input: EvaluatePricingInput): PricingResult {
     cartRemainingAfterCouponsUnits -= discountUnits;
   }
 
+  // 2.5. Reward benefit (TASK 13.2, ADR-0019 "Pricing pipeline
+  // placement") — after promotions and coupons, before the manual
+  // discount. Computed against what promotions/coupons already left
+  // (so it naturally "stacks" with both, reducing whatever remains,
+  // never negative — the identical cascading-and-capping mechanism
+  // this engine already uses for coupons, not a new stacking-policy
+  // schema; ADR-0019 documents why no explicit combinability flags were
+  // added). Always applied BEFORE the manual discount so a cashier's
+  // own override authority still operates on top of it if genuinely
+  // needed, and so the reward's own benefit is never itself reduced to
+  // nothing by an already-applied manual discount consuming the
+  // remaining amount first.
+  const remainingAfterRewardUnits = [...remainingAfterCouponsUnits];
+  if (input.rewardCandidate !== undefined && input.rewardCandidate !== null) {
+    const reward = computeRewardBenefit(input.rewardCandidate, input.lines, remainingAfterRewardUnits);
+    if (reward !== null) {
+      const arrayIndex = input.lines.findIndex((line) => line.lineIndex === reward.lineIndex);
+      if (arrayIndex !== -1) {
+        remainingAfterRewardUnits[arrayIndex] = (remainingAfterRewardUnits[arrayIndex] ?? 0n) - reward.amountUnits;
+        appliedDiscounts.push({
+          sourceType: 'reward',
+          sourceId: input.rewardCandidate.rewardEntitlementId,
+          label: 'Recompensa',
+          reasonCode: null,
+          basisPoints:
+            input.rewardCandidate.benefitType === 'percentage_discount'
+              ? input.rewardCandidate.benefitPercentageBasisPoints
+              : null,
+          amountUnits: reward.amountUnits,
+          lineIndex: reward.lineIndex,
+        });
+      }
+    }
+  }
+
   // 3. Manual discount — always the final, authorized-only step.
-  const remainingAfterManualUnits = [...remainingAfterCouponsUnits];
+  const remainingAfterManualUnits = [...remainingAfterRewardUnits];
   if (input.manualDiscount !== undefined) {
     if (!input.actorPermissions.includes('discount.apply'))
       throw new PromotionError(

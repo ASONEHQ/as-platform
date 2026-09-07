@@ -424,12 +424,13 @@ All inventory decimals are exact strings. Consumers deduplicate by `event_id`; n
 
 Direct brand mutations emit the corresponding `brand.*` event and never masquerade as `product.updated`. An option or option-value change may emit `product.updated` because it changes the product aggregate. Every catalogue row uses the normative envelope, including `event_id`, `company_id`, `aggregate_id`, `aggregate_version`, and `occurred_at`. Actor identity remains in the correlated audit record; the current public event envelope does not add actor metadata ad hoc. Delivery is at least once, and consumers deduplicate with `event_id`.
 
-### 11.7 Sales and payments — 6 events
+### 11.7 Sales and payments — 7 events
 
 | Event type | Producer / aggregate | Scope / minimum permission | Allowed `data`; prohibited | Cause / recovery | Order / retention |
 | --- | --- | --- | --- | --- | --- |
 | `sale.created` | sales / `sale` | branch / `sale.read` | sale ID/number, register/session/device IDs, status, currency, exact total, version; `P-FIN` | committed sale creation / `SALE` | V / CP |
 | `sale.completed` | sales / `sale` | branch / `sale.read` | sale ID/number, exact totals, status, completed_at, version; `P-FIN` | committed completion / `SALE` | V / CP |
+| `sale.completed_without_payment` | sales / `sale` | branch / `sale.read` | sale ID/number, version; `P-FIN` | committed zero-total settlement (TASK 13.2, ADR-0019 D9) — no payment/payment-attempt/cash-movement row exists for this sale; written alongside, never instead of, `sale.completed` / `SALE` | V / CP |
 | `sale.cancelled` | sales / `sale` | branch / `sale.read` | sale ID/number, safe reason code, cancelled_at, version; `P-FIN` | committed eligible cancellation / `SALE` | V / CP |
 | `payment.recorded` | payments / `payment` | branch / `payment.read` | payment/sale IDs, method, status, exact amount/currency, safe reference, occurred_at; `P-FIN` | committed payment attempt/result / `SALE` | C / CP |
 | `payment.status_changed` | payments / `payment` | branch / `payment.read` | payment/sale IDs, previous/new status, safe reason, occurred_at; `P-FIN` | committed provider/domain transition / `SALE` | C / CP |
@@ -510,6 +511,10 @@ Not part of any prior domain grouping — §1's own excluded-scope list named "R
 | `reward.expired` | rewards / `reward_entitlement` | branch (redemption branch, if supplied) or company / `reward.read` | entitlement ID, customer ID, status; `P-FIN` | lazy `available → expired` transition, discovered and persisted the moment someone attempts to redeem a stale entitlement / `CUST` | C / CP |
 | `reward.revoked` | rewards / `reward_entitlement` | company / `reward.read` | entitlement ID, customer ID, status; `P-FIN`, never the revocation reason text | committed revocation / `CUST` | C / CP |
 | `reward.token_issued` | rewards / `reward_entitlement_token` | company / `reward.read` | entitlement ID (never the token value itself); `P-FIN` | presentation token issued/rotated / `CUST` | C / CP |
+
+### 11.14 Reward benefit application (TASK 13.2) — 0 new event types
+
+No new reward event TYPE was added by TASK 13.2 (ADR-0019). Two existing events change shape/cause instead: `reward.redeemed` (§11.13) is now also fired from a Sale's real settlement transaction (not only the standalone `/redeem` endpoint), and its payload additionally carries the settling `sale_id` — still only ids and status, never PII. `sale.completed_without_payment` (§11.7) is the one genuinely new event type this task added, and it lives in the sales/payments group, not here, since it describes a Sale settlement outcome, not a reward-entity change. No `reward.applied`/`sale_reward_usage.*` event exists: attaching a reward to a sale, and that sale's own reward discount amount, are visible via the sale's own persisted `sale_discounts`/`GET /sales/{id}/discounts` rows (§16.9/§16.12), never a separate event — matching §11.11's identical stance on discount application.
 
 ## 12. Protocol errors
 

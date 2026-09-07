@@ -830,7 +830,7 @@ export class PromotionsRepository {
       branchId: string;
       saleId: string;
       saleItemId: string | null;
-      sourceType: 'promotion' | 'coupon' | 'manual';
+      sourceType: 'promotion' | 'coupon' | 'manual' | 'reward';
       sourceId: string | null;
       labelSnapshot: string;
       reasonCode: string | null;
@@ -872,7 +872,7 @@ export class PromotionsRepository {
     {
       id: string;
       saleItemId: string | null;
-      sourceType: 'promotion' | 'coupon' | 'manual';
+      sourceType: 'promotion' | 'coupon' | 'manual' | 'reward';
       sourceId: string | null;
       labelSnapshot: string;
       reasonCode: string | null;

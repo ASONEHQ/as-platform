@@ -54,6 +54,9 @@ interface SaleBody {
   items: SaleItemBody[];
   coupon_codes?: string[];
   manual_discount?: ManualDiscountBody;
+  // TASK 13.2 — requires `customer_id`; re-validated fresh here, never
+  // trusted from a prior quote (Part X).
+  reward_entitlement_id?: string;
 }
 interface ReasonBody {
   reason_code: string;
@@ -360,6 +363,7 @@ export function registerSaleRoutes(
                 reason_code: { type: 'string', minLength: 1, maxLength: 200 },
               },
             },
+            reward_entitlement_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -374,6 +378,11 @@ export function registerSaleRoutes(
         // (Part K/L) — gated independently of `sale.create`, never
         // silently accepted from just any actor who can start a sale.
         if (request.body.manual_discount !== undefined) requirePermission(authentication, auth, 'discount.apply');
+        // TASK 13.2 (Part S) — reuses `reward.redeem`, never a new
+        // `reward.apply` code (the task's own explicit instruction):
+        // attaching a reward to a Sale IS the checkout-time consuming
+        // action, just deferred to settlement.
+        if (request.body.reward_entitlement_id !== undefined) requirePermission(authentication, auth, 'reward.redeem');
         // No `device_id` in the request body falls back to the
         // authenticated session's own bound device, when it has one (see
         // sales.ts's schema doc — most CAJERO sessions today are an
@@ -392,6 +401,9 @@ export function registerSaleRoutes(
             ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
             ...(request.body.coupon_codes === undefined ? {} : { couponCodes: request.body.coupon_codes }),
+            ...(request.body.reward_entitlement_id === undefined
+              ? {}
+              : { rewardEntitlementId: request.body.reward_entitlement_id }),
             ...(manualDiscount === undefined
               ? {}
               : {

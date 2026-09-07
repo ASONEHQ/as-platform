@@ -507,6 +507,10 @@ export function registerPromotionRoutes(app: FastifyInstance, authentication: Au
         value: string;
         reason_code: string;
       };
+      // TASK 13.2 — both required together; see `QuoteInput`'s own doc
+      // comment.
+      customer_id?: string;
+      reward_entitlement_id?: string;
     };
   }>(
     '/api/v1/sales/pricing-quotes',
@@ -546,6 +550,8 @@ export function registerPromotionRoutes(app: FastifyInstance, authentication: Au
                 reason_code: { type: 'string', minLength: 1, maxLength: 200 },
               },
             },
+            customer_id: { type: 'string', format: 'uuid' },
+            reward_entitlement_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -557,6 +563,7 @@ export function registerPromotionRoutes(app: FastifyInstance, authentication: Au
         requirePermission(authentication, auth, 'sale.create');
         requireBranchAccess(authentication, auth, request.body.branch_id);
         if (request.body.manual_discount !== undefined) requirePermission(authentication, auth, 'discount.apply');
+        if (request.body.reward_entitlement_id !== undefined) requirePermission(authentication, auth, 'reward.redeem');
         const manual = request.body.manual_discount;
         const result = await service.quote(
           mutationContext(request, auth.companyId, auth.userId, auth.permissions),
@@ -565,6 +572,10 @@ export function registerPromotionRoutes(app: FastifyInstance, authentication: Au
             branchId: request.body.branch_id,
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
             couponCodes: request.body.coupon_codes ?? [],
+            ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
+            ...(request.body.reward_entitlement_id === undefined
+              ? {}
+              : { rewardEntitlementId: request.body.reward_entitlement_id }),
             ...(manual === undefined
               ? {}
               : {

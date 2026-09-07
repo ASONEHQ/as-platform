@@ -107,6 +107,11 @@ export interface CreateSaleInput {
     value: string;
     reasonCode: string;
   };
+  /** TASK 13.2 — requires `customerId` (a reward is always customer-
+   * scoped; there is no such thing as a walk-in-sale reward). Re-
+   * validated fresh here, never trusted from a prior quote — see
+   * `SalesService.createSale`/ADR-0019 "Quote vs Sale creation". */
+  rewardEntitlementId?: string;
 }
 
 export interface SaleMutationContext {

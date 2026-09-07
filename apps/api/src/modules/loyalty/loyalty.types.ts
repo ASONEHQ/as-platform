@@ -12,6 +12,9 @@ export type LoyaltyUnitType = 'stamp' | 'point';
 export type LoyaltyEntryType = 'earn' | 'redeem' | 'adjustment' | 'expiration';
 export type LoyaltyEntrySourceType = 'sale' | 'manual' | 'expiration_job';
 export type LoyaltyRewardType = 'vip_pass';
+// TASK 13.2 (ADR-0019) — the smallest typed set of ways an issued
+// entitlement can reduce a Sale's price at checkout.
+export type LoyaltyRewardBenefitType = 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | 'free_eligible_item';
 
 export interface LoyaltyProgramRow {
   id: string;
@@ -30,6 +33,22 @@ export interface LoyaltyProgramRow {
   rewardType: LoyaltyRewardType | null;
   rewardExpirationDays: number | null;
   rewardRepeatable: boolean;
+  /** TASK 13.2 (ADR-0019) — `null` means this program's issued
+   * entitlements still carry no purchasable checkout benefit (the
+   * TASK 13.1 display/tracking-only state) — automatic benefit
+   * APPLICATION at checkout is gated on this being non-null, never
+   * inferred from `rewardType` alone. */
+  rewardBenefitType: LoyaltyRewardBenefitType | null;
+  rewardBenefitPercentageBasisPoints: number | null;
+  rewardBenefitFixedAmount: string | null;
+  /** Part B — empty means "not restricted by specific product" (still
+   * possibly restricted by category). Both empty is a valid (if useless)
+   * DB state, but the pricing engine treats both-empty as "matches
+   * nothing" for a reward (the deliberate inverse of a promotion's own
+   * both-empty convention) — `LoyaltyService` itself refuses to let a
+   * caller configure `rewardBenefitType` with a fully empty scope. */
+  rewardScopeProductIds: readonly string[];
+  rewardScopeCategoryIds: readonly string[];
   createdBy: string;
   updatedBy: string;
   version: bigint;
@@ -49,6 +68,14 @@ export interface CreateLoyaltyProgramInput {
   rewardType?: LoyaltyRewardType;
   rewardExpirationDays?: number;
   rewardRepeatable?: boolean;
+  rewardBenefitType?: LoyaltyRewardBenefitType;
+  rewardBenefitPercentageBasisPoints?: number;
+  rewardBenefitFixedAmount?: string;
+  /** Omitted entirely means "leave the existing scope alone" on an
+   * update; `LoyaltyService.createProgram` always supplies both
+   * (possibly empty) arrays explicitly. */
+  rewardScopeProductIds?: readonly string[];
+  rewardScopeCategoryIds?: readonly string[];
 }
 
 export interface LoyaltyAccountRow {

@@ -162,6 +162,13 @@
       "when": 1788545597288,
       "tag": "0022_cheerful_scrambler",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788800829060,
+      "tag": "0023_tan_luke_cage",
+      "breakpoints": true
     }
   ]
 }

@@ -17,6 +17,9 @@ import { PaymentRepository } from '../payments/payments.repository.js';
 import { PaymentService } from '../payments/payments.service.js';
 import { MercadoPagoClient } from '../payments/providers/mercado-pago.client.js';
 import { MercadoPagoPointProvider } from '../payments/providers/mercado-pago.provider.js';
+import { PromotionsRepository } from '../promotions/promotions.repository.js';
+import { PromotionsService } from '../promotions/promotions.service.js';
+import { mapSaleError } from '../sales/sales.http-errors.js';
 import { SalesRepository } from '../sales/sales.repository.js';
 import { SalesService } from '../sales/sales.service.js';
 import { RewardsRepository, type RewardTransaction } from './rewards.repository.js';
@@ -45,6 +48,7 @@ const migrationsPath = resolve(import.meta.dirname, '../../../../../packages/dat
 integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false }, () => {
   let database: DatabaseClient;
   let sales: SalesService;
+  let promotions: PromotionsService;
   let cash: CashService;
   let payments: PaymentService;
   let customers: CustomersService;
@@ -130,6 +134,11 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
     // `loyalty_programs`'s new reward_* columns and `loyalty_ledger`'s
     // `loyalty_ledger_company_id_id_uq`.
     await applyIfMissing('reward_entitlements', ['0022_cheerful_scrambler.sql']);
+    // TASK 13.2 — `sale_reward_usages`/`loyalty_program_reward_products`/
+    // `loyalty_program_reward_categories`, plus `loyalty_programs`'s new
+    // `reward_benefit_*` columns and `sale_discounts`'s widened
+    // `source_type` check (now also allows `'reward'`).
+    await applyIfMissing('sale_reward_usages', ['0023_tan_luke_cage.sql']);
 
     await database.pool.query(
       `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
@@ -167,17 +176,24 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
     const salesRepository = new SalesRepository(database);
     const customersRepository = new CustomersRepository(database);
     customers = new CustomersService(customersRepository);
-    sales = new SalesService(salesRepository, undefined, customersRepository);
+    const promotionsRepository = new PromotionsRepository(database);
+    loyaltyRepository = new LoyaltyRepository(database);
+    loyalty = new LoyaltyService(loyaltyRepository);
+    rewardsRepository = new RewardsRepository(database);
+    rewards = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
+    // TASK 13.2 — `promotionsRepository` (so a reward's `sale_discounts`
+    // snapshot is actually written, exactly like real production wiring)
+    // and `rewards` as the 4th/5th args: `createSale` resolves/records a
+    // reward benefit via `RewardsService` when `rewardEntitlementId` is
+    // supplied; `quote()` mirrors the identical resolution read-only.
+    sales = new SalesService(salesRepository, promotionsRepository, customersRepository, rewards);
+    promotions = new PromotionsService(promotionsRepository, rewards);
     const cashRepository = new CashRepository(database);
     cash = new CashService(cashRepository);
     const paymentRepository = new PaymentRepository(database);
     const mercadoPagoProvider = new MercadoPagoPointProvider(
       new MercadoPagoClient({ accessToken: undefined, apiBaseUrl: 'https://api.mercadopago.com' }),
     );
-    loyaltyRepository = new LoyaltyRepository(database);
-    loyalty = new LoyaltyService(loyaltyRepository);
-    rewardsRepository = new RewardsRepository(database);
-    rewards = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
     // TASK 13.1 — `rewardsService` as the 7th arg: `applyPostSettlementHooks`
     // calls `evaluateAutomaticIssuance` AFTER `loyaltyService.earnFromSale`,
     // in the same settlement transaction — see `payments.service.ts`.
@@ -186,12 +202,24 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
 
   afterEach(async () => {
     for (const cid of [companyId, companyIdB]) {
+      // TASK 13.2 — `sale_reward_usages` (restrict-FK child of `sales`/
+      // `sale_items`/`reward_entitlements`/`loyalty_programs`) and
+      // `sale_discounts` (restrict-FK child of `sales`/`sale_items`, now
+      // also written for a reward's own snapshot since `sales` is wired
+      // with a real `promotionsRepository` in this file) must both be
+      // cleared before any of their parents below.
+      await database.pool.query('delete from sale_reward_usages where company_id=$1', [cid]);
+      await database.pool.query('delete from sale_discounts where company_id=$1', [cid]);
       await database.pool.query('delete from reward_entitlement_tokens where company_id=$1', [cid]);
       await database.pool.query('delete from reward_entitlements where company_id=$1', [cid]);
       await database.pool.query('delete from payment_attempts where company_id=$1', [cid]);
       await database.pool.query('delete from payments where company_id=$1', [cid]);
       await database.pool.query('delete from loyalty_ledger where company_id=$1', [cid]);
       await database.pool.query('delete from loyalty_accounts where company_id=$1', [cid]);
+      // TASK 13.2 — a reward's benefit scope (restrict-FK child of
+      // `loyalty_programs`) must be cleared before the programs themselves.
+      await database.pool.query('delete from loyalty_program_reward_products where company_id=$1', [cid]);
+      await database.pool.query('delete from loyalty_program_reward_categories where company_id=$1', [cid]);
       await database.pool.query('delete from loyalty_programs where company_id=$1', [cid]);
       await database.pool.query('delete from sale_items where company_id=$1', [cid]);
       await database.pool.query('delete from sales where company_id=$1', [cid]);
@@ -390,6 +418,95 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
     overrides: { expiresAt?: Date } = {},
   ): Promise<RewardEntitlementRow> {
     return issueEntitlementFor(context, keySuffix, customerId, programId, overrides);
+  }
+
+  // --- TASK 13.2 fixture helpers (checkout benefit application + VIP Pass
+  // POS consumption) --------------------------------------------------
+
+  /** A reward program with a real checkout BENEFIT configured (not just
+   * the bare threshold/type TASK 13.1's own helpers above build) — scoped
+   * to this file's single `productId` fixture by default, a
+   * `percentage_discount` of 50% unless overridden. `rewardThreshold`/
+   * `rewardType` are always supplied together (Part B) even though every
+   * test below issues its entitlement manually via `issueEntitlement`,
+   * never through a real threshold crossing. */
+  async function createBenefitProgram(
+    key: string,
+    overrides: Partial<Parameters<LoyaltyService['createProgram']>[2]> = {},
+  ): Promise<LoyaltyProgramRow> {
+    return createProgram(key, {
+      rewardThreshold: 3,
+      rewardType: 'vip_pass',
+      rewardBenefitType: 'percentage_discount',
+      rewardBenefitPercentageBasisPoints: 5000,
+      rewardScopeProductIds: [productId],
+      ...overrides,
+    });
+  }
+
+  /** Opens a fresh register+session for `branchId` — the same real
+   * `CashService` calls `buyForCustomer` above already uses, split out
+   * standalone so a test can create a Sale (with a reward attached) and
+   * settle it as two clearly separate steps, or open two independent
+   * sessions/registers to race two different Sales' own settlements
+   * against each other without them fighting over "which open session"
+   * `resolveOpenCashSession` should pick. */
+  async function openRegisterAndSession(keySuffix: string): Promise<{ registerId: string }> {
+    const register = await cash.createRegister(context, branchIds, `reg-${keySuffix}`, {
+      branchId,
+      code: `REG-${keySuffix}`,
+      name: `Caja ${keySuffix}`,
+    });
+    await cash.openSession(context, branchIds, `session-${keySuffix}`, {
+      cashRegisterId: register.value.id,
+      openingAmount: '0.0000',
+    });
+    return { registerId: register.value.id };
+  }
+
+  /** Creates a pending_payment Sale for `productId` (this file's own
+   * $200.0000, IVA_EXEMPT fixture — 0% tax keeps every benefit-type's
+   * arithmetic simple and round) with `rewardEntitlementId` attached,
+   * via the real `SalesService.createSale` — never a raw insert. */
+  async function createRewardSale(
+    keySuffix: string,
+    customerId: string,
+    rewardEntitlementId: string,
+    quantity = '1',
+  ): ReturnType<SalesService['createSale']> {
+    return sales.createSale(context, branchIds, `sale-${keySuffix}`, {
+      branchId,
+      customerId,
+      items: [{ productId, quantity }],
+      rewardEntitlementId,
+    });
+  }
+
+  async function saleRewardUsageRows(
+    targetCompanyId: string,
+    saleId: string,
+  ): Promise<
+    { status: string; benefit_amount_snapshot: string; consumed_at: Date | null; released_at: Date | null }[]
+  > {
+    const rows = await database.pool.query<{
+      status: string;
+      benefit_amount_snapshot: string;
+      consumed_at: Date | null;
+      released_at: Date | null;
+    }>(
+      `select status, benefit_amount_snapshot::text as benefit_amount_snapshot, consumed_at, released_at
+       from sale_reward_usages where company_id=$1 and sale_id=$2`,
+      [targetCompanyId, saleId],
+    );
+    return rows.rows;
+  }
+
+  async function capturedPaymentCount(targetCompanyId: string, saleId: string): Promise<number> {
+    const rows = await database.pool.query<{ n: string }>(
+      `select count(*)::text as n from payments where company_id=$1 and sale_id=$2 and status='captured'`,
+      [targetCompanyId, saleId],
+    );
+    return Number(rows.rows[0]?.n ?? '0');
   }
 
   // --- Automatic issuance (threshold crossing) ------------------------
@@ -967,6 +1084,380 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
         expect(serializedAudit).not.toContain(needle);
         expect(serializedOutbox).not.toContain(needle);
       }
+    });
+  });
+
+  // --- Reward benefit application + VIP Pass POS consumption (TASK 13.2,
+  // ADR-0019) — Part V integration coverage. `pricing.service.ts`'s own
+  // reward-benefit arithmetic (which entry point applies, capping, scope
+  // matching) already has full unit coverage
+  // (`pricing.service.test.ts`) — everything below instead proves the
+  // real, end-to-end WIRING across modules: quote is genuinely read-only,
+  // sale creation only ever freezes a snapshot, and — the single most
+  // important guarantee in this task — settlement is the ONLY place an
+  // entitlement is ever actually redeemed, exactly once, even when two
+  // Sales race to consume the same one.
+  describe('checkout benefit application + VIP Pass POS consumption (TASK 13.2, ADR-0019)', () => {
+    describe('quote (read-only preview)', () => {
+      it('repeated quote calls with a reward attached never mutate the entitlement or write a sale_reward_usages row', async () => {
+        const program = await createBenefitProgram('prog-quote-readonly-1');
+        const customer = await customers.createCustomer(context, 'cust-quote-readonly-1', { firstName: 'Quote' });
+        const entitlement = await issueEntitlement('quote-readonly-1', customer.value.id, program.id);
+        for (let i = 0; i < 3; i += 1) {
+          const quote = await promotions.quote(context, branchIds, {
+            branchId,
+            items: [{ productId, quantity: '1' }],
+            customerId: customer.value.id,
+            rewardEntitlementId: entitlement.id,
+          });
+          // 50% off $200.0000 — proves the reward benefit really was
+          // resolved and priced on every one of the three calls, not
+          // silently skipped.
+          expect(quote.discountTotalUnits).toBe(1_000_000n);
+        }
+        const after = await rewards.entitlement(context, entitlement.id);
+        expect(after.status).toBe('available');
+        expect(after.version).toBe(entitlement.version);
+        expect(after.redeemedAt).toBeNull();
+        const usageCount = await database.pool.query<{ n: string }>(
+          `select count(*)::text as n from sale_reward_usages where company_id=$1 and reward_entitlement_id=$2`,
+          [companyId, entitlement.id],
+        );
+        expect(usageCount.rows[0]?.n).toBe('0');
+      });
+    });
+
+    describe('sale creation (freezes a snapshot, never redeems)', () => {
+      it('writes exactly one applied sale_reward_usages row matching the pricing engine discount, without redeeming the entitlement', async () => {
+        const program = await createBenefitProgram('prog-create-snapshot-1');
+        const customer = await customers.createCustomer(context, 'cust-create-snapshot-1', { firstName: 'Snap' });
+        const entitlement = await issueEntitlement('create-snapshot-1', customer.value.id, program.id);
+        const created = await createRewardSale('create-snapshot-1', customer.value.id, entitlement.id);
+        expect(created.value.sale.status).toBe('pending_payment');
+        expect(created.value.sale.discountTotal).toBe('100.0000'); // 50% off $200.0000.
+        const usageRows = await saleRewardUsageRows(companyId, created.value.sale.id);
+        expect(usageRows).toHaveLength(1);
+        expect(usageRows[0]).toMatchObject({ status: 'applied', consumed_at: null, released_at: null });
+        expect(usageRows[0]?.benefit_amount_snapshot).toBe(created.value.sale.discountTotal);
+        const afterEntitlement = await rewards.entitlement(context, entitlement.id);
+        expect(afterEntitlement.status).toBe('available');
+        expect(afterEntitlement.redeemedAt).toBeNull();
+        expect(afterEntitlement.version).toBe(entitlement.version); // untouched — creation never locks/mutates it.
+      });
+    });
+
+    describe('settlement (consumes exactly once)', () => {
+      it('settling the sale redeems the entitlement, consumes the usage row, and writes exactly one reward.redeemed row for this sale', async () => {
+        const program = await createBenefitProgram('prog-settle-1');
+        const customer = await customers.createCustomer(context, 'cust-settle-1', { firstName: 'Settle' });
+        const entitlement = await issueEntitlement('settle-1', customer.value.id, program.id);
+        const created = await createRewardSale('settle-1', customer.value.id, entitlement.id);
+        expect(created.value.sale.total).toBe('100.0000');
+        const { registerId } = await openRegisterAndSession('settle-1');
+        const cashPayment = await payments.createCashPayment(context, branchIds, 'pay-settle-1', {
+          saleId: created.value.sale.id,
+          tenderedAmount: '100.0000',
+          cashRegisterId: registerId,
+        });
+        expect(cashPayment.value.sale.status).toBe('completed');
+        const afterEntitlement = await rewards.entitlement(context, entitlement.id);
+        expect(afterEntitlement.status).toBe('redeemed');
+        expect(afterEntitlement.redeemedAt).not.toBeNull();
+        expect(afterEntitlement.redeemedBranchId).toBe(branchId);
+        const usageRows = await saleRewardUsageRows(companyId, created.value.sale.id);
+        expect(usageRows).toHaveLength(1);
+        expect(usageRows[0]?.status).toBe('consumed');
+        expect(usageRows[0]?.consumed_at).not.toBeNull();
+        const outbox = await outboxRows(companyId, 'reward.redeemed', entitlement.id);
+        expect(outbox).toHaveLength(1);
+        expect(outbox[0]?.payload).toMatchObject({ sale_id: created.value.sale.id });
+      });
+    });
+
+    describe('settlement idempotency (retry-safety)', () => {
+      it('replaying the same cash-payment idempotency key on an already-settled sale never re-attempts or double-consumes the reward', async () => {
+        const program = await createBenefitProgram('prog-settle-retry-1');
+        const customer = await customers.createCustomer(context, 'cust-settle-retry-1', { firstName: 'Retry' });
+        const entitlement = await issueEntitlement('settle-retry-1', customer.value.id, program.id);
+        const created = await createRewardSale('settle-retry-1', customer.value.id, entitlement.id);
+        const { registerId } = await openRegisterAndSession('settle-retry-1');
+        const first = await payments.createCashPayment(context, branchIds, 'pay-settle-retry-1', {
+          saleId: created.value.sale.id,
+          tenderedAmount: '100.0000',
+          cashRegisterId: registerId,
+        });
+        expect(first.replayed).toBe(false);
+        const afterFirst = await rewards.entitlement(context, entitlement.id);
+        expect(afterFirst.status).toBe('redeemed');
+        // A replayed confirmation (same idempotency key) never re-executes
+        // `createCashPayment`'s own body at all — `consumeAppliedUsagesForSale`
+        // is never called a second time, so there is nothing to throw on
+        // and nothing to double-consume.
+        const replay = await payments.createCashPayment(context, branchIds, 'pay-settle-retry-1', {
+          saleId: created.value.sale.id,
+          tenderedAmount: '100.0000',
+          cashRegisterId: registerId,
+        });
+        expect(replay.replayed).toBe(true);
+        const afterReplay = await rewards.entitlement(context, entitlement.id);
+        expect(afterReplay.status).toBe('redeemed');
+        expect(afterReplay.version).toBe(afterFirst.version); // no further mutation from the replay.
+        const usageRows = await saleRewardUsageRows(companyId, created.value.sale.id);
+        expect(usageRows).toHaveLength(1);
+        expect(usageRows[0]?.status).toBe('consumed');
+        const outbox = await outboxRows(companyId, 'reward.redeemed', entitlement.id);
+        expect(outbox).toHaveLength(1); // never a second consumption event from the replay.
+      });
+    });
+
+    // THE single most important test in this whole task (see the task's
+    // own Part V spec) — two entirely separate Sales, for the SAME
+    // customer, both legitimately attach the SAME reward entitlement at
+    // creation time (both succeed — creation only ever checks the
+    // entitlement is still `available`, which it genuinely is for both,
+    // since neither has settled yet). Racing their SETTLEMENT must let
+    // exactly one through and cleanly roll the other back — never a
+    // double-redeem, never a partially-completed Sale.
+    describe('concurrent settlement — the critical guarantee', () => {
+      it('two Sales referencing the same reward entitlement race to settle: exactly one succeeds, the other rolls back cleanly with no partial state', async () => {
+        const program = await createBenefitProgram('prog-race-1');
+        const customer = await customers.createCustomer(context, 'cust-race-1', { firstName: 'Race' });
+        const entitlement = await issueEntitlement('race-1', customer.value.id, program.id);
+        const saleA = await createRewardSale('race-1a', customer.value.id, entitlement.id);
+        const saleB = await createRewardSale('race-1b', customer.value.id, entitlement.id);
+        expect(saleA.value.sale.total).toBe('100.0000');
+        expect(saleB.value.sale.total).toBe('100.0000');
+        // Both Sales already, legitimately, each hold their own `applied`
+        // usage row against the very same entitlement — the state this
+        // whole test exists to race.
+        expect((await saleRewardUsageRows(companyId, saleA.value.sale.id))[0]?.status).toBe('applied');
+        expect((await saleRewardUsageRows(companyId, saleB.value.sale.id))[0]?.status).toBe('applied');
+
+        // Two independent registers/sessions so neither `createCashPayment`
+        // call has to guess "which open session" — each is explicit,
+        // exactly like a real second physical register would be.
+        const registerA = await openRegisterAndSession('race-1a');
+        const registerB = await openRegisterAndSession('race-1b');
+        const results = await Promise.allSettled([
+          payments.createCashPayment(context, branchIds, 'pay-race-1a', {
+            saleId: saleA.value.sale.id,
+            tenderedAmount: '100.0000',
+            cashRegisterId: registerA.registerId,
+          }),
+          payments.createCashPayment(context, branchIds, 'pay-race-1b', {
+            saleId: saleB.value.sale.id,
+            tenderedAmount: '100.0000',
+            cashRegisterId: registerB.registerId,
+          }),
+        ]);
+        const fulfilled = results.filter(
+          (entry): entry is PromiseFulfilledResult<Awaited<ReturnType<typeof payments.createCashPayment>>> =>
+            entry.status === 'fulfilled',
+        );
+        const rejected = results.filter((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        // The loser's own settlement transaction is rolled back by exactly
+        // the same `reward_already_redeemed` a standalone `redeem()` call
+        // would raise — `RewardsService.consumeAppliedUsagesForSale` uses
+        // the identical row-locked mechanism, no parallel primitive.
+        expect(rejected[0]?.reason).toMatchObject({ code: 'reward_already_redeemed' });
+
+        const winningSaleId = fulfilled[0]?.value.value.sale.id;
+        if (winningSaleId === undefined) throw new Error('Expected exactly one winning settlement.');
+        const losingSaleId = winningSaleId === saleA.value.sale.id ? saleB.value.sale.id : saleA.value.sale.id;
+
+        const winningSale = await sales.sale(companyId, branchIds, winningSaleId);
+        expect(winningSale.sale.status).toBe('completed');
+        const losingSale = await sales.sale(companyId, branchIds, losingSaleId);
+        // Never partially completed — the loser's Sale stays exactly where
+        // it was before the race, and its own payment attempt left no
+        // captured payment row behind (the whole transaction, including
+        // the payment/attempt/cash-movement inserts made earlier in that
+        // SAME transaction, rolled back together with the reward
+        // rejection).
+        expect(losingSale.sale.status).toBe('pending_payment');
+        expect(await capturedPaymentCount(companyId, losingSaleId)).toBe(0);
+
+        const afterEntitlement = await rewards.entitlement(context, entitlement.id);
+        expect(afterEntitlement.status).toBe('redeemed'); // exactly once, overall.
+
+        const winningUsage = await saleRewardUsageRows(companyId, winningSaleId);
+        expect(winningUsage).toHaveLength(1);
+        expect(winningUsage[0]?.status).toBe('consumed');
+        expect(winningUsage[0]?.consumed_at).not.toBeNull();
+
+        const losingUsage = await saleRewardUsageRows(companyId, losingSaleId);
+        expect(losingUsage).toHaveLength(1);
+        // The loser's own usage row was never touched by the failed
+        // settlement attempt — `markSaleRewardUsageConsumed` never
+        // committed before the whole transaction rolled back, so it
+        // remains exactly what `createSale` left it as: still `applied`,
+        // never `consumed`, and (deliberately) never released either —
+        // this Sale itself was never cancelled, only its settlement
+        // attempt failed.
+        expect(losingUsage[0]?.status).toBe('applied');
+        expect(losingUsage[0]?.consumed_at).toBeNull();
+        expect(losingUsage[0]?.released_at).toBeNull();
+
+        // Exactly one `reward.redeemed` row overall, referencing the
+        // WINNING sale specifically — never the loser's.
+        const outbox = await outboxRows(companyId, 'reward.redeemed', entitlement.id);
+        expect(outbox).toHaveLength(1);
+        expect(outbox[0]?.payload).toMatchObject({ sale_id: winningSaleId });
+      });
+    });
+
+    describe('cancellation (releases the usage, never touches the entitlement)', () => {
+      it('cancelling a pending-payment sale releases its sale_reward_usages row without ever redeeming the entitlement', async () => {
+        const program = await createBenefitProgram('prog-cancel-1');
+        const customer = await customers.createCustomer(context, 'cust-cancel-1', { firstName: 'Cancel' });
+        const entitlement = await issueEntitlement('cancel-1', customer.value.id, program.id);
+        const created = await createRewardSale('cancel-1', customer.value.id, entitlement.id);
+        await sales.cancelSale(
+          context,
+          branchIds,
+          created.value.sale.id,
+          'sale-cancel-reward-1-key',
+          'customer_changed_mind',
+        );
+        const usageRows = await saleRewardUsageRows(companyId, created.value.sale.id);
+        expect(usageRows).toHaveLength(1);
+        expect(usageRows[0]?.status).toBe('released');
+        expect(usageRows[0]?.released_at).not.toBeNull();
+        expect(usageRows[0]?.consumed_at).toBeNull();
+        const afterEntitlement = await rewards.entitlement(context, entitlement.id);
+        // Never redeemed-then-un-redeemed — simply never redeemed at all:
+        // the entitlement itself was never locked or mutated by creation,
+        // so cancellation has nothing to give back.
+        expect(afterEntitlement.status).toBe('available');
+        expect(afterEntitlement.redeemedAt).toBeNull();
+        expect(afterEntitlement.version).toBe(entitlement.version);
+      });
+    });
+
+    describe('zero-total completion', () => {
+      it('a free_eligible_item reward that waives the sale entirely settles via completeZeroTotalSale with no payment/cash rows at all', async () => {
+        const program = await createProgram('prog-zerototal-1', {
+          rewardThreshold: 3,
+          rewardType: 'vip_pass',
+          rewardBenefitType: 'free_eligible_item',
+          rewardScopeProductIds: [productId],
+        });
+        const customer = await customers.createCustomer(context, 'cust-zerototal-1', { firstName: 'Zero' });
+        const entitlement = await issueEntitlement('zerototal-1', customer.value.id, program.id);
+        const created = await createRewardSale('zerototal-1', customer.value.id, entitlement.id);
+        // The reward waives the entire (only) line — 0% tax on this
+        // file's own IVA_EXEMPT fixture keeps the post-discount base,
+        // and therefore the tax, at exactly zero too.
+        expect(created.value.sale.discountTotal).toBe('200.0000');
+        expect(created.value.sale.taxTotal).toBe('0.0000');
+        expect(created.value.sale.total).toBe('0.0000');
+
+        const zeroTotal = await payments.completeZeroTotalSale(context, branchIds, created.value.sale.id);
+        expect(zeroTotal.sale.status).toBe('completed');
+
+        const afterEntitlement = await rewards.entitlement(context, entitlement.id);
+        expect(afterEntitlement.status).toBe('redeemed');
+        const usageRows = await saleRewardUsageRows(companyId, created.value.sale.id);
+        expect(usageRows).toHaveLength(1);
+        expect(usageRows[0]?.status).toBe('consumed');
+
+        // No payment/payment_attempt/cash_movement row was ever created —
+        // not merely none captured.
+        const paymentCount = await database.pool.query<{ n: string }>(
+          `select count(*)::text as n from payments where company_id=$1 and sale_id=$2`,
+          [companyId, created.value.sale.id],
+        );
+        expect(paymentCount.rows[0]?.n).toBe('0');
+        const attemptCount = await database.pool.query<{ n: string }>(
+          `select count(*)::text as n from payment_attempts where company_id=$1
+           and payment_id in (select id from payments where company_id=$1 and sale_id=$2)`,
+          [companyId, created.value.sale.id],
+        );
+        expect(attemptCount.rows[0]?.n).toBe('0');
+        const cashMovementCount = await database.pool.query<{ n: string }>(
+          `select count(*)::text as n from cash_movements where company_id=$1`,
+          [companyId],
+        );
+        expect(cashMovementCount.rows[0]?.n).toBe('0');
+
+        // A distinct `sale.completed_without_payment` fact, IN ADDITION TO
+        // (never instead of) the normal `sale.completed` every other
+        // settlement path already writes.
+        const completed = await outboxRows(companyId, 'sale.completed', created.value.sale.id);
+        expect(completed).toHaveLength(1);
+        const completedWithoutPayment = await outboxRows(
+          companyId,
+          'sale.completed_without_payment',
+          created.value.sale.id,
+        );
+        expect(completedWithoutPayment).toHaveLength(1);
+      });
+    });
+
+    describe('rejection mapping (createSale surfaces the same reward_* codes redeem() would)', () => {
+      it('an already-redeemed rewardEntitlementId is rejected with the same mapped reward_already_redeemed error redeem() would give', async () => {
+        const program = await createBenefitProgram('prog-reject-redeemed-1');
+        const customer = await customers.createCustomer(context, 'cust-reject-redeemed-1', { firstName: 'Redeemed' });
+        const entitlement = await issueEntitlement('reject-redeemed-1', customer.value.id, program.id);
+        await rewards.redeem(context, 'reject-redeemed-1-redeem-key', entitlement.id, branchId);
+        await expect(
+          sales
+            .createSale(context, branchIds, 'sale-reject-redeemed-1', {
+              branchId,
+              customerId: customer.value.id,
+              items: [{ productId, quantity: '1' }],
+              rewardEntitlementId: entitlement.id,
+            })
+            .catch((error: unknown) => {
+              throw mapSaleError(error);
+            }),
+        ).rejects.toMatchObject({ code: 'reward_already_redeemed', statusCode: 409 });
+      });
+
+      it('an expired rewardEntitlementId is rejected with the same mapped reward_expired error redeem() would give', async () => {
+        const program = await createBenefitProgram('prog-reject-expired-1');
+        const customer = await customers.createCustomer(context, 'cust-reject-expired-1', { firstName: 'Expired' });
+        const entitlement = await issueEntitlement('reject-expired-1', customer.value.id, program.id, {
+          expiresAt: new Date('2026-09-01T00:00:00.000Z'), // before context.timestamp (2026-09-04).
+        });
+        await expect(
+          sales
+            .createSale(context, branchIds, 'sale-reject-expired-1', {
+              branchId,
+              customerId: customer.value.id,
+              items: [{ productId, quantity: '1' }],
+              rewardEntitlementId: entitlement.id,
+            })
+            .catch((error: unknown) => {
+              throw mapSaleError(error);
+            }),
+        ).rejects.toMatchObject({ code: 'reward_expired', statusCode: 409 });
+      });
+
+      it('a rewardEntitlementId belonging to a different customer is rejected with the mapped reward_not_available error, never leaking to the wrong cart', async () => {
+        const program = await createBenefitProgram('prog-reject-wrongcustomer-1');
+        const owner = await customers.createCustomer(context, 'cust-reject-wrongcustomer-owner-1', {
+          firstName: 'Owner',
+        });
+        const stranger = await customers.createCustomer(context, 'cust-reject-wrongcustomer-stranger-1', {
+          firstName: 'Stranger',
+        });
+        const entitlement = await issueEntitlement('reject-wrongcustomer-1', owner.value.id, program.id);
+        await expect(
+          sales
+            .createSale(context, branchIds, 'sale-reject-wrongcustomer-1', {
+              branchId,
+              customerId: stranger.value.id,
+              items: [{ productId, quantity: '1' }],
+              rewardEntitlementId: entitlement.id,
+            })
+            .catch((error: unknown) => {
+              throw mapSaleError(error);
+            }),
+        ).rejects.toMatchObject({ code: 'reward_not_available', statusCode: 409 });
+      });
     });
   });
 });

@@ -82,6 +82,22 @@ export class LoyaltyService {
     // clean `validation_error`, not a raw constraint violation.
     if ((input.rewardThreshold === undefined) !== (input.rewardType === undefined))
       throw new LoyaltyError('validation_error', 'reward_threshold and reward_type must be set together.');
+    // TASK 13.2 (ADR-0019 "Reward benefit model"/"Benefit scope") — a
+    // benefit definition requires the reward itself, and requires an
+    // EXPLICIT, non-empty scope; never inferred, never left implicit
+    // (Part B: "do not make a VIP Pass silently discount an unrelated
+    // product family"). Validated here (not only by the DB's own
+    // `loyalty_programs_reward_benefit_requires_reward_ck`) for a clean
+    // `validation_error`.
+    if (input.rewardBenefitType !== undefined && input.rewardType === undefined)
+      throw new LoyaltyError('validation_error', 'reward_benefit_type requires reward_type to already be set.');
+    const scopeProductIds = input.rewardScopeProductIds ?? [];
+    const scopeCategoryIds = input.rewardScopeCategoryIds ?? [];
+    if (input.rewardBenefitType !== undefined && scopeProductIds.length === 0 && scopeCategoryIds.length === 0)
+      throw new LoyaltyError(
+        'validation_error',
+        'A reward benefit requires at least one scoped product or category.',
+      );
     // Stable across a genuine retry — see the identical reasoning in
     // `MembershipsService.createPlan`.
     const requestHash = hash(input);
@@ -118,18 +134,30 @@ export class LoyaltyService {
             // loyalty program; a company that wants a one-time reward sets
             // this `false` explicitly.
             rewardRepeatable: input.rewardRepeatable ?? true,
+            rewardBenefitType: input.rewardBenefitType ?? null,
+            rewardBenefitPercentageBasisPoints: input.rewardBenefitPercentageBasisPoints ?? null,
+            rewardBenefitFixedAmount: input.rewardBenefitFixedAmount ?? null,
             createdBy: context.actorId,
             timestamp: context.timestamp,
           });
+          await this.repository.replaceRewardScope(
+            client,
+            context.companyId,
+            created.id,
+            { productIds: scopeProductIds, categoryIds: scopeCategoryIds },
+            context.timestamp,
+          );
+          const withScope = await this.repository.program(client, context.companyId, created.id);
+          if (withScope === null) throw new Error('Loyalty program creation did not return a row.');
           await this.repository.auditAndPublish(client, context, {
             action: 'loyalty_program.created',
             resourceType: 'loyalty_program',
-            resourceId: created.id,
+            resourceId: withScope.id,
             eventType: 'loyalty_program.created',
-            version: created.version,
-            payload: { loyalty_program_id: created.id, active: created.active },
+            version: withScope.version,
+            payload: { loyalty_program_id: withScope.id, active: withScope.active },
           });
-          return created;
+          return withScope;
         },
       ),
     );
@@ -156,18 +184,44 @@ export class LoyaltyService {
         ...(input.rewardType === undefined ? {} : { rewardType: input.rewardType }),
         ...(input.rewardExpirationDays === undefined ? {} : { rewardExpirationDays: input.rewardExpirationDays }),
         ...(input.rewardRepeatable === undefined ? {} : { rewardRepeatable: input.rewardRepeatable }),
+        ...(input.rewardBenefitType === undefined ? {} : { rewardBenefitType: input.rewardBenefitType }),
+        ...(input.rewardBenefitPercentageBasisPoints === undefined
+          ? {}
+          : { rewardBenefitPercentageBasisPoints: input.rewardBenefitPercentageBasisPoints }),
+        ...(input.rewardBenefitFixedAmount === undefined ? {} : { rewardBenefitFixedAmount: input.rewardBenefitFixedAmount }),
         updatedBy: context.actorId,
         timestamp: context.timestamp,
       });
+      // TASK 13.2 (Part B) — scope is only ever touched when the caller
+      // supplied AT LEAST ONE of the two arrays; supplying `[]` for a
+      // dimension the caller wants cleared is a deliberate, explicit
+      // choice (never inferred from omission). `undefined` for BOTH
+      // means "leave the existing scope alone" (e.g. a plain `active`
+      // toggle never has to re-supply scope every time).
+      const finalScope =
+        input.rewardScopeProductIds !== undefined || input.rewardScopeCategoryIds !== undefined
+          ? { productIds: input.rewardScopeProductIds ?? [], categoryIds: input.rewardScopeCategoryIds ?? [] }
+          : null;
+      if (finalScope !== null) {
+        if (
+          (updated.rewardBenefitType !== null || input.rewardBenefitType !== undefined) &&
+          finalScope.productIds.length === 0 &&
+          finalScope.categoryIds.length === 0
+        )
+          throw new LoyaltyError('validation_error', 'A reward benefit requires at least one scoped product or category.');
+        await this.repository.replaceRewardScope(client, context.companyId, id, finalScope, context.timestamp);
+      }
+      const withScope = await this.repository.program(client, context.companyId, id);
+      if (withScope === null) throw new LoyaltyError('resource_not_found', 'The loyalty program was not found.');
       await this.repository.auditAndPublish(client, context, {
         action: 'loyalty_program.updated',
         resourceType: 'loyalty_program',
-        resourceId: updated.id,
+        resourceId: withScope.id,
         eventType: 'loyalty_program.updated',
-        version: updated.version,
-        payload: { loyalty_program_id: updated.id, active: updated.active },
+        version: withScope.version,
+        payload: { loyalty_program_id: withScope.id, active: withScope.active },
       });
-      return updated;
+      return withScope;
     });
   }
 

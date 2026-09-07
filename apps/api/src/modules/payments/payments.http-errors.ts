@@ -2,6 +2,8 @@ import { AppError } from '@asone/errors';
 
 import { CashError } from '../cash/cash.types.js';
 import { SaleInventoryPostingError } from '../inventory/sale-consumption.js';
+import { mapRewardError } from '../rewards/rewards.http-errors.js';
+import { RewardError } from '../rewards/rewards.types.js';
 import { PaymentError } from './payments.types.js';
 
 // TASK 12.7 gap fixed while building TASK 12.8's own cross-module refund
@@ -39,6 +41,16 @@ const inventoryPostingStatus: Readonly<Record<string, number>> = {
 };
 
 export function mapPaymentError(error: unknown): Error {
+  // TASK 13.2 — settlement now optionally calls `RewardsService.
+  // consumeAppliedUsagesForSale` (Part F/E: atomic, settlement-only
+  // consumption) inside the SAME transaction `trySettleSale` runs in; a
+  // rejection there (already redeemed by a concurrent Sale, expired,
+  // customer inactive) rolls the whole cash-payment transaction back and
+  // must surface as the SAME specific `reward_*` code the standalone
+  // `/redeem` endpoint would give, never a generic 500 — mirrors
+  // `SaleInventoryPostingError`'s own established "chain another
+  // module's error family through this mapper" shape.
+  if (error instanceof RewardError) return mapRewardError(error);
   if (error instanceof SaleInventoryPostingError)
     return new AppError({
       code: error.code,

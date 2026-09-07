@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { ivaBasisPointsForTaxCode, type ProductTaxCode } from '@asone/database';
 
+import type { RewardsService } from '../rewards/rewards.service.js';
 import { applyBasisPoints, evaluatePricing, formatMoney, parseQuantityUnits } from './pricing.service.js';
 import type { CreatePromotionInput, PromotionsRepository } from './promotions.repository.js';
 import {
@@ -138,10 +139,24 @@ export interface QuoteInput {
   items: readonly PricingLineInput[];
   couponCodes?: readonly string[];
   manualDiscount?: PricingManualDiscountInput;
+  /** TASK 13.2 — both required together (a reward is always customer-
+   * scoped; there is no "reward for whoever's cart this is"). `undefined`
+   * for either means no reward attached — the honest default for a
+   * walk-in/no-customer preview. */
+  customerId?: string;
+  rewardEntitlementId?: string;
 }
 
 export class PromotionsService {
-  public constructor(private readonly repository: PromotionsRepository) {}
+  // TASK 13.2 — `rewardsService` optional and backward-compatible,
+  // mirroring `SalesService`'s own established optional-cross-module-
+  // dependency shape (`promotionsRepository?`) exactly: a deployment
+  // that never wires it simply never previews a reward benefit, never a
+  // crash.
+  public constructor(
+    private readonly repository: PromotionsRepository,
+    private readonly rewardsService?: RewardsService,
+  ) {}
 
   // --- Admin: promotions -----------------------------------------------
 
@@ -481,6 +496,28 @@ export class PromotionsService {
       couponCache.set(normalizedCode, { coupon: couponRow, branchEligible: true, redeemedCount });
     }
 
+    // TASK 13.2 — Part D "quote... validates reward entitlement...
+    // DOES NOT consume/redeem entitlement, DOES NOT mutate DB state":
+    // `resolveCheckoutBenefit` is entirely read-only (no lock, no
+    // status transition — see its own doc comment). Requires BOTH a
+    // customer and a reward id; either alone is a validation error, not
+    // silently ignored (a caller that meant to preview a reward but
+    // forgot to attach a customer should see why nothing happened).
+    let rewardCandidate = null;
+    if (input.rewardEntitlementId !== undefined) {
+      if (input.customerId === undefined)
+        throw new PromotionError('validation_error', 'reward_entitlement_id requires a customer_id.');
+      if (this.rewardsService === undefined)
+        throw new PromotionError('validation_error', 'Reward pricing is not available in this deployment.');
+      const resolved = await this.rewardsService.resolveCheckoutBenefit(
+        context,
+        input.customerId,
+        input.rewardEntitlementId,
+        context.timestamp,
+      );
+      rewardCandidate = resolved.candidate;
+    }
+
     return evaluatePricing({
       branchId: input.branchId,
       branchTimezone: timezone,
@@ -489,6 +526,7 @@ export class PromotionsService {
       promotionCandidates,
       couponLookup: (normalizedCode) => couponCache.get(normalizedCode) ?? null,
       requestedCouponCodes: input.couponCodes ?? [],
+      rewardCandidate,
       ...(input.manualDiscount === undefined ? {} : { manualDiscount: input.manualDiscount }),
       actorPermissions: context.actorPermissions,
       now: context.timestamp,

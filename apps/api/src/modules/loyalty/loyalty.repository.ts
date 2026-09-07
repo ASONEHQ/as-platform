@@ -11,6 +11,7 @@ import {
   type LoyaltyLedgerEntryRow,
   type LoyaltyMutationContext,
   type LoyaltyProgramRow,
+  type LoyaltyRewardBenefitType,
   type LoyaltyRewardType,
   type LoyaltyUnitType,
 } from './loyalty.types.js';
@@ -41,10 +42,24 @@ interface IdempotencyDb {
   response_body: unknown;
 }
 
+// TASK 13.2 — `lp.` prefixed and joined against the two new reward-scope
+// tables (mirrors `promotions.repository.ts`'s own `PROMOTION_COLUMNS`/
+// `PROMOTION_SCOPE_SELECT`/`PROMOTION_SCOPE_JOIN` shape exactly, right
+// down to the `group by lp.id` — Postgres' own primary-key functional-
+// dependency rule, not a full column list). Every existing call site
+// (`program()`, `listPrograms()`) picks up the scope for free; none of
+// them needed a second, parallel query.
 const PROGRAM_COLUMNS =
-  'id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,' +
-  'reward_threshold,reward_description,reward_type,reward_expiration_days,reward_repeatable,' +
-  'created_by,updated_by,version,created_at,updated_at';
+  'lp.id,lp.company_id,lp.name,lp.active,lp.unit_type,lp.earning_rule_type,lp.earn_quantity_per_sale,lp.minimum_sale_total,' +
+  'lp.reward_threshold,lp.reward_description,lp.reward_type,lp.reward_expiration_days,lp.reward_repeatable,' +
+  'lp.reward_benefit_type,lp.reward_benefit_percentage_basis_points,lp.reward_benefit_fixed_amount,' +
+  'lp.created_by,lp.updated_by,lp.version,lp.created_at,lp.updated_at';
+const PROGRAM_SCOPE_SELECT =
+  ",coalesce(array_agg(distinct lprp.product_id) filter (where lprp.product_id is not null), '{}') as reward_scope_product_ids" +
+  ",coalesce(array_agg(distinct lprc.category_id) filter (where lprc.category_id is not null), '{}') as reward_scope_category_ids";
+const PROGRAM_SCOPE_JOIN = `
+  left join loyalty_program_reward_products lprp on lprp.company_id=lp.company_id and lprp.loyalty_program_id=lp.id
+  left join loyalty_program_reward_categories lprc on lprc.company_id=lp.company_id and lprc.loyalty_program_id=lp.id`;
 interface ProgramDb {
   id: string;
   company_id: string;
@@ -59,6 +74,11 @@ interface ProgramDb {
   reward_type: LoyaltyRewardType | null;
   reward_expiration_days: number | null;
   reward_repeatable: boolean;
+  reward_benefit_type: LoyaltyRewardBenefitType | null;
+  reward_benefit_percentage_basis_points: number | null;
+  reward_benefit_fixed_amount: string | null;
+  reward_scope_product_ids: string[];
+  reward_scope_category_ids: string[];
   created_by: string;
   updated_by: string;
   version: string;
@@ -108,6 +128,11 @@ function program(row: ProgramDb): LoyaltyProgramRow {
     rewardType: row.reward_type,
     rewardExpirationDays: row.reward_expiration_days,
     rewardRepeatable: row.reward_repeatable,
+    rewardBenefitType: row.reward_benefit_type,
+    rewardBenefitPercentageBasisPoints: row.reward_benefit_percentage_basis_points,
+    rewardBenefitFixedAmount: row.reward_benefit_fixed_amount,
+    rewardScopeProductIds: row.reward_scope_product_ids,
+    rewardScopeCategoryIds: row.reward_scope_category_ids,
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     version: BigInt(row.version),
@@ -157,6 +182,9 @@ export interface InsertProgramInput {
   rewardType: LoyaltyRewardType | null;
   rewardExpirationDays: number | null;
   rewardRepeatable: boolean;
+  rewardBenefitType: LoyaltyRewardBenefitType | null;
+  rewardBenefitPercentageBasisPoints: number | null;
+  rewardBenefitFixedAmount: string | null;
   createdBy: string;
   timestamp: Date;
 }
@@ -171,6 +199,9 @@ export interface UpdateProgramFields {
   rewardType?: LoyaltyRewardType | null;
   rewardExpirationDays?: number | null;
   rewardRepeatable?: boolean;
+  rewardBenefitType?: LoyaltyRewardBenefitType | null;
+  rewardBenefitPercentageBasisPoints?: number | null;
+  rewardBenefitFixedAmount?: string | null;
   updatedBy: string;
   timestamp: Date;
 }
@@ -217,6 +248,10 @@ export class LoyaltyRepository {
   private mapDatabaseError(error: unknown): unknown {
     if (constraint(error) === 'loyalty_programs_reward_pair_ck')
       return new LoyaltyError('validation_error', 'reward_threshold and reward_type must be set together.');
+    if (constraint(error) === 'loyalty_programs_reward_benefit_requires_reward_ck')
+      return new LoyaltyError('validation_error', 'reward_benefit_type requires reward_type to already be set.');
+    if (constraint(error) === 'loyalty_programs_reward_benefit_value_ck')
+      return new LoyaltyError('validation_error', 'The reward benefit value does not match its benefit type.');
     return error;
   }
 
@@ -312,8 +347,9 @@ export class LoyaltyRepository {
       `insert into loyalty_programs
        (id,company_id,name,active,unit_type,earning_rule_type,earn_quantity_per_sale,minimum_sale_total,
         reward_threshold,reward_description,reward_type,reward_expiration_days,reward_repeatable,
+        reward_benefit_type,reward_benefit_percentage_basis_points,reward_benefit_fixed_amount,
         created_by,updated_by,created_at,updated_at)
-       values ($1,$2,$3,$4,$5,'per_completed_sale',$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$14)`,
+       values ($1,$2,$3,$4,$5,'per_completed_sale',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16,$17,$17)`,
       [
         input.id,
         input.companyId,
@@ -327,6 +363,9 @@ export class LoyaltyRepository {
         input.rewardType,
         input.rewardExpirationDays,
         input.rewardRepeatable,
+        input.rewardBenefitType,
+        input.rewardBenefitPercentageBasisPoints,
+        input.rewardBenefitFixedAmount,
         input.createdBy,
         input.timestamp,
       ],
@@ -334,6 +373,51 @@ export class LoyaltyRepository {
     const created = await this.program(client, input.companyId, input.id);
     if (created === null) throw new Error('Loyalty program insertion did not return a row.');
     return created;
+  }
+
+  /** TASK 13.2 (Part B) — a straightforward delete-then-reinsert of this
+   * program's reward scope, inside the SAME transaction `insertProgram`/
+   * `updateProgram` just ran in. A program's scope is small (a handful
+   * of products/categories at most) and changes rarely enough that a
+   * diff-based partial update would add real complexity for no real
+   * benefit — this mirrors the simplest correct pattern already used
+   * elsewhere in this codebase for small many-to-many scope sets
+   * (`membership_plan_branches`). Called ONLY when the caller actually
+   * supplied scope ids (`undefined` means "leave the existing scope
+   * alone" on an update; `createProgram` always calls this, even with
+   * empty arrays, to establish the row's initial — possibly empty —
+   * scope explicitly). */
+  public async replaceRewardScope(
+    client: LoyaltyTransaction,
+    companyId: string,
+    loyaltyProgramId: string,
+    scope: { productIds: readonly string[]; categoryIds: readonly string[] },
+    timestamp: Date,
+  ): Promise<void> {
+    await client.query(`delete from loyalty_program_reward_products where company_id=$1 and loyalty_program_id=$2`, [
+      companyId,
+      loyaltyProgramId,
+    ]);
+    await client.query(`delete from loyalty_program_reward_categories where company_id=$1 and loyalty_program_id=$2`, [
+      companyId,
+      loyaltyProgramId,
+    ]);
+    for (const productId of scope.productIds) {
+      await client.query(
+        `insert into loyalty_program_reward_products (id,company_id,loyalty_program_id,product_id,created_at)
+         values ($1,$2,$3,$4,$5)
+         on conflict on constraint loyalty_program_reward_products_company_program_product_uq do nothing`,
+        [randomUUID(), companyId, loyaltyProgramId, productId, timestamp],
+      );
+    }
+    for (const categoryId of scope.categoryIds) {
+      await client.query(
+        `insert into loyalty_program_reward_categories (id,company_id,loyalty_program_id,category_id,created_at)
+         values ($1,$2,$3,$4,$5)
+         on conflict on constraint loyalty_program_reward_categories_company_program_category_uq do nothing`,
+        [randomUUID(), companyId, loyaltyProgramId, categoryId, timestamp],
+      );
+    }
   }
 
   public async updateProgram(
@@ -361,6 +445,10 @@ export class LoyaltyRepository {
     if (fields.rewardType !== undefined) set('reward_type', fields.rewardType);
     if (fields.rewardExpirationDays !== undefined) set('reward_expiration_days', fields.rewardExpirationDays);
     if (fields.rewardRepeatable !== undefined) set('reward_repeatable', fields.rewardRepeatable);
+    if (fields.rewardBenefitType !== undefined) set('reward_benefit_type', fields.rewardBenefitType);
+    if (fields.rewardBenefitPercentageBasisPoints !== undefined)
+      set('reward_benefit_percentage_basis_points', fields.rewardBenefitPercentageBasisPoints);
+    if (fields.rewardBenefitFixedAmount !== undefined) set('reward_benefit_fixed_amount', fields.rewardBenefitFixedAmount);
     set('updated_by', fields.updatedBy);
     set('updated_at', fields.timestamp);
     set('version', (expectedVersion + 1n).toString());
@@ -393,7 +481,8 @@ export class LoyaltyRepository {
   public async program(client: LoyaltyTransaction | null, companyId: string, id: string): Promise<LoyaltyProgramRow | null> {
     const row = result<ProgramDb>(
       await (client ?? this.database.pool).query(
-        `select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 and id=$2`,
+        `select ${PROGRAM_COLUMNS}${PROGRAM_SCOPE_SELECT} from loyalty_programs lp ${PROGRAM_SCOPE_JOIN}
+         where lp.company_id=$1 and lp.id=$2 group by lp.id`,
         [companyId, id],
       ),
     ).rows[0];
@@ -404,13 +493,16 @@ export class LoyaltyRepository {
     const rows =
       active === null
         ? result<ProgramDb>(
-            await this.database.pool.query(`select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 order by created_at desc`, [
-              companyId,
-            ]),
+            await this.database.pool.query(
+              `select ${PROGRAM_COLUMNS}${PROGRAM_SCOPE_SELECT} from loyalty_programs lp ${PROGRAM_SCOPE_JOIN}
+               where lp.company_id=$1 group by lp.id order by lp.created_at desc`,
+              [companyId],
+            ),
           ).rows
         : result<ProgramDb>(
             await this.database.pool.query(
-              `select ${PROGRAM_COLUMNS} from loyalty_programs where company_id=$1 and active=$2 order by created_at desc`,
+              `select ${PROGRAM_COLUMNS}${PROGRAM_SCOPE_SELECT} from loyalty_programs lp ${PROGRAM_SCOPE_JOIN}
+               where lp.company_id=$1 and lp.active=$2 group by lp.id order by lp.created_at desc`,
               [companyId, active],
             ),
           ).rows;

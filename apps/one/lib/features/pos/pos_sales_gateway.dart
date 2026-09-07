@@ -193,12 +193,21 @@ abstract interface class PosSalesGateway {
   /// sale (ADR-0017 D6) — omit entirely for "Venta sin cliente", the
   /// default/fast path that must never be required or block checkout
   /// speed.
+  ///
+  /// TASK 13.2: [rewardEntitlementId] attaches an already-selected,
+  /// already-quote-validated reward entitlement (ADR-0019) — requires
+  /// [customerId] also present, exactly matching the backend's own
+  /// required-together validation on this same field. The backend
+  /// independently re-validates and only actually consumes the
+  /// entitlement once this Sale genuinely settles, never on this call
+  /// alone (which only creates a `pending_payment` row).
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
+    String? rewardEntitlementId,
   });
 
   /// `GET /api/v1/sales/{sale_id}/receipt` — TASK 12.5B. A plain,
@@ -207,6 +216,17 @@ abstract interface class PosSalesGateway {
   /// success: throws [ApiException] on any rejection, same as every
   /// other gateway call here.
   Future<PosReceipt> receipt(String saleId);
+
+  /// `POST /api/v1/sales/{sale_id}/zero-total-completion` (TASK 13.2,
+  /// `reward.redeem`) — the dedicated settlement path for a `pending_
+  /// payment` Sale whose reward benefit already reduced its own `total`
+  /// to exactly zero (ADR-0019 "Zero-total Sale design"). No request
+  /// body, no payment created — deliberately NOT `/cash-payments` with a
+  /// fabricated `"0.00"` tender. The response carries the same real
+  /// `id`/`sale_number`/`status`/`total`/`discount_total` fields
+  /// [PosSaleCreated.fromJson] already decodes off `POST /sales`'s own
+  /// response, so it is reused here rather than a new model class.
+  Future<PosSaleCreated> completeZeroTotalSale(String saleId);
 
   /// `GET /api/v1/sales` (E075) — TASK 12.6 Part C. A plain, read-only,
   /// paginated query: never creates, mutates, or posts anything. `cursor`
@@ -235,6 +255,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
+    String? rewardEntitlementId,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales',
@@ -248,6 +269,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
         if (couponCodes != null && couponCodes.isNotEmpty) 'coupon_codes': couponCodes,
         if (manualDiscount != null) 'manual_discount': manualDiscount.toJson(),
         if (customerId != null) 'customer_id': customerId,
+        if (rewardEntitlementId != null) 'reward_entitlement_id': rewardEntitlementId,
       },
     );
     final data = envelope['data'];
@@ -265,6 +287,16 @@ class ApiPosSalesGateway implements PosSalesGateway {
       throw const FormatException('Missing receipt data.');
     }
     return PosReceipt.fromJson(data);
+  }
+
+  @override
+  Future<PosSaleCreated> completeZeroTotalSale(String saleId) async {
+    final envelope = await _client.postJson('/api/v1/sales/$saleId/zero-total-completion');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing sale data.');
+    }
+    return PosSaleCreated.fromJson(data);
   }
 
   @override
@@ -310,10 +342,15 @@ class EmptyPosSalesGateway implements PosSalesGateway {
     List<String>? couponCodes,
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
+    String? rewardEntitlementId,
   }) => Future.error(StateError('No sales gateway is configured.'));
 
   @override
   Future<PosReceipt> receipt(String saleId) =>
+      Future.error(StateError('No sales gateway is configured.'));
+
+  @override
+  Future<PosSaleCreated> completeZeroTotalSale(String saleId) =>
       Future.error(StateError('No sales gateway is configured.'));
 
   @override

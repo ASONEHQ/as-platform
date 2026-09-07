@@ -53,6 +53,11 @@ function programHttp(value: LoyaltyProgramRow): Readonly<Record<string, unknown>
     reward_type: value.rewardType,
     reward_expiration_days: value.rewardExpirationDays,
     reward_repeatable: value.rewardRepeatable,
+    reward_benefit_type: value.rewardBenefitType,
+    reward_benefit_percentage_basis_points: value.rewardBenefitPercentageBasisPoints,
+    reward_benefit_fixed_amount: value.rewardBenefitFixedAmount,
+    reward_scope_product_ids: value.rewardScopeProductIds,
+    reward_scope_category_ids: value.rewardScopeCategoryIds,
     version: Number(value.version),
   };
 }
@@ -95,6 +100,14 @@ const programSchema = {
     reward_type: { type: 'string', enum: ['vip_pass'] },
     reward_expiration_days: { type: 'integer', minimum: 1 },
     reward_repeatable: { type: 'boolean' },
+    reward_benefit_type: {
+      type: 'string',
+      enum: ['percentage_discount', 'fixed_amount_discount', 'fixed_price', 'free_eligible_item'],
+    },
+    reward_benefit_percentage_basis_points: { type: 'integer', minimum: 1, maximum: 10_000 },
+    reward_benefit_fixed_amount: { type: 'string', pattern: '^\\d+(\\.\\d{1,4})?$' },
+    reward_scope_product_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
+    reward_scope_category_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
   },
 } as const;
 
@@ -118,6 +131,11 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
           reward_type?: 'vip_pass';
           reward_expiration_days?: number;
           reward_repeatable?: boolean;
+          reward_benefit_type?: 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | 'free_eligible_item';
+          reward_benefit_percentage_basis_points?: number;
+          reward_benefit_fixed_amount?: string;
+          reward_scope_product_ids?: string[];
+          reward_scope_category_ids?: string[];
         };
         const created = await service.createProgram(
           mutationContext(request, auth.companyId, auth.userId, auth.permissions),
@@ -134,6 +152,13 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
             ...(body.reward_type === undefined ? {} : { rewardType: body.reward_type }),
             ...(body.reward_expiration_days === undefined ? {} : { rewardExpirationDays: body.reward_expiration_days }),
             ...(body.reward_repeatable === undefined ? {} : { rewardRepeatable: body.reward_repeatable }),
+            ...(body.reward_benefit_type === undefined ? {} : { rewardBenefitType: body.reward_benefit_type }),
+            ...(body.reward_benefit_percentage_basis_points === undefined
+              ? {}
+              : { rewardBenefitPercentageBasisPoints: body.reward_benefit_percentage_basis_points }),
+            ...(body.reward_benefit_fixed_amount === undefined ? {} : { rewardBenefitFixedAmount: body.reward_benefit_fixed_amount }),
+            ...(body.reward_scope_product_ids === undefined ? {} : { rewardScopeProductIds: body.reward_scope_product_ids }),
+            ...(body.reward_scope_category_ids === undefined ? {} : { rewardScopeCategoryIds: body.reward_scope_category_ids }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -188,6 +213,11 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
           reward_type: 'vip_pass';
           reward_expiration_days: number;
           reward_repeatable: boolean;
+          reward_benefit_type: 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | 'free_eligible_item';
+          reward_benefit_percentage_basis_points: number;
+          reward_benefit_fixed_amount: string;
+          reward_scope_product_ids: string[];
+          reward_scope_category_ids: string[];
         }>;
         const updated = await service.updateProgram(
           mutationContext(request, auth.companyId, auth.userId, auth.permissions),
@@ -204,6 +234,13 @@ export function registerLoyaltyRoutes(app: FastifyInstance, authentication: Auth
             ...(body.reward_type === undefined ? {} : { rewardType: body.reward_type }),
             ...(body.reward_expiration_days === undefined ? {} : { rewardExpirationDays: body.reward_expiration_days }),
             ...(body.reward_repeatable === undefined ? {} : { rewardRepeatable: body.reward_repeatable }),
+            ...(body.reward_benefit_type === undefined ? {} : { rewardBenefitType: body.reward_benefit_type }),
+            ...(body.reward_benefit_percentage_basis_points === undefined
+              ? {}
+              : { rewardBenefitPercentageBasisPoints: body.reward_benefit_percentage_basis_points }),
+            ...(body.reward_benefit_fixed_amount === undefined ? {} : { rewardBenefitFixedAmount: body.reward_benefit_fixed_amount }),
+            ...(body.reward_scope_product_ids === undefined ? {} : { rewardScopeProductIds: body.reward_scope_product_ids }),
+            ...(body.reward_scope_category_ids === undefined ? {} : { rewardScopeCategoryIds: body.reward_scope_category_ids }),
           },
         );
         return reply.header('etag', `"${updated.version.toString()}"`).send(successResponse(programHttp(updated), request.requestContext));

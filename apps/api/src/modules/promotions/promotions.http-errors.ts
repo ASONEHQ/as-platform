@@ -1,5 +1,7 @@
 import { AppError } from '@asone/errors';
 
+import { mapRewardError } from '../rewards/rewards.http-errors.js';
+import { RewardError } from '../rewards/rewards.types.js';
 import { PromotionError } from './promotions.types.js';
 
 const promotionErrorStatus: Readonly<Record<string, number>> = {
@@ -19,6 +21,13 @@ const promotionErrorStatus: Readonly<Record<string, number>> = {
 };
 
 export function mapPromotionError(error: unknown): Error {
+  // TASK 13.2 — `quote()` now optionally resolves a reward benefit via
+  // `RewardsService.resolveCheckoutBenefit`, which throws its OWN
+  // `RewardError` codes (`reward_expired`/`reward_already_redeemed`/
+  // etc.) — checked FIRST so those specific reasons reach the caller
+  // (Part O "eligibility errors surface clearly"), never collapsed into
+  // this module's own generic 409 default.
+  if (error instanceof RewardError) return mapRewardError(error);
   if (!(error instanceof PromotionError)) return error instanceof Error ? error : new Error('Unknown error');
   const statusCode = promotionErrorStatus[error.code] ?? 409;
   if (statusCode === 404)

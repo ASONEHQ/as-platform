@@ -76,6 +76,65 @@ interface TokenDb {
   created_at: Date | string;
   revoked_at: Date | string | null;
 }
+// TASK 13.2 — `sale_reward_usages` (defined in `promotions.ts`'s schema
+// file, alongside its sibling `sale_discounts`, but managed from HERE:
+// both `SalesService` and `RewardsService`/`PaymentService` already
+// depend on `RewardsRepository`, so this avoids a THIRD cross-module
+// dependency edge — see ADR-0019 "Sale reward snapshot".
+export type SaleRewardUsageStatus = 'applied' | 'consumed' | 'released';
+export interface SaleRewardUsageRow {
+  id: string;
+  companyId: string;
+  branchId: string;
+  saleId: string;
+  saleItemId: string;
+  rewardEntitlementId: string;
+  loyaltyProgramId: string;
+  rewardType: RewardType;
+  benefitType: string;
+  benefitAmountSnapshot: string;
+  status: SaleRewardUsageStatus;
+  createdAt: Date;
+  consumedAt: Date | null;
+  releasedAt: Date | null;
+}
+interface SaleRewardUsageDb {
+  id: string;
+  company_id: string;
+  branch_id: string;
+  sale_id: string;
+  sale_item_id: string;
+  reward_entitlement_id: string;
+  loyalty_program_id: string;
+  reward_type: RewardType;
+  benefit_type: string;
+  benefit_amount_snapshot: string;
+  status: SaleRewardUsageStatus;
+  created_at: Date | string;
+  consumed_at: Date | string | null;
+  released_at: Date | string | null;
+}
+function saleRewardUsage(row: SaleRewardUsageDb): SaleRewardUsageRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    branchId: row.branch_id,
+    saleId: row.sale_id,
+    saleItemId: row.sale_item_id,
+    rewardEntitlementId: row.reward_entitlement_id,
+    loyaltyProgramId: row.loyalty_program_id,
+    rewardType: row.reward_type,
+    benefitType: row.benefit_type,
+    benefitAmountSnapshot: row.benefit_amount_snapshot,
+    status: row.status,
+    createdAt: new Date(row.created_at),
+    consumedAt: row.consumed_at === null ? null : new Date(row.consumed_at),
+    releasedAt: row.released_at === null ? null : new Date(row.released_at),
+  };
+}
+const SALE_REWARD_USAGE_COLUMNS =
+  'id,company_id,branch_id,sale_id,sale_item_id,reward_entitlement_id,loyalty_program_id,reward_type,' +
+  'benefit_type,benefit_amount_snapshot,status,created_at,consumed_at,released_at';
 
 function entitlement(row: EntitlementDb): RewardEntitlementRow {
   return {
@@ -458,6 +517,121 @@ export class RewardsRepository {
       ),
     ).rows[0];
     return row === undefined ? null : token(row);
+  }
+
+  // --- Sale reward usages (TASK 13.2, Part G/F) -----------------------------
+
+  /** Called from `SalesService.createSale`, inside the SAME transaction
+   * the Sale/`sale_items`/`sale_discounts` rows are written in — an
+   * `on conflict do nothing` on `sale_reward_usages_company_sale_uq`
+   * makes a retried/replayed sale-creation request safe (never a second
+   * usage row for the same Sale). Deliberately does NOT lock or mutate
+   * `reward_entitlements` at all (Part D: "Sale creation... still does
+   * NOT mark redeemed merely because sale exists") — this row only
+   * records INTENT; consumption happens exclusively at settlement via
+   * `consumeAppliedUsagesForSale` below. */
+  public async insertSaleRewardUsage(
+    client: RewardTransaction,
+    input: {
+      id: string;
+      companyId: string;
+      branchId: string;
+      saleId: string;
+      saleItemId: string;
+      rewardEntitlementId: string;
+      loyaltyProgramId: string;
+      // Deliberately `string`, not the closed `RewardType` union — this
+      // snapshot's real validation is the DB's own `sale_reward_usages_
+      // reward_type_ck`, matching `benefitType` below (this call site's
+      // caller, `SalesService.createSale`, only ever has a
+      // `RewardBenefitCandidate.rewardType: string` to hand it — see
+      // that type's own doc comment for why `promotions.types.ts` stays
+      // decoupled from `rewards.types.ts`'s closed enum).
+      rewardType: string;
+      benefitType: string;
+      benefitAmountSnapshot: string;
+      timestamp: Date;
+    },
+  ): Promise<SaleRewardUsageRow | null> {
+    const inserted = result<{ id: string }>(
+      await client.query(
+        `insert into sale_reward_usages
+         (id,company_id,branch_id,sale_id,sale_item_id,reward_entitlement_id,loyalty_program_id,reward_type,
+          benefit_type,benefit_amount_snapshot,status,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'applied',$11)
+         on conflict on constraint sale_reward_usages_company_sale_uq do nothing
+         returning id`,
+        [
+          input.id,
+          input.companyId,
+          input.branchId,
+          input.saleId,
+          input.saleItemId,
+          input.rewardEntitlementId,
+          input.loyaltyProgramId,
+          input.rewardType,
+          input.benefitType,
+          input.benefitAmountSnapshot,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (inserted === undefined) return null;
+    const row = result<SaleRewardUsageDb>(
+      await client.query(`select ${SALE_REWARD_USAGE_COLUMNS} from sale_reward_usages where id=$1`, [inserted.id]),
+    ).rows[0];
+    return row === undefined ? null : saleRewardUsage(row);
+  }
+
+  /** Read-only, no lock — a Sale's own attached-reward preview (Customer
+   * Detail / receipt / Sales History all read this), never the
+   * settlement-authoritative path itself. */
+  public async saleRewardUsageForSale(companyId: string, saleId: string): Promise<SaleRewardUsageRow | null> {
+    const row = result<SaleRewardUsageDb>(
+      await this.database.pool.query(
+        `select ${SALE_REWARD_USAGE_COLUMNS} from sale_reward_usages where company_id=$1 and sale_id=$2`,
+        [companyId, saleId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : saleRewardUsage(row);
+  }
+
+  /** Every `status='applied'` usage row for this Sale, locked — the
+   * settlement-time lookup `RewardsService.consumeAppliedUsagesForSale`
+   * drives. `for update` on the usage row itself (defense-in-depth
+   * alongside the entitlement's own row lock — two different Sales can
+   * never both transition the SAME usage row, though in practice each
+   * Sale only ever has its own). */
+  public async lockAppliedUsagesForSale(client: RewardTransaction, companyId: string, saleId: string): Promise<SaleRewardUsageRow[]> {
+    const rows = result<SaleRewardUsageDb>(
+      await client.query(
+        `select ${SALE_REWARD_USAGE_COLUMNS} from sale_reward_usages
+         where company_id=$1 and sale_id=$2 and status='applied' for update`,
+        [companyId, saleId],
+      ),
+    ).rows;
+    return rows.map(saleRewardUsage);
+  }
+
+  public async markSaleRewardUsageConsumed(client: RewardTransaction, companyId: string, id: string, timestamp: Date): Promise<void> {
+    await client.query(
+      `update sale_reward_usages set status='consumed', consumed_at=$1 where company_id=$2 and id=$3 and status='applied'`,
+      [timestamp, companyId, id],
+    );
+  }
+
+  /** Cancellation release (Part D/L — mirrors `PromotionsRepository.
+   * deleteCouponRedemptionsForSale`'s identical "free the reservation,
+   * never touch the frozen arithmetic snapshot" shape exactly): only
+   * ever touches STILL-`applied` rows — a `consumed` usage belongs to a
+   * Sale that already genuinely settled and can never be cancelled
+   * (the Sale state machine itself forbids `completed → cancelled`), so
+   * this is always a safe, idempotent no-op for that case regardless. */
+  public async releaseAppliedUsagesForSale(client: RewardTransaction, companyId: string, saleId: string, timestamp: Date): Promise<void> {
+    await client.query(
+      `update sale_reward_usages set status='released', released_at=$1 where company_id=$2 and sale_id=$3 and status='applied'`,
+      [timestamp, companyId, saleId],
+    );
   }
 
   private mapDatabaseError(error: unknown): unknown {

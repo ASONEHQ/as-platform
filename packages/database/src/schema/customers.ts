@@ -18,7 +18,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
-import { products } from './catalog.js';
+import { productCategories, products } from './catalog.js';
 import { companyMemberships } from './identity.js';
 import { branches, companies } from './organizations.js';
 
@@ -372,6 +372,14 @@ export const customerMemberships = pgTable(
  * `reward_threshold` alone. See ADR-0018 "Reward definitions"/"Threshold
  * semantics". */
 export const rewardTypes = ['vip_pass'] as const;
+// TASK 13.2 (ADR-0019) — the smallest typed set of ways an issued
+// entitlement can actually reduce a Sale's price at checkout.
+export const rewardBenefitTypes = [
+  'percentage_discount',
+  'fixed_amount_discount',
+  'fixed_price',
+  'free_eligible_item',
+] as const;
 
 export const loyaltyPrograms = pgTable(
   'loyalty_programs',
@@ -390,6 +398,17 @@ export const loyaltyPrograms = pgTable(
     rewardType: text('reward_type'),
     rewardExpirationDays: integer('reward_expiration_days'),
     rewardRepeatable: boolean('reward_repeatable').notNull().default(true),
+    // TASK 13.2 additions (ADR-0019 "Reward benefit model") — the
+    // smallest typed representation of what an ISSUED entitlement of
+    // this program actually discounts at checkout. `null` (the default
+    // for every TASK 13.1 program) means this program still only issues
+    // a display/tracking entitlement with no purchasable benefit wired
+    // up yet — automatic benefit APPLICATION at checkout is gated on
+    // this being non-null, exactly like automatic ISSUANCE is gated on
+    // `reward_type is not null` (never inferred from one another).
+    rewardBenefitType: text('reward_benefit_type'),
+    rewardBenefitPercentageBasisPoints: integer('reward_benefit_percentage_basis_points'),
+    rewardBenefitFixedAmount: numeric('reward_benefit_fixed_amount', { precision: 19, scale: 4 }),
     createdBy: uuid('created_by').notNull(),
     updatedBy: uuid('updated_by').notNull(),
     version: bigint('version', { mode: 'bigint' }).notNull().default(sql`1`),
@@ -437,7 +456,109 @@ export const loyaltyPrograms = pgTable(
       'loyalty_programs_reward_pair_ck',
       sql`(${table.rewardThreshold} is null) = (${table.rewardType} is null)`,
     ),
+    // TASK 13.2 — a benefit definition requires the reward itself to
+    // already be configured (never a benefit with nothing to attach it
+    // to), and each benefit type carries exactly the ONE value field it
+    // actually needs — never both, never neither when a type is set
+    // (mirrors `promotions`' own `benefit_percentage_basis_points`/
+    // `benefit_fixed_amount` mutual-exclusion shape exactly).
+    check(
+      'loyalty_programs_reward_benefit_requires_reward_ck',
+      sql`${table.rewardBenefitType} is null or ${table.rewardType} is not null`,
+    ),
+    check(
+      'loyalty_programs_reward_benefit_type_ck',
+      sql`${table.rewardBenefitType} is null or ${table.rewardBenefitType} in ('percentage_discount','fixed_amount_discount','fixed_price','free_eligible_item')`,
+    ),
+    check(
+      'loyalty_programs_reward_benefit_value_ck',
+      sql`(${table.rewardBenefitType} is null and ${table.rewardBenefitPercentageBasisPoints} is null and ${table.rewardBenefitFixedAmount} is null)
+        or (${table.rewardBenefitType} = 'percentage_discount' and ${table.rewardBenefitPercentageBasisPoints} is not null and ${table.rewardBenefitFixedAmount} is null)
+        or (${table.rewardBenefitType} in ('fixed_amount_discount','fixed_price') and ${table.rewardBenefitFixedAmount} is not null and ${table.rewardBenefitPercentageBasisPoints} is null)
+        or (${table.rewardBenefitType} = 'free_eligible_item' and ${table.rewardBenefitPercentageBasisPoints} is null and ${table.rewardBenefitFixedAmount} is null)`,
+    ),
+    check(
+      'loyalty_programs_reward_benefit_basis_points_ck',
+      sql`${table.rewardBenefitPercentageBasisPoints} is null or (${table.rewardBenefitPercentageBasisPoints} > 0 and ${table.rewardBenefitPercentageBasisPoints} <= 10000)`,
+    ),
+    check(
+      'loyalty_programs_reward_benefit_fixed_amount_ck',
+      sql`${table.rewardBenefitFixedAmount} is null or ${table.rewardBenefitFixedAmount} >= 0`,
+    ),
     check('loyalty_programs_version_ck', sql`${table.version} >= 1`),
+  ],
+);
+
+/** TASK 13.2 (ADR-0019 "Benefit scope") — a real relational join table,
+ * mirroring `promotions.ts`'s own `promotionProducts` exactly (never a
+ * denormalized array column, which cannot carry a real FK). Empty means
+ * "not restricted by specific product" (still possibly restricted by
+ * category — see [loyaltyProgramRewardCategories]). A program with a
+ * `reward_benefit_type` configured must have at least one row here OR in
+ * the category table — enforced at the service layer (a cross-table
+ * invariant a single-table CHECK cannot express), never left implicit:
+ * Part B explicitly forbids a reward silently discounting an unrelated
+ * product family. */
+export const loyaltyProgramRewardProducts = pgTable(
+  'loyalty_program_reward_products',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    loyaltyProgramId: uuid('loyalty_program_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    unique('loyalty_program_reward_products_company_program_product_uq').on(
+      table.companyId,
+      table.loyaltyProgramId,
+      table.productId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.loyaltyProgramId],
+      foreignColumns: [loyaltyPrograms.companyId, loyaltyPrograms.id],
+      name: 'loyalty_program_reward_products_program_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.productId],
+      foreignColumns: [products.companyId, products.id],
+      name: 'loyalty_program_reward_products_product_scope_fk',
+    }).onDelete('restrict'),
+    index('loyalty_program_reward_products_program_idx').on(table.companyId, table.loyaltyProgramId),
+    index('loyalty_program_reward_products_product_idx').on(table.companyId, table.productId),
+  ],
+);
+
+/** Category scope — a product is eligible for this program's reward
+ * benefit if it is listed in [loyaltyProgramRewardProducts] OR its own
+ * `category_id` is listed here; mirrors `promotionCategories` exactly. */
+export const loyaltyProgramRewardCategories = pgTable(
+  'loyalty_program_reward_categories',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    loyaltyProgramId: uuid('loyalty_program_id').notNull(),
+    categoryId: uuid('category_id').notNull(),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    unique('loyalty_program_reward_categories_company_program_category_uq').on(
+      table.companyId,
+      table.loyaltyProgramId,
+      table.categoryId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.loyaltyProgramId],
+      foreignColumns: [loyaltyPrograms.companyId, loyaltyPrograms.id],
+      name: 'loyalty_program_reward_categories_program_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.categoryId],
+      foreignColumns: [productCategories.companyId, productCategories.id],
+      name: 'loyalty_program_reward_categories_category_scope_fk',
+    }).onDelete('restrict'),
+    index('loyalty_program_reward_categories_program_idx').on(table.companyId, table.loyaltyProgramId),
+    index('loyalty_program_reward_categories_category_idx').on(table.companyId, table.categoryId),
   ],
 );
 
@@ -742,6 +863,8 @@ export type MembershipPlan = typeof membershipPlans.$inferSelect;
 export type MembershipPlanBranch = typeof membershipPlanBranches.$inferSelect;
 export type CustomerMembership = typeof customerMemberships.$inferSelect;
 export type LoyaltyProgram = typeof loyaltyPrograms.$inferSelect;
+export type LoyaltyProgramRewardProduct = typeof loyaltyProgramRewardProducts.$inferSelect;
+export type LoyaltyProgramRewardCategory = typeof loyaltyProgramRewardCategories.$inferSelect;
 export type LoyaltyAccount = typeof loyaltyAccounts.$inferSelect;
 export type LoyaltyLedgerEntry = typeof loyaltyLedger.$inferSelect;
 export type RewardEntitlement = typeof rewardEntitlements.$inferSelect;

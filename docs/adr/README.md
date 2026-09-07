@@ -28,6 +28,7 @@ Every future decision that materially affects architecture, module boundaries, d
 | [ADR-0016](ADR-0016-promotions-discounts-and-coupons.md) | Promotions/discounts/coupons engine, pricing pipeline order, priority/stacking, coupon concurrency, and refund compatibility |
 | [ADR-0017](ADR-0017-customers-memberships-and-rewards-foundation.md) | Customer identity, membership plan/entitlement lifecycle, and AS Rewards+ loyalty-ledger foundation |
 | [ADR-0018](ADR-0018-reward-entitlements-and-redemption.md) | Reward entitlement/redemption engine, threshold-cycle issuance idempotency, VIP Pass reward type, and presentation tokens |
+| [ADR-0019](ADR-0019-reward-benefit-application-and-vip-pass-consumption.md) | Reward benefit model/scope, pricing pipeline integration, sale reward snapshot, and settlement-only VIP Pass consumption |
 
 ## When to create an ADR
 

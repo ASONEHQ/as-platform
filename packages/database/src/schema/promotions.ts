@@ -16,6 +16,7 @@ import {
 
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
 import { productCategories, products } from './catalog.js';
+import { loyaltyPrograms, rewardEntitlements } from './customers.js';
 import { companyMemberships } from './identity.js';
 import { branches, companies } from './organizations.js';
 import { saleItems, sales } from './sales.js';
@@ -422,22 +423,110 @@ export const saleDiscounts = pgTable(
     }).onDelete('restrict'),
     index('sale_discounts_sale_idx').on(table.companyId, table.saleId),
     index('sale_discounts_sale_item_idx').on(table.companyId, table.saleItemId),
-    check('sale_discounts_source_type_ck', sql`${table.sourceType} in ('promotion','coupon','manual')`),
+    // TASK 13.2 — `'reward'` added, mirroring `'promotion'`/`'coupon'`'s
+    // own shape exactly (a reward's `source_id` is the entitlement id it
+    // came from, see `sale_discounts_source_fields_ck` below).
+    check('sale_discounts_source_type_ck', sql`${table.sourceType} in ('promotion','coupon','manual','reward')`),
     check('sale_discounts_amount_ck', sql`${table.amount} >= 0`),
     check(
       'sale_discounts_basis_points_ck',
       sql`${table.basisPoints} is null or (${table.basisPoints} >= 0 and ${table.basisPoints} <= 10000)`,
     ),
     check('sale_discounts_label_nonblank_ck', sql`length(btrim(${table.labelSnapshot})) > 0`),
-    // A promotion/coupon source always carries the id it came from and
-    // never a reason code (that's a manual-discount-only field); a
-    // manual source always carries a reason code and never a source id
-    // — the two shapes are never blurred together.
+    // A promotion/coupon/reward source always carries the id it came
+    // from and never a reason code (that's a manual-discount-only
+    // field); a manual source always carries a reason code and never a
+    // source id — the two shapes are never blurred together.
     check(
       'sale_discounts_source_fields_ck',
-      sql`(${table.sourceType} in ('promotion','coupon') and ${table.sourceId} is not null and ${table.reasonCode} is null)
+      sql`(${table.sourceType} in ('promotion','coupon','reward') and ${table.sourceId} is not null and ${table.reasonCode} is null)
         or (${table.sourceType} = 'manual' and ${table.sourceId} is null and ${table.reasonCode} is not null)`,
     ),
+  ],
+);
+
+/** TASK 13.2 (ADR-0019 "Sale reward snapshot"/"Discount accounting") —
+ * the reward-specific LIFECYCLE record `sale_discounts` deliberately
+ * does not carry (that table is an immutable, append-only arithmetic
+ * audit trail with no status concept at all — every row it holds is
+ * simply "applied", forever). This table answers a DIFFERENT question:
+ * "does settlement of THIS Sale still need to consume an entitlement,
+ * and which one" — `applied` (attached at Sale creation, not yet
+ * consumed) → `consumed` (the Sale genuinely settled and
+ * `RewardsService` durably redeemed the entitlement in the SAME
+ * transaction) or `released` (the Sale was cancelled before ever
+ * settling — the entitlement was never touched and remains available
+ * for a different Sale).
+ *
+ * `benefit_amount_snapshot` is a READ-CONVENIENCE COPY of the exact
+ * amount `sale_discounts` (source_type='reward', same sale_item_id)
+ * already recorded from the SAME pricing computation in the SAME
+ * transaction — `sale_discounts`/`sale_items.discount_total` remain the
+ * ONE arithmetic authority; this column is never independently computed
+ * and never disagrees with it by construction (Part H "avoid double-
+ * storage contradictions").
+ *
+ * Exactly one usage row per Sale (`UNIQUE(company_id, sale_id)`) — this
+ * task's scope is one attached reward per Sale (Part O: "cashier can
+ * select one"). Concurrency safety (Part F) is NOT enforced here at
+ * all — this table never blocks a second Sale from also attaching the
+ * SAME entitlement while it is still `available` (both previews, and
+ * even both Sale creations, may legitimately reference it). The single
+ * real serialization point is `reward_entitlements`' own row lock inside
+ * `RewardsService`'s existing, already-concurrency-tested redemption
+ * path (ADR-0018 Part G/J) — reused as-is at settlement, never
+ * duplicated here. */
+export const saleRewardUsages = pgTable(
+  'sale_reward_usages',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    branchId: uuid('branch_id').notNull(),
+    saleId: uuid('sale_id').notNull(),
+    saleItemId: uuid('sale_item_id').notNull(),
+    rewardEntitlementId: uuid('reward_entitlement_id').notNull(),
+    loyaltyProgramId: uuid('loyalty_program_id').notNull(),
+    rewardType: text('reward_type').notNull(),
+    benefitType: text('benefit_type').notNull(),
+    benefitAmountSnapshot: numeric('benefit_amount_snapshot', { precision: 19, scale: 4 }).notNull(),
+    status: text('status').notNull().default('applied'),
+    createdAt: createdAtColumn(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
+    releasedAt: timestamp('released_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    unique('sale_reward_usages_company_sale_uq').on(table.companyId, table.saleId),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.saleId],
+      foreignColumns: [sales.companyId, sales.branchId, sales.id],
+      name: 'sale_reward_usages_sale_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.saleItemId],
+      foreignColumns: [saleItems.companyId, saleItems.id],
+      name: 'sale_reward_usages_sale_item_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.rewardEntitlementId],
+      foreignColumns: [rewardEntitlements.companyId, rewardEntitlements.id],
+      name: 'sale_reward_usages_entitlement_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.loyaltyProgramId],
+      foreignColumns: [loyaltyPrograms.companyId, loyaltyPrograms.id],
+      name: 'sale_reward_usages_program_scope_fk',
+    }).onDelete('restrict'),
+    index('sale_reward_usages_sale_idx').on(table.companyId, table.saleId),
+    index('sale_reward_usages_entitlement_idx').on(table.companyId, table.rewardEntitlementId),
+    check('sale_reward_usages_reward_type_ck', sql`${table.rewardType} in ('vip_pass')`),
+    check(
+      'sale_reward_usages_benefit_type_ck',
+      sql`${table.benefitType} in ('percentage_discount','fixed_amount_discount','fixed_price','free_eligible_item')`,
+    ),
+    check('sale_reward_usages_benefit_amount_ck', sql`${table.benefitAmountSnapshot} >= 0`),
+    check('sale_reward_usages_status_ck', sql`${table.status} in ('applied','consumed','released')`),
+    check('sale_reward_usages_consumed_at_ck', sql`(${table.status} = 'consumed') = (${table.consumedAt} is not null)`),
+    check('sale_reward_usages_released_at_ck', sql`(${table.status} = 'released') = (${table.releasedAt} is not null)`),
   ],
 );
 
@@ -445,6 +534,7 @@ export type Promotion = typeof promotions.$inferSelect;
 export type PromotionBranch = typeof promotionBranches.$inferSelect;
 export type PromotionProduct = typeof promotionProducts.$inferSelect;
 export type PromotionCategory = typeof promotionCategories.$inferSelect;
+export type SaleRewardUsage = typeof saleRewardUsages.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
 export type SaleDiscount = typeof saleDiscounts.$inferSelect;

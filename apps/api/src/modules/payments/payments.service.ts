@@ -201,6 +201,28 @@ export class PaymentService {
       });
     }
     if (this.rewardsService !== undefined) {
+      // TASK 13.2 (ADR-0019 "Settlement-only consumption") — consumes
+      // whatever reward THIS sale itself attached at creation time
+      // (`sale_reward_usages`, status `applied`), BEFORE evaluating
+      // whether this same settlement also crosses a NEW threshold for a
+      // DIFFERENT, future entitlement — two independent facts about the
+      // same settlement, ordered for readability, not correctness (a
+      // failure in EITHER step rolls back this entire transaction —
+      // Part F "no payment irreversibility risk" — so nothing here ever
+      // partially commits regardless of order). A rejection (already
+      // redeemed by a concurrent Sale, expired, customer inactive)
+      // propagates straight up through `createCashPayment`/
+      // `transitionAttempt`'s own transaction and fails the whole
+      // settlement — see `RewardsService.consumeAppliedUsagesForSale`'s
+      // own doc comment.
+      await this.rewardsService.consumeAppliedUsagesForSale(client, {
+        companyId: context.companyId,
+        branchId: settledSale.branchId,
+        saleId: settledSale.id,
+        actorId: context.actorId,
+        correlationId: context.correlationId,
+        timestamp: context.timestamp,
+      });
       await this.rewardsService.evaluateAutomaticIssuance(client, {
         companyId: context.companyId,
         branchId: settledSale.branchId,
@@ -688,6 +710,68 @@ export class PaymentService {
         },
       ),
     );
+  }
+
+  // --- Zero-total settlement (TASK 13.2, Part I) --------------------------
+
+  /** Completes a Sale whose reward benefit already reduced its `total`
+   * to exactly zero — WITHOUT creating any `payments`/`payment_attempts`
+   * row, WITHOUT touching a cash session, WITHOUT posting a
+   * `cash_movements` row (ADR-0019 "Zero-total Sale design": "do not
+   * create a fake cash tender... no cash drawer movement for $0").
+   * `SalesRepository.trySettleSale`'s own existing settlement condition
+   * — `SUM(captured payments) >= total` — is ALREADY satisfied by
+   * `0 >= 0` with zero payment rows, so this simply calls it directly;
+   * no new state-machine branch, no new column, the exact same
+   * `pending_payment → completed` transition and post-settlement hooks
+   * (including reward consumption, Part E) every other settlement path
+   * already uses. Deliberately NOT idempotency-key-gated: there is no
+   * caller-supplied data here that could vary between calls, and
+   * `trySettleSale`'s own `current.status !== 'pending_payment' →
+   * {settled:false}` guard already makes a retried/replayed call a safe,
+   * side-effect-free no-op — the identical repeat-safety every other
+   * settlement path relies on, just without a NEW idempotency key on
+   * top of it. A distinct `sale.completed_without_payment` audit/outbox
+   * fact is written (in addition to `trySettleSale`'s own `sale.
+   * completed`) so this path is never confused with a real captured
+   * payment when reviewing history (Part I "audit/outbox must
+   * distinguish it"). */
+  public async completeZeroTotalSale(
+    context: PaymentMutationContext,
+    branchIds: readonly string[],
+    saleId: string,
+  ): Promise<{ sale: SaleRow }> {
+    return this.repository.transaction(async (client) => {
+      const sale = await this.salesRepository.lockSaleById(client, context.companyId, saleId);
+      if (sale === null) throw new PaymentError('resource_not_found', 'The sale was not found.');
+      if (!branchIds.includes(sale.branchId))
+        throw new PaymentError('sale_branch_mismatch', 'The sale does not belong to an authorized branch.');
+      if (sale.status !== 'pending_payment')
+        throw new PaymentError('invalid_sale_state', 'The sale is not awaiting payment.');
+      if (moneyUnits(sale.total) !== 0n)
+        throw new PaymentError(
+          'invalid_sale_state',
+          'This sale has a nonzero total and requires a real payment.',
+        );
+      const { sale: settledSale, settled } = await this.salesRepository.trySettleSale(client, context, sale.id);
+      if (settled) {
+        await this.applyPostSettlementHooks(client, context, settledSale);
+        await this.salesRepository.auditAndPublish(client, context, {
+          action: 'sale.completed_without_payment',
+          resourceType: 'sale',
+          resourceId: settledSale.id,
+          eventType: 'sale.completed_without_payment',
+          version: settledSale.version,
+          payload: {
+            sale_id: settledSale.id,
+            branch_id: settledSale.branchId,
+            sale_number: settledSale.saleNumber,
+            total: settledSale.total,
+          },
+        });
+      }
+      return { sale: settledSale };
+    });
   }
 
   public async payment(

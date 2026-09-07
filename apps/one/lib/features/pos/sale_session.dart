@@ -118,9 +118,28 @@ class SaleSession extends ChangeNotifier {
   String? get customerDisplayName => _customerDisplayName;
   bool get hasCustomer => _customerId != null;
 
+  // TASK 13.2: the customer's own reward entitlement (e.g. a VIP Pass)
+  // optionally attached to this ticket — plain *intent*, threaded into
+  // both `POST /sales/pricing-quotes` and `POST /sales`'s own
+  // `reward_entitlement_id` (ADR-0019). Never valid without an attached
+  // customer (see [setRewardEntitlement]/[setCustomer]/[clearCustomer]
+  // below) — mirrors [couponCodes]'s own "intent only, the backend alone
+  // derives the real amount" contract.
+  String? _rewardEntitlementId;
+
+  String? get rewardEntitlementId => _rewardEntitlementId;
+
   void setCustomer({required String customerId, required String displayName}) {
     _customerId = customerId;
     _customerDisplayName = displayName;
+    // TASK 13.2: a newly-attached customer never inherits the previous
+    // customer's reward entitlement — it belongs to that other customer
+    // and can never legitimately apply here. Only invalidates the quote
+    // when there actually was one to clear, so plain "attach a customer,
+    // no reward involved" keeps behaving exactly like pre-TASK-13.2.
+    final hadReward = _rewardEntitlementId != null;
+    _rewardEntitlementId = null;
+    if (hadReward) _quote = null;
     notifyListeners();
   }
 
@@ -128,6 +147,38 @@ class SaleSession extends ChangeNotifier {
     if (_customerId == null) return;
     _customerId = null;
     _customerDisplayName = null;
+    // TASK 13.2: a reward entitlement can never outlive the customer it
+    // belongs to on this ticket — see [setRewardEntitlement]'s own
+    // "customer must already be attached" precondition.
+    final hadReward = _rewardEntitlementId != null;
+    _rewardEntitlementId = null;
+    if (hadReward) _quote = null;
+    notifyListeners();
+  }
+
+  /// Attaches [entitlementId] as the reward benefit to apply to this
+  /// ticket — the caller (`_TicketFooter`'s reward dialog) must already
+  /// have confirmed a customer is attached and a fresh quote accepted this
+  /// exact entitlement before calling this; this method itself only
+  /// records the intent and invalidates the stale quote, exactly like
+  /// [addCouponCode]. A no-op without an attached customer — mirrors this
+  /// same file's "selecting a reward with no customer attached must never
+  /// be possible" rule.
+  void setRewardEntitlement(String entitlementId) {
+    if (_customerId == null) return;
+    if (_rewardEntitlementId == entitlementId) return;
+    _rewardEntitlementId = entitlementId;
+    _quote = null;
+    notifyListeners();
+  }
+
+  /// Removes/deselects the currently-attached reward entitlement — a
+  /// no-op when none is attached, matching [removeCouponCode]'s own
+  /// idempotent shape.
+  void clearRewardEntitlement() {
+    if (_rewardEntitlementId == null) return;
+    _rewardEntitlementId = null;
+    _quote = null;
     notifyListeners();
   }
 
@@ -342,17 +393,23 @@ class SaleSession extends ChangeNotifier {
   /// TASK 13.0: also clears any attached customer, for the identical
   /// reason — a brand-new ticket never silently carries the previous
   /// customer over to a different guest's sale.
+  ///
+  /// TASK 13.2: also clears any attached reward entitlement, for the same
+  /// reason — it belongs to the previous ticket's customer and can never
+  /// legitimately carry over.
   void clearAll() {
     final hadDiscountState =
         _couponCodes.isNotEmpty || _manualDiscount != null || _quote != null;
     final hadCustomer = _customerId != null;
-    if (_lines.isEmpty && !hadDiscountState && !hadCustomer) return;
+    final hadReward = _rewardEntitlementId != null;
+    if (_lines.isEmpty && !hadDiscountState && !hadCustomer && !hadReward) return;
     _lines.clear();
     _couponCodes = const [];
     _manualDiscount = null;
     _quote = null;
     _customerId = null;
     _customerDisplayName = null;
+    _rewardEntitlementId = null;
     notifyListeners();
   }
 }

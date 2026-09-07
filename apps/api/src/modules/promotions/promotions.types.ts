@@ -16,7 +16,11 @@ export const promotionBenefitTypes: readonly PromotionBenefitType[] = [
 export type CouponBenefitType = 'percentage' | 'fixed_amount';
 export const couponBenefitTypes: readonly CouponBenefitType[] = ['percentage', 'fixed_amount'];
 
-export type DiscountSourceType = 'promotion' | 'coupon' | 'manual';
+// TASK 13.2 (ADR-0019) — `'reward'` added, a reward-entitlement-backed
+// benefit computed by the SAME pricing engine as promotion/coupon/manual,
+// never a parallel arithmetic path.
+export type DiscountSourceType = 'promotion' | 'coupon' | 'manual' | 'reward';
+export type RewardBenefitType = 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | 'free_eligible_item';
 
 export interface PromotionRow {
   id: string;
@@ -94,6 +98,36 @@ export interface PricingManualDiscountInput {
    * amount, matching `type`. */
   value: string;
   reasonCode: string;
+}
+
+/** TASK 13.2 (ADR-0019 "Pricing pipeline placement") — a SINGLE,
+ * already-resolved-and-validated reward candidate the caller (`quote()`/
+ * `SalesService.createSale`) hands to `evaluatePricing`. Unlike coupons
+ * (looked up by arbitrary code via `couponLookup`), at most ONE reward is
+ * ever attached to a cart in this task's scope (Part O: "cashier can
+ * select one") — the engine itself has NO database access (its own
+ * standing design principle), so eligibility/ownership/expiry/scope
+ * resolution always happens in the caller BEFORE this candidate is ever
+ * built; `evaluatePricing` trusts it exactly as much as it trusts an
+ * already-resolved `PromotionCandidate` — no re-validation, no lookup,
+ * pure arithmetic over already-known-good scope ids. */
+export interface RewardBenefitCandidate {
+  rewardEntitlementId: string;
+  loyaltyProgramId: string;
+  rewardType: string;
+  benefitType: RewardBenefitType;
+  benefitPercentageBasisPoints: number | null;
+  benefitFixedAmount: string | null;
+  /** Empty means "not restricted by specific product" (still possibly
+   * restricted by category) — mirrors `PromotionScope` exactly. A reward
+   * candidate's scope is never both-empty in practice (Part B requires at
+   * least one dimension whenever a benefit is configured, enforced by
+   * `LoyaltyService`), but the engine itself does not assume that — an
+   * accidentally-both-empty scope simply matches nothing, never
+   * everything (the deliberate INVERSE of how promotion scope treats
+   * both-empty, since a reward must never silently discount an unrelated
+   * product family). */
+  scope: { productIds: readonly string[]; categoryIds: readonly string[] };
 }
 
 export interface PricingRequest {

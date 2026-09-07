@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CouponRow, PricingResolvedLine, PromotionRow } from './promotions.types.js';
+import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from './promotions.types.js';
 import type { EvaluatePricingInput } from './pricing.service.js';
 import { evaluatePricing, formatMoney } from './pricing.service.js';
 
@@ -750,6 +750,198 @@ describe('pricing engine (TASK 12.9)', () => {
       expect(formatMoney(result.discountTotalUnits)).toBe('27.1000'); // 10 + 9 + 8.10
       expect(formatMoney(result.subtotalUnits)).toBe('100.0000');
       expect(formatMoney(result.subtotalUnits - result.discountTotalUnits)).toBe('72.9000');
+    });
+  });
+
+  describe('reward benefit (TASK 13.2, ADR-0019)', () => {
+    function reward(overrides: Partial<RewardBenefitCandidate> = {}): RewardBenefitCandidate {
+      return {
+        rewardEntitlementId: overrides.rewardEntitlementId ?? '00000000-0000-9000-8000-000000000030',
+        loyaltyProgramId: overrides.loyaltyProgramId ?? '00000000-0000-9000-8000-000000000031',
+        rewardType: overrides.rewardType ?? 'vip_pass',
+        benefitType: overrides.benefitType ?? 'free_eligible_item',
+        benefitPercentageBasisPoints: overrides.benefitPercentageBasisPoints ?? null,
+        benefitFixedAmount: overrides.benefitFixedAmount ?? null,
+        scope: overrides.scope ?? { productIds: ['product-0'], categoryIds: [] },
+      };
+    }
+
+    it('free_eligible_item waives the eligible line entirely', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, unitPriceUnits: 2_500_000n })], // $250
+          rewardCandidate: reward(),
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(rewardEntries).toHaveLength(1);
+      expect(rewardEntries[0]?.sourceId).toBe('00000000-0000-9000-8000-000000000030');
+      expect(rewardEntries[0]?.lineIndex).toBe(0);
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('250.0000');
+      expect(formatMoney(result.discountTotalUnits)).toBe('250.0000');
+      expect(formatMoney(result.subtotalUnits - result.discountTotalUnits)).toBe('0.0000');
+    });
+
+    it('an out-of-scope cart applies no reward discount and throws nothing', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'sock-1', unitPriceUnits: 1_000_000n })],
+          rewardCandidate: reward({ scope: { productIds: ['product-0'], categoryIds: [] } }),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+      expect(formatMoney(result.discountTotalUnits)).toBe('0.0000');
+    });
+
+    it('a both-empty scope matches NOTHING — the deliberate inverse of promotion scope (Part B)', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })],
+          rewardCandidate: reward({ scope: { productIds: [], categoryIds: [] } }),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+    });
+
+    it('a category-scoped reward matches a line by category even when productIds is empty', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'unrelated-product', categoryId: 'admissions', unitPriceUnits: 900_000n })],
+          rewardCandidate: reward({ scope: { productIds: [], categoryIds: ['admissions'] } }),
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(rewardEntries).toHaveLength(1);
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('90.0000');
+    });
+
+    it('Part J — with several eligible lines, benefits exactly ONE: the largest remaining amount', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [
+            line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 500_000n }), // $50
+            line({ lineIndex: 1, productId: 'product-0', unitPriceUnits: 900_000n }), // $90 — the largest
+            line({ lineIndex: 2, productId: 'product-0', unitPriceUnits: 300_000n }), // $30
+          ],
+          rewardCandidate: reward(),
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(rewardEntries).toHaveLength(1);
+      expect(rewardEntries[0]?.lineIndex).toBe(1);
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('90.0000');
+    });
+
+    it('percentage_discount takes basis points of what promotions/coupons already left', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          rewardCandidate: reward({ benefitType: 'percentage_discount', benefitPercentageBasisPoints: 2500 }), // 25%
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('25.0000');
+      expect(rewardEntries[0]?.basisPoints).toBe(2500);
+    });
+
+    it('fixed_price grants the gap between what remains and the promotional price, floored at zero', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          rewardCandidate: reward({ benefitType: 'fixed_price', benefitFixedAmount: '35.0000' }),
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('65.0000');
+    });
+
+    it('fixed_price at or above the remaining amount grants no discount rather than a negative one', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 100_000n })], // $10
+          rewardCandidate: reward({ benefitType: 'fixed_price', benefitFixedAmount: '35.0000' }),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+    });
+
+    it('fixed_amount_discount is capped at what remains, never granting more than the line is worth', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 200_000n })], // $20
+          rewardCandidate: reward({ benefitType: 'fixed_amount_discount', benefitFixedAmount: '250.0000' }),
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('20.0000');
+    });
+
+    it('stacks naturally after promotions/coupons — computed against what they already left, not the original gross', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          promotionCandidates: [
+            {
+              promotion: promotion({ benefitPercentageBasisPoints: 2000 }), // -20% of $100 = $20 → $80 left
+              scope: { branchIds: [], productIds: [], categoryIds: [] },
+            },
+          ],
+          requestedCouponCodes: ['SAVE10'],
+          couponLookup: () => ({
+            coupon: coupon({ benefitPercentageBasisPoints: 1000 }), // -10% of $80 = $8 → $72 left
+            branchEligible: true,
+            redeemedCount: 0,
+          }),
+          rewardCandidate: reward(), // free_eligible_item — waives what's left: $72
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('72.0000');
+      expect(formatMoney(result.subtotalUnits - result.discountTotalUnits)).toBe('0.0000');
+    });
+
+    it('applies BEFORE the manual discount, so a cashier override still operates on top of it', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          rewardCandidate: reward({ benefitType: 'fixed_amount_discount', benefitFixedAmount: '40.0000' }), // → $60 left
+          manualDiscount: { scope: 'ticket', type: 'percentage', value: '1000', reasonCode: 'goodwill' }, // -10% of $60 = $6
+          actorPermissions: ['discount.apply'],
+        }),
+      );
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      const manualEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'manual');
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('40.0000');
+      expect(formatMoney(manualEntries[0]?.amountUnits ?? 0n)).toBe('6.0000');
+      expect(formatMoney(result.discountTotalUnits)).toBe('46.0000');
+    });
+
+    it('a line already reduced to zero by promotions/coupons is not eligible for a further reward benefit', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [
+            line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 500_000n }), // $50, in scope
+            line({ lineIndex: 1, productId: 'other-product', unitPriceUnits: 500_000n }), // $50, out of scope
+          ],
+          promotionCandidates: [
+            {
+              // 100% off line 0 only — leaves it at $0.
+              promotion: promotion({ benefitPercentageBasisPoints: 10_000 }),
+              scope: { branchIds: [], productIds: ['product-0'], categoryIds: [] },
+            },
+          ],
+          rewardCandidate: reward({ scope: { productIds: ['product-0'], categoryIds: [] } }),
+        }),
+      );
+      // The only in-scope line is already fully discounted — no reward
+      // benefit event is produced (never a negative/no-op discount row).
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+    });
+
+    it('no rewardCandidate present is a plain no-op, identical to the pre-TASK-13.2 pipeline', () => {
+      const result = evaluatePricing(baseInput({ rewardCandidate: null }));
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+      expect(formatMoney(result.discountTotalUnits)).toBe('0.0000');
     });
   });
 });
