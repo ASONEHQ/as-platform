@@ -68,7 +68,17 @@ export function registerHealthRoutes(app: FastifyInstance, options: HealthRouteO
     },
     async (_request, reply) => {
       const services = await options.infrastructure.checkReadiness();
-      const ready = services.postgres === 'available' && services.redis === 'available';
+      // PRODUCTION_GAPS.md section 7 / TASK 14.1 section D: confirmed by
+      // grepping every module under apps/api/src/modules (auth, sales, cash,
+      // payments, refunds, promotions, loyalty, rewards) that none of them
+      // reference Redis — the core POS flow (login -> sale -> payment ->
+      // receipt) is Postgres-only. Redis usage is limited to
+      // infrastructure/dependencies.ts, operations/*, this health route, and
+      // server.ts. So the HTTP readiness status gates on Postgres only;
+      // Redis's own state is still reported honestly below (response body
+      // and the Prometheus gauge), it just no longer pulls a healthy
+      // instance out of load-balancer rotation for a Redis-only outage.
+      const ready = services.postgres === 'available';
       options.observability.readiness.set(
         { service: 'postgres' },
         services.postgres === 'available' ? 1 : 0,

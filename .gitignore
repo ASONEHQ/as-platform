@@ -11,3 +11,9 @@ coverage/
 .DS_Store
 Thumbs.db
 .claude/
+
+# Local PostgreSQL backups produced by scripts/production/backup-db.mjs
+# (default --out-dir). Never committed — see docs/BACKUP_STRATEGY.md.
+backups/
+scripts/production/backups/
+*.dump

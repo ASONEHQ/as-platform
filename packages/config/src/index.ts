@@ -29,6 +29,18 @@ const sharedSchema = z.object({
   APP_VERSION: z.string().trim().min(1),
   LOG_LEVEL: logLevelSchema,
   DATABASE_URL: z.url().startsWith('postgresql://'),
+  // PRODUCTION_GAPS.md section 5 / TASK 14.1 section C: an explicit,
+  // documented escape hatch for the (real, common) case where TLS to
+  // Postgres is terminated *outside* the `pg` driver entirely — e.g. a
+  // Cloud SQL Auth Proxy or an `stunnel` sidecar that the app connects to
+  // over a local socket/loopback address, with the sidecar itself carrying
+  // the encrypted connection the rest of the way. In that architecture
+  // `DATABASE_URL` correctly has no `sslmode` parameter, so
+  // `validateProductionDatabaseTls` below would otherwise reject it. An
+  // operator must set this explicitly to `true` to opt out of the
+  // in-connection-string TLS requirement; it defaults to `false`, so the
+  // default posture stays fail-closed.
+  DATABASE_TLS_EXTERNALLY_TERMINATED: booleanSchema.default(false),
   REDIS_URL: z.url().startsWith('redis://'),
 });
 
@@ -62,6 +74,62 @@ function isWeakProductionSecret(secret: string): boolean {
   if (new Set(normalized).size < 4) return true;
   return weakSecretPlaceholders.some((placeholder) => normalized.includes(placeholder));
 }
+
+// PRODUCTION_GAPS.md section 5 / TASK 14.1 section C: previously nothing
+// enforced TLS to Postgres in code — it depended entirely on an operator
+// remembering to put `sslmode=require` (or equivalent) in `DATABASE_URL`
+// themselves, undocumented and unvalidated. `sslmode=require`/`verify-ca`/
+// `verify-full` all request an encrypted connection (see
+// `sslOptionForMode` in packages/database/src/client.ts, which now
+// actually threads the resulting `ssl` option into the real `pg.Pool`
+// construction); `disable` (or no `sslmode` at all) does not. Same
+// `.superRefine`, same `NODE_ENV === 'production'` scoping pattern as the
+// `AUTH_ACCESS_TOKEN_SECRET` check immediately below — local/test fixtures
+// using a loopback `DATABASE_URL` with no `sslmode` are never affected.
+const tlsVerifiedSslModes = new Set(['require', 'verify-ca', 'verify-full']);
+
+function extractSslModeFromDatabaseUrl(databaseUrl: string): string | undefined {
+  try {
+    return new URL(databaseUrl).searchParams.get('sslmode') ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function databaseUrlRequestsTls(databaseUrl: string): boolean {
+  const mode = extractSslModeFromDatabaseUrl(databaseUrl);
+  return mode !== undefined && tlsVerifiedSslModes.has(mode);
+}
+
+function validateProductionDatabaseTls(
+  value: {
+    readonly NODE_ENV: z.infer<typeof environmentSchema>;
+    readonly DATABASE_URL: string;
+    readonly DATABASE_TLS_EXTERNALLY_TERMINATED: boolean;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (value.NODE_ENV !== 'production') return;
+  if (value.DATABASE_TLS_EXTERNALLY_TERMINATED) return;
+  if (databaseUrlRequestsTls(value.DATABASE_URL)) return;
+  context.addIssue({
+    code: 'custom',
+    path: ['DATABASE_URL'],
+    message:
+      'DATABASE_URL must request TLS in production: add sslmode=require, sslmode=verify-ca, ' +
+      'or sslmode=verify-full to the connection string. If TLS is already terminated outside ' +
+      'the Postgres driver (e.g. a Cloud SQL Auth Proxy or stunnel sidecar), set ' +
+      'DATABASE_TLS_EXTERNALLY_TERMINATED=true instead.',
+  });
+}
+
+// Applies the production DB-TLS check to the shared schema alone (used by
+// `loadWorkerConfig` — the worker opens its own Postgres pool and must be
+// held to the exact same policy as the API, see
+// apps/worker/src/infrastructure.ts). `sharedSchema` itself stays a plain
+// `ZodObject` (not wrapped in `.superRefine`) so `apiSchema` below can still
+// `.extend()` it.
+const sharedSchemaWithProductionChecks = sharedSchema.superRefine(validateProductionDatabaseTls);
 
 const apiSchema = sharedSchema
   .extend({
@@ -110,6 +178,7 @@ const apiSchema = sharedSchema
     MERCADO_PAGO_API_BASE_URL: z.url().default('https://api.mercadopago.com'),
   })
   .superRefine((value, context) => {
+    validateProductionDatabaseTls(value, context);
     if (value.NODE_ENV === 'production' && isWeakProductionSecret(value.AUTH_ACCESS_TOKEN_SECRET)) {
       context.addIssue({
         code: 'custom',
@@ -126,6 +195,7 @@ export interface SharedConfig {
   readonly appVersion: string;
   readonly logLevel: z.infer<typeof logLevelSchema>;
   readonly databaseUrl: string;
+  readonly databaseTlsExternallyTerminated: boolean;
   readonly redisUrl: string;
 }
 
@@ -164,6 +234,7 @@ function toSharedConfig(value: z.infer<typeof sharedSchema>): SharedConfig {
     appVersion: value.APP_VERSION,
     logLevel: value.LOG_LEVEL,
     databaseUrl: value.DATABASE_URL,
+    databaseTlsExternallyTerminated: value.DATABASE_TLS_EXTERNALLY_TERMINATED,
     redisUrl: value.REDIS_URL,
   });
 }
@@ -200,5 +271,5 @@ export function loadApiConfig(environment: Environment = process.env): ApiConfig
 }
 
 export function loadWorkerConfig(environment: Environment = process.env): WorkerConfig {
-  return toSharedConfig(sharedSchema.parse(environment));
+  return toSharedConfig(sharedSchemaWithProductionChecks.parse(environment));
 }

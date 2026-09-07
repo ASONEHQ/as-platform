@@ -95,10 +95,103 @@ Restore validation includes:
   approved provider controls.
 - No operator manually deletes the last known good recovery point.
 
-## Safe metadata verification
+## Real tooling: `scripts/production/`
 
-`backup-verify --manifest <path>` validates a local version-1 manifest, a
-non-empty referenced file, SHA-256 checksum, creation time, declared type and
-optional encryption/retention metadata. It never creates, uploads, restores or
-deletes backups and does not access remote storage. Provider-side backup jobs
-and retention enforcement remain manual infrastructure responsibilities.
+TASK 14.0 flagged this section as aspirational-only — the `backup-verify` /
+`restore-validate` names below described a CLI that did not exist as
+runnable code anywhere in the repo. TASK 14.1 replaced that with two real,
+portable Node.js scripts (`.mjs`, run the same way on any host OS) that
+orchestrate the real PostgreSQL client tools (`pg_dump`, `pg_restore`,
+`psql`) — neither script reimplements dump/restore logic itself.
+
+### `scripts/production/backup-db.mjs` — produce one backup
+
+```
+DATABASE_URL=postgresql://user:pass@host:5432/dbname \
+  node scripts/production/backup-db.mjs [--out-dir <dir>]
+```
+
+(equivalently, from the repo root: `pnpm backup:db -- --out-dir <dir>`)
+
+- Required env: `DATABASE_URL`.
+- `--out-dir` defaults to `./backups` (gitignored — see root `.gitignore`;
+  never point this at a path that could be committed).
+- Shells out to `pg_dump --format=custom` (`-Fc`, `pg_restore`-compatible,
+  supports selective/parallel restore) against the URL. The password is
+  passed to `pg_dump` via `PGPASSWORD`, never as a CLI argument — it is
+  never printed by this script, in any output, at any point.
+- Output file name embeds an explicit UTC timestamp, e.g.
+  `asone-backup-2026-09-15T03-00-00Z.dump` — every run gets its own file;
+  nothing is silently overwritten.
+- On any failure (nonzero `pg_dump` exit, or a 0-byte output file despite a
+  zero exit code) it prints the `pg_dump` stderr, deletes the partial file,
+  and exits nonzero. A `pg_dump` binary missing from `PATH` is reported with
+  a clear message rather than a stack trace.
+- On success it prints a manifest to stdout: file path, size, database name,
+  a redacted connection string (password replaced with `****`), UTC
+  timestamp and duration — never the raw `DATABASE_URL`.
+
+This script's job stops at "one correct local backup file." It does not
+rotate/retain old backups, upload anywhere, or encrypt the output — see
+"Operator recommendations" below for what covers those.
+
+### `scripts/production/verify-restore.mjs` — prove a backup restores
+
+```
+VERIFY_DATABASE_URL=postgresql://user:pass@host:5432/asone_restore_verify_<task> \
+  node scripts/production/verify-restore.mjs <path-to-backup.dump>
+```
+
+(equivalently: `pnpm verify:restore -- <path-to-backup.dump>`)
+
+- Required env: `VERIFY_DATABASE_URL`, pointing at a **separate, disposable**
+  verification database — never the primary/production database.
+- Optional env: `DATABASE_URL` — when set, used only so the script can
+  refuse to run if `VERIFY_DATABASE_URL` is textually identical to it.
+- **Safety gate** (fail-closed, mirroring the loopback/name-allowlist
+  convention `apps/api/src/development/bootstrap-owner.service.ts`'s
+  `validateBootstrapEnvironment` already uses in this codebase): the
+  verification database's name must contain `restore_verify` or end with
+  `_verify`; names that look like a real primary/production database
+  (`asone_local`, anything starting `asone_prod`, containing `prod`, or the
+  PostgreSQL system databases) are refused even if they also match the
+  verify pattern. `VERIFY_DATABASE_URL == DATABASE_URL` is refused outright.
+- Once the target passes the gate, the script `DROP DATABASE IF EXISTS ...
+  WITH (FORCE)` then `CREATE DATABASE ...` for that verification database
+  only (via the `postgres` maintenance database on the same server), so
+  every run restores into a guaranteed-empty target. It never issues a
+  DROP/CREATE/data statement against any database that did not just pass
+  the safety gate — the primary database is never touched.
+- Restores the file with `pg_restore --no-owner --no-privileges
+  --exit-on-error`.
+- Runs a real integrity check against the restored database: the migration
+  journal table (`drizzle.__drizzle_migrations`) row count must match the
+  authoritative count read live from
+  `packages/database/drizzle/meta/_journal.json` (24 entries as of this
+  writing — the script re-reads the file, so it stays correct as migrations
+  are added); the core tables `companies`, `branches`, `users`, `sales` and
+  `cash_sessions` must exist and be queryable; row counts for each are
+  printed so an operator can eyeball "this looks like real data."
+- Exits nonzero with a specific, printed reason on any failure (safety-gate
+  rejection, restore failure, missing table, migration-count mismatch). On
+  success it leaves the verification database in place for inspection —
+  the operator drops it when done (never reuse it as a real database).
+
+### Operator recommendations (not automated by these scripts)
+
+- **Schedule**: run `backup-db.mjs` on a cron (or equivalent) matching the
+  backup catalog above; a daily base backup is the current baseline.
+- **Retention**: rotate/prune old `.dump` files per the retention column in
+  the backup catalog above (e.g. a small wrapper script or your scheduler's
+  own retention policy) — `backup-db.mjs` intentionally does not delete
+  anything itself.
+- **Offsite copy**: upload each `.dump` file to your approved
+  cloud-storage/cross-location target (e.g. `rclone copy`) immediately after
+  a successful backup, before the local copy is ever pruned.
+- **At-rest encryption**: encrypt the `.dump` file (or the storage/bucket it
+  lands in) per the "Security and isolation" section above — this script
+  produces a plaintext custom-format dump; encryption is the operator's
+  responsibility, not the script's.
+- **Restore drills**: run `verify-restore.mjs` against the latest backup on
+  the cadence in `docs/DISASTER_RECOVERY.md`'s exercises table, and record
+  its printed report as evidence.

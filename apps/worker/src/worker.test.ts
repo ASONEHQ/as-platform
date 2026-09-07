@@ -10,6 +10,7 @@ const config: WorkerConfig = Object.freeze({
   appName: 'asone-worker-test',
   appVersion: '0.1.0-test',
   databaseUrl: 'postgresql://local:local@127.0.0.1:5432/test',
+  databaseTlsExternallyTerminated: false,
   logLevel: 'silent',
   nodeEnv: 'test',
   redisUrl: 'redis://127.0.0.1:6379',

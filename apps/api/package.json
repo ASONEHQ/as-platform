@@ -16,6 +16,8 @@
     "dev:seed-cash-registers": "node --env-file-if-exists=../../.env --import tsx src/development/seed-cash-registers.cli.ts",
     "dev:seed-loyalty-rewards": "node --env-file-if-exists=../../.env --import tsx src/development/seed-loyalty-rewards.cli.ts",
     "ops": "tsx src/operations/cli.ts",
+    "provision:production-owner": "node dist/provisioning/production-owner.cli.js",
+    "provision:production-owner:dev": "node --env-file-if-exists=../../.env --import tsx src/provisioning/production-owner.cli.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

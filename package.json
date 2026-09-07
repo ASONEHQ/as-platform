@@ -28,7 +28,9 @@
     "db:migrate": "pnpm --filter @asone/database db:migrate",
     "db:seed": "pnpm --filter @asone/database db:seed",
     "db:test": "pnpm --filter @asone/database db:test",
-    "db:studio": "pnpm --filter @asone/database db:studio"
+    "db:studio": "pnpm --filter @asone/database db:studio",
+    "backup:db": "node scripts/production/backup-db.mjs",
+    "verify:restore": "node scripts/production/verify-restore.mjs"
   },
   "devDependencies": {
     "@asone/eslint-config": "workspace:*",

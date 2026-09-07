@@ -5,6 +5,7 @@ export type {
   Database,
   DatabaseClient,
   DatabaseClientOptions,
+  DatabaseSslMode,
   DatabaseTransaction,
   TransactionCallback,
 } from './client.js';

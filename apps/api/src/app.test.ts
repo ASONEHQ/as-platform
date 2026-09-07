@@ -351,7 +351,13 @@ describe('API foundation', () => {
   });
 
   it('uses a valid __Host cookie and root path in production', async () => {
-    const app = await appWithLoginAuth({ NODE_ENV: 'production' });
+    // TASK 14.1 section C: production now also enforces the DB TLS policy
+    // (packages/config/src/index.ts) - satisfy it with sslmode=require so
+    // this test stays focused on the cookie behaviour under test.
+    const app = await appWithLoginAuth({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://local:local@127.0.0.1:5432/test?sslmode=require',
+    });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
@@ -545,5 +551,46 @@ describe('API foundation', () => {
       status: 'not_ready',
     });
     expect(ready.body).not.toContain('postgresql://');
+  });
+
+  // TASK 14.1 section D: Redis is not touched by the core POS flow (login ->
+  // sale -> payment -> receipt) - confirmed by grepping every module under
+  // apps/api/src/modules for a Redis reference (none found). So `/ready`
+  // must not fail the whole instance out of load-balancer rotation just
+  // because Redis is down; Postgres availability alone decides the HTTP
+  // status. Redis's own state stays visible in the response body (and the
+  // `asone_readiness_dependency{service="redis"}` gauge, unchanged).
+  it('reports ready when postgres is available even if redis is not', async () => {
+    const app = await buildApp({
+      config: loadApiConfig(environment),
+      infrastructure: infrastructure({ postgres: 'available', redis: 'unavailable' }),
+      logger: pino({ level: 'silent' }),
+    });
+    apps.push(app);
+
+    const ready = await app.inject({ method: 'GET', url: '/ready' });
+
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual({
+      services: { postgres: 'available', redis: 'unavailable' },
+      status: 'ready',
+    });
+  });
+
+  it('stays not ready when postgres is unavailable even if redis is available', async () => {
+    const app = await buildApp({
+      config: loadApiConfig(environment),
+      infrastructure: infrastructure({ postgres: 'unavailable', redis: 'available' }),
+      logger: pino({ level: 'silent' }),
+    });
+    apps.push(app);
+
+    const ready = await app.inject({ method: 'GET', url: '/ready' });
+
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toEqual({
+      services: { postgres: 'unavailable', redis: 'available' },
+      status: 'not_ready',
+    });
   });
 });

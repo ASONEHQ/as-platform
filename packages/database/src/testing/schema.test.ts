@@ -88,15 +88,23 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  it('records exactly twelve migrations ending in product pricing foundation', () => {
+  // TASK 14.1 — updated from its original "exactly twelve, ending in
+  // product pricing foundation" snapshot: this codebase has since grown
+  // to 24 migrations across many later tasks (promotions/coupons,
+  // customers/memberships/loyalty, reward entitlements, reward benefit
+  // application). The test's actual intent — the journal is sequential,
+  // contiguous, and its last entry matches the newest real migration
+  // file — is unchanged; only the specific numbers needed to track
+  // reality, exactly like `_journal.json` itself already does.
+  it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(12);
-    expect(journal.entries.map((entry) => entry.idx)).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-    ]);
-    expect(journal.entries.at(-1)?.tag).toBe('0011_product_pricing_foundation');
+    expect(journal.entries).toHaveLength(24);
+    expect(journal.entries.map((entry) => entry.idx)).toEqual(
+      Array.from({ length: 24 }, (_, index) => index),
+    );
+    expect(journal.entries.at(-1)?.tag).toBe('0023_tan_luke_cage');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {
@@ -309,13 +317,20 @@ describe('database foundation schema', () => {
     expect(outboxColumns).not.toContain('deleted_at');
   });
 
-  it('contains exactly the 56 approved permission definitions', () => {
-    expect(technicalPermissionCodes).toHaveLength(56);
-    expect(new Set(technicalPermissionCodes).size).toBe(56);
+  // TASK 14.1 — updated from a stale hardcoded 56: later tasks
+  // (promotions/coupons, customers/memberships/loyalty, reward
+  // entitlements, reward benefit application, and TASK 14.0's own
+  // `role.permission.manage` launch-blocker fix) have grown the real
+  // approved catalogue to 75. The uniqueness check and the specific
+  // spot-checked codes are the test's real intent and are unchanged.
+  it('contains exactly the current approved permission definitions, each unique', () => {
+    expect(technicalPermissionCodes).toHaveLength(75);
+    expect(new Set(technicalPermissionCodes).size).toBe(75);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');
     expect(technicalPermissionCodes).toContain('inventory.reconcile');
+    expect(technicalPermissionCodes).toContain('role.permission.manage');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {

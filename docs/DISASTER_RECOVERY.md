@@ -104,8 +104,26 @@ a successful exercise.
 
 ## Restore validation automation boundary
 
-The internal harness validates preconditions only. It rejects protected or
-non-allowlisted database names, production mode, source/target equality and
-missing `--dry-run --confirm`. It performs no restore or deletion. Actual
-isolated restore, PITR, promotion and failback remain controlled manual
-procedures requiring the roles and evidence defined above.
+TASK 14.1 replaced the previously aspirational `backup-verify` /
+`restore-validate` names with the real, runnable tooling in
+`scripts/production/` (see `docs/BACKUP_STRATEGY.md` for full usage). What
+it actually does, and does not do:
+
+- `scripts/production/backup-db.mjs` produces one timestamped `pg_dump
+  -Fc` backup file of a given `DATABASE_URL`. It performs no restore and no
+  deletion of anything other than its own partial output on failure.
+- `scripts/production/verify-restore.mjs` DOES perform a real, isolated
+  restore — but only into a separate, disposable `VERIFY_DATABASE_URL` that
+  passed an explicit, fail-closed safety gate first (name must carry a
+  `restore_verify` / `_verify` marker; a primary-looking name, or a target
+  identical to `DATABASE_URL`, is refused). It then runs the migration-count
+  and core-table checks described in `docs/BACKUP_STRATEGY.md`. It never
+  restores into, drops, or otherwise writes to the primary database — the
+  only database it ever issues DROP/CREATE/data statements against is the
+  one that just passed the safety gate.
+- Neither script performs PITR, promotion, or failback. Actual isolated
+  PITR restore, promotion and failback for a real incident or scheduled
+  exercise remain controlled manual procedures requiring the roles and
+  evidence defined above — `verify-restore.mjs` is a restore-integrity
+  check an operator runs as part of (or in preparation for) those
+  procedures, not a replacement for them.

@@ -109,7 +109,88 @@ describe('configuration', () => {
       NODE_ENV: 'production',
       CORS_ALLOWED_ORIGINS: 'https://app.asone.mx',
       AUTH_ACCESS_TOKEN_SECRET: 'Qx7$kP2mLwZ9!vR4tBn8&hJ1cYs6@Fg3D',
+      // Production also enforces the DB TLS policy (see the tests below) —
+      // this fixture is only about the secret-strength check, so satisfy
+      // that policy with sslmode=require to isolate what's under test.
+      DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=require',
     });
     expect(config.authAccessTokenSecret).toBe('Qx7$kP2mLwZ9!vR4tBn8&hJ1cYs6@Fg3D');
+  });
+
+  // PRODUCTION_GAPS.md section 5 / TASK 14.1 section C: a `DATABASE_URL`
+  // with no TLS indication must never be accepted in production — TLS
+  // previously depended entirely on an operator remembering to add
+  // `sslmode=require` themselves, with nothing validating it.
+  const productionEnvironment = {
+    ...validEnvironment,
+    NODE_ENV: 'production',
+    CORS_ALLOWED_ORIGINS: 'https://app.asone.mx',
+    AUTH_ACCESS_TOKEN_SECRET: 'Qx7$kP2mLwZ9!vR4tBn8&hJ1cYs6@Fg3D',
+  } as const;
+
+  it('rejects a production DATABASE_URL with no TLS indication', () => {
+    expect(() =>
+      loadApiConfig({
+        ...productionEnvironment,
+        DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a production DATABASE_URL with sslmode=disable', () => {
+    expect(() =>
+      loadApiConfig({
+        ...productionEnvironment,
+        DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=disable',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a production DATABASE_URL with sslmode=require or verify-full', () => {
+    const requireConfig = loadApiConfig({
+      ...productionEnvironment,
+      DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=require',
+    });
+    expect(requireConfig.databaseUrl).toContain('sslmode=require');
+
+    const verifyFullConfig = loadApiConfig({
+      ...productionEnvironment,
+      DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=verify-full',
+    });
+    expect(verifyFullConfig.databaseUrl).toContain('sslmode=verify-full');
+  });
+
+  it('accepts a production DATABASE_URL with no sslmode when TLS is externally terminated', () => {
+    const config = loadApiConfig({
+      ...productionEnvironment,
+      DATABASE_URL: 'postgresql://prod:prod@127.0.0.1:5432/asone_prod',
+      DATABASE_TLS_EXTERNALLY_TERMINATED: 'true',
+    });
+    expect(config.databaseTlsExternallyTerminated).toBe(true);
+  });
+
+  it('leaves dev/test DATABASE_URL validation completely unaffected by the TLS check', () => {
+    const config = loadApiConfig(validEnvironment);
+    expect(config.nodeEnv).toBe('test');
+    expect(config.databaseUrl).toBe('postgresql://local:local@127.0.0.1:5432/asone_test');
+    expect(config.databaseTlsExternallyTerminated).toBe(false);
+
+    const worker = loadWorkerConfig(validEnvironment);
+    expect(worker.databaseUrl).toBe('postgresql://local:local@127.0.0.1:5432/asone_test');
+  });
+
+  it('also enforces the production DB TLS policy for the worker config', () => {
+    expect(() =>
+      loadWorkerConfig({
+        ...productionEnvironment,
+        DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod',
+      }),
+    ).toThrow();
+
+    const worker = loadWorkerConfig({
+      ...productionEnvironment,
+      DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=verify-full',
+    });
+    expect(worker.databaseUrl).toContain('sslmode=verify-full');
   });
 });
