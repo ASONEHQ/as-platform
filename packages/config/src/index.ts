@@ -32,46 +32,93 @@ const sharedSchema = z.object({
   REDIS_URL: z.url().startsWith('redis://'),
 });
 
-const apiSchema = sharedSchema.extend({
-  API_HOST: z.string().trim().min(1),
-  API_PORT: z.coerce.number().int().min(1).max(65_535),
-  AUTH_ACCESS_TOKEN_SECRET: z.string().min(32),
-  AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
-  AUTH_JWT_AUDIENCE: z.string().trim().min(1),
-  AUTH_JWT_ISSUER: z.string().trim().min(1),
-  AUTH_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100).default(10),
-  AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce
-    .number()
-    .int()
-    .min(1_000)
-    .max(3_600_000)
-    .default(60_000),
-  AUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce
-    .number()
-    .int()
-    .min(3_600)
-    .max(31_536_000)
-    .default(2_592_000),
-  CORS_ALLOWED_ORIGINS: corsOriginsSchema,
-  KEEP_ALIVE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(72_000),
-  METRICS_ENABLED: optionalBooleanSchema,
-  OPENAPI_UI_ENABLED: optionalBooleanSchema,
-  RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100_000).default(300),
-  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
-  REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(10_485_760).default(1_048_576),
-  REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
-  TRUST_PROXY: booleanSchema.default(false),
-  // TASK 12.4B.1: Mercado Pago Point provider credentials. Deliberately
-  // optional — the app must still boot in any environment that has no
-  // provider configured yet (local dev, CI, a company that hasn't set up
-  // Point). The specific provider call fails cleanly and explicitly
-  // (`PaymentProviderError('not_configured', ...)`) only when actually
-  // invoked without them — see providers/mercado-pago.provider.ts. Never
-  // a secret with a baked-in default.
-  MERCADO_PAGO_ACCESS_TOKEN: z.string().trim().min(1).optional(),
-  MERCADO_PAGO_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
-  MERCADO_PAGO_API_BASE_URL: z.url().default('https://api.mercadopago.com'),
-});
+// PRODUCTION_GAPS.md section K1: mirrors the placeholder/weak-secret
+// rejection `validateBootstrapPassword` already applies to the dev-only
+// `AS_DEV_BOOTSTRAP_PASSWORD` (see
+// apps/api/src/development/bootstrap-owner.service.ts). Nothing equivalent
+// previously existed for `AUTH_ACCESS_TOKEN_SECRET`, the real production
+// auth/session secret — `.min(32)` alone accepts an obviously unsafe value
+// such as 32 repeated characters or "replace_me_replace_me_replace_me...".
+// Scoped to NODE_ENV === 'production' only, so local/test fixtures using a
+// readable literal (see index.test.ts) are never affected.
+const weakSecretPlaceholders = Object.freeze([
+  'changeme',
+  'change_me',
+  'change-me',
+  'replace_me',
+  'replace-me',
+  'placeholder',
+  'example',
+  'secret_here',
+  'your_secret',
+  'insert_secret',
+  'local_only',
+  'localhost',
+  'todo',
+]);
+
+function isWeakProductionSecret(secret: string): boolean {
+  const normalized = secret.trim().toLowerCase();
+  if (new Set(normalized).size < 4) return true;
+  return weakSecretPlaceholders.some((placeholder) => normalized.includes(placeholder));
+}
+
+const apiSchema = sharedSchema
+  .extend({
+    API_HOST: z.string().trim().min(1),
+    API_PORT: z.coerce.number().int().min(1).max(65_535),
+    AUTH_ACCESS_TOKEN_SECRET: z.string().min(32),
+    AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
+    AUTH_JWT_AUDIENCE: z.string().trim().min(1),
+    AUTH_JWT_ISSUER: z.string().trim().min(1),
+    AUTH_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    AUTH_LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(3_600_000)
+      .default(60_000),
+    AUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(3_600)
+      .max(31_536_000)
+      .default(2_592_000),
+    CORS_ALLOWED_ORIGINS: corsOriginsSchema,
+    KEEP_ALIVE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(72_000),
+    METRICS_ENABLED: optionalBooleanSchema,
+    OPENAPI_UI_ENABLED: optionalBooleanSchema,
+    RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100_000).default(300),
+    RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
+    REQUEST_BODY_LIMIT_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1_024)
+      .max(10_485_760)
+      .default(1_048_576),
+    REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+    TRUST_PROXY: booleanSchema.default(false),
+    // TASK 12.4B.1: Mercado Pago Point provider credentials. Deliberately
+    // optional — the app must still boot in any environment that has no
+    // provider configured yet (local dev, CI, a company that hasn't set up
+    // Point). The specific provider call fails cleanly and explicitly
+    // (`PaymentProviderError('not_configured', ...)`) only when actually
+    // invoked without them — see providers/mercado-pago.provider.ts. Never
+    // a secret with a baked-in default.
+    MERCADO_PAGO_ACCESS_TOKEN: z.string().trim().min(1).optional(),
+    MERCADO_PAGO_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
+    MERCADO_PAGO_API_BASE_URL: z.url().default('https://api.mercadopago.com'),
+  })
+  .superRefine((value, context) => {
+    if (value.NODE_ENV === 'production' && isWeakProductionSecret(value.AUTH_ACCESS_TOKEN_SECRET)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['AUTH_ACCESS_TOKEN_SECRET'],
+        message:
+          'AUTH_ACCESS_TOKEN_SECRET must not be a low-entropy or placeholder value in production.',
+      });
+    }
+  });
 
 export interface SharedConfig {
   readonly nodeEnv: z.infer<typeof environmentSchema>;

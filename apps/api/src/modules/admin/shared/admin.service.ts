@@ -4,6 +4,7 @@ import { AppError } from '@asone/errors';
 
 import { requireBranchAccess, requirePermission } from '../../auth/auth.guards.js';
 import type { AuthService } from '../../auth/auth.service.js';
+import { hashPassword, validatePasswordStrength } from '../../auth/auth.passwords.js';
 import type { AdminActor } from './admin.types.js';
 import type { AdminRepository } from './admin.repository.js';
 
@@ -277,12 +278,60 @@ export class AdministrationService {
     };
   }
 
+  // TASK 14.0 (launch-blocker fix): `createUser` below has always inserted
+  // the new `users` row with `status='pending'` and no `password_hash` —
+  // and nothing anywhere in the codebase ever transitioned either field.
+  // `AuthService.login`/`beginLogin` both require `users.status==='active'`
+  // AND a non-null `password_hash` (auth.service.ts) — so an admin-invited
+  // user could be created, granted roles/branch access, and marked
+  // `company_memberships.status='active'`, and still could NEVER actually
+  // log in: there was no code path anywhere that could set either field.
+  // Only the dev-only, environment-gated `bootstrap-owner.service.ts`
+  // could ever produce a working login, by inserting a password hash
+  // directly — a real second staff account (a cashier, a manager) could
+  // not be onboarded through the actual product at all. This is fixed
+  // here, at the one existing activation call site, rather than by adding
+  // a separate invitation-email/token flow (real infrastructure this pass
+  // doesn't need to build): on FIRST activation of a still-`pending`
+  // identity, the acting admin must supply a real password for the new
+  // hire directly (the normal small-business-launch pattern — the owner
+  // sets it and tells the cashier in person), which is validated and
+  // hashed here and written to `users.status='active'`+`password_hash` in
+  // the SAME transaction as the membership activation. `users.status` is
+  // the per-IDENTITY gate (a person could belong to more than one
+  // company); it is only ever set here, once, on first activation — every
+  // other transition (suspend/disable/reactivate) continues to touch only
+  // `company_memberships.status`, exactly as before, since a person
+  // suspended at ONE company must remain `active` at the identity level
+  // for any other company they also belong to.
   public async updateMembership(
     actor: AdminActor,
     userId: string,
     status: 'active' | 'suspended' | 'disabled',
+    password?: string,
   ): Promise<void> {
     requirePermission(this.authentication, actor.context, 'user.update');
+    const [identity] = await this.repository.query<{ status: string; password_hash: string | null }>(
+      `select u.status, u.password_hash from users u
+       join company_memberships m on m.user_id = u.id
+       where m.company_id = $1 and m.user_id = $2`,
+      [actor.context.companyId, userId],
+    );
+    if (identity === undefined) throw missing();
+    const isFirstActivation = status === 'active' && identity.status === 'pending';
+    let passwordHash: string | null = null;
+    if (isFirstActivation) {
+      if (password === undefined || password.length === 0)
+        throw new AppError({
+          code: 'validation_error',
+          message: 'A password is required to activate a new account for the first time.',
+          statusCode: 400,
+        });
+      const strengthError = validatePasswordStrength(password);
+      if (strengthError !== null)
+        throw new AppError({ code: 'validation_error', message: strengthError, statusCode: 400 });
+      passwordHash = await hashPassword(password);
+    }
     await this.repository.mutate({
       companyId: actor.context.companyId,
       actorId: actor.context.userId,
@@ -298,6 +347,12 @@ export class AdministrationService {
           [actor.context.companyId, userId, status],
         )) as { rowCount?: number };
         if (result.rowCount !== 1) throw missing();
+        if (isFirstActivation) {
+          await client.query(`update users set status='active',password_hash=$2,updated_at=now() where id=$1`, [
+            userId,
+            passwordHash,
+          ]);
+        }
         if (status !== 'active') {
           await client.query(
             `update sessions set status='revoked',revoked_at=now(),revocation_reason='membership_${status}',updated_at=now() where company_id=$1 and user_id=$2 and status='active'`,

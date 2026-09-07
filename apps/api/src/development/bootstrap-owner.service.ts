@@ -46,6 +46,12 @@ export const ownerPermissionCodes = Object.freeze([
   'role.read',
   'role.create',
   'role.update',
+  // TASK 14.0 — the dev owner also exercises real role/permission-matrix
+  // QA end to end (creating a genuine Cashier role and actually setting
+  // its permissions via `PUT /roles/{id}/permissions`), so it needs this
+  // code too — see `technical-permissions.ts`'s own doc comment for why
+  // this permission was missing from the seed entirely until now.
+  'role.permission.manage',
   'role.assign',
   'permission.read',
   'branch_access.manage',

@@ -78,7 +78,7 @@ export function registerIdentityAdministrationRoutes(
   });
   app.patch<{
     Params: { user_id: string };
-    Body: { membership_status: 'active' | 'suspended' | 'disabled' };
+    Body: { membership_status: 'active' | 'suspended' | 'disabled'; password?: string };
   }>(
     '/api/v1/users/:user_id',
     {
@@ -87,7 +87,16 @@ export function registerIdentityAdministrationRoutes(
           type: 'object',
           additionalProperties: false,
           required: ['membership_status'],
-          properties: { membership_status: { enum: ['active', 'suspended', 'disabled'] } },
+          properties: {
+            membership_status: { enum: ['active', 'suspended', 'disabled'] },
+            // TASK 14.0 — required only the FIRST time a still-`pending`
+            // identity is activated (`AdministrationService.
+            // updateMembership` enforces this — the schema itself cannot
+            // express "conditionally required", so the honest
+            // `validation_error` for a missing password on first
+            // activation is raised there, not here).
+            password: { type: 'string', minLength: 1, maxLength: 200 },
+          },
         },
       },
     },
@@ -101,6 +110,7 @@ export function registerIdentityAdministrationRoutes(
         },
         request.params.user_id,
         request.body.membership_status,
+        request.body.password,
       );
       return successResponse(
         { id: request.params.user_id, membership_status: request.body.membership_status },

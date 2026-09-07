@@ -746,6 +746,24 @@ export class PaymentService {
       if (sale === null) throw new PaymentError('resource_not_found', 'The sale was not found.');
       if (!branchIds.includes(sale.branchId))
         throw new PaymentError('sale_branch_mismatch', 'The sale does not belong to an authorized branch.');
+      // TASK 14.0 (launch double-submit audit): this endpoint is
+      // deliberately NOT Idempotency-Key-gated (ADR-0019 D9 — the request
+      // carries no variable caller data to hash), but a real retry still
+      // has to land safely: a cashier whose client lost the response (a
+      // dropped connection, a UI refresh) will call this again for the
+      // SAME sale, which the first call already settled. Treating an
+      // ALREADY-`completed` sale as a successful no-op replay — rather
+      // than the honest-sounding but operationally confusing
+      // `invalid_sale_state` a raw status check would throw — is what
+      // makes that retry safe; found by this task's own live double-
+      // submit test calling this endpoint twice with the same key.
+      // `trySettleSale`/`applyPostSettlementHooks` are never re-invoked
+      // here, so nothing (reward consumption included) can double-fire —
+      // this is a pure "it's already done, here it is" read, not a
+      // second settlement attempt. Any OTHER non-`pending_payment` status
+      // (e.g. `cancelled`) still throws — only a genuine prior success of
+      // *this same* zero-total path replays cleanly.
+      if (sale.status === 'completed' && moneyUnits(sale.total) === 0n) return { sale };
       if (sale.status !== 'pending_payment')
         throw new PaymentError('invalid_sale_state', 'The sale is not awaiting payment.');
       if (moneyUnits(sale.total) !== 0n)

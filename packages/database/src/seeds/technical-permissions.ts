@@ -21,6 +21,21 @@ export const technicalPermissionCodes = [
   'role.read',
   'role.create',
   'role.update',
+  // TASK 14.0 (launch-blocker fix): `AdministrationService.
+  // replaceRolePermissions` (`PUT /roles/{id}/permissions` — the ONLY way
+  // to actually attach permissions to a role through the real product,
+  // e.g. building a genuine minimal-permission Cashier role for launch)
+  // has required this exact code since it was written, but it was never
+  // added here — only to `admin.integration.test.ts`'s own hand-rolled,
+  // already-drifted fixture permission list, which inserts permissions
+  // directly and never goes through this seed. The result: in every real
+  // environment that boots from this seed (dev, staging, production),
+  // NO user — not even a company's own owner — could ever set a role's
+  // permissions via the API; the permission row to grant simply never
+  // existed. Added here, in its natural position beside its sibling
+  // `role.*` codes, so `db:seed` (and `bootstrap-owner.service.ts`'s own
+  // owner grant, updated alongside this) both cover it going forward.
+  'role.permission.manage',
   'role.assign',
   'permission.read',
   'branch_access.manage',

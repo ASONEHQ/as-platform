@@ -79,4 +79,37 @@ describe('configuration', () => {
     expect(config.mercadoPagoWebhookSecret).toBe('fixture-webhook-secret');
     expect(config.mercadoPagoApiBaseUrl).toBe('https://sandbox.example.test');
   });
+
+  // PRODUCTION_GAPS.md section K1: a placeholder or low-entropy
+  // AUTH_ACCESS_TOKEN_SECRET must never be accepted in production, even
+  // though it satisfies the plain `.min(32)` length check.
+  it('rejects a placeholder or low-entropy AUTH_ACCESS_TOKEN_SECRET in production', () => {
+    const productionEnvironment = {
+      ...validEnvironment,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.asone.mx',
+    } as const;
+    expect(() =>
+      loadApiConfig({
+        ...productionEnvironment,
+        AUTH_ACCESS_TOKEN_SECRET: 'replace_me_replace_me_replace_me_replace_me',
+      }),
+    ).toThrow();
+    expect(() =>
+      loadApiConfig({
+        ...productionEnvironment,
+        AUTH_ACCESS_TOKEN_SECRET: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a high-entropy AUTH_ACCESS_TOKEN_SECRET in production', () => {
+    const config = loadApiConfig({
+      ...validEnvironment,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.asone.mx',
+      AUTH_ACCESS_TOKEN_SECRET: 'Qx7$kP2mLwZ9!vR4tBn8&hJ1cYs6@Fg3D',
+    });
+    expect(config.authAccessTokenSecret).toBe('Qx7$kP2mLwZ9!vR4tBn8&hJ1cYs6@Fg3D');
+  });
 });
