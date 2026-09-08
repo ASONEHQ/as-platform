@@ -174,6 +174,26 @@ class _RecordingSettingsGateway implements PosSettingsGateway {
     _settings[key] = updated;
     return updated;
   }
+
+  // TASK 14.5A extended `PosSettingsGateway` with the business-logo
+  // upload/delete methods (see `pos_branding_test.dart` for the fake that
+  // actually exercises them) -- this receipts-branding test double never
+  // calls either, so both simply fail loudly if that ever changes rather
+  // than silently doing nothing.
+  @override
+  Future<PosEffectiveSetting> uploadCompanyLogo({
+    required String companyId,
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) => throw UnimplementedError('uploadCompanyLogo is not exercised by this test double.');
+
+  @override
+  Future<PosEffectiveSetting> deleteCompanyLogo({
+    required String companyId,
+    required int expectedVersion,
+  }) => throw UnimplementedError('deleteCompanyLogo is not exercised by this test double.');
 }
 
 Future<void> _pump(

@@ -57,6 +57,37 @@ header/footer admin screen persists real data but is not yet threaded
 into any of the 4 real print call sites. Formal Purchase Orders and CFDI
 fiscal stamping were explicitly re-confirmed untouched this wave too.
 
+## TASK 14.5A (Wave 3A, "final forensic correction") — completed
+
+Wave 3's own closing claim was contradicted by its own report: 10
+non-A/H rows still remained. This wave independently re-audited all 10
+directly against `AS POS V1.html` before touching any code — see
+[[LEGACY_FUNCTIONAL_PARITY]]'s "FINAL FORENSIC CORRECTION" section for
+full line-cited evidence. Result: **4 rows were over-classified as real
+debt and are removed from this action plan entirely** (they never had
+anything to port) — in-house credit accounts / "cuenta a crédito"
+payment (`DB.creditos` permanently empty, nothing ever wrote to it, now
+listed under "Not real" below), the full CFDI invoicing UI (its
+draft-creation half was real, but its entire purpose depended on a
+stamping step that was always simulated — a correctly-computed but
+never-stampable draft was never a complete real capability), and
+scheduled email reports (100% fake send mechanism, matching the
+already-documented fake-sync pattern). **6 rows were genuinely real and
+are now DONE**, closed and independently re-verified this wave (all
+struck through in their sections below): kiosk/self-checkout mode (a
+real "CLIENTE mode" already existed; two real gaps — open-session entry
+gating, real PIN-verified exit — were closed), post-sale success
+animation/sound, birthday alerts on the dashboard (Wave 3's own claim
+that no computed alert existed was factually wrong — corrected), the
+dashboard sales-vs-yesterday trend, receipt header/footer print wiring
+(closing the loop Wave 3 left open), and per-tenant logo upload
+(including threading the uploaded logo into printed receipts).
+
+**Result: this action plan is now empty of genuine P0/P1/P2 gaps** —
+every remaining un-struck item below is either an explicit non-goal
+(Formal POs, CFDI) or was reclassified into "Not real — nothing to
+port."
+
 ## TASK 14.4 (Wave 2) — completed
 
 Five more items from the P1/P2 lists below are now **backend-and-UI
@@ -142,15 +173,18 @@ beyond Inflapark specifically:
   missing: a single consolidated "today at a glance" landing screen
   (sales trend + parties + alerts on one view) — see
   [[V1_POST_LAUNCH_BACKLOG]].
-- **Per-tenant branding** (logo, receipt header/footer) — **PARTIALLY
-  DONE (TASK 14.5 Wave 3).** Receipt header/footer text now has a real
-  admin screen (`pos_receipt_branding_screen.dart`) that persists real
-  data (the EAV backend already existed before this wave), but the value
-  is not yet threaded into any of the 4 real print call sites — configured
-  text never appears on an actual printed receipt yet. Per-tenant logo
-  upload remains fully undone — no file-upload infrastructure
-  (MinIO/S3/multipart/image-picker) exists anywhere, re-confirmed this
-  wave. See [[V1_POST_LAUNCH_BACKLOG]].
+- ~~**Per-tenant branding** (logo, receipt header/footer)~~ — **DONE
+  (TASK 14.5A, Wave 3A).** Receipt header/footer text (admin screen +
+  EAV backend pre-existed Wave 3) is now threaded through all 4 real
+  print call sites — configured text genuinely reaches printed receipts,
+  normal sale and refund. Per-tenant logo upload is now fully real: a
+  MinIO-backed multipart upload/delete endpoint, a `branding.logo_url`
+  company setting (reusing the existing settings CAS mechanism), a real
+  Flutter admin screen, and the uploaded logo now reaches printed
+  receipts the same way the header/footer text does. The platform's own
+  topbar brand mark deliberately continues to show product (not
+  per-tenant) identity — a documented scope boundary, not a gap; see
+  [[LEGACY_FUNCTIONAL_PARITY]]'s §19 row for the full reasoning.
 - ~~**Product variant management UI**~~ — **DONE (TASK 14.5 Wave 3).**
   `pos_product_variants_screen.dart` (795 lines) now manages the
   pre-existing, already-more-capable `product_variants` backend.
@@ -192,18 +226,44 @@ beyond Inflapark specifically:
   own expiry field, so nothing about the expiration ever actually
   changes — the same class of bug as the legacy's own "notas" field. See
   [[LEGACY_FUNCTIONAL_PARITY]]'s §13 for the full, corrected finding.
-- **In-house customer credit accounts** — a real payment-provider path is
-  the correct modern replacement, not worth reproducing as a bespoke
-  ledger.
-- **Scheduled email reports** — real scheduling UI existed, but the send
-  itself was fake even in the legacy; low priority, low effort if ever
-  wanted. **Re-confirmed still deferred in TASK 14.5 (Wave 3)** by direct
-  inspection of `apps/worker` — no SMTP client dependency and no
-  job-scheduling infrastructure of any kind exist.
-- **Modo Cliente (self-checkout kiosk mode)** — real in the legacy, no
-  current equivalent; a genuine feature, not currently needed for the
-  proven V1 cashier-operated workflow. **Re-confirmed still deferred in
-  TASK 14.5 (Wave 3)** — no kiosk/self-checkout code was added anywhere.
+- **In-house customer credit accounts** — **RECLASSIFIED, moved to "Not
+  real" below (TASK 14.5A).** Direct re-inspection found `DB.creditos`
+  was seeded permanently empty and nothing anywhere ever wrote to it —
+  this was never real in the legacy, not merely a low-priority gap. A
+  real payment-provider path remains the correct modern approach if a
+  credit concept is ever wanted, but nothing owed a rebuild.
+- **Scheduled email reports** — **RECLASSIFIED, moved to "Not real"
+  below (TASK 14.5A).** Direct re-inspection found the send mechanism
+  (`enviarReporteEmailId`/`enviarReporteEmail`) was 100% fake — pure
+  `setTimeout` + toast, zero real transport, matching the sync/backup
+  fiction pattern already documented below. Only a local to-do-list
+  record of "reports I intend to send" was real, which is not itself a
+  meaningful capability.
+- ~~**Modo Cliente (self-checkout kiosk mode)**~~ — **DONE (TASK 14.5A,
+  Wave 3A).** Direct re-inspection found this was genuinely a functional
+  autonomous self-checkout kiosk in the legacy (the checkout button was
+  never actually disabled in Modo Cliente) — not merely a customer
+  display. A real "CLIENTE mode" already existed in the current
+  platform; two real gaps were closed: entry now gates on a real open
+  cash-register session, and exit now requires real employee PIN
+  re-authentication (`PosAuthGateway.pinLogin`) rather than a bare
+  permission check.
+- ~~**Post-sale success animation/sound**~~ — **DONE (TASK 14.5A, Wave
+  3A).** Confirmed genuinely real in the legacy (fires only after every
+  real sale mutation commits, never on a failed precondition, shows real
+  per-sale data). Implemented as `pos_post_sale_feedback.dart`, wired to
+  fire only after genuine server-confirmed sale completion.
+- ~~**Dashboard sales-vs-yesterday trend**~~ — **DONE (TASK 14.5A, Wave
+  3A).** Confirmed genuinely real math in the legacy (`vsAyer`, real
+  percent-change over real daily sales totals — not fake/random).
+  Implemented reusing the exact same real sales-aggregation query the
+  dashboard's "today's sales" figure already uses; returns `null` (never
+  a fabricated number) when yesterday had no sales.
+- ~~**Birthday alerts on dashboard**~~ — **DONE (TASK 14.5A, Wave 3A).**
+  A prior classification claiming "no computed alert exists" was
+  factually wrong — the legacy's `generarAlertas()` genuinely computed
+  and displayed this. Implemented as a real server-side SQL date-match
+  query, company/branch-scoped, tenant-isolation-tested.
 - ~~**Café visual sub-mode**~~ — **DONE (TASK 14.5 Wave 3).** A real,
   generic `product_categories.is_visual_tile` flag (never hardcoded to
   "café"), a dedicated `PosModule.cafeteria` sharing the real sale
@@ -241,7 +301,24 @@ lost functionality:
 - Purchase history and supplier price-comparison screens (static
   hardcoded example rows)
 - CFDI fiscal stamping (self-admitted simulation) — **untouched by TASK
-  14.4 (Wave 2)**; no billing/CFDI work was done this wave
+  14.4 (Wave 2)**; no billing/CFDI work was done this wave. **TASK
+  14.5A**: the full invoicing/draft UI is reclassified alongside it —
+  its draft-creation half was real in isolation, but the capability's
+  entire purpose depended on this always-simulated stamping step, so a
+  correctly-computed but never-stampable draft was never a complete real
+  capability. Real PAC/SAT integration remains a new-product capability,
+  not legacy parity debt.
+- In-house customer credit accounts / "cuenta a crédito" payment method
+  — **TASK 14.5A finding**: `DB.creditos` was seeded permanently empty
+  and an exhaustive search confirms nothing anywhere in the 14,712-line
+  file ever wrote to it — no account creation, no debt-charging at
+  checkout, no payment-posting, no limit enforcement. Every reference
+  was a read against permanently-empty data; this was never real.
+- Scheduled email reports (the send mechanism) — **TASK 14.5A finding**:
+  100% fake, `setTimeout` + toast only, zero real mail-transport call
+  anywhere, matching the sync/backup fiction below exactly. Only a local
+  to-do-list record of intended reports was real, which is not itself a
+  meaningful capability.
 - Ticket-scan access-control validation (accepts anything, always
   "succeeds") — **TASK 14.4 (Wave 2) built a real replacement** (see
   [[LEGACY_FUNCTIONAL_PARITY]]'s §13, classified **H**), but this does

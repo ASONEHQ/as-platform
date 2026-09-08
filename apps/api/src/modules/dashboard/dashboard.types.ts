@@ -15,22 +15,26 @@ import type { CurrencyAmount } from '../reports/reports.types.js';
  * them (`DashboardRepository.outstandingPartyBalances`/
  * `clockedInEmployeeCount` — see that file's own doc comment for why).
  *
- * Two legacy dashboard fields are DELIBERATELY NOT ported here:
- *  - "vs. yesterday" percent change (`vsAyer` in the legacy) — this task's
- *    own instruction #4 forbids ever fabricating a trend/growth
- *    percentage on a first-real-metrics screen; the legacy's own value was
- *    real (computed from a real prior-day total), but reproducing a
- *    percent-vs-yesterday comparison was never asked for and this module
- *    sticks to exactly the metric list the task specifies.
- *  - active-membership count (`kpi-mems` in the legacy) — not in this
- *    task's required metric list either; omitted rather than guessed at.
- * Neither omission is because the underlying legacy figure was fake (both
- * were real, per §12) — they are simply out of this task's explicit scope.
- * The two admitted-fake legacy BI-tab fields (`prom_estancia`=95,
- * always-0 water-park occupancy — §12's *Business Intelligence tab* row,
- * not the *Dashboard* row) were never part of `renderDashboard()` itself
- * and are correctly absent from Wave 2's report center already; nothing
- * new to exclude here.
+ * TASK 14.5A (final legacy parity correction) adds the two remaining
+ * genuinely-real `renderDashboard()` figures that Wave 3 Phase 2
+ * deliberately deferred:
+ *  - "vs. yesterday" percent change (`vsAyer` in the legacy,
+ *    `comparativoAyer:ventasDia[5].ventas` → `renderDashboard()` lines
+ *    10823/10832-10836) — a real percent-change computed from a real
+ *    prior-day sales total, reusing `ReportsService.salesReport` for
+ *    yesterday exactly as it is already reused for today (never a second,
+ *    divergent sales query). `pctChange` is `null` (never a fabricated 0)
+ *    when yesterday had zero real sales — the legacy's own honest "Sin
+ *    datos de ayer" case (see `salesTrend` in `dashboard.service.ts`).
+ *  - birthday alerts (`generarAlertas()` lines 10957-10976 — an exact
+ *    month/day match against each customer's real `birth_date`) — real
+ *    customers whose birth date matches the requested `date`'s month/day,
+ *    company-scoped (the `customers` table's own identity boundary is
+ *    COMPANY-scoped only — see `customers.ts`'s header comment — mirroring
+ *    `outstandingPartyBalances`'s identical company-wide scope decision
+ *    for the same structural reason).
+ * Active-membership count (`kpi-mems` in the legacy) remains out of this
+ * task's scope — not requested by TASK 14.5A either.
  */
 
 export interface DashboardPartyReservation {
@@ -44,6 +48,29 @@ export interface DashboardPartyReservation {
   readonly startTime: string;
   readonly endTime: string;
   readonly status: string;
+}
+
+/** One currency's real today-vs-yesterday sales comparison — mirrors the
+ * legacy `vsAyer` computation exactly (see this file's header comment).
+ * `todayTotal`/`yesterdayTotal` are the exact same ADR-0001 decimal-string
+ * money representation `CurrencyAmount.amount` uses everywhere else in
+ * this codebase. */
+export interface DashboardSalesTrendEntry {
+  readonly currencyCode: string;
+  readonly todayTotal: string;
+  readonly yesterdayTotal: string;
+  /** `null` only when yesterday's real total for this currency was zero —
+   * never a fabricated 0 or `NaN` (see this file's header comment). */
+  readonly pctChange: number | null;
+}
+
+/** A real customer whose `birth_date` month/day matches the requested
+ * `date` — see this file's header comment. Minimal exposure by design
+ * (id + display name only), matching the legacy's own minimal
+ * `cumpleHoy.map(c=>c.nombre)` — never the full birth date/year. */
+export interface DashboardBirthdayCustomer {
+  readonly id: string;
+  readonly displayName: string;
 }
 
 export interface DashboardOpenCashSession {
@@ -68,6 +95,10 @@ export interface DashboardSummary {
    * `completed` sales count, exactly like the Sales report. */
   readonly salesTransactionCount: number;
   readonly salesGrossTotal: readonly CurrencyAmount[];
+
+  /** Real today-vs-yesterday percent change per currency — see this
+   * file's header comment and `dashboard.service.ts`'s `salesTrend`. */
+  readonly salesTrendVsYesterday: readonly DashboardSalesTrendEntry[];
 
   /** Reuses `ReportsService.accessReport`'s own live, present-moment
    * `currentOccupancy` snapshot (never date-filtered). */
@@ -102,6 +133,10 @@ export interface DashboardSummary {
    * (quantity_on_hand = 0) — see `docs/LEGACY_FUNCTIONAL_PARITY.md` §4.
    * No new low-stock threshold concept is invented here. */
   readonly outOfStockVariantCount: number;
+
+  /** Real customers whose `birth_date` month/day matches `date` — see
+   * this file's header comment and `DashboardRepository.birthdaysOn`. */
+  readonly birthdaysToday: readonly DashboardBirthdayCustomer[];
 }
 
 export type DashboardErrorCode = 'validation_error' | 'resource_not_found';

@@ -1,3 +1,4 @@
+import fastifyMultipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 
 import type { ApiConfig } from '@asone/config';
@@ -117,6 +118,12 @@ import { SalesRepository } from '../modules/sales/sales.repository.js';
 import { registerSaleRoutes } from '../modules/sales/sales.routes.js';
 import { SalesService } from '../modules/sales/sales.service.js';
 import { registerAdministrationRoutes } from '../modules/admin/admin.routes.js';
+import { registerBrandingRoutes } from '../modules/admin/branding/branding.routes.js';
+import { BrandingService } from '../modules/admin/branding/branding.service.js';
+import {
+  BrandingObjectStorage,
+  brandingStorageConfigFromEnv,
+} from '../modules/admin/branding/branding.storage.js';
 import { AdminRepository } from '../modules/admin/shared/admin.repository.js';
 import { AdministrationService } from '../modules/admin/shared/admin.service.js';
 import { SettingsRepository } from '../modules/admin/settings/settings.repository.js';
@@ -144,6 +151,12 @@ export async function registerPlugins(
   registerRequestContext(app);
   registerObservability(app, observability, options.config.metricsEnabled);
   await registerSecurity(app, options.config);
+  // TASK 14.5A: registered globally (like every other transport plugin in
+  // this function) but never widens the app-wide body-size default --
+  // `branding.routes.ts`'s own upload route sets a route-level `bodyLimit`
+  // override for its real, bounded (2MB) logo cap; every other route is
+  // unaffected and still governed by `REQUEST_BODY_LIMIT_BYTES`.
+  await app.register(fastifyMultipart, { attachFieldsToBody: false });
   await registerOpenApi(app, options.config);
   registerErrorHandler(app, observability);
   registerHealthRoutes(app, { ...options, observability });
@@ -178,6 +191,25 @@ export async function registerPlugins(
         ),
         new SettingsService(new SettingsRepository(options.infrastructure.database)),
       );
+      // TASK 14.5A: only registered when the SAME `MINIO_*` env vars
+      // `compose.yaml`/`.env.example` already provision are actually
+      // present -- mirrors this codebase's own established pattern for an
+      // optional external dependency (see `MERCADO_PAGO_ACCESS_TOKEN` in
+      // `.env.example`: "the app boots fine and the ...-specific path
+      // fails cleanly and explicitly when actually invoked instead").
+      // Here that means the two branding routes are simply absent (a real
+      // 404) rather than the whole app failing to boot.
+      const brandingStorageConfig = brandingStorageConfigFromEnv();
+      if (brandingStorageConfig !== undefined) {
+        registerBrandingRoutes(
+          app,
+          authentication,
+          new BrandingService(
+            new SettingsService(new SettingsRepository(options.infrastructure.database)),
+            new BrandingObjectStorage(brandingStorageConfig),
+          ),
+        );
+      }
       registerCatalogRoutes(
         app,
         authentication,

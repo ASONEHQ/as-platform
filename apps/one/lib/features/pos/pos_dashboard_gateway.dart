@@ -63,6 +63,48 @@ class PosDashboardPartyReservation {
   final String status;
 }
 
+/// TASK 14.5A — mirrors the backend's `DashboardSalesTrendEntry`
+/// (`dashboard.routes.ts`'s `salesTrendHttp`) exactly: a real today-vs-
+/// yesterday percent change per currency, `pctChange` staying `null`
+/// (never a fabricated 0) when yesterday had zero real sales.
+class PosDashboardSalesTrendEntry {
+  const PosDashboardSalesTrendEntry({
+    required this.currencyCode,
+    required this.todayTotal,
+    required this.yesterdayTotal,
+    required this.pctChange,
+  });
+
+  factory PosDashboardSalesTrendEntry.fromJson(Map<String, Object?> json) => PosDashboardSalesTrendEntry(
+    currencyCode: json['currency_code']! as String,
+    todayTotal: json['today_total']! as String,
+    yesterdayTotal: json['yesterday_total']! as String,
+    pctChange: (json['pct_change'] as num?)?.round(),
+  );
+
+  final String currencyCode;
+  final String todayTotal;
+  final String yesterdayTotal;
+  /// `null` only when yesterday's real total for this currency was zero —
+  /// never a fabricated 0 (mirrors the backend's own `number | null`).
+  final int? pctChange;
+}
+
+/// TASK 14.5A — mirrors the backend's `DashboardBirthdayCustomer`
+/// (`dashboard.routes.ts`'s `birthdayCustomerHttp`) exactly: a real
+/// customer whose `birth_date` month/day matches the requested date.
+class PosDashboardBirthdayCustomer {
+  const PosDashboardBirthdayCustomer({required this.id, required this.displayName});
+
+  factory PosDashboardBirthdayCustomer.fromJson(Map<String, Object?> json) => PosDashboardBirthdayCustomer(
+    id: json['id']! as String,
+    displayName: json['display_name']! as String,
+  );
+
+  final String id;
+  final String displayName;
+}
+
 class PosDashboardOpenCashSession {
   const PosDashboardOpenCashSession({
     required this.cashSessionId,
@@ -106,6 +148,7 @@ class PosDashboardSummary {
     required this.branchId,
     required this.salesTransactionCount,
     required this.salesGrossTotal,
+    required this.salesTrendVsYesterday,
     required this.currentOccupancy,
     required this.partyReservationCount,
     required this.partyReservations,
@@ -114,6 +157,7 @@ class PosDashboardSummary {
     required this.outstandingPartyBalances,
     required this.clockedInEmployeeCount,
     required this.outOfStockVariantCount,
+    required this.birthdaysToday,
   });
 
   factory PosDashboardSummary.fromJson(Map<String, Object?> json) {
@@ -130,6 +174,10 @@ class PosDashboardSummary {
       salesGrossTotal: (sales['gross_total'] as List<Object?>? ?? const [])
           .whereType<Map<String, Object?>>()
           .map(PosDashboardCurrencyAmount.fromJson)
+          .toList(growable: false),
+      salesTrendVsYesterday: (sales['trend_vs_yesterday'] as List<Object?>? ?? const [])
+          .whereType<Map<String, Object?>>()
+          .map(PosDashboardSalesTrendEntry.fromJson)
           .toList(growable: false),
       currentOccupancy: (occupancy['current_occupancy']! as num).toInt(),
       partyReservationCount: (parties['count']! as num).toInt(),
@@ -148,6 +196,10 @@ class PosDashboardSummary {
           .toList(growable: false),
       clockedInEmployeeCount: (attendance['clocked_in_count']! as num).toInt(),
       outOfStockVariantCount: (inventoryAlerts['out_of_stock_variant_count']! as num).toInt(),
+      birthdaysToday: ((json['birthdays_today'] as Map<String, Object?>?)?['customers'] as List<Object?>? ?? const [])
+          .whereType<Map<String, Object?>>()
+          .map(PosDashboardBirthdayCustomer.fromJson)
+          .toList(growable: false),
     );
   }
 
@@ -155,6 +207,7 @@ class PosDashboardSummary {
   final String? branchId;
   final int salesTransactionCount;
   final List<PosDashboardCurrencyAmount> salesGrossTotal;
+  final List<PosDashboardSalesTrendEntry> salesTrendVsYesterday;
   final int currentOccupancy;
   final int partyReservationCount;
   final List<PosDashboardPartyReservation> partyReservations;
@@ -163,6 +216,7 @@ class PosDashboardSummary {
   final List<PosDashboardCurrencyAmount> outstandingPartyBalances;
   final int clockedInEmployeeCount;
   final int outOfStockVariantCount;
+  final List<PosDashboardBirthdayCustomer> birthdaysToday;
 }
 
 // --- Gateway ---------------------------------------------------------------

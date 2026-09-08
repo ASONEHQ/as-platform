@@ -100,6 +100,39 @@ abstract interface class PosSettingsGateway {
     required String valueType,
     required int expectedVersion,
   });
+
+  /// TASK 14.5A: `POST /api/v1/companies/{company_id}/branding/logo` --
+  /// legacy parity for `AS POS V1.html`'s
+  /// `cfgNegocioLogoSeleccionado()`/`aplicarBrandingNegocio()` (an
+  /// operator-uploaded business logo). [bytes] are the real image file
+  /// contents the caller already picked (see `pos_branding_screen.dart`);
+  /// [contentType] must be one of the content types
+  /// `branding.validation.ts`'s own `ALLOWED_LOGO_CONTENT_TYPES` allows
+  /// (`image/png`, `image/jpeg`, `image/webp`, `image/svg+xml`) or the
+  /// backend rejects it with a real 415. Same `company_settings.update`
+  /// permission and `If-Match`/[PosSettingVersionConflict] contract as
+  /// [setCompanySetting] -- this is still, underneath, a
+  /// `branding.logo_url` company-setting write, just carried by a
+  /// multipart request instead of JSON.
+  Future<PosEffectiveSetting> uploadCompanyLogo({
+    required String companyId,
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  });
+
+  /// TASK 14.5A: `DELETE /api/v1/companies/{company_id}/branding/logo` --
+  /// clears `branding.logo_url` back to unset (the catalog's own `''`
+  /// default), mirroring the same "set it back to empty" clear semantics
+  /// [setCompanySetting] documents for `receipts.header_text`, except this
+  /// key has a distinct clear action because the value is never
+  /// user-typable text. Same `If-Match`/[PosSettingVersionConflict]
+  /// contract as every other write here.
+  Future<PosEffectiveSetting> deleteCompanyLogo({
+    required String companyId,
+    required int expectedVersion,
+  });
 }
 
 class ApiPosSettingsGateway implements PosSettingsGateway {
@@ -158,7 +191,62 @@ class ApiPosSettingsGateway implements PosSettingsGateway {
       rethrow;
     }
   }
+
+  @override
+  Future<PosEffectiveSetting> uploadCompanyLogo({
+    required String companyId,
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) async {
+    try {
+      final envelope = await _client.postMultipart(
+        '/api/v1/companies/$companyId/branding/logo',
+        fieldName: 'file',
+        filename: filename,
+        bytes: bytes,
+        contentType: contentType,
+        ifMatch: '"$expectedVersion"',
+      );
+      final data = envelope['data'];
+      if (data is! Map<String, Object?>) {
+        throw const FormatException('Missing setting data.');
+      }
+      return PosEffectiveSetting.fromJson(data);
+    } on ApiException catch (error) {
+      if (error.failure.code == 'version_conflict') {
+        throw const PosSettingVersionConflict(_brandingLogoKey);
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<PosEffectiveSetting> deleteCompanyLogo({
+    required String companyId,
+    required int expectedVersion,
+  }) async {
+    try {
+      final envelope = await _client.deleteJson(
+        '/api/v1/companies/$companyId/branding/logo',
+        ifMatch: '"$expectedVersion"',
+      );
+      final data = envelope['data'];
+      if (data is! Map<String, Object?>) {
+        throw const FormatException('Missing setting data.');
+      }
+      return PosEffectiveSetting.fromJson(data);
+    } on ApiException catch (error) {
+      if (error.failure.code == 'version_conflict') {
+        throw const PosSettingVersionConflict(_brandingLogoKey);
+      }
+      rethrow;
+    }
+  }
 }
+
+const String _brandingLogoKey = 'branding.logo_url';
 
 class EmptyPosSettingsGateway implements PosSettingsGateway {
   const EmptyPosSettingsGateway();
@@ -175,6 +263,21 @@ class EmptyPosSettingsGateway implements PosSettingsGateway {
     required String key,
     required Object value,
     required String valueType,
+    required int expectedVersion,
+  }) => Future.error(StateError('No settings gateway is configured.'));
+
+  @override
+  Future<PosEffectiveSetting> uploadCompanyLogo({
+    required String companyId,
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) => Future.error(StateError('No settings gateway is configured.'));
+
+  @override
+  Future<PosEffectiveSetting> deleteCompanyLogo({
+    required String companyId,
     required int expectedVersion,
   }) => Future.error(StateError('No settings gateway is configured.'));
 }

@@ -27,6 +27,7 @@ import 'pos_parties_models.dart';
 import 'pos_payments_gateway.dart';
 import 'pos_people_gateway.dart';
 import 'pos_people_screen.dart';
+import 'pos_post_sale_feedback.dart';
 import 'pos_product_variants_gateway.dart';
 import 'pos_product_variants_screen.dart';
 import 'pos_promotions_gateway.dart';
@@ -221,9 +222,46 @@ class _PosShellState extends State<PosShell> {
     }
   }
 
-  // TASK 12.3A: CAJERO → CLIENTE is always allowed directly (matches V1's
-  // own `cambiarModoPOS('cliente')`, which has no credential gate).
-  void _enterClienteMode() => setState(() => clienteMode = true);
+  // TASK 14.5A: CAJERO → CLIENTE (kiosk/self-checkout) now requires an open
+  // cash-register session before the swap happens — V1's own
+  // `cambiarModoPOS('cliente')`/`requiereEmpleado` gate reads
+  // `DB.turnoActual.estado==='abierto'` before allowing entry into Modo
+  // Cliente (AS POS V1.html ~line 6994). Checked the exact same way a live
+  // cash sale already checks it — `cashGateway.openSessionForBranch` (see
+  // `_PosCobrarButtonState._handleTap`'s cash-path guard) — never a second,
+  // duplicated notion of "is the register open". Kept as a synchronous
+  // `VoidCallback` at the call site (`onEnterCliente` is threaded through
+  // several widget layers as `VoidCallback`) by fire-and-forgetting the
+  // actual async check.
+  void _enterClienteMode() => unawaited(_attemptEnterClienteMode());
+
+  Future<void> _attemptEnterClienteMode() async {
+    final branchId = widget.context.session.branchId;
+    if (branchId == null) {
+      _showNotice(
+        context,
+        'Selecciona una sucursal para activar el modo Cliente.',
+      );
+      return;
+    }
+    PosCashSession? openSession;
+    var checkFailed = false;
+    try {
+      openSession = await widget.cashGateway.openSessionForBranch(branchId);
+    } on Object {
+      checkFailed = true;
+    }
+    if (!mounted) return;
+    if (checkFailed) {
+      _showNotice(context, 'No fue posible verificar el estado de la caja.');
+      return;
+    }
+    if (openSession == null) {
+      _showNotice(context, 'Abre la caja para activar el modo Cliente.');
+      return;
+    }
+    setState(() => clienteMode = true);
+  }
 
   // CLIENTE → CAJERO always requires authorization (V1's own
   // `cambiarModoPOS('cajero')` unconditionally calls `requiereEmpleado(...)`
@@ -233,7 +271,7 @@ class _PosShellState extends State<PosShell> {
     final authorized = await showDialog<bool>(
       context: context,
       builder: (context) =>
-          _CajeroReturnAuthDialog(permissions: widget.context.permissions),
+          _CajeroReturnAuthDialog(authGateway: widget.authGateway),
     );
     // A cancelled or failed dialog resolves to `null`/`false` — CLIENTE
     // stays active either way. `saleSession` is never touched here, so
@@ -1336,6 +1374,11 @@ Future<void> _submitSaleForPayment(
   required String? branchId,
   required ValueChanged<String?> onStatusUpdate,
   PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
+  // TASK 14.5A: `true` only from `_ClienteCardPaymentButton` (kiosk/
+  // self-checkout) — tunes the post-sale success feedback's tone/duration
+  // only (see `showPosPostSaleSuccessFeedback`); the checkout logic above
+  // and below this is byte-for-byte identical for both callers.
+  bool kiosk = false,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1445,12 +1488,42 @@ Future<void> _submitSaleForPayment(
       }
     }
     if (!context.mounted) return;
+    final approved = latestAttempt.status == 'approved';
     _showNotice(
       context,
-      latestAttempt.status == 'approved'
+      approved
           ? 'Pago aprobado — venta ${sale.saleNumber}.'
           : 'Pago no completado (${_paymentStatusLabel(latestAttempt.status)}).',
     );
+    // TASK 14.5A: fires ONLY once the backend itself reports the terminal
+    // attempt `approved` — every real mutation this sale involves is
+    // already committed by the backend before this status is ever
+    // reachable, and every other terminal status (`declined`/`cancelled`/
+    // `timed_out`/`failed`) — plus the "terminal no configurada"/timeout/
+    // exception paths above and below, which never reach this line at
+    // all — never fires it. `unawaited`: purely additive, must never
+    // block or delay anything above.
+    if (approved) {
+      // A malformed `sale.total` (never actually observed — the backend's
+      // own response) must never turn an already-approved payment into an
+      // apparent failure; the feedback layer is purely additive.
+      try {
+        unawaited(
+          showPosPostSaleSuccessFeedback(
+            context,
+            PosPostSaleFeedbackData(
+              saleNumber: sale.saleNumber,
+              amount: Money.parse(sale.total, 'MXN'),
+              paymentMethodLabel: 'Tarjeta',
+              customerDisplayName: saleSession.customerDisplayName,
+            ),
+            kiosk: kiosk,
+          ),
+        );
+      } on Object {
+        // Defensive — see comment above.
+      }
+    }
   } on ApiException catch (error) {
     onStatusUpdate(null);
     if (!context.mounted) return;
@@ -1484,6 +1557,10 @@ Future<void> _submitCashSaleForPayment(
   required String? branchId,
   required VoidCallback onDialogAboutToOpen,
   PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
+  // TASK 14.5A: threaded straight through to `_ReceiptSuccessDialog` —
+  // see that class's own doc comment for the branding read pattern.
+  PosSettingsGateway settingsGateway = const EmptyPosSettingsGateway(),
+  String? companyId,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1590,6 +1667,28 @@ Future<void> _submitCashSaleForPayment(
   }
   saleSession.clearAll();
   if (!context.mounted) return;
+  // TASK 14.5A: fires only here — after the cash payment itself already
+  // settled (the real, server-confirmed completion this cash path
+  // depends on) and after every above mutation (`clearAll`) already
+  // happened, never before. `unawaited` and defensively guarded: purely
+  // additive, must never block/delay the receipt dialog immediately
+  // below or the sale-history entry the backend already committed.
+  try {
+    unawaited(
+      showPosPostSaleSuccessFeedback(
+        context,
+        PosPostSaleFeedbackData(
+          saleNumber: sale.saleNumber,
+          amount: total,
+          paymentMethodLabel: 'Efectivo',
+          change: change,
+          customerDisplayName: customerDisplayName,
+        ),
+      ),
+    );
+  } on Object {
+    // Defensive — see comment above.
+  }
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -1599,6 +1698,8 @@ Future<void> _submitCashSaleForPayment(
       total: total,
       change: change,
       salesGateway: salesGateway,
+      settingsGateway: settingsGateway,
+      companyId: companyId,
       customerDisplayName: customerDisplayName,
       note: note,
     ),
@@ -1622,6 +1723,9 @@ Future<void> _submitZeroTotalSale(
   required String? branchId,
   required VoidCallback onBeforeReceiptDialog,
   PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
+  // TASK 14.5A: see `_submitCashSaleForPayment`'s identical params.
+  PosSettingsGateway settingsGateway = const EmptyPosSettingsGateway(),
+  String? companyId,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1703,6 +1807,25 @@ Future<void> _submitZeroTotalSale(
   }
   saleSession.clearAll();
   if (!context.mounted) return;
+  // TASK 14.5A: fires only here — after `completeZeroTotalSale` (the real
+  // server-confirmed completion this path depends on) already succeeded
+  // and the reward entitlement it consumes is already settled, never
+  // before. Same defensive/`unawaited` posture as the cash path above.
+  try {
+    unawaited(
+      showPosPostSaleSuccessFeedback(
+        context,
+        PosPostSaleFeedbackData(
+          saleNumber: completed.saleNumber,
+          amount: total,
+          paymentMethodLabel: 'Recompensa — sin cargo',
+          customerDisplayName: customerDisplayName,
+        ),
+      ),
+    );
+  } on Object {
+    // Defensive — see comment above.
+  }
   // Mirrors `_submitCashSaleForPayment`'s own `onDialogAboutToOpen`: the
   // Cobrar button's busy/spinner state covers only the two network calls
   // above, never however long the cashier leaves the completed-sale
@@ -1717,6 +1840,8 @@ Future<void> _submitZeroTotalSale(
       total: total,
       change: Money.zero('MXN'),
       salesGateway: salesGateway,
+      settingsGateway: settingsGateway,
+      companyId: companyId,
       customerDisplayName: customerDisplayName,
       note: note,
     ),
@@ -1746,6 +1871,62 @@ Future<String?> _receiptLogoDataUri() async {
   }
 }
 
+// TASK 14.5A: the exact settings keys `pos_receipt_branding_screen.dart`
+// already reads/writes (`_headerKey`/`_footerKey` there) — never a second,
+// diverging key name.
+const _receiptHeaderSettingKey = 'receipts.header_text';
+const _receiptFooterSettingKey = 'receipts.footer_text';
+
+// TASK 14.5A (final forensic correction): the same real, persisted,
+// admin-uploaded per-tenant logo `pos_branding_screen.dart` writes via
+// `PosSettingsGateway.uploadCompanyLogo` — never a second, diverging key
+// name. When set, this real tenant logo takes priority over the bundled
+// generic AS ONE mark on every printed receipt (see `_receiptLogoDataUri`
+// below), matching the legacy's own `aplicarBrandingNegocio()` behavior
+// of a real operator-configured logo overriding the default everywhere it
+// renders.
+const _brandingLogoSettingKey = 'branding.logo_url';
+
+/// TASK 14.5A: the one real read path every real print call site below
+/// uses to fetch the current company's configured receipt header/footer
+/// text and logo — mirrors `pos_receipt_branding_screen.dart`'s own
+/// `_load()` read pattern (`effectiveCompanySettings` with the keys
+/// above, picked by `.key`, `.stringValue`) rather than inventing a
+/// second one. Never blocks/aborts printing: a `null`/missing
+/// `companyId`, or any failure fetching the settings, resolves to
+/// `(null, null, null)` — the receipt then renders exactly as it did
+/// before this task (falling back to the bundled logo, no header/footer),
+/// as `buildReceiptHtml`/`buildRefundReceiptHtml` already handle safely.
+Future<({String? header, String? footer, String? logoUrl})>
+_loadReceiptBranding({
+  required PosSettingsGateway settingsGateway,
+  required String? companyId,
+}) async {
+  if (companyId == null) return (header: null, footer: null, logoUrl: null);
+  try {
+    final settings = await settingsGateway.effectiveCompanySettings(
+      companyId: companyId,
+      keys: const [
+        _receiptHeaderSettingKey,
+        _receiptFooterSettingKey,
+        _brandingLogoSettingKey,
+      ],
+    );
+    String? pick(String key) =>
+        settings.where((setting) => setting.key == key).firstOrNull?.stringValue;
+    final logoUrl = pick(_brandingLogoSettingKey);
+    return (
+      header: pick(_receiptHeaderSettingKey),
+      footer: pick(_receiptFooterSettingKey),
+      // An empty string means "configured then cleared" — treat exactly
+      // like unset, never render a broken `<img src="">`.
+      logoUrl: (logoUrl == null || logoUrl.isEmpty) ? null : logoUrl,
+    );
+  } on Object {
+    return (header: null, footer: null, logoUrl: null);
+  }
+}
+
 /// TASK 12.5B: the completed-sale success/receipt experience — see
 /// ADR-0012. [saleNumber]/[total]/[change] are already known the instant
 /// this opens (straight from the backend's own cash-payment response,
@@ -1766,6 +1947,8 @@ class _ReceiptSuccessDialog extends StatefulWidget {
     required this.total,
     required this.change,
     required this.salesGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    this.companyId,
     this.customerDisplayName,
     this.note,
   });
@@ -1774,6 +1957,10 @@ class _ReceiptSuccessDialog extends StatefulWidget {
   final Money total;
   final Money change;
   final PosSalesGateway salesGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — see
+  // `_ReceiptSuccessDialogState._loadBranding`.
+  final PosSettingsGateway settingsGateway;
+  final String? companyId;
   // TASK 13.0: captured by the caller before `SaleSession.clearAll()` —
   // see `buildReceiptHtml`'s own doc comment for why this isn't read off
   // the receipt itself.
@@ -1793,11 +1980,28 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
   String? _receiptError;
   bool _printing = false;
   String? _printError;
+  String? _headerText;
+  String? _footerText;
+  String? _logoUrl;
 
   @override
   void initState() {
     super.initState();
     unawaited(_loadReceipt());
+    unawaited(_loadBranding());
+  }
+
+  Future<void> _loadBranding() async {
+    final branding = await _loadReceiptBranding(
+      settingsGateway: widget.settingsGateway,
+      companyId: widget.companyId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _headerText = branding.header;
+      _footerText = branding.footer;
+      _logoUrl = branding.logoUrl;
+    });
   }
 
   Future<void> _loadReceipt() async {
@@ -1834,7 +2038,7 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
       _printing = true;
       _printError = null;
     });
-    final logoDataUri = await _receiptLogoDataUri();
+    final logoDataUri = _logoUrl ?? await _receiptLogoDataUri();
     // Printing failure/cancel must never undo or modify the already-
     // completed sale (see ADR-0012) — `buildReceiptHtml`/
     // `openReceiptPrintWindow` are pure/side-effect-free with respect to
@@ -1844,6 +2048,8 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
       logoDataUri: logoDataUri,
       customerDisplayName: widget.customerDisplayName,
       note: widget.note,
+      headerText: _headerText,
+      footerText: _footerText,
     );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
@@ -2736,6 +2942,7 @@ class _Content extends StatelessWidget {
                         onEnterCliente: onEnterCliente,
                         visualTileOnly: module == PosModule.cafeteria,
                         authGateway: authGateway,
+                        settingsGateway: settingsGateway,
                       ),
               )
             : SingleChildScrollView(
@@ -2779,6 +2986,7 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     salesGateway: salesGateway,
                     refundsGateway: refundsGateway,
+                    settingsGateway: settingsGateway,
                     onNavigateToCaja: () =>
                         onNavigateToModule(PosModule.cash),
                   ),
@@ -2802,6 +3010,7 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     refundsGateway: refundsGateway,
                     salesGateway: salesGateway,
+                    settingsGateway: settingsGateway,
                     onNavigateToCaja: () =>
                         onNavigateToModule(PosModule.cash),
                   ),
@@ -3567,6 +3776,7 @@ class _PosSale extends StatefulWidget {
     // disconnected second cart), only the category/product scope differs.
     this.visualTileOnly = false,
     this.authGateway = const EmptyPosAuthGateway(),
+    this.settingsGateway = const EmptyPosSettingsGateway(),
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -3590,6 +3800,11 @@ class _PosSale extends StatefulWidget {
   final VoidCallback onEnterCliente;
   final bool visualTileOnly;
   final PosAuthGateway authGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — read
+  // once here and threaded down to `_ReceiptSuccessDialog` (see
+  // `_TicketFooter`/`_PosCobrarButton`), matching `pos_receipt_branding_
+  // screen.dart`'s own `effectiveCompanySettings` read pattern.
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_PosSale> createState() => _PosSaleState();
@@ -3876,6 +4091,8 @@ class _PosSaleState extends State<_PosSale> {
                     customersGateway: widget.customersGateway,
                     rewardsGateway: widget.rewardsGateway,
                     heldSalesGateway: widget.heldSalesGateway,
+                    settingsGateway: widget.settingsGateway,
+                    companyId: widget.context.session.companyId,
                     branchId: widget.context.session.branchId,
                     permissions: widget.context.permissions,
                     selectedCategoryId: selectedCategoryId,
@@ -3956,6 +4173,8 @@ class _PosSaleBody extends StatelessWidget {
     required this.customersGateway,
     required this.rewardsGateway,
     required this.heldSalesGateway,
+    required this.settingsGateway,
+    required this.companyId,
     required this.branchId,
     required this.permissions,
     required this.selectedCategoryId,
@@ -3996,6 +4215,11 @@ class _PosSaleBody extends StatelessWidget {
   // to a future held-carts affordance if needed — the real suspend call
   // itself is owned by `_PosSaleState._handleSuspend`.
   final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.5A: threaded only so `_TicketFooter`/`_PosCobrarButton` can
+  // fetch the real `receipts.header_text`/`receipts.footer_text` before
+  // printing a just-completed sale's receipt.
+  final PosSettingsGateway settingsGateway;
+  final String companyId;
   final String? branchId;
   final List<String> permissions;
   final String? selectedCategoryId;
@@ -4118,6 +4342,8 @@ class _PosSaleBody extends StatelessWidget {
       customersGateway: customersGateway,
       rewardsGateway: rewardsGateway,
       heldSalesGateway: heldSalesGateway,
+      settingsGateway: settingsGateway,
+      companyId: companyId,
       branchId: branchId,
       permissions: permissions,
       cobrarButtonKey: cobrarButtonKey,
@@ -4269,21 +4495,22 @@ class _ModeButton extends StatelessWidget {
 /// exactly the insecure local-credential pattern this task explicitly
 /// forbids recreating.
 ///
-/// No real backend contract for this exists today (confirmed by
-/// inspection: no PIN column/table anywhere in `packages/database`, no
-/// elevation/step-up endpoint in `apps/api`, no "confirm current
-/// password without replacing the session" call — every credentialed
-/// endpoint mints a brand-new session, which would be a disproportionate
-/// and unsafe side effect of a wrong guess here). So this dialog keeps
-/// V1's canonical PIN-entry visual (title, message, masked input, that
-/// input is intentionally not compared to anything — this app must never
-/// store or compare a PIN client-side) and authorizes by re-affirming a
-/// permission the *already-authenticated* session's real, backend-issued
-/// permission list already carries: `sale.create`. That is not a new
-/// credential check — it's the same honest "$0.00, not fabricated"
-/// posture used everywhere else in this arc, applied to authorization
-/// instead of pricing. A real PIN/step-up contract is a deferred backend
-/// task — see docs/AS_POS_SALE_ENGINE.md.
+/// TASK 14.5A: previously this dialog authorized by re-affirming a
+/// permission the already-authenticated session's own permission list
+/// already carried (`sale.create`) — never a real re-authentication, just
+/// an honest "no fabricated PIN comparison" placeholder while no PIN
+/// contract existed. That contract now exists and is already real
+/// elsewhere in this file (`_StaffQuickSwitchDialog`, which calls
+/// `PosAuthGateway.pinLogin`/`qrLogin` — real backend calls, see that
+/// gateway's own security-model doc comment): CLIENTE→CAJERO now reuses
+/// the exact same `pinLogin` call, so exiting kiosk/self-checkout mode
+/// requires the same genuine employee credential check the rest of the
+/// app already performs, not a second, weaker mechanism. Matches V1's own
+/// `cambiarModoPOS('cajero')`, which unconditionally calls
+/// `requiereEmpleado(...)` before allowing the mode switch (AS POS
+/// V1.html ~lines 6987-7030) — this is that same requirement, backed by a
+/// real credential check instead of V1's insecure client-side plaintext
+/// comparison.
 ///
 /// TASK 12.3B polish: adds the canonical AS logo mark, a fade+scale
 /// entrance (a `ScaleTransition` layered on top of `showDialog`'s own
@@ -4292,16 +4519,11 @@ class _ModeButton extends StatelessWidget {
 /// (`StartupPinKeypad`, the same component the login PIN tab already
 /// uses) — V1's `#empleado-pin-input` is `type="password"`, so its global
 /// on-screen keyboard (`#teclado-global-dock`) appears beside it in the
-/// canonical HTML; this reproduces that keypad's *presence*, not a real
-/// PIN comparison (the field is still never compared to anything — see
-/// above). The previous in-dialog "requires a backend contract" caption
-/// has been removed from this customer/staff-facing surface per this
-/// task's "no developer/backend-contract text in production UI" rule —
-/// the same explanation now lives only in this doc comment and in
-/// docs/AS_POS_SALE_ENGINE.md.
+/// canonical HTML; this reproduces that keypad's *presence*, and now also
+/// its actual verification.
 class _CajeroReturnAuthDialog extends StatefulWidget {
-  const _CajeroReturnAuthDialog({required this.permissions});
-  final List<String> permissions;
+  const _CajeroReturnAuthDialog({required this.authGateway});
+  final PosAuthGateway authGateway;
 
   @override
   State<_CajeroReturnAuthDialog> createState() =>
@@ -4311,6 +4533,7 @@ class _CajeroReturnAuthDialog extends StatefulWidget {
 class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
   final pinController = TextEditingController();
   String? error;
+  bool _busy = false;
 
   @override
   void dispose() {
@@ -4318,13 +4541,40 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
     super.dispose();
   }
 
-  void _confirm() {
-    final authorized = widget.permissions.contains('sale.create');
-    if (!authorized) {
-      setState(() => error = 'No tienes permiso para volver a modo Cajero.');
+  Future<void> _confirm() async {
+    if (_busy) return;
+    final pin = pinController.text;
+    if (pin.isEmpty) {
+      setState(() => error = 'Ingresa tu PIN o contraseña.');
       return;
     }
-    Navigator.of(context).pop(true);
+    setState(() {
+      _busy = true;
+      error = null;
+    });
+    try {
+      // TASK 14.5A: the real, backend-issued credential check — same
+      // gateway call/endpoint `_StaffQuickSwitchDialog` already uses (see
+      // `pos_auth_gateway.dart`). Never a client-side comparison.
+      await widget.authGateway.pinLogin(pin);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        // Honest, generic failure — mirrors `_StaffQuickSwitchDialogState.
+        // _submit`'s own uniform `invalid_credentials` handling.
+        error = e.failure.message;
+        pinController.clear();
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        error = 'No fue posible verificar el PIN o contraseña.';
+      });
+    }
   }
 
   void _appendDigit(String digit) {
@@ -4371,12 +4621,13 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
             controller: pinController,
             obscureText: true,
             autofocus: true,
+            enabled: !_busy,
             textAlign: TextAlign.center,
             decoration: const InputDecoration(
               isDense: true,
               hintText: 'PIN o contraseña',
             ),
-            onSubmitted: (_) => _confirm(),
+            onSubmitted: (_) => unawaited(_confirm()),
           ),
           const SizedBox(height: 14),
           // `AlertDialog` sizes its content by asking it for intrinsic
@@ -4395,12 +4646,20 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
               width: 220,
               height: 220,
               child: StartupPinKeypad(
-                onDigit: _appendDigit,
-                onBackspace: _backspace,
-                onOk: _confirm,
+                onDigit: _busy ? (_) {} : _appendDigit,
+                onBackspace: _busy ? () {} : _backspace,
+                onOk: _busy ? () {} : () => unawaited(_confirm()),
               ),
             ),
           ),
+          if (_busy) ...[
+            const SizedBox(height: 10),
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ],
           if (error != null) ...[
             const SizedBox(height: 10),
             Text(
@@ -4415,12 +4674,12 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
       actions: [
         TextButton(
           key: const Key('pos-cajero-return-cancel'),
-          onPressed: () => Navigator.of(context).pop(false),
+          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
           child: const Text('Cancelar'),
         ),
         FilledButton(
           key: const Key('pos-cajero-return-confirm'),
-          onPressed: _confirm,
+          onPressed: _busy ? null : () => unawaited(_confirm()),
           child: const Text('Confirmar'),
         ),
       ],
@@ -5269,6 +5528,8 @@ class _TicketPanel extends StatelessWidget {
     required this.customersGateway,
     required this.rewardsGateway,
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    required this.companyId,
     required this.branchId,
     required this.permissions,
     this.cobrarButtonKey,
@@ -5288,6 +5549,9 @@ class _TicketPanel extends StatelessWidget {
   // TASK 14.3 (Wave 1, Part B.1): the resumed-held-cart `link-sale`
   // handshake — see `_TicketFooter`/`_PosCobrarButton`.
   final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.5A: see `_PosSaleBody`'s own field doc comment.
+  final PosSettingsGateway settingsGateway;
+  final String companyId;
   final String? branchId;
   final List<String> permissions;
   final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
@@ -5399,6 +5663,8 @@ class _TicketPanel extends StatelessWidget {
               customersGateway: customersGateway,
               rewardsGateway: rewardsGateway,
               heldSalesGateway: heldSalesGateway,
+              settingsGateway: settingsGateway,
+              companyId: companyId,
               branchId: branchId,
               permissions: permissions,
               cobrarButtonKey: cobrarButtonKey,
@@ -5874,6 +6140,10 @@ class _ClienteCardPaymentButtonState extends State<_ClienteCardPaymentButton> {
       onStatusUpdate: (message) {
         if (mounted) setState(() => _statusMessage = message);
       },
+      // TASK 14.5A: the exact same real checkout code path CAJERO's own
+      // Tarjeta button calls — only the post-sale feedback's tone/
+      // duration differs (see `showPosPostSaleSuccessFeedback`).
+      kiosk: true,
     );
     if (mounted) setState(() => _busy = false);
   }
@@ -7014,6 +7284,8 @@ class _TicketFooter extends StatefulWidget {
     required this.customersGateway,
     required this.rewardsGateway,
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    required this.companyId,
     required this.branchId,
     required this.permissions,
     // TASK 14.5 (Wave 3, Phase 4a): see `_PosCobrarButton`'s own doc
@@ -7034,6 +7306,10 @@ class _TicketFooter extends StatefulWidget {
   // TASK 14.3 (Wave 1, Part B.1): the resumed-held-cart `link-sale`
   // handshake — see `_PosCobrarButton`.
   final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.5A: forwarded straight through to `_PosCobrarButton` — real
+  // receipt header/footer branding for the just-completed sale's receipt.
+  final PosSettingsGateway settingsGateway;
+  final String companyId;
   final String? branchId;
   final List<String> permissions;
   final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
@@ -7551,6 +7827,8 @@ class _TicketFooterState extends State<_TicketFooter> {
             paymentsGateway: widget.paymentsGateway,
             cashGateway: widget.cashGateway,
             heldSalesGateway: widget.heldSalesGateway,
+            settingsGateway: widget.settingsGateway,
+            companyId: widget.companyId,
             branchId: widget.branchId,
             selectedMethod: _selectedMethod,
           ),
@@ -8171,6 +8449,8 @@ class _PosCobrarButton extends StatefulWidget {
     required this.paymentsGateway,
     required this.cashGateway,
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    required this.companyId,
     required this.branchId,
     required this.selectedMethod,
   });
@@ -8179,6 +8459,10 @@ class _PosCobrarButton extends StatefulWidget {
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
   final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — see
+  // `_handleTap`'s own doc comment for where this is actually used.
+  final PosSettingsGateway settingsGateway;
+  final String companyId;
   final String selectedMethod;
   final String? branchId;
 
@@ -8209,6 +8493,8 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         salesGateway: widget.salesGateway,
         branchId: widget.branchId,
         heldSalesGateway: widget.heldSalesGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.companyId,
         onBeforeReceiptDialog: () {
           if (mounted) setState(() => _busy = false);
         },
@@ -8259,6 +8545,8 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         paymentsGateway: widget.paymentsGateway,
         branchId: widget.branchId,
         heldSalesGateway: widget.heldSalesGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.companyId,
         onDialogAboutToOpen: () {
           if (mounted) setState(() => _busy = false);
         },
@@ -10186,11 +10474,16 @@ class _SalesHistory extends StatefulWidget {
     required this.context,
     required this.salesGateway,
     required this.refundsGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
     required this.onNavigateToCaja,
   });
   final AuthenticatedContext context;
   final PosSalesGateway salesGateway;
   final PosRefundsGateway refundsGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — threaded
+  // to `_SaleDetailDialog` (reprint) and, from there, `_RefundFlowDialog`
+  // (live refund print).
+  final PosSettingsGateway settingsGateway;
   final VoidCallback onNavigateToCaja;
 
   @override
@@ -10310,6 +10603,7 @@ class _SalesHistoryState extends State<_SalesHistory> {
         customerDisplayName: summary.customerDisplayName,
         salesGateway: widget.salesGateway,
         refundsGateway: widget.refundsGateway,
+        settingsGateway: widget.settingsGateway,
         context: widget.context,
         onNavigateToCaja: widget.onNavigateToCaja,
       ),
@@ -10672,6 +10966,7 @@ class _SaleDetailDialog extends StatefulWidget {
     required this.refundState,
     required this.salesGateway,
     required this.refundsGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
     required this.context,
     required this.onNavigateToCaja,
     this.customerDisplayName,
@@ -10683,6 +10978,13 @@ class _SaleDetailDialog extends StatefulWidget {
   final String refundState;
   final PosSalesGateway salesGateway;
   final PosRefundsGateway refundsGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — see
+  // `_SaleDetailDialogState._loadBranding`. Historical reprints
+  // deliberately use TODAY's effective branding (this dialog has no
+  // point-in-time settings history to read instead), consistent with
+  // this same reprint fetching TODAY's `receipt()` shape/data generally
+  // — see this task's own final-report note on that choice.
+  final PosSettingsGateway settingsGateway;
   final AuthenticatedContext context;
   final VoidCallback onNavigateToCaja;
   // TASK 13.0: the already-fetched Sales History row's own value — the
@@ -10701,6 +11003,9 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
   String? _errorMessage;
   bool _printing = false;
   String? _printError;
+  String? _headerText;
+  String? _footerText;
+  String? _logoUrl;
 
   // TASK 12.8: E081's own eligibility answer — `null` while unresolved
   // (still loading, not attempted, or the actor lacks `refund.read`), in
@@ -10713,6 +11018,20 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
   void initState() {
     super.initState();
     unawaited(_load());
+    unawaited(_loadBranding());
+  }
+
+  Future<void> _loadBranding() async {
+    final branding = await _loadReceiptBranding(
+      settingsGateway: widget.settingsGateway,
+      companyId: widget.context.session.companyId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _headerText = branding.header;
+      _footerText = branding.footer;
+      _logoUrl = branding.logoUrl;
+    });
   }
 
   Future<void> _load() async {
@@ -10779,6 +11098,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
         cashier: receipt.cashier,
         balance: balance,
         refundsGateway: widget.refundsGateway,
+        settingsGateway: widget.settingsGateway,
         actorContext: widget.context,
         onNavigateToCaja: widget.onNavigateToCaja,
       ),
@@ -10801,7 +11121,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
       _printing = true;
       _printError = null;
     });
-    final logoDataUri = await _receiptLogoDataUri();
+    final logoDataUri = _logoUrl ?? await _receiptLogoDataUri();
     // Reprint is read-only by construction: `buildReceiptHtml`/
     // `openReceiptPrintWindow` never call the backend — this only
     // re-renders data already fetched by the read-only `receipt()` call
@@ -10811,6 +11131,8 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
       receipt: receipt,
       logoDataUri: logoDataUri,
       customerDisplayName: widget.customerDisplayName,
+      headerText: _headerText,
+      footerText: _footerText,
     );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
@@ -11211,6 +11533,7 @@ class _RefundFlowDialog extends StatefulWidget {
     required this.cashier,
     required this.balance,
     required this.refundsGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
     required this.actorContext,
     required this.onNavigateToCaja,
   });
@@ -11220,6 +11543,12 @@ class _RefundFlowDialog extends StatefulWidget {
   final PosReceiptCashier? cashier;
   final PosRefundableBalance balance;
   final PosRefundsGateway refundsGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — the
+  // legacy's own branding applied to both sale and refund receipts alike
+  // (see this task's final report), fetched fresh on each print tap
+  // (`_RefundFlowDialogState._print`) rather than cached, since this
+  // dialog has no existing async-load lifecycle to hang it off of.
+  final PosSettingsGateway settingsGateway;
   final AuthenticatedContext actorContext;
   final VoidCallback onNavigateToCaja;
 
@@ -11366,7 +11695,11 @@ class _RefundFlowDialogState extends State<_RefundFlowDialog> {
       _printing = true;
       _printError = null;
     });
-    final logoDataUri = await _receiptLogoDataUri();
+    final branding = await _loadReceiptBranding(
+      settingsGateway: widget.settingsGateway,
+      companyId: widget.actorContext.session.companyId,
+    );
+    final logoDataUri = branding.logoUrl ?? await _receiptLogoDataUri();
     final lineInfo = <String, PosRefundableLine>{
       for (final line in widget.balance.lines) line.saleItemId: line,
     };
@@ -11380,6 +11713,8 @@ class _RefundFlowDialogState extends State<_RefundFlowDialog> {
       cashier: widget.cashier,
       lineInfoBySaleItemId: lineInfo,
       logoDataUri: logoDataUri,
+      headerText: branding.header,
+      footerText: branding.footer,
     );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
@@ -11791,11 +12126,15 @@ class _Devoluciones extends StatefulWidget {
     required this.context,
     required this.refundsGateway,
     required this.salesGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
     required this.onNavigateToCaja,
   });
   final AuthenticatedContext context;
   final PosRefundsGateway refundsGateway;
   final PosSalesGateway salesGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — threaded
+  // to `_RefundDetailDialog` (historical refund reprint).
+  final PosSettingsGateway settingsGateway;
   final VoidCallback onNavigateToCaja;
 
   @override
@@ -11880,6 +12219,8 @@ class _DevolucionesState extends State<_Devoluciones> {
         refundId: refund.id,
         refundsGateway: widget.refundsGateway,
         salesGateway: widget.salesGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.context.session.companyId,
       ),
     );
   }
@@ -12137,10 +12478,17 @@ class _RefundDetailDialog extends StatefulWidget {
     required this.refundId,
     required this.refundsGateway,
     required this.salesGateway,
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    this.companyId,
   });
   final String refundId;
   final PosRefundsGateway refundsGateway;
   final PosSalesGateway salesGateway;
+  // TASK 14.5A: real per-tenant receipt header/footer branding — see
+  // `_RefundDetailDialogState._loadBranding`. Same "TODAY's effective
+  // branding, no point-in-time history" choice as `_SaleDetailDialog`.
+  final PosSettingsGateway settingsGateway;
+  final String? companyId;
 
   @override
   State<_RefundDetailDialog> createState() => _RefundDetailDialogState();
@@ -12154,11 +12502,28 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
   String? _errorMessage;
   bool _printing = false;
   String? _printError;
+  String? _headerText;
+  String? _footerText;
+  String? _logoUrl;
 
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    unawaited(_loadBranding());
+  }
+
+  Future<void> _loadBranding() async {
+    final branding = await _loadReceiptBranding(
+      settingsGateway: widget.settingsGateway,
+      companyId: widget.companyId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _headerText = branding.header;
+      _footerText = branding.footer;
+      _logoUrl = branding.logoUrl;
+    });
   }
 
   Future<void> _load() async {
@@ -12215,7 +12580,7 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
       _printing = true;
       _printError = null;
     });
-    final logoDataUri = await _receiptLogoDataUri();
+    final logoDataUri = _logoUrl ?? await _receiptLogoDataUri();
     final html = buildRefundReceiptHtml(
       refund: refund,
       sale: saleReceipt.sale,
@@ -12223,6 +12588,8 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
       cashier: saleReceipt.cashier,
       lineInfoBySaleItemId: _lineInfo,
       logoDataUri: logoDataUri,
+      headerText: _headerText,
+      footerText: _footerText,
     );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;

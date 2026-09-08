@@ -164,6 +164,9 @@ PosDashboardSummary _fixtureSummary() => PosDashboardSummary(
   branchId: 'branch-id',
   salesTransactionCount: 3,
   salesGrossTotal: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '1500.0000')],
+  salesTrendVsYesterday: const [
+    PosDashboardSalesTrendEntry(currencyCode: 'MXN', todayTotal: '1500.0000', yesterdayTotal: '1000.0000', pctChange: 50),
+  ],
   currentOccupancy: 7,
   partyReservationCount: 2,
   partyReservations: const [
@@ -204,6 +207,7 @@ PosDashboardSummary _fixtureSummary() => PosDashboardSummary(
   outstandingPartyBalances: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '450.0000')],
   clockedInEmployeeCount: 4,
   outOfStockVariantCount: 2,
+  birthdaysToday: const [PosDashboardBirthdayCustomer(id: 'customer-1', displayName: 'Cliente Cumpleañero')],
 );
 
 PosDashboardSummary _emptySummary() => const PosDashboardSummary(
@@ -211,6 +215,7 @@ PosDashboardSummary _emptySummary() => const PosDashboardSummary(
   branchId: null,
   salesTransactionCount: 0,
   salesGrossTotal: [],
+  salesTrendVsYesterday: [],
   currentOccupancy: 0,
   partyReservationCount: 0,
   partyReservations: [],
@@ -219,6 +224,7 @@ PosDashboardSummary _emptySummary() => const PosDashboardSummary(
   outstandingPartyBalances: [],
   clockedInEmployeeCount: 0,
   outOfStockVariantCount: 0,
+  birthdaysToday: [],
 );
 
 class _RecordingDashboardGateway implements PosDashboardGateway {

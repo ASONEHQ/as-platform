@@ -8,6 +8,7 @@ import {
   DashboardError,
   type DashboardOpenCashSession,
   type DashboardPartyReservation,
+  type DashboardSalesTrendEntry,
   type DashboardSummary,
 } from './dashboard.types.js';
 
@@ -33,6 +34,49 @@ function formatMoney(units: bigint): string {
 function validateDate(value: string): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new DashboardError('validation_error', 'date must be an ISO date (YYYY-MM-DD).');
   if (Number.isNaN(new Date(`${value}T00:00:00Z`).getTime())) throw new DashboardError('validation_error', 'date is not a valid date.');
+}
+
+/** The calendar day immediately before `date` (UTC, matching
+ * `validateDate`'s own UTC parsing) — TASK 14.5A's "yesterday" for the
+ * sales trend comparison, never the device/server wall clock (the whole
+ * summary is already parameterized by `date`, so "yesterday" is always
+ * relative to THAT date, exactly like the legacy's own `ventasDia[5]`
+ * kept a rolling per-day array indexed off "today"). */
+function previousIsoDate(date: string): string {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() - 1);
+  return parsed.toISOString().slice(0, 10);
+}
+
+/** Real today-vs-yesterday percent change per currency — mirrors the
+ * legacy `renderDashboard()`'s own
+ * `vsAyer=ayer>0?Math.round((ventasHoy-ayer)/ayer*100):0` (lines
+ * 10832-10836) exactly, EXCEPT `pctChange` is `null` (never a fabricated
+ * 0) when yesterday had zero real sales — the legacy's own honest "Sin
+ * datos de ayer" case, which its `0` fallback actually threw away; this
+ * port keeps the "no data" distinction the legacy's own UI already made
+ * elsewhere. Bigint-scaled money throughout (this file's own
+ * `MONEY_SCALE` trio) — `Number(...)` conversion only at the very last
+ * step, for the same real-valued (never money-precision-sensitive)
+ * `Math.round` percentage the legacy itself computed. */
+function salesTrend(
+  todayTotals: readonly CurrencyAmount[],
+  yesterdayTotals: readonly CurrencyAmount[],
+): DashboardSalesTrendEntry[] {
+  const todayByCurrency = new Map(todayTotals.map((entry) => [entry.currencyCode, entry.amount]));
+  const yesterdayByCurrency = new Map(yesterdayTotals.map((entry) => [entry.currencyCode, entry.amount]));
+  const currencies = [...new Set([...todayByCurrency.keys(), ...yesterdayByCurrency.keys()])].sort();
+  return currencies.map((currencyCode) => {
+    const todayUnits = moneyUnits(todayByCurrency.get(currencyCode) ?? '0');
+    const yesterdayUnits = moneyUnits(yesterdayByCurrency.get(currencyCode) ?? '0');
+    const pctChange = yesterdayUnits === 0n ? null : Math.round((Number(todayUnits - yesterdayUnits) / Number(yesterdayUnits)) * 100);
+    return {
+      currencyCode,
+      todayTotal: formatMoney(todayUnits),
+      yesterdayTotal: formatMoney(yesterdayUnits),
+      pctChange,
+    };
+  });
 }
 
 /**
@@ -62,34 +106,52 @@ export class DashboardService {
   ): Promise<DashboardSummary> {
     validateDate(input.date);
     const filter = { dateFrom: input.date, dateTo: input.date, ...(input.branchId === undefined ? {} : { branchId: input.branchId }) };
+    const yesterdayDate = previousIsoDate(input.date);
+    const yesterdayFilter = { dateFrom: yesterdayDate, dateTo: yesterdayDate, ...(input.branchId === undefined ? {} : { branchId: input.branchId }) };
 
-    const [salesReport, accessReport, inventoryReport, reservationsPage, roomsPage, openSessionsPage, registersPage, outstandingTotals, clockedInEmployeeCount] =
-      await Promise.all([
-        this.reportsService.salesReport(companyId, branchIds, filter),
-        this.reportsService.accessReport(companyId, branchIds, filter),
-        this.reportsService.inventoryReport(companyId, branchIds, filter),
-        this.partyReservationsService.listReservations(companyId, branchIds, {
-          limit: 100,
-          eventDateFrom: input.date,
-          eventDateTo: input.date,
-          ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
-        }),
-        // Company-wide room lookup (never branch-filtered here) so a
-        // reservation's room name can always be resolved regardless of
-        // which single branch the caller is currently viewing.
-        this.partyRoomsService.listRooms(companyId, branchIds, { limit: 200 }),
-        this.cashService.listSessions(companyId, branchIds, {
-          limit: 100,
-          status: 'open',
-          ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
-        }),
-        this.cashService.listRegisters(companyId, branchIds, {
-          limit: 200,
-          ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
-        }),
-        this.repository.outstandingPartyBalances(companyId, branchIds),
-        this.repository.clockedInEmployeeCount(companyId, branchIds, input.branchId, input.date),
-      ]);
+    const [
+      salesReport,
+      yesterdaySalesReport,
+      accessReport,
+      inventoryReport,
+      reservationsPage,
+      roomsPage,
+      openSessionsPage,
+      registersPage,
+      outstandingTotals,
+      clockedInEmployeeCount,
+      birthdaysToday,
+    ] = await Promise.all([
+      this.reportsService.salesReport(companyId, branchIds, filter),
+      // Same real `salesReport` service/query as today's figure above —
+      // never a second, divergent sales aggregation (this task's own
+      // instruction) — just pointed at yesterday's date instead.
+      this.reportsService.salesReport(companyId, branchIds, yesterdayFilter),
+      this.reportsService.accessReport(companyId, branchIds, filter),
+      this.reportsService.inventoryReport(companyId, branchIds, filter),
+      this.partyReservationsService.listReservations(companyId, branchIds, {
+        limit: 100,
+        eventDateFrom: input.date,
+        eventDateTo: input.date,
+        ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
+      }),
+      // Company-wide room lookup (never branch-filtered here) so a
+      // reservation's room name can always be resolved regardless of
+      // which single branch the caller is currently viewing.
+      this.partyRoomsService.listRooms(companyId, branchIds, { limit: 200 }),
+      this.cashService.listSessions(companyId, branchIds, {
+        limit: 100,
+        status: 'open',
+        ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
+      }),
+      this.cashService.listRegisters(companyId, branchIds, {
+        limit: 200,
+        ...(input.branchId === undefined ? {} : { branchId: input.branchId }),
+      }),
+      this.repository.outstandingPartyBalances(companyId, branchIds),
+      this.repository.clockedInEmployeeCount(companyId, branchIds, input.branchId, input.date),
+      this.repository.birthdaysOn(companyId, input.date),
+    ]);
 
     const roomNameById = new Map(roomsPage.items.map((room) => [room.id, room.name]));
     const registerById = new Map(registersPage.items.map((register) => [register.id, register]));
@@ -129,6 +191,7 @@ export class DashboardService {
       branchId: input.branchId ?? null,
       salesTransactionCount: salesReport.transactionCount,
       salesGrossTotal: salesReport.grossSales,
+      salesTrendVsYesterday: salesTrend(salesReport.grossSales, yesterdaySalesReport.grossSales),
       currentOccupancy: accessReport.currentOccupancy,
       partyReservationCount: partyReservations.length,
       partyReservations,
@@ -137,6 +200,7 @@ export class DashboardService {
       outstandingPartyBalances,
       clockedInEmployeeCount,
       outOfStockVariantCount: inventoryReport.outOfStockVariantCount,
+      birthdaysToday,
     };
   }
 }

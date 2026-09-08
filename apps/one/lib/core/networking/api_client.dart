@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show MediaType;
 
 import '../errors/app_error.dart';
 
@@ -140,6 +141,75 @@ class ApiClient {
     retryAfterRefresh: false,
     ifMatch: ifMatch,
   );
+
+  /// TASK 14.5A: the first Flutter caller of a `DELETE` -- mirrors
+  /// [putJson]'s own `If-Match` CAS contract, just a different HTTP verb
+  /// and no request body (`POST /companies/{id}/branding/logo`'s sibling
+  /// clear endpoint, `branding.routes.ts`'s `DELETE`, carries no JSON
+  /// body of its own -- only the strong version header).
+  Future<Map<String, Object?>> deleteJson(
+    String path, {
+    String? ifMatch,
+    bool authenticated = true,
+  }) => _send(
+    'DELETE',
+    path,
+    authenticated: authenticated,
+    retryAfterRefresh: false,
+    ifMatch: ifMatch,
+  );
+
+  /// TASK 14.5A: the first Flutter caller of a real multipart file upload
+  /// -- `POST /api/v1/companies/{id}/branding/logo` (`branding.routes.ts`)
+  /// accepts the raw image bytes as a single multipart file part (field
+  /// name `file`, matching that route's own `request.file()` read), not a
+  /// JSON body, so this bypasses [_send]/[_perform] entirely rather than
+  /// forcing multipart through their JSON-only `body` parameter. Same
+  /// `If-Match` CAS contract as [putJson]/[deleteJson] -- the branding
+  /// route requires it for the exact same reason every other
+  /// company-setting write does.
+  Future<Map<String, Object?>> postMultipart(
+    String path, {
+    required String fieldName,
+    required String filename,
+    required List<int> bytes,
+    required String contentType,
+    String? ifMatch,
+    bool authenticated = true,
+  }) async {
+    final token = authenticated ? readAccessToken() : null;
+    final request = http.MultipartRequest('POST', baseUrl.resolve(path))
+      ..headers.addAll({
+        'Accept': 'application/json',
+        'X-Correlation-ID': createCorrelationId(),
+        ...token == null ? const {} : {'Authorization': 'Bearer $token'},
+        ...ifMatch == null ? const {} : {'If-Match': ifMatch},
+      })
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          fieldName,
+          bytes,
+          filename: filename,
+          contentType: MediaType.parse(contentType),
+        ),
+      );
+    try {
+      final response = await http.Response.fromStream(
+        await transport.send(request).timeout(timeout),
+      );
+      return _decode(response);
+    } on TimeoutException {
+      throw const ApiException(
+        AppFailure(AppErrorKind.timeout, 'La conexión tardó demasiado.', code: 'timeout'),
+      );
+    } on ApiException {
+      rethrow;
+    } on Object {
+      throw const ApiException(
+        AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+      );
+    }
+  }
 
   Future<Map<String, Object?>> _send(
     String method,

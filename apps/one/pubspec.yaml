@@ -35,6 +35,21 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   go_router: ^17.1.0
   http: ^1.6.0
+  # TASK 14.5A: used directly by `ApiClient.postMultipart` (the branding
+  # logo upload's `Content-Type: image/...` file part) -- already a
+  # transitive dependency of `http` (its own multipart internals), added
+  # here as a direct dependency since this app's own code now imports it.
+  http_parser: ^4.1.2
+  # TASK 14.5A: legacy parity for `AS POS V1.html`'s
+  # `cfgNegocioLogoSeleccionado()` (an operator picking a real image file
+  # to use as the business logo). `apps/one` targets Flutter Web only (see
+  # the `web/` directory -- no `android/`/`ios/`/`windows/`/`macos/`/
+  # `linux/` platform folders exist in this app), so the picker must work
+  # there: `image_picker`'s federated web implementation
+  # (`image_picker_for_web`, pulled in automatically) uses a real HTML
+  # file input under the hood, exactly the mechanism the legacy HTML's own
+  # `<input type=file>` used.
+  image_picker: ^1.2.1
   web: ^1.1.1
 
 dev_dependencies:

@@ -42,13 +42,32 @@ keyboard shortcuts, PIN/QR staff quick-switch login, catalog CSV export,
 inventory Kardex CSV export, a Flutter product-variants admin screen, and
 a promotions usage report. None of these were ever a Sept 15
 *requirement* — being done early doesn't change the launch-critical scope
-below. Genuinely still not built, independently re-confirmed rather than
-taken on faith: post-sale animation/sound, Kiosk/self-checkout mode,
-scheduled email reports, per-tenant logo upload. The new Dashboard
-deliberately omits the legacy's real sales-trend and active-membership
-metrics; the new receipt header/footer admin screen persists real data
-but isn't yet rendered on a printed receipt. See
-[[LEGACY_FUNCTIONAL_PARITY]] for per-capability status.
+below.
+
+**TASK 14.5A (Wave 3A, "final forensic correction") update —
+2026-09-08**: independently re-audited every remaining non-A/H row
+directly against `AS POS V1.html` (not against Wave 3's own summary
+text) — full evidence in [[LEGACY_FUNCTIONAL_PARITY]]'s "FINAL FORENSIC
+CORRECTION" section. Scheduled email reports and in-house credit
+accounts / "cuenta a crédito" payment turned out to have never been real
+in the legacy (permanently-fake send mechanism; a permanently-empty
+credit ledger nothing ever wrote to) — correctly excluded, not built.
+The full CFDI invoicing UI is excluded alongside its already-out-of-scope
+stamping step for the same reason: its draft-creation half was real in
+isolation, but the capability's whole purpose depended on a step that
+was always simulated. Post-sale animation/sound, Kiosk/self-checkout
+mode, the dashboard's real sales-trend metric, and birthday alerts on
+the dashboard turned out to be genuinely real legacy capabilities
+(Kiosk mode and birthday alerts, in particular, were incorrectly
+classified as absent/deferred in Wave 3) and are now built, tested, and
+real. The receipt header/footer admin screen and per-tenant logo upload
+are now both genuinely wired end-to-end — configured branding and an
+uploaded logo both reach actual printed receipts. None of this changes
+the launch-critical scope below — none of these six items were ever a
+Sept 15 requirement — but real functional parity against the legacy is
+now 100% (every genuinely-real legacy capability is ported or safely
+replaced; every remaining gap is a confirmed placeholder that was never
+real). See [[LEGACY_FUNCTIONAL_PARITY]] for per-capability status.
 
 ## IN SCOPE for September 15
 

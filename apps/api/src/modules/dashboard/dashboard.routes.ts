@@ -6,7 +6,13 @@ import type { AuthService } from '../auth/auth.service.js';
 import type { CurrencyAmount } from '../reports/reports.types.js';
 import { withDashboardErrors } from './dashboard.http-errors.js';
 import type { DashboardService } from './dashboard.service.js';
-import type { DashboardOpenCashSession, DashboardPartyReservation, DashboardSummary } from './dashboard.types.js';
+import type {
+  DashboardBirthdayCustomer,
+  DashboardOpenCashSession,
+  DashboardPartyReservation,
+  DashboardSalesTrendEntry,
+  DashboardSummary,
+} from './dashboard.types.js';
 
 /**
  * TASK 14.5 (Wave 3, Phase 2) — Dashboard ("today at a glance"). Mirrors
@@ -55,6 +61,19 @@ function partyReservationHttp(entry: DashboardPartyReservation): Readonly<Record
   };
 }
 
+function salesTrendHttp(entry: DashboardSalesTrendEntry): Readonly<Record<string, unknown>> {
+  return {
+    currency_code: entry.currencyCode,
+    today_total: entry.todayTotal,
+    yesterday_total: entry.yesterdayTotal,
+    pct_change: entry.pctChange,
+  };
+}
+
+function birthdayCustomerHttp(entry: DashboardBirthdayCustomer): Readonly<Record<string, unknown>> {
+  return { id: entry.id, display_name: entry.displayName };
+}
+
 function openCashSessionHttp(entry: DashboardOpenCashSession): Readonly<Record<string, unknown>> {
   return {
     cash_session_id: entry.cashSessionId,
@@ -75,6 +94,7 @@ function summaryHttp(summary: DashboardSummary): Readonly<Record<string, unknown
     sales: {
       transaction_count: summary.salesTransactionCount,
       gross_total: summary.salesGrossTotal.map(currencyAmountHttp),
+      trend_vs_yesterday: summary.salesTrendVsYesterday.map(salesTrendHttp),
     },
     occupancy: { current_occupancy: summary.currentOccupancy },
     parties: {
@@ -88,6 +108,10 @@ function summaryHttp(summary: DashboardSummary): Readonly<Record<string, unknown
     outstanding_party_balances: summary.outstandingPartyBalances.map(currencyAmountHttp),
     employee_attendance: { clocked_in_count: summary.clockedInEmployeeCount },
     inventory_alerts: { out_of_stock_variant_count: summary.outOfStockVariantCount },
+    birthdays_today: {
+      count: summary.birthdaysToday.length,
+      customers: summary.birthdaysToday.map(birthdayCustomerHttp),
+    },
   };
 }
 

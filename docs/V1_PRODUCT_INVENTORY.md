@@ -32,12 +32,33 @@ keyboard shortcuts, PIN/QR staff quick-switch login, catalog CSV export,
 inventory Kardex CSV export, a Flutter product-variants admin screen, and
 a promotions usage report are all now real and GREEN. See
 [[LEGACY_FUNCTIONAL_PARITY]]'s Wave 3 recount for full row-by-row
-evidence. Genuinely still not built, re-confirmed by direct verification:
-post-sale animation/sound, Kiosk/self-checkout mode, scheduled email
-reports, per-tenant logo upload. The Dashboard deliberately omits the
-legacy's real %-vs-yesterday sales trend and active-membership count; the
-receipt header/footer admin screen persists real data but is not yet
-rendered on a printed receipt.
+evidence.
+
+**TASK 14.5A (Wave 3A, "final forensic correction") update —
+2026-09-08**: Wave 3's own closing claim was contradicted by its own
+report (10 non-A/H rows still remained). Every one was independently
+re-audited directly against `AS POS V1.html` before any code changed —
+full evidence in [[LEGACY_FUNCTIONAL_PARITY]]'s "FINAL FORENSIC
+CORRECTION" section. **4 rows were over-classified as real debt** and
+are now correctly excluded as legacy placeholders that were never real:
+in-house credit accounts / "cuenta a crédito" payment (`DB.creditos`
+permanently empty, never populated by any code path), the full CFDI
+invoicing UI (a real draft-creation mechanism whose entire purpose
+depended on an always-simulated stamping step), and scheduled email
+reports (100% fake `setTimeout`-only send mechanism). **6 rows were
+genuinely real and are now built, tested, and GREEN**: kiosk/self-
+checkout mode (a real "CLIENTE mode" already existed — its 2 real gaps,
+open-session entry gating and real PIN-verified exit, are now closed),
+post-sale success animation/sound, birthday alerts on the dashboard (a
+prior classification claiming no computed alert existed was factually
+wrong), the dashboard's real %-vs-yesterday sales trend, receipt
+header/footer text now genuinely reaching printed receipts (normal sale
+and refund), and a real per-tenant logo upload (MinIO-backed, also now
+reaching printed receipts the same way). **Result: real functional
+parity is 100%** — every genuinely-real legacy capability across the
+100-row matrix is now fully ported or safely replaced; every remaining
+non-A/H row is a confirmed legacy placeholder, correctly excluded from
+the parity formula, not a gap.
 
 ## Classification key
 

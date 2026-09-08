@@ -42,6 +42,13 @@ function appendBranchScope(
   }
 }
 
+/** A real customer whose `birth_date` month/day matches the requested
+ * date — see `dashboard.service.ts`'s own doc comment. */
+export interface DashboardBirthdayCustomerRow {
+  readonly id: string;
+  readonly displayName: string;
+}
+
 export class DashboardRepository {
   public constructor(private readonly database: DatabaseClient) {}
 
@@ -111,5 +118,31 @@ export class DashboardRepository {
       ),
     ).rows;
     return Number(rows[0]?.cnt ?? '0');
+  }
+
+  /** Real customers whose `birth_date` month/day matches `date`'s
+   * month/day — TASK 14.5A, `generarAlertas()`'s exact
+   * `parseInt(p[1],10)===hoyMM&&parseInt(p[2],10)===hoyDD` rule (legacy
+   * `AS POS V1.html` lines 10965-10969), ported to a real SQL
+   * `extract(month/day from birth_date)` comparison — never
+   * fetched-and-filtered in Node. Company-scoped ONLY, never branch-scoped
+   * — `customers.ts`'s own header comment: "Every entity here is
+   * COMPANY-scoped, never branch-scoped as its identity boundary" — the
+   * exact same structural reason `outstandingPartyBalances` above is
+   * company-wide too. `birth_date is not null` excludes every customer
+   * with no birth date on file (never a false match on a null column). */
+  public async birthdaysOn(companyId: string, date: string): Promise<DashboardBirthdayCustomerRow[]> {
+    const rows = result<{ id: string; display_name: string }>(
+      await this.database.pool.query(
+        `select id, display_name from customers
+         where company_id = $1
+           and birth_date is not null
+           and extract(month from birth_date) = extract(month from $2::date)
+           and extract(day from birth_date) = extract(day from $2::date)
+         order by display_name`,
+        [companyId, date],
+      ),
+    ).rows;
+    return rows.map((row) => ({ id: row.id, displayName: row.display_name }));
   }
 }

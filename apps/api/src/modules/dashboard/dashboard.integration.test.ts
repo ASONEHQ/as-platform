@@ -85,6 +85,12 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
   const TARGET_DATE = '2026-03-10';
   const OTHER_DATE = '2026-03-01';
   const EMPTY_DATE = '2020-01-01';
+  // TASK 14.5A — dedicated dates for the sales-trend fixture, deliberately
+  // disjoint from every date above so the new assertions can never
+  // interfere with the pre-existing "known fixture" totals.
+  const TREND_YESTERDAY_DATE = '2026-07-14';
+  const TREND_TODAY_DATE = '2026-07-15'; // TREND_YESTERDAY_DATE + 1 day.
+  const TREND_NO_YDATA_DATE = '2026-07-20'; // its own "yesterday" (07-19) has zero sales.
 
   function onTarget(hhmm = '10:00:00'): Date {
     return new Date(`${TARGET_DATE}T${hhmm}Z`);
@@ -95,6 +101,8 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
 
   let cashRegisterId: string;
   let reservationTodayId: string;
+  let custBirthdayTodayId: string;
+  let custOtherCompanyBirthdayId: string;
 
   function cashContext(forCompanyId: string, timestamp: Date): CashMutationContext {
     return {
@@ -189,6 +197,17 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     await insertSale({ forCompanyId: companyId, forBranchId: branchId, number: 'DB-0003', status: 'pending_payment', total: '10.0000', completedAt: null }); // never completed.
     await insertSale({ forCompanyId: companyId, forBranchId: excludedBranchId, number: 'DB-0004', status: 'completed', total: '999.0000', completedAt: onTarget('09:00:00') }); // excluded branch.
     await insertSale({ forCompanyId: otherCompanyId, forBranchId: otherCompanyBranchId, number: 'OC-0001', status: 'completed', total: '777.0000', completedAt: onTarget('09:00:00') }); // other tenant.
+
+    // TASK 14.5A — sales trend fixture: yesterday=1000.0000, today=1200.0000
+    // (exact +20% — see the dedicated `sales trend` tests below), plus a
+    // separate "today" with genuinely zero sales the day before (proves
+    // `pct_change: null`, never a fabricated 0), plus another tenant's sale
+    // on the SAME "yesterday" date (proves the yesterday total is real
+    // company-scoped SQL, never leaked across tenants).
+    await insertSale({ forCompanyId: companyId, forBranchId: branchId, number: 'DB-0005', status: 'completed', total: '1000.0000', completedAt: new Date(`${TREND_YESTERDAY_DATE}T09:00:00Z`) });
+    await insertSale({ forCompanyId: companyId, forBranchId: branchId, number: 'DB-0006', status: 'completed', total: '1200.0000', completedAt: new Date(`${TREND_TODAY_DATE}T09:00:00Z`) });
+    await insertSale({ forCompanyId: companyId, forBranchId: branchId, number: 'DB-0007', status: 'completed', total: '500.0000', completedAt: new Date(`${TREND_NO_YDATA_DATE}T09:00:00Z`) });
+    await insertSale({ forCompanyId: otherCompanyId, forBranchId: otherCompanyBranchId, number: 'OC-0002', status: 'completed', total: '9999.0000', completedAt: new Date(`${TREND_YESTERDAY_DATE}T09:00:00Z`) });
 
     // --- Cash (real CashService flow; session left OPEN) -----------------
     const cashRepository = new CashRepository(database);
@@ -331,6 +350,28 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
       [randomUUID(), companyId, branchId, credentialId, onTarget('09:00:00'), userId],
     );
 
+    // --- Customers (birthdays) ---------------------------------------------
+    // TASK 14.5A — real customers whose `birth_date` month/day is matched
+    // against TARGET_DATE's own month/day (2026-03-10 → 03-10), including
+    // two negative controls (wrong month, wrong day) and one positive
+    // cross-tenant control (same month/day, different company).
+    custBirthdayTodayId = randomUUID();
+    const custWrongMonthId = randomUUID();
+    const custWrongDayId = randomUUID();
+    custOtherCompanyBirthdayId = randomUUID();
+    await database.pool.query(
+      `insert into customers(id,company_id,first_name,last_name,display_name,birth_date,created_by,updated_by)
+       values($1,$2,'Cliente','Cumpleañero','Cliente Cumpleañero','1990-03-10',$3,$3),
+             ($4,$2,'Cliente','Mes Incorrecto','Cliente Mes Incorrecto','1990-04-10',$3,$3),
+             ($5,$2,'Cliente','Dia Incorrecto','Cliente Dia Incorrecto','1990-03-11',$3,$3)`,
+      [custBirthdayTodayId, companyId, userId, custWrongMonthId, custWrongDayId],
+    );
+    await database.pool.query(
+      `insert into customers(id,company_id,first_name,last_name,display_name,birth_date,created_by,updated_by)
+       values($1,$2,'Cliente','Cumpleaños Otra Empresa','Cliente Cumpleaños Otra Empresa','1985-03-10',$3,$3)`,
+      [custOtherCompanyBirthdayId, otherCompanyId, otherCompanyUserId],
+    );
+
     const authentication = {
       authenticate: () => Promise.resolve(authContext),
       requirePermission: (context: AuthContext, permission: string) => {
@@ -398,6 +439,9 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     await database.pool.query('delete from idempotency_keys where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from outbox_events where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from audit_log where company_id=any($1::uuid[])', [ids]);
+    // TASK 14.5A — customers reference company_memberships (created_by/
+    // updated_by, `onDelete: 'restrict'`), so they must be deleted first.
+    await database.pool.query('delete from customers where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from company_memberships where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from branches where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from companies where id=any($1::uuid[])', [ids]);
@@ -413,13 +457,18 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     data: {
       date: string;
       branch_id: string | null;
-      sales: { transaction_count: number; gross_total: { currency_code: string; amount: string }[] };
+      sales: {
+        transaction_count: number;
+        gross_total: { currency_code: string; amount: string }[];
+        trend_vs_yesterday: { currency_code: string; today_total: string; yesterday_total: string; pct_change: number | null }[];
+      };
       occupancy: { current_occupancy: number };
       parties: { count: number; reservations: { id: string; room_name: string | null; status: string }[] };
       cash_sessions: { open_count: number; sessions: { cash_register_name: string | null; opening_amount: string }[] };
       outstanding_party_balances: { currency_code: string; amount: string }[];
       employee_attendance: { clocked_in_count: number };
       inventory_alerts: { out_of_stock_variant_count: number };
+      birthdays_today: { count: number; customers: { id: string; display_name: string }[] };
     };
   }
 
@@ -516,6 +565,11 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     expect(data.inventory_alerts.out_of_stock_variant_count).toBe(1);
     expect(data.cash_sessions.open_count).toBe(1);
     expect(data.outstanding_party_balances).toEqual([{ currency_code: 'MXN', amount: '600.0000' }]);
+    // Real "no activity at all" for this date — no currency was ever seen
+    // today OR yesterday, so the trend array is genuinely empty (never a
+    // fabricated entry), and no customer has this month/day birthday.
+    expect(data.sales.trend_vs_yesterday).toEqual([]);
+    expect(data.birthdays_today).toEqual({ count: 0, customers: [] });
   });
 
   it('a missing/malformed date is rejected as a real validation error, never silently defaulted', async () => {
@@ -536,5 +590,72 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     authContext = baseContext(companyId, branchId, [branchId]);
     const response = await get(`/api/v1/dashboard/summary?date=${TARGET_DATE}&branch_id=${excludedBranchId}`);
     expect(response.statusCode).toBe(403);
+  });
+
+  // --- TASK 14.5A: sales trend vs. yesterday ------------------------------
+
+  it('sales trend: exact pctChange against a known fixture (yesterday=1000.0000, today=1200.0000 -> +20%)', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TREND_TODAY_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<SummaryBody>().data;
+    expect(data.sales.trend_vs_yesterday).toEqual([
+      { currency_code: 'MXN', today_total: '1200.0000', yesterday_total: '1000.0000', pct_change: 20 },
+    ]);
+  });
+
+  it('sales trend: pct_change is null (never a fabricated 0) when yesterday had zero real sales', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TREND_NO_YDATA_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<SummaryBody>().data;
+    expect(data.sales.trend_vs_yesterday).toEqual([
+      { currency_code: 'MXN', today_total: '500.0000', yesterday_total: '0.0000', pct_change: null },
+    ]);
+  });
+
+  it('sales trend: company-scoping positive control — a second tenant\'s much larger sale on the SAME "yesterday" never leaks into company A\'s yesterday_total', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TREND_TODAY_DATE}&branch_id=${branchId}`);
+    const data = response.json<SummaryBody>().data;
+    // If tenant scoping were broken, yesterday_total would include the
+    // other company's 9999.0000 sale on TREND_YESTERDAY_DATE (making it
+    // 10999.0000 instead of 1000.0000).
+    expect(data.sales.trend_vs_yesterday).toEqual([
+      { currency_code: 'MXN', today_total: '1200.0000', yesterday_total: '1000.0000', pct_change: 20 },
+    ]);
+  });
+
+  it('sales trend: the second tenant queried for the same dates sees only its OWN real sales', async () => {
+    authContext = baseContext(otherCompanyId, otherCompanyBranchId, [otherCompanyBranchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TREND_TODAY_DATE}`);
+    const data = response.json<SummaryBody>().data;
+    expect(data.sales.trend_vs_yesterday).toEqual([
+      { currency_code: 'MXN', today_total: '0.0000', yesterday_total: '9999.0000', pct_change: -100 },
+    ]);
+  });
+
+  // --- TASK 14.5A: birthday alerts -----------------------------------------
+
+  it('birthdays: includes only the customer whose birth_date month/day matches the requested date, excluding wrong-month/wrong-day negative controls', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TARGET_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<SummaryBody>().data;
+    expect(data.birthdays_today).toEqual({
+      count: 1,
+      customers: [{ id: custBirthdayTodayId, display_name: 'Cliente Cumpleañero' }],
+    });
+  });
+
+  it('birthdays: a matching customer belonging to a DIFFERENT company never leaks into company A\'s list, and company B sees its own', async () => {
+    authContext = baseContext(otherCompanyId, otherCompanyBranchId, [otherCompanyBranchId]);
+    const response = await get(`/api/v1/dashboard/summary?date=${TARGET_DATE}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<SummaryBody>().data;
+    expect(data.birthdays_today).toEqual({
+      count: 1,
+      customers: [{ id: custOtherCompanyBirthdayId, display_name: 'Cliente Cumpleaños Otra Empresa' }],
+    });
   });
 });

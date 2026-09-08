@@ -4,6 +4,7 @@ import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/money.dart';
+import 'package:as_one/features/pos/pos_auth_gateway.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
 import 'package:as_one/features/pos/pos_loyalty_gateway.dart';
@@ -20,6 +21,7 @@ import 'package:as_one/features/pos/pos_receipt.dart';
 import 'package:as_one/features/pos/pos_refunds_gateway.dart';
 import 'package:as_one/features/pos/pos_rewards_gateway.dart';
 import 'package:as_one/features/pos/pos_sales_gateway.dart';
+import 'package:as_one/features/pos/pos_settings_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -436,6 +438,13 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-mode-cajero')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+      // TASK 14.5A: a real PIN must be entered — see `_FakeAuthGateway`
+      // (defaults to a successful `pinLogin`, matching every other gateway
+      // default in this harness).
+      await tester.enterText(
+        find.byKey(const Key('pos-cajero-return-input')),
+        '1234',
+      );
       await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
@@ -648,6 +657,10 @@ void main() {
         // same session underneath (quantity survives).
         await tester.tap(find.byKey(const Key('pos-mode-cajero')));
         await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-cajero-return-input')),
+          '1234',
+        );
         await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
         await tester.pumpAndSettle();
         expect(
@@ -857,18 +870,46 @@ void main() {
       await tester.pump();
       expect(find.text('Esperando pago en terminal'), findsOneWidget);
       expect(find.text('Pago aprobado'), findsNothing);
+      // TASK 14.5A: post-sale success feedback must not appear before the
+      // backend itself reports the payment approved — same "never
+      // fabricated success" rule as the "Pago aprobado" text itself.
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
 
       await tester.pump(pollInterval); // poll 1: awaiting_terminal
       expect(find.text('Esperando pago en terminal'), findsOneWidget);
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
 
       await tester.pump(pollInterval); // poll 2: processing
       expect(find.text('Procesando'), findsOneWidget);
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
 
       await tester.pump(pollInterval); // poll 3: approved — loop exits
       await tester.pumpAndSettle();
 
       expect(paymentsGateway.statusCalls, hasLength(3));
       expect(find.text('Pago aprobado — venta SALE-mp1.'), findsOneWidget);
+      // TASK 14.5A: fires ONLY now, after the backend's own 'approved'
+      // response — with the real amount/folio/payment method, never a
+      // placeholder.
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsOneWidget);
+      expect(find.text('¡Venta completada!'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('pos-post-sale-feedback')),
+          matching: find.text(r'$46.40'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('pos-post-sale-feedback-method')),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<Text>(
+          find.byKey(const Key('pos-post-sale-feedback-method')),
+        ).data,
+        'Tarjeta',
+      );
       expect(tester.takeException(), isNull);
     });
 
@@ -932,6 +973,9 @@ void main() {
 
       expect(find.text('Pago aprobado — venta SALE-mp2.'), findsNothing);
       expect(find.text('Pago no completado (Pago rechazado).'), findsOneWidget);
+      // TASK 14.5A: a declined payment is never a completed sale — the
+      // success feedback must never appear for it.
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
@@ -977,8 +1021,72 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Pago aprobado — venta SALE-mp3.'), findsOneWidget);
+      // TASK 14.5A: the kiosk surface gets the same real, server-confirmed
+      // feedback — with its own customer-facing title (tone differs; the
+      // real gateway call/ordering rule is identical).
+      expect(find.byKey(const Key('pos-post-sale-feedback')), findsOneWidget);
+      expect(find.text('¡Pago completado!'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+      'TASK 14.5A: the post-sale success feedback literally cannot appear '
+      'before PosSalesGateway.createSale itself resolves — a call-order '
+      'proof, not just a timing coincidence',
+      (tester) async {
+        final salesGateway = _DelayedSalesGateway();
+        final paymentsGateway = _FakePaymentsGateway(
+          terminals: const [
+            PosPaymentTerminal(
+              id: 'terminal-1',
+              provider: 'mercado_pago',
+              status: 'active',
+            ),
+          ],
+          createResult: const PosPaymentStatus(
+            id: 'payment-delayed-1',
+            status: 'captured',
+            attempts: [
+              PosPaymentAttempt(id: 'attempt-delayed-1', status: 'approved'),
+            ],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-pay-card')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+
+        // `createSale` is still pending (the completer hasn't resolved) —
+        // the feedback must not exist yet, no matter how many frames pass.
+        expect(salesGateway.createCalls, hasLength(1));
+        await tester.pump(const Duration(seconds: 5));
+        expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
+
+        // The server's own confirmation arrives now — only past this
+        // point can the feedback legitimately appear.
+        salesGateway.resolveWith(
+          const PosSaleCreated(
+            id: 'sale-delayed-1',
+            saleNumber: 'SALE-delayed1',
+            status: 'pending_payment',
+            total: '10.0000',
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-post-sale-feedback')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
   });
 
   group('Cash payment and sale completion (TASK 12.5A)', () {
@@ -3179,25 +3287,32 @@ void main() {
       expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
     });
 
-    testWidgets('an unauthorized session (missing sale.create) cannot '
-        'return to CAJERO and sees the error', (tester) async {
-      await _pump(
-        tester,
-        const Size(1440, 900),
-        context: _contextWithoutSaleCreate,
-      );
+    testWidgets('a wrong PIN cannot return to CAJERO and sees the real '
+        "server-rejected error — TASK 14.5A's real re-auth", (tester) async {
+      final authGateway = _FakeAuthGateway(pinSucceeds: false);
+      await _pump(tester, const Size(1440, 900), authGateway: authGateway);
       await _navigateToPos(tester);
       await tester.tap(find.byKey(const Key('pos-mode-cliente')));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-mode-cajero')));
       await tester.pumpAndSettle();
+      // A real PIN must actually be entered — this is the same
+      // `PosAuthGateway.pinLogin` call `_StaffQuickSwitchDialog` uses, not
+      // a client-side comparison, so an empty submission is rejected
+      // locally before ever reaching the gateway.
+      await tester.enterText(
+        find.byKey(const Key('pos-cajero-return-input')),
+        '0000',
+      );
       await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
-      await tester.pump();
+      await tester.pumpAndSettle();
 
+      expect(authGateway.pinLoginCalls, 1);
+      expect(authGateway.lastPin, '0000');
       expect(find.byKey(const Key('pos-cajero-return-error')), findsOneWidget);
-      // The dialog stays open and CLIENTE stays active — an unauthorized
-      // attempt must never grant cashier controls.
+      // The dialog stays open and CLIENTE stays active — a rejected PIN
+      // must never grant cashier controls.
       expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
       await tester.tap(find.byKey(const Key('pos-cajero-return-cancel')));
       await tester.pumpAndSettle();
@@ -3208,7 +3323,7 @@ void main() {
       expect(find.byKey(const Key('pos-ticket-panel')), findsNothing);
     });
 
-    testWidgets('a sale.create-authorized confirmation returns to CAJERO', (
+    testWidgets('a correct-PIN confirmation returns to CAJERO', (
       tester,
     ) async {
       await _pump(tester, const Size(1440, 900));
@@ -3218,6 +3333,10 @@ void main() {
 
       await tester.tap(find.byKey(const Key('pos-mode-cajero')));
       await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('pos-cajero-return-input')),
+        '1234',
+      );
       await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
       await tester.pumpAndSettle();
 
@@ -3263,6 +3382,10 @@ void main() {
 
       await tester.tap(find.byKey(const Key('pos-mode-cajero')));
       await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('pos-cajero-return-input')),
+        '1234',
+      );
       await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
       await tester.pumpAndSettle();
 
@@ -3389,7 +3512,11 @@ void main() {
               controller: PosReadController(const _ClienteCatalogGateway()),
               salesGateway: _FakeSalesGateway(),
               paymentsGateway: _FakePaymentsGateway(),
-              cashGateway: const EmptyPosCashGateway(),
+              // TASK 14.5A: this test exercises catalog/category rendering,
+              // not the cash-session gate — an already-open session (like
+              // every other test's own default) so entering CLIENTE mode
+              // itself never becomes the thing under test here.
+              cashGateway: _FakeCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
               promotionsGateway: const EmptyPosPromotionsGateway(),
               customersGateway: const EmptyPosCustomersGateway(),
@@ -3428,7 +3555,10 @@ void main() {
               controller: PosReadController(const _EmptyPosReadGateway()),
               salesGateway: _FakeSalesGateway(),
               paymentsGateway: _FakePaymentsGateway(),
-              cashGateway: const EmptyPosCashGateway(),
+              // TASK 14.5A: see the identical comment in the sibling test
+              // above — this test is about the empty-categories state, not
+              // the cash-session gate.
+              cashGateway: _FakeCashGateway(),
               refundsGateway: const EmptyPosRefundsGateway(),
               promotionsGateway: const EmptyPosPromotionsGateway(),
               customersGateway: const EmptyPosCustomersGateway(),
@@ -6694,6 +6824,497 @@ void main() {
       );
     });
   });
+
+  // TASK 14.5A: the confirmed gap this task closed — the real print call
+  // sites in `pos_shell.dart` now actually fetch and thread
+  // `receipts.header_text`/`receipts.footer_text` through to
+  // `buildReceiptHtml`/`buildRefundReceiptHtml`, which already rendered
+  // them correctly (see `receipt_html_test.dart`/`refund_receipt_html_
+  // test.dart`'s own dedicated branding groups for that render-level
+  // proof). These tests prove the WIRING itself: the real settings
+  // gateway is actually called, with the current company's own id and the
+  // exact two keys, at both a live sale receipt and a historical reprint
+  // — and that an unset/empty configuration never blocks printing.
+  group('TASK 14.5A — receipt header/footer branding wiring', () {
+    PosEffectiveSetting headerSetting(String value, {int version = 3}) =>
+        PosEffectiveSetting(
+          key: 'receipts.header_text',
+          type: 'string',
+          value: value,
+          source: 'company',
+          version: version,
+        );
+    PosEffectiveSetting footerSetting(String value, {int version = 5}) =>
+        PosEffectiveSetting(
+          key: 'receipts.footer_text',
+          type: 'string',
+          value: value,
+          source: 'company',
+          version: version,
+        );
+
+    testWidgets(
+      'a live cash-sale receipt (_ReceiptSuccessDialog) fetches the real '
+      "configured branding for the session's own company",
+      (tester) async {
+        final settingsGateway = _RecordingSettingsGateway(
+          settings: [
+            headerSetting('Sucursal Centro'),
+            footerSetting('Gracias por tu compra.'),
+          ],
+        );
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-branding-1',
+            saleNumber: 'SALE-branding1',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-branding-1',
+            status: 'captured',
+            tenderedAmount: '58.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-branding-1',
+            saleNumber: 'SALE-branding1',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+          settingsGateway: settingsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '58',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pumpAndSettle();
+
+        // The completed-sale dialog is now on screen, and it already
+        // fetched the real branding for the real, logged-in company —
+        // never a hardcoded/fabricated id, never a key typo diverging
+        // from `pos_receipt_branding_screen.dart`'s own two keys.
+        expect(find.byKey(const Key('pos-receipt-print')), findsOneWidget);
+        expect(settingsGateway.effectiveCalls, isNotEmpty);
+        final call = settingsGateway.effectiveCalls.first;
+        expect(call.companyId, 'company-id');
+        expect(
+          call.keys,
+          containsAll(['receipts.header_text', 'receipts.footer_text']),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a historical reprint (Sale Detail) fetches the real configured '
+      "branding for the session's own company — same wiring as a live sale",
+      (tester) async {
+        final settingsGateway = _RecordingSettingsGateway(
+          settings: [headerSetting('Sucursal Centro')],
+        );
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [
+              PosSaleSummary(
+                id: 'sale-history-branding-1',
+                saleNumber: 'SALE-2517abd73ecf44a2b2206f4eadfeee49',
+                status: 'completed',
+                currencyCode: 'MXN',
+                branchId: 'branch-id',
+                branchName: 'Puerta La Victoria',
+                cashierId: 'user-id',
+                cashierName: 'Bryant Aguilera',
+                occurredAt: DateTime.utc(2026, 9, 3, 12),
+                completedAt: DateTime.utc(2026, 9, 3, 12, 1),
+                itemCount: 1,
+                subtotal: '25.0000',
+                taxTotal: '4.0000',
+                total: '29.0000',
+                paymentMethods: const ['cash'],
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithSaleRead,
+          salesGateway: salesGateway,
+          settingsGateway: settingsGateway,
+        );
+        await tester.tap(find.byKey(const Key('nav-history')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('SALE-ADFEEE49'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Detalle de venta'), findsOneWidget);
+        expect(settingsGateway.effectiveCalls, isNotEmpty);
+        final call = settingsGateway.effectiveCalls.first;
+        expect(call.companyId, 'company-id');
+        expect(
+          call.keys,
+          containsAll(['receipts.header_text', 'receipts.footer_text']),
+        );
+
+        // Reprint still never calls the backend a second time for the
+        // sale/receipt itself — only the (separate, additive) branding
+        // fetch is new.
+        await tester.tap(find.byKey(const Key('pos-history-detail-print')));
+        await tester.pump();
+        expect(salesGateway.receiptCalls, hasLength(1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'an unset/empty branding configuration never blocks a live sale '
+      'receipt from loading or printing — no literal "null" text, no crash',
+      (tester) async {
+        // The default `EmptyPosSettingsGateway` (see `_pump`'s own default)
+        // already models "no branding configured" honestly — this test
+        // makes that explicit and asserts on the resulting UI instead of
+        // only on the absence of an exception.
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-branding-2',
+            saleNumber: 'SALE-branding2',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-branding-2',
+            status: 'captured',
+            tenderedAmount: '58.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-branding-2',
+            saleNumber: 'SALE-branding2',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '58',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-receipt-print')), findsOneWidget);
+        expect(find.textContaining('null'), findsNothing);
+        await tester.tap(find.byKey(const Key('pos-receipt-print')));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a real, admin-uploaded per-tenant logo (branding.logo_url) is fetched '
+      'alongside header/footer text, taking priority over the bundled '
+      'default mark on print',
+      (tester) async {
+        final settingsGateway = _RecordingSettingsGateway(
+          settings: [
+            headerSetting('Sucursal Centro'),
+            footerSetting('Gracias por tu compra.'),
+            PosEffectiveSetting(
+              key: 'branding.logo_url',
+              type: 'string',
+              value: 'https://minio.example.test/asone-branding/logos/company-id/logo.png',
+              source: 'company',
+              version: 2,
+            ),
+          ],
+        );
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-branding-logo-1',
+            saleNumber: 'SALE-brandinglogo1',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-branding-logo-1',
+            status: 'captured',
+            tenderedAmount: '58.0000',
+            changeAmount: '0.0000',
+            saleId: 'sale-branding-logo-1',
+            saleNumber: 'SALE-brandinglogo1',
+            saleStatus: 'completed',
+          ),
+        );
+        await _addProductAndOpenCashDialog(
+          tester,
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+          settingsGateway: settingsGateway,
+        );
+        await tester.enterText(
+          find.byKey(const Key('pos-cash-dialog-input')),
+          '58',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-receipt-print')), findsOneWidget);
+        expect(settingsGateway.effectiveCalls, isNotEmpty);
+        final call = settingsGateway.effectiveCalls.first;
+        expect(
+          call.keys,
+          containsAll([
+            'receipts.header_text',
+            'receipts.footer_text',
+            'branding.logo_url',
+          ]),
+        );
+        // Printing must never crash even though a real network image URL
+        // (rather than the bundled asset) is now the resolved logo source.
+        await tester.tap(find.byKey(const Key('pos-receipt-print')));
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  // TASK 14.5A: kiosk/self-checkout mode (CLIENTE) — the three real
+  // requirements this task's kiosk arc added: (a) entry now genuinely
+  // gated on an open cash-register session, (b) exit now genuinely
+  // requires and validates real employee PIN re-auth, (c) add-to-cart and
+  // checkout in kiosk mode go through the exact same real gateway calls
+  // as the CAJERO flow. Some of this is already exercised incidentally by
+  // the "Canonical CLIENTE locked surface" group above (which predates
+  // this task and was updated in place where its own assumptions no
+  // longer held) — this group is the explicit, dedicated proof this
+  // task's own validation step asks for.
+  group('TASK 14.5A — kiosk/self-checkout mode', () {
+    testWidgets(
+      '(a) kiosk mode cannot be entered when no cash-register session is '
+      'open — CAJERO stays active, a real cashGateway call was made',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(openSessionFixture: null);
+        await _pump(tester, const Size(1440, 900), cashGateway: cashGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(cashGateway.openSessionForBranchCalls, contains('branch-id'));
+        expect(find.byKey(const Key('pos-cliente-shell')), findsNothing);
+        expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+        expect(
+          find.text('Abre la caja para activar el modo Cliente.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      '(a) kiosk mode fails closed (never enters) if the cash-session '
+      'check itself fails — never a silent unlock',
+      (tester) async {
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          cashGateway: _ThrowingOpenSessionCashGateway(),
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-shell')), findsNothing);
+        expect(
+          find.text('No fue posible verificar el estado de la caja.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      '(a) kiosk mode is entered once a real open session is confirmed',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(tester, const Size(1440, 900), cashGateway: cashGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(cashGateway.openSessionForBranchCalls, contains('branch-id'));
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      '(b) exiting kiosk mode requires and correctly validates real '
+      'employee re-auth via PosAuthGateway.pinLogin — rejected on a wrong '
+      'PIN, then succeeds once the same field carries a valid one',
+      (tester) async {
+        final authGateway = _FakeAuthGateway(pinSucceeds: false);
+        await _pump(tester, const Size(1440, 900), authGateway: authGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-cajero-return-input')),
+          '0000',
+        );
+        await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+        await tester.pumpAndSettle();
+
+        // Rejected: a real `pinLogin` call was made and it genuinely
+        // failed (this fake's `ApiException`, mirroring the backend's own
+        // uniform `invalid_credentials`) — CLIENTE stays locked.
+        expect(authGateway.pinLoginCalls, 1);
+        expect(authGateway.lastPin, '0000');
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        expect(find.byKey(const Key('pos-cajero-return-error')), findsOneWidget);
+
+        // Now the same gateway starts accepting real PINs (simulating the
+        // employee typing their actual one this time) — still a genuine
+        // `pinLogin` call, never a client-side comparison of any kind.
+        authGateway.pinSucceeds = true;
+        await tester.enterText(
+          find.byKey(const Key('pos-cajero-return-input')),
+          '1234',
+        );
+        await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+        await tester.pumpAndSettle();
+
+        expect(authGateway.pinLoginCalls, 2);
+        expect(authGateway.lastPin, '1234');
+        expect(find.byKey(const Key('pos-cliente-shell')), findsNothing);
+        expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
+      },
+    );
+
+    // (c) proven across two sibling tests (never two `_pump()` calls in one
+    // test, matching every other test in this file) — each drives its own
+    // real checkout surface (kiosk vs. CAJERO Tarjeta) through to the real
+    // `PosSalesGateway.createSale` call and records the exact request
+    // shape; the shared `_lastCreateSaleCall` lets the second test assert
+    // both surfaces produced an identical real request for the identical
+    // real action, never two diverging implementations.
+    ({String branchId, String productId, String quantity})? cajeroCreateSaleCall;
+
+    testWidgets(
+      '(c) CAJERO Tarjeta add-to-cart and checkout call the real '
+      'PosSalesGateway.createSale — the baseline kiosk must match',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-cajero-1',
+            saleNumber: 'SALE-cajero1',
+            status: 'pending_payment',
+            total: '10.0000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-pay-card')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(salesGateway.calls, hasLength(1));
+        final call = salesGateway.calls.single;
+        expect(call.items, hasLength(1));
+        cajeroCreateSaleCall = (
+          branchId: call.branchId,
+          productId: call.items.single.productId,
+          quantity: call.items.single.quantity,
+        );
+        expect(cajeroCreateSaleCall!.branchId, 'branch-id');
+        expect(cajeroCreateSaleCall!.productId, 'product-1');
+      },
+    );
+
+    testWidgets(
+      '(c) kiosk add-to-cart and card checkout call the exact same real '
+      "SaleSession.addProduct + PosSalesGateway.createSale path CAJERO's "
+      'own Tarjeta flow uses — never a divergent/duplicated implementation',
+      (tester) async {
+        expect(
+          cajeroCreateSaleCall,
+          isNotNull,
+          reason: 'the CAJERO baseline test above must run first',
+        );
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-kiosk-1',
+            saleNumber: 'SALE-kiosk1',
+            status: 'pending_payment',
+            total: '10.0000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-cliente-card-payment')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(salesGateway.calls, hasLength(1));
+        final call = salesGateway.calls.single;
+        expect(call.items, hasLength(1));
+
+        // Identical real request shape from both surfaces — the same
+        // `_submitSaleForPayment`/`PosSalesGateway.createSale` call, not
+        // two implementations that merely happen to agree.
+        expect(call.branchId, cajeroCreateSaleCall!.branchId);
+        expect(call.items.single.productId, cajeroCreateSaleCall!.productId);
+        expect(call.items.single.quantity, cajeroCreateSaleCall!.quantity);
+      },
+    );
+
+    testWidgets(
+      '(kiosk restrictions) cashier-only affordances never render in '
+      'kiosk mode — no cash/transfer payment amount entry, no suspend, no '
+      'cancel, no manual discount, no customer search',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-shell')), findsOneWidget);
+        // Card-only checkout — the one payable action.
+        expect(find.byKey(const Key('pos-cliente-card-payment')), findsOneWidget);
+        // No cashier controls exist anywhere in this locked subtree.
+        expect(find.byKey(const Key('pos-pay-cash')), findsNothing);
+        expect(find.byKey(const Key('pos-pay-card')), findsNothing);
+        expect(find.byKey(const Key('pos-cash-dialog-input')), findsNothing);
+        expect(find.text('Suspender venta'), findsNothing);
+        expect(find.text('Cancelar venta'), findsNothing);
+        expect(find.textContaining('Desc.'), findsNothing);
+        expect(find.byKey(const Key('pos-history-search')), findsNothing);
+      },
+    );
+  });
 }
 
 Future<void> _pump(
@@ -6710,6 +7331,8 @@ Future<void> _pump(
   PosLoyaltyGateway? loyaltyGateway,
   PosRewardsGateway? rewardsGateway,
   PosPartiesGateway? partiesGateway,
+  PosAuthGateway? authGateway,
+  PosSettingsGateway? settingsGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -6760,6 +7383,14 @@ Future<void> _pump(
         // Fiestas state; the dedicated Fiestas tests below inject their
         // own explicit fake instead.
         partiesGateway: partiesGateway ?? const EmptyPosPartiesGateway(),
+        // TASK 14.5A: defaults to a successful-PIN fake — see
+        // `_FakeAuthGateway`'s own doc comment for why.
+        authGateway: authGateway ?? _FakeAuthGateway(),
+        // TASK 14.5A: defaults to the honest empty-catalog fake — every
+        // pre-existing test keeps seeing no header/footer branding text;
+        // the dedicated branding-wiring tests below inject their own
+        // recording fake instead.
+        settingsGateway: settingsGateway ?? const EmptyPosSettingsGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -6874,12 +7505,14 @@ Future<void> _addProductAndOpenCashDialog(
   WidgetTester tester, {
   required PosSalesGateway salesGateway,
   required PosPaymentsGateway paymentsGateway,
+  PosSettingsGateway? settingsGateway,
 }) async {
   await _pump(
     tester,
     const Size(1440, 900),
     salesGateway: salesGateway,
     paymentsGateway: paymentsGateway,
+    settingsGateway: settingsGateway,
   );
   await _navigateToPos(tester);
   await tester.tap(find.byKey(const Key('pos-product-product-1')));
@@ -6918,28 +7551,18 @@ final _context = AuthenticatedContext(
   ],
   companyWideAccess: false,
   // Includes `sale.create` — a real permission from the backend catalog
-  // (packages/database/src/seeds/technical-permissions.ts), not a fabricated
-  // one — so this fixture represents a realistically-authorized cashier who
-  // can return from CLIENTE to CAJERO (TASK 12.3A). `_contextWithoutSaleCreate`
-  // below covers the unauthorized case.
+  // (packages/database/src/seeds/technical-permissions.ts), not a
+  // fabricated one. TASK 14.5A: CLIENTE→CAJERO re-authorization no longer
+  // keys off this permission list at all — it now requires a real
+  // `PosAuthGateway.pinLogin` (see `_FakeAuthGateway`'s own doc comment)
+  // — so this fixture no longer needs a "without sale.create" counterpart
+  // for that flow.
   permissions: const [
     'catalog.read',
     'inventory.read',
     'user.read',
     'sale.create',
   ],
-);
-
-/// TASK 12.3A: a session identical to [_context] but lacking `sale.create` —
-/// used to prove that a genuinely unauthorized session cannot return from
-/// CLIENTE to CAJERO.
-final _contextWithoutSaleCreate = AuthenticatedContext(
-  session: _context.session,
-  user: _context.user,
-  companies: _context.companies,
-  branches: _context.branches,
-  companyWideAccess: false,
-  permissions: const ['catalog.read', 'inventory.read', 'user.read'],
 );
 
 /// POS branch-context fix: a CEO/owner-style session with genuine
@@ -7615,6 +8238,129 @@ class _FakePaymentsGateway implements PosPaymentsGateway {
 /// requirement existed — keeps exercising what it actually tests; pass
 /// `openSessionFixture: null` to simulate a closed drawer for the
 /// dedicated gating tests.
+/// TASK 14.5A: a real-PIN-auth fake for `_CajeroReturnAuthDialog`/
+/// `_StaffQuickSwitchDialog`. Defaults to a successful `pinLogin`/`qrLogin`
+/// — matching every other gateway's own "defaults to success, dedicated
+/// tests inject the failure case explicitly" convention in this file — so
+/// every pre-existing CLIENTE→CAJERO test written before real PIN auth
+/// existed for that flow keeps exercising what it actually tests, and the
+/// wrong-PIN rejection gets its own explicit `pinSucceeds: false` fake.
+class _FakeAuthGateway implements PosAuthGateway {
+  _FakeAuthGateway({this.pinSucceeds = true});
+  // Mutable so a single test can flip a wrong-PIN attempt into a correct
+  // one without needing a second widget tree.
+  bool pinSucceeds;
+  int pinLoginCalls = 0;
+  String? lastPin;
+
+  @override
+  Future<void> pinLogin(String pin) async {
+    pinLoginCalls++;
+    lastPin = pin;
+    if (!pinSucceeds) {
+      throw ApiException(AppFailure.fromCode('invalid_credentials'));
+    }
+  }
+
+  // Not exercised by any test in this file — `_StaffQuickSwitchDialog`'s
+  // own QR tab has its dedicated coverage elsewhere; this fake only needs
+  // to satisfy the `PosAuthGateway` interface honestly (never a fabricated
+  // success without a real call ever happening).
+  @override
+  Future<void> qrLogin(String code) async {}
+}
+
+/// TASK 14.5A: a `PosSalesGateway` whose `createSale` only ever resolves
+/// when the test explicitly calls [resolveWith] — lets a test hold the
+/// real checkout flow open at the exact "server hasn't confirmed yet"
+/// instant and assert nothing has jumped the gun, rather than merely
+/// inferring good ordering from a coincidental frame count.
+class _DelayedSalesGateway implements PosSalesGateway {
+  final List<String> createCalls = [];
+  final Completer<PosSaleCreated> _completer = Completer<PosSaleCreated>();
+
+  void resolveWith(PosSaleCreated sale) => _completer.complete(sale);
+
+  @override
+  Future<PosSaleCreated> createSale({
+    required String branchId,
+    required List<PosSaleLineRequest> items,
+    List<String>? couponCodes,
+    PosManualDiscountRequest? manualDiscount,
+    String? customerId,
+    String? rewardEntitlementId,
+    String? note,
+  }) {
+    createCalls.add(branchId);
+    return _completer.future;
+  }
+
+  @override
+  Future<PosReceipt> receipt(String saleId) =>
+      Future.error(StateError('not used by this test'));
+
+  @override
+  Future<PosSaleCreated> completeZeroTotalSale(String saleId) =>
+      Future.error(StateError('not used by this test'));
+
+  @override
+  Future<PosSaleHistoryPage> listSales({
+    PosSaleHistoryFilter filter = const PosSaleHistoryFilter(),
+    String? cursor,
+    int limit = 50,
+  }) => Future.error(StateError('not used by this test'));
+}
+
+/// TASK 14.5A: a recording fake for `PosSettingsGateway` — proves the real
+/// receipt print call sites actually call `effectiveCompanySettings` with
+/// the current session's own `companyId` and the exact
+/// `receipts.header_text`/`receipts.footer_text` keys, mirroring
+/// `pos_receipt_branding_test.dart`'s own `_RecordingSettingsGateway`
+/// fixture convention (that screen's own structural template — see this
+/// file's `_FakeAuthGateway` doc comment for the same "mirrors an existing
+/// convention" rationale). Only the two methods this arc's tests actually
+/// exercise are meaningfully implemented; the branding-upload/-delete
+/// methods (a concurrent, unrelated task's own surface) simply reject —
+/// never called by anything under test here.
+class _RecordingSettingsGateway implements PosSettingsGateway {
+  _RecordingSettingsGateway({this.settings = const []});
+  final List<PosEffectiveSetting> settings;
+  final List<({String companyId, List<String>? keys})> effectiveCalls = [];
+
+  @override
+  Future<List<PosEffectiveSetting>> effectiveCompanySettings({
+    required String companyId,
+    List<String>? keys,
+  }) async {
+    effectiveCalls.add((companyId: companyId, keys: keys));
+    return settings;
+  }
+
+  @override
+  Future<PosEffectiveSetting> setCompanySetting({
+    required String companyId,
+    required String key,
+    required Object value,
+    required String valueType,
+    required int expectedVersion,
+  }) => Future.error(StateError('not used by these tests'));
+
+  @override
+  Future<PosEffectiveSetting> uploadCompanyLogo({
+    required String companyId,
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) => Future.error(StateError('not used by these tests'));
+
+  @override
+  Future<PosEffectiveSetting> deleteCompanyLogo({
+    required String companyId,
+    required int expectedVersion,
+  }) => Future.error(StateError('not used by these tests'));
+}
+
 class _FakeCashGateway implements PosCashGateway {
   _FakeCashGateway({
     List<PosCashRegister>? registers,

@@ -201,6 +201,33 @@ export const settingsCatalog = [
     resolveDefault: constantDefault(''),
     normalize: (value: unknown) => isoCountryCodeOrEmpty('customers.default_country_code', value),
   },
+  {
+    // TASK 14.5A: legacy parity for `AS POS V1.html`'s
+    // `cfgNegocioLogoSeleccionado()`/`aplicarBrandingNegocio()` (an
+    // operator-uploaded business logo, applied live and persisted). The
+    // image itself is never stored here -- only its resolvable object
+    // URL, exactly like `receipts.header_text` stores text, not a file.
+    // The real bytes live in the MinIO `asone-branding` bucket (see
+    // `branding.storage.ts`); this key is written by
+    // `POST /companies/{id}/branding/logo` and cleared by
+    // `DELETE /companies/{id}/branding/logo`
+    // (`branding.routes.ts`), both through the SAME
+    // `SettingsService.mutateCompanySetting` CAS-guarded write every
+    // other company setting uses -- no bespoke persistence mechanism.
+    // Company-wide only (no branch override): a business's logo is one
+    // tenant-wide identity asset in the legacy behavior being ported,
+    // not something that varies location-to-location.
+    key: 'branding.logo_url',
+    type: 'string',
+    technicalDefault: '',
+    branchOverride: false,
+    public: true,
+    resolveDefault: constantDefault(''),
+    // 2048 bounds a URL, never the image itself (the image lives in
+    // object storage) -- generous enough for any real path-style or
+    // virtual-hosted-style object URL.
+    normalize: (value: unknown) => boundedString(2048)('branding.logo_url', value),
+  },
 ] as const satisfies readonly SettingDefinition[];
 
 export type SettingKey = (typeof settingsCatalog)[number]['key'];

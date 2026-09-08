@@ -6,6 +6,35 @@ exists. Source: `AS POS V1.html` (14,712 lines), forensically inspected
 in full. Read the matrix for the row-by-row detail and line citations;
 this document is the "so what" for each module.
 
+**TASK 14.5A (Wave 3A, "final forensic correction") update — 2026-09-08**:
+the matrix's own "FINAL FORENSIC CORRECTION" section is now the
+authoritative source for the 10 rows this update touches — read it for
+exact line-cited evidence. Summary for this narrative doc: **In-house
+credit accounts / "cuenta a crédito" payment** was reclassified from real
+debt to a legacy placeholder — `DB.creditos` was permanently empty and
+never populated by any code path, so "instead of the legacy's in-house
+'credit account' fiction" above was already the correct framing, now with
+full forensic confirmation. **CFDI invoicing** stays out of scope, now
+for a sharper reason: the draft-creation UI was real in isolation, but
+its entire purpose depended on `timbrarFactura()`, which was always
+simulated — a correctly-computed but never-stampable draft was never a
+complete real capability. **Scheduled email reports** turned out to be
+100% fake on the send side (matching the sync/backup fiction pattern
+below), reclassified to a placeholder, not built. Four items previously
+marked "deferred"/"partial" turned out to be genuinely real legacy
+capabilities and are now closed: **kiosk/self-checkout mode** (a real
+"CLIENTE mode" already existed; two real gaps — open-session entry
+gating, real PIN-verified exit — were closed, not built from scratch),
+**post-sale success animation/sound**, **birthday alerts on the
+dashboard** (a factually wrong prior classification is corrected — the
+legacy's `generarAlertas()` genuinely computed this), and the **dashboard
+sales-trend metric** (`vsAyer`, real percent-change math, now
+server-computed). **Receipt header/footer text** and **per-tenant logo
+upload** — both confirmed genuinely real legacy capabilities — are now
+fully wired end-to-end: an admin-configured header/footer and a real
+uploaded logo both reach actual printed receipts (normal sale and
+refund), not just an admin config screen.
+
 ## Ventas / Checkout
 
 **Maps to**: `sales.routes.ts` + `payments.routes.ts` + the Flutter POS

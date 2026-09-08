@@ -94,11 +94,25 @@ employee count, every figure computed via the same real Wave 1/2 services
 the report endpoints themselves use. Deliberately does NOT reproduce the
 legacy's own two admitted-fake fields (`prom_estancia`=95, always-0
 water-park occupancy) — those are simply absent, not replaced with a new
-placeholder. What remains genuinely POST-LAUNCH, real legacy metrics
-consciously scoped out rather than fabricated: the %-vs-yesterday sales
-trend (`vsAyer`) and active-membership count — neither is on the new
-Dashboard; birthday alerts are also absent (only the raw `birth_date`
-field on customers exists). **TASK 14.2R update (historical)**: the
+placeholder. **TASK 14.5A (Wave 3A) update — 2026-09-08**: this entry's
+"what remains" is now split and mostly closed, not merely re-confirmed —
+see [[LEGACY_FUNCTIONAL_PARITY]]'s "FINAL FORENSIC CORRECTION" for full
+evidence. The **%-vs-yesterday sales trend (`vsAyer`)** was confirmed
+genuinely real legacy math (not fake/random) and is now **DONE** —
+`dashboard.service.ts` reuses the exact same real sales-aggregation call
+the "today's sales" figure already makes, for yesterday's date, and
+returns `null` (never a fabricated percentage) when yesterday had zero
+sales. **Birthday alerts** were also confirmed genuinely real (a prior
+finding claiming "no computed alert exists" was factually wrong — the
+legacy's own `generarAlertas()` genuinely computed and displayed this)
+and are now **DONE** — a real server-side SQL date-match query,
+company/branch-scoped. **Active-membership count** was re-investigated
+and found to be the opposite case: the underlying `.activas` field is
+initialized to 0 and never incremented anywhere in the entire
+14,712-line legacy file — a `reduce()` over permanently-inert data is
+not a genuine metric, so this one correctly stays unbuilt, not as a
+post-launch item but because it was never real. **TASK 14.2R update
+(historical)**: the
 legacy prototype's dashboard and per-area reports (Ventas/Financiero/
 Inventario/Clientes/Empleados/Accesos) were genuinely computed from live
 data, not static mockups — the finding that correctly predicted this was
@@ -186,10 +200,22 @@ scope, not from legacy evidence):
   existing TASK 12.7 cash foundation. Not ported: the legacy's own
   dedicated over-withdrawal guard/authorizer field and its (superficial
   even in the legacy) expense photo-evidence flag.
-- **Modo Cliente** (self-checkout kiosk mode) — real in the legacy, no
-  current equivalent, but not needed for the already-proven
-  cashier-operated V1 workflow; P2. **Re-confirmed still deferred in TASK
-  14.5 (Wave 3)** — no kiosk/self-checkout code was added anywhere.
+- ~~**Modo Cliente** (self-checkout kiosk mode)~~ — **DONE (TASK 14.5A,
+  Wave 3A).** Wave 3's own reasoning ("not needed for the proven
+  cashier-operated V1 workflow") did not survive re-inspection: the
+  legacy's checkout button was never actually disabled in Modo Cliente,
+  making it a genuinely functional autonomous self-checkout kiosk, not
+  a read-only display. A real "CLIENTE mode" already existed in the
+  current platform; its 2 real gaps are now closed — entry gates on a
+  real open cash-register session, and exit requires real employee PIN
+  re-authentication (`PosAuthGateway.pinLogin`) rather than a bare
+  permission check. Add-to-cart and checkout reuse the exact same real
+  `SaleSession.addProduct`/`PosSalesGateway.createSale` path CAJERO uses.
+- ~~**Post-sale success animation/sound**~~ — **DONE (TASK 14.5A, Wave
+  3A).** Confirmed genuinely real in the legacy (fires only after every
+  real sale mutation commits, never on a failed precondition).
+  Implemented as `pos_post_sale_feedback.dart`, fires only after genuine
+  server-confirmed sale completion, defensive/non-blocking.
 - ~~**Café visual sub-mode**~~ — **DONE (TASK 14.5 Wave 3).** A real,
   generic `product_categories.is_visual_tile` flag (never hardcoded to
   "café"/"coffee"), a dedicated `PosModule.cafeteria` sharing the exact
@@ -226,28 +252,35 @@ See [[LEGACY_MISSING_PORTS]] for the complete list and reasoning, and
 [[LEGACY_FUNCTIONAL_PARITY]] for the full evidence-backed matrix this is
 drawn from.
 
-## Per-tenant receipt branding
+## Per-tenant receipt branding — DONE (TASK 14.5A, Wave 3A)
 
-Today's receipt logo is one shared, app-bundled mark
-(`assets/branding/as_logo_mark.png`) — `companies` has no branding/logo
-column. Adding one is additive (a new company-scoped asset reference), not
-launch-critical. **Re-confirmed still fully undone in TASK 14.5 (Wave
-3)** by direct search: no MinIO/S3 client, no `@fastify/multipart`, and
-no Flutter `image_picker`-style dependency exists anywhere in the
-repository.
+**This entry is superseded — both halves are now closed.** TASK 14.5A
+confirmed the legacy's operator-configured logo upload
+(`cfgNegocioLogoSeleccionado()`) was genuine, repeatable, persistent
+debt — not a hardcoded/static logo — and, critically, that in the
+legacy this real logo was applied to real printed/exported documents
+(ticket, contract, receipt templates), not just chrome decoration. Built
+this wave: a real `@aws-sdk/client-s3` MinIO client wired to the
+already-provisioned MinIO container (`compose.yaml`), a `branding.
+logo_url` company-setting key (reusing the existing generic settings
+CAS mechanism, zero migration needed), real multipart upload (magic-byte
+content-type verification, 2MB cap) + delete endpoints, and a real
+Flutter admin screen (`pos_branding_screen.dart`). Tested against real
+Postgres + real MinIO: upload+retrieve, wrong-type→415, spoofed-
+signature→415, oversized→413, real cross-tenant isolation, delete clears
+setting+object.
 
-Receipt *header/footer text* (a separate, narrower piece of branding) is
-now **partially done (TASK 14.5 Wave 3)**: the EAV backend
-(`company_settings`/`branch_settings` keys `receipts.header_text`/
-`receipts.footer_text`) already existed before this wave, and Wave 3
-built a real admin screen (`pos_receipt_branding_screen.dart`) that
-genuinely persists it, plus threaded the fields into
-`receipt_html.dart`/`refund_receipt_html.dart`'s own template functions.
-**Independently verified gap**: none of the 4 real print call sites in
-`pos_shell.dart` pass those values through yet, so configured header/
-footer text does not appear on an actual printed receipt — a deliberate
-scope cut this wave, not an oversight, and still a real, open,
-POST-LAUNCH remainder.
+Receipt *header/footer text* is also now fully closed: the EAV backend
+and admin screen (`pos_receipt_branding_screen.dart`) pre-existed Wave
+3; this wave threaded both the header/footer text AND the newly-real
+logo URL through all 4 real print call sites in `pos_shell.dart` — a
+configured header/footer and an uploaded logo now genuinely reach
+printed receipts, both normal-sale and refund. Deliberate, documented
+scope boundary: the platform's own topbar/sidebar brand mark continues
+to show the AS ONE product identity rather than a per-tenant image —
+consistent, already-established product chrome (the same mark used at
+login/splash), distinct from the legacy's single-tenant deployment where
+"the app" and "the one business" were the same thing by construction.
 
 ## Forced password-change-on-first-login
 
@@ -262,7 +295,14 @@ ticket, never represented as a Mexican CFDI tax invoice. A real CFDI
 integration is a substantial, separate compliance-driven project.
 **Re-confirmed untouched by TASK 14.5 (Wave 3)** — no billing/CFDI module
 exists anywhere in the repository, and none appears in this wave's own
-diff.
+diff. **TASK 14.5A finding**: the legacy's own invoicing UI is not
+"real work minus the compliance step" — its `emitirCFDI()` draft-creation
+half was genuinely real in isolation, but the capability's entire
+purpose (a legally valid invoice) depended on `timbrarFactura()`, which
+was always simulated (self-admitted `-SIMULADO` suffix and toast). A
+correctly-computed but never-stampable draft was never a complete real
+capability, so nothing here is legacy parity debt — a real CFDI/PAC
+integration, if ever built, is a new-product capability, not a port.
 
 ## Flutter admin screens for company/branch/user/role management
 
