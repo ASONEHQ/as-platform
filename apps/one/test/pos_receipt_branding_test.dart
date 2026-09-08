@@ -11,6 +11,7 @@
 library;
 
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/pos_branding_screen.dart';
 import 'package:as_one/features/pos/pos_receipt_branding_screen.dart';
 import 'package:as_one/features/pos/pos_settings_gateway.dart';
 import 'package:flutter/material.dart';
@@ -116,6 +117,24 @@ void main() {
 
       final after = tester.widget<FilledButton>(find.byKey(const Key('pos-receipt-branding-save')));
       expect(after.onPressed, isNotNull);
+    });
+  });
+
+  group('TASK 15.0 RC certification (Phase 12 finding F2 fix) — logo navigation', () {
+    testWidgets('tapping "Logo del negocio" navigates to a real PosBrandingScreen', (tester) async {
+      final gateway = _RecordingSettingsGateway(seed: const {});
+      await _pump(tester, gateway: gateway, permissions: _readOnly);
+
+      expect(find.byType(PosBrandingScreen), findsNothing);
+      await tester.tap(find.byKey(const Key('pos-receipt-branding-open-logo')));
+      await tester.pumpAndSettle();
+
+      // Before this fix, `PosBrandingScreen` had zero call sites anywhere
+      // in `apps/one/lib` -- a real operator had no way to reach the
+      // logo-upload screen TASK 14.5A built. This proves the entry point
+      // is real: it lands on the actual screen, not a stub/placeholder.
+      expect(find.byType(PosBrandingScreen), findsOneWidget);
+      expect(find.text('Logo del negocio'), findsWidgets);
     });
   });
 }

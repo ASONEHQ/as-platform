@@ -54,6 +54,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
+import 'pos_branding_screen.dart';
 import 'pos_settings_gateway.dart';
 import 'pos_tokens.dart';
 
@@ -238,6 +239,30 @@ class _PosReceiptBrandingScreenState extends State<PosReceiptBrandingScreen> {
                   style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 20),
                 ),
               ),
+              // RC certification (TASK 15.0, Phase 12 UX pass, finding
+              // F2): `PosBrandingScreen` (the real logo upload/preview/
+              // delete screen TASK 14.5A built) had zero navigation entry
+              // point anywhere in the app -- confirmed by
+              // `grep -rn "PosBrandingScreen(" apps/one/lib` returning no
+              // call sites. This button is that entry point: it reuses
+              // this screen's own `context`/`settingsGateway`, matching
+              // `PosBrandingScreen`'s exact declared dependencies, so no
+              // new gateway wiring was needed.
+              TextButton.icon(
+                key: const Key('pos-receipt-branding-open-logo'),
+                onPressed: () => unawaited(
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => Scaffold(
+                        appBar: AppBar(title: const Text('Logo del negocio')),
+                        body: PosBrandingScreen(context: widget.context, settingsGateway: widget.settingsGateway),
+                      ),
+                    ),
+                  ),
+                ),
+                icon: Icon(Icons.image_outlined, color: palette.action, size: 18),
+                label: Text('Logo del negocio', style: TextStyle(color: palette.action, fontWeight: FontWeight.w700)),
+              ),
               IconButton(
                 key: const Key('pos-receipt-branding-refresh'),
                 tooltip: 'Actualizar',
@@ -248,7 +273,8 @@ class _PosReceiptBrandingScreenState extends State<PosReceiptBrandingScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Texto de encabezado y pie de página que se imprime en cada ticket de venta y de reembolso.',
+            'Texto de encabezado y pie de página que se imprime en cada ticket de venta y de reembolso. '
+            'Usa "Logo del negocio" arriba para subir o quitar el logo que se imprime junto a este texto.',
             style: TextStyle(color: palette.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: 16),

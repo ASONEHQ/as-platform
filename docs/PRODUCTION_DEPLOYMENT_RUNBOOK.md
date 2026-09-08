@@ -6,6 +6,28 @@ Every command below was actually run, in this exact order, against a fresh
 database during this task's own staging rehearsal (a disposable database,
 never `asone_local`/`asone_test`) — this is not a speculative plan.
 
+**Re-verified at TASK 15.0 Phase 9** (RC certification) against current
+HEAD. The launch topology table immediately below has one correction from
+its TASK 14.1 version: MinIO is no longer "DEV-ONLY / not wired" — TASK
+14.5A wired it for the optional business-logo branding feature. See
+`docs/RC_PRODUCTION_CONFIG.md` section 5 and
+`docs/PRODUCTION_ENVIRONMENT.md`'s new MinIO section for the full
+evidence; the short version is that it remains fully optional for
+launch — the API boots and the entire core POS flow works identically
+with or without it.
+
+**Re-verified again at TASK 15.0 Phase 10** (backup/restore certification)
+and **Phase 14** (observability certification): a real backup/verify/
+restore cycle was proven end-to-end against a real tenant's live data
+(see `docs/RC_BACKUP_RESTORE.md` — bit-for-bit exact row counts and
+financial/inventory totals after a real restore into a separate
+database), and the operator failure-scenario runbook further down this
+document (`## Operator Runbook — Observability & Failure Scenarios`) was
+added from that pass's own live findings. Also corrected: the migration
+count below was stale (said 24; the real, current count at this
+checkpoint is **29**, confirmed directly via
+`drizzle.__drizzle_migrations`).
+
 ## 0. Launch topology (Part A)
 
 The smallest reliable architecture for a September 15 single-store launch:
@@ -15,7 +37,7 @@ The smallest reliable architecture for a September 15 single-store launch:
 | PostgreSQL | **REQUIRED** | The only datastore the core POS flow (login → sale → payment → receipt) reads or writes. |
 | Redis | **REQUIRED to boot, not required for core POS** | `packages/config` requires `REDIS_URL` to parse at startup, but grepping every module under `apps/api/src/modules/{auth,sales,cash,payments,refunds,promotions,loyalty,rewards}` finds zero references — nothing on the login→sale→payment→receipt path touches it (confirmed directly, not assumed; see `docs/PRODUCTION_ENVIRONMENT.md`). `/ready`'s HTTP status now reflects this (Part D, below) — a Redis outage degrades observability/ops tooling, never the register. |
 | RabbitMQ | **DEV-ONLY / not wired** | No config key, no client, no reference anywhere in `apps/api`'s real request path. |
-| MinIO | **DEV-ONLY / not wired** | Same — confirmed absent from `packages/config`'s schema entirely. |
+| MinIO | **OPTIONAL — branding logo upload only** | TASK 14.5A wired `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`/`MINIO_API_PORT` (read directly, outside `packages/config`'s schema) for the business-logo upload/delete routes only. Verified directly in `apps/api/src/bootstrap/register-plugins.ts`: when these vars are absent, `brandingStorageConfigFromEnv()` returns `undefined` (never throws) and the branding routes are simply never registered (a real 404) — every other route, and the app's own boot, is completely unaffected. Provision it only if the operator wants the logo-upload feature live at launch; skip it otherwise. |
 | Mailpit | **DEV-ONLY** | Local SMTP capture for developer convenience; nothing in the API sends real email yet. |
 | API (Fastify) | **REQUIRED** | Runs compiled (`node dist/server.js`), never `tsx watch`, in production — see Part J of `docs/DEPLOYMENT_PACKAGING.md`. |
 | Flutter Web | **REQUIRED** | The cashier/owner-facing app; a separate, independently-deployed static build — see `docs/DEPLOYMENT_PACKAGING.md`. |
@@ -59,6 +81,16 @@ No value in this step should ever be committed to git or pasted into a
 chat/ticket in plaintext — use whatever secrets manager your host
 provides.
 
+**Optional — only if the business-logo branding feature should be live at
+launch:** also set `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, and
+`MINIO_API_PORT` (pointed at a real, reachable MinIO/S3-compatible
+deployment). These are read directly by `branding.storage.ts`, not
+through `packages/config`, and are entirely optional — omitting them does
+not affect `DATABASE_URL`/`REDIS_URL`/any other step below, boots the API
+normally, and simply leaves the two branding routes returning 404. See
+`docs/PRODUCTION_ENVIRONMENT.md`'s MinIO section and
+`docs/RC_PRODUCTION_CONFIG.md` section 5 for the full evidence.
+
 ### 4. Backup
 
 Before touching a database that already holds real data (i.e., every
@@ -78,6 +110,17 @@ pnpm --filter @asone/api ops backup-verify --manifest /secure/backup/path/<file>
 See `docs/BACKUP_STRATEGY.md` for retention/offsite/encryption guidance —
 this step only produces one correct local file; rotation and off-host copy
 are the operator's own responsibility.
+
+**If the business-logo branding feature (step 3) is enabled: this backup
+does NOT protect uploaded logos.** Confirmed by direct code inspection
+(`docs/RC_BACKUP_RESTORE.md` §5): the database stores only a
+`branding.logo_url` *reference*; the actual logo image bytes live in
+MinIO object storage. A Postgres-only backup/restore, after a real
+disaster, brings back a company record pointing at a logo object that no
+longer exists unless MinIO's own data was *separately* backed up (e.g.
+`mc mirror` to a secondary bucket, or a volume-level snapshot of the
+MinIO data directory) on its own schedule. Do not treat a verified
+database backup as covering uploaded logos — it does not.
 
 ### 5. Build artifacts
 
@@ -101,7 +144,7 @@ Run BEFORE the API accepts traffic — never auto-run at API boot (confirmed:
 DATABASE_URL=<production URL> pnpm --filter @asone/database db:migrate
 ```
 
-**Fresh database:** every one of the 24 (currently) migration files
+**Fresh database:** every one of the 29 (currently) migration files
 applies in order, tracked in drizzle's own migrations table.
 
 **Existing database:** only migrations not yet recorded apply — safe to
@@ -268,6 +311,199 @@ confirm the discrepancy computes correctly, then confirm a NEW session can
 be opened cleanly afterward — proving the full daily cycle works before
 handing the register to a real cashier for a real business day.
 
+## Operator Runbook — Observability & Failure Scenarios
+
+Merged in from TASK 15.0 Phase 14's observability certification pass
+(`docs/RC_OBSERVABILITY.md`, which has the full certification detail and
+file:line citations behind every procedure below — this section only
+carries the operator-facing runbook itself). Every procedure below is
+grounded in the actual code/config verified in that pass, re-tested live
+against isolated API instances, not generic boilerplate.
+
+### API won't start
+
+1. Check the process's stdout/stderr (journald under systemd:
+   `journalctl -u asone-api -n 100`).
+2. If the **only** line is the literal string `"API configuration is
+   invalid."` (no other detail) — a required environment variable is
+   missing or fails Zod validation in `packages/config/src/index.ts`'s
+   `apiSchema`, but the specific variable/reason is **not** included in
+   this message (a known, documented gap). Remediation: manually diff the
+   deployed environment file against every required key in that schema
+   (secrets' minimum lengths, `DATABASE_URL`/`REDIS_URL` shape, JWT
+   audience/issuer, etc.) — there is currently no faster path than this.
+3. If instead you see a **structured `fatal` log line** with message
+   `"server startup failed"` and a populated `err` object —
+   `loadApiConfig()` succeeded but `app.listen()` itself failed. Read
+   `err.code`: `EADDRINUSE` means another process already owns the
+   configured port (`lsof -i :<port>` / `netstat`, kill or reconfigure);
+   `EACCES` typically means a privileged port (<1024) without the needed
+   capability — do not run the API as root to work around this, configure
+   a non-privileged port behind a reverse proxy instead.
+4. Confirm `pnpm build` actually produced `apps/api/dist/server.js` and
+   every workspace dependency's own `dist/` (`@asone/config`,
+   `@asone/database`, `@asone/errors`, `@asone/logger`) — building
+   `apps/api` in isolation is not sufficient (see
+   `docs/DEPLOYMENT_PACKAGING.md` §1.2).
+
+### DB unavailable
+
+1. `curl -s -o /dev/null -w '%{http_code}\n' http://<host>/ready` — `503`
+   confirms it from the outside; the body's `services.postgres` field
+   confirms it's specifically Postgres, not Redis (`/ready` returns `200`
+   for a Redis-only outage).
+2. Check the `asone_readiness_dependency{service="postgres"}` Prometheus
+   gauge if `METRICS_ENABLED=true` — it mirrors the same signal
+   continuously, without polling `/ready`.
+3. **A single idle-connection drop mid-session** (as opposed to Postgres
+   being down at boot/probe time) is absorbed by `pg.Pool`'s own internal
+   recovery (the broken client is evicted, a fresh one opened on the next
+   query, per a real fix made during Phase 14 — a bare `pool.on('error',
+   ...)` listener, `apps/api/src/infrastructure/dependencies.ts`) — look
+   for no crash at all, just possibly one request that failed while the
+   pool was recovering.
+4. Confirm Postgres is actually reachable from the API host on the
+   configured port/host (`psql "$DATABASE_URL" -c 'select 1'` from the
+   same host the API runs on).
+5. Once Postgres is restored, no manual API restart should be required —
+   `checkReadiness()` re-checks on every `/ready` call and the connection
+   pool reconnects on its own; confirm with another `/ready` poll.
+
+### Migrations fail
+
+1. Migrations are **never** run automatically at API boot — they are a
+   standalone, explicit step: `pnpm db:migrate`.
+2. That script has **no top-level try/catch** — on failure it lets the
+   exception propagate, printing a full stack trace to stderr with a
+   non-zero exit code (loud by omission; not a structured/pino log line —
+   read the raw stderr directly).
+3. **Never run this from a concurrently-booting API replica** — it must
+   run once, from a single controlled job, before the API process(es)
+   start or restart.
+4. To check current migration state without attempting to apply anything,
+   use the read-only `ops check` command — its `postgres.migrations` check
+   reports `applied` count and whether the latest migration file is
+   present.
+5. If a migration partially applied before failing, do not re-run
+   blindly — inspect the actual DB state (drizzle's own migrations-journal
+   table) before deciding whether a manual rollback or a forward-fix
+   migration is the safe path.
+
+### Logo storage (MinIO) unavailable
+
+1. First determine which of the two MinIO failure modes you're in: **not
+   configured** (env vars absent — branding routes are simply a real
+   `404`, expected/normal) vs. **configured but unreachable** (env vars
+   present, MinIO itself down — branding upload/delete return a generic
+   `500 internal_error`).
+2. To tell them apart: hit the branding logo route with a valid auth
+   token — `404` means not configured (not an incident); `500` logged
+   server-side as `'request failed'` means configured-but-down (a real
+   incident).
+3. `ops check`'s `object_storage.connectivity` row will **not** help
+   here — it is hardcoded to always report `unknown` regardless of actual
+   MinIO state (a documented gap) — do not rely on it.
+4. Confirm MinIO's own health directly:
+   `curl -s http://<minio-host>:<MINIO_API_PORT>/minio/health/live`, and
+   confirm the container/service is actually running.
+5. **Every other route is unaffected** — a MinIO outage never blocks app
+   boot or any non-branding route. Treat it as a scoped incident against
+   the branding/logo feature only.
+6. Once MinIO is restored, no API restart is needed — the very next
+   upload/delete call will succeed.
+
+### Cashier cannot login
+
+1. Filter the `'request completed'` log line to `route:
+   '/api/v1/auth/login'`, `status != 200` — shows volume/timing of failed
+   attempts without any credential detail (by design).
+2. **Failed login attempts are never written to `audit_log`** — deliberate
+   (the same dummy-hash-verify pattern that also prevents
+   user-enumeration via timing) — the log-line filter above is the only
+   signal for that.
+3. For **successful**-but-anomalous auth activity (token reuse, unexpected
+   company/branch switches), query `audit_log` directly: `select * from
+   audit_log where action like 'auth.%' order by occurred_at desc` — pay
+   particular attention to `auth.refresh_reuse_detected`, a genuine
+   security signal.
+4. Confirm `/ready`'s `services.postgres` is `available` first — auth is
+   Postgres-only.
+5. If a specific cashier is locked out but the API itself is healthy,
+   check `company_membership`/session state for that actor directly in
+   Postgres.
+
+### Register cannot open
+
+1. The client response's `error.code` field tells you precisely why:
+   - `cash_session_already_open` — the register already has an open
+     session; the single most common cause and **not** an incident —
+     resume the existing session or have the previous shift close it out
+     first. Query: `select * from cash_sessions where cash_register_id =
+     '<id>' and status = 'open'`.
+   - `resource_not_found` — the register ID doesn't exist or isn't
+     visible to this actor's company/branch scope.
+   - `validation_error` — either the register is inactive or the device
+     doesn't belong to this branch.
+2. All three are safe, deterministic rejections backed by a real unique
+   constraint (`cash_sessions_register_active_uq`) — there is no race
+   condition where two opens both silently succeed.
+3. If none of the above codes come back and the request instead times out
+   or 500s, treat it as a DB-availability incident (see "DB unavailable"
+   above).
+
+### Payment appears duplicated
+
+1. Every payment-mutating route requires an `Idempotency-Key` header — a
+   retried request with the **same** key returns the **original** result
+   with an `idempotency-replayed: true` response header, never a second
+   charge/record.
+2. First check for that header on the client's retried response — if
+   present, this is not a duplicate. Confirm by querying the
+   `idempotency_keys` table directly for that key.
+3. If the client retried **without** reusing the same idempotency key (a
+   client-side bug), you will see two distinct real payment rows for what
+   the operator perceives as "one" transaction. Confirm via `audit_log`
+   cross-referenced by `entity_id`.
+4. For an actual Mercado Pago-side double-charge concern: out of scope —
+   Mercado Pago remains paused for the entire RC freeze (see
+   `docs/RC_FREEZE_POLICY.md`); no live provider calls occur.
+
+### Inventory discrepancy
+
+1. Run the read-only `ops inventory` CLI command — reports
+   `openCriticalFindings`, `expiredCountLocks`, and
+   `expiredActiveReservations` without mutating anything.
+2. For a suspected balance-vs-ledger mismatch specifically, run `ops
+   shadow-rebuild --company-id <id>` — a read-only comparison that walks
+   real movement history and reports `mismatches`/`missing_balances`
+   counts without writing anything.
+3. Both commands are chunked/paginated for a large catalog — run them to
+   completion before concluding "no discrepancy."
+4. Neither command repairs anything — diagnostic only, by design. Any
+   actual correction is a separate, explicit, audited mutation through the
+   normal inventory-adjustment routes.
+
+### Stuck held sale
+
+1. Held-sale carts move through a small, explicit state machine: `held` →
+   `resuming` → (`claimed`, or rolled back to `held`). Query the cart
+   directly: `select id, status, updated_at from held_sale_carts where id
+   = '<id>'`.
+2. If `status = 'resuming'` and `updated_at` is old (minutes, not
+   seconds) — this is the stuck case; means the client that claimed it
+   crashed or lost connectivity mid-transition, never a server-side race
+   (a CAS guard means a second concurrent resume attempt simply finds no
+   row).
+3. Every state transition is independently audited — query `select * from
+   audit_log where entity_type = 'held_sale_cart' and entity_id = '<id>'
+   order by occurred_at` to reconstruct exactly which step the stuck cart
+   last completed before deciding on a manual remediation.
+4. There is currently no automatic timeout that reclaims a cart stuck in
+   `resuming` back to `held` — remediation today is a manual, explicit
+   update once the audit trail confirms genuine client abandonment (not a
+   launch blocker for a single-store deployment with a small cashier
+   count; a candidate for a future automatic reclaim-after-timeout job).
+
 ## Rollback (Part S)
 
 **Code rollback** — API: redeploy the previous known-good `dist/` +
@@ -278,8 +514,9 @@ API's own rollback, since they are separate artifacts (Part J).
 
 **Database — never blindly downgrade migrations.** This codebase has no
 "down" migrations by design (matching its own additive-migration
-discipline, verified across all 24 files in TASK 14.0's own audit). If a
-deploy's migration is genuinely wrong:
+discipline, verified across all 29 files at the current TASK 15.0
+checkpoint — 24 at TASK 14.0's own original audit, since grown
+additively). If a deploy's migration is genuinely wrong:
 
 1. **Prefer a forward fix** — write and apply a new, additive migration
    that corrects the problem, exactly like every other schema change in

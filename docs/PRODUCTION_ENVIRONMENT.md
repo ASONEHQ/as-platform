@@ -9,6 +9,13 @@ audit of this same code). This document also incorporates the production
 database-TLS policy added in this task (section C below), which
 `docs/PRODUCTION_GAPS.md` §5 had flagged as a real, unfixed gap.
 
+**Re-verified at TASK 15.0 Phase 9** (RC certification) against current
+HEAD: every table below was re-checked directly against
+`packages/config/src/index.ts` and remains accurate as written. The one
+real change since TASK 14.1 is TASK 14.5A's branding/object-storage
+dependency, documented in its own new section below and in
+`docs/RC_PRODUCTION_CONFIG.md`.
+
 ## How to read this document
 
 - **Required** means `loadApiConfig()`/`loadWorkerConfig()` throws
@@ -164,7 +171,16 @@ validated identically for both processes via `loadApiConfig()` and
 - **Production constraint.** None beyond a well-formed URL — there is no
   TLS/`rediss://` enforcement in code today (out of scope for this task;
   flagged here for visibility since Redis is not authoritative data per
-  `docs/DISASTER_RECOVERY.md`'s T3 classification).
+  `docs/DISASTER_RECOVERY.md`'s T3 classification). **Phase 9
+  re-verification note:** the schema check is a literal
+  `.startsWith('redis://')` (exact 8-character prefix), which means a
+  `rediss://` (TLS) URL is not merely "unenforced" but would actually
+  **fail** validation outright (`"rediss://x".startsWith("redis://")` is
+  `false`) — a real constraint worth knowing before attempting a managed
+  Redis provider that requires `rediss://`. Not fixed in this task
+  (re-verification only, no launch-blocking Redis TLS requirement exists
+  today), but a genuine follow-up item if a future deployment needs
+  Redis-in-transit TLS.
 - **Failure mode.** Missing/malformed URL: boot refused. At runtime, an
   unreachable Redis degrades `/ready`'s reported `services.redis` to
   `unavailable` and the CLI's `check`/`readiness` commands, but no longer
@@ -442,29 +458,88 @@ These extend `sharedSchema` into `apiSchema` and only apply to
 
 ---
 
+## Business logo / object-storage (MinIO) — TASK 14.5A, real but outside `packages/config`
+
+TASK 14.5A wired a real dependency this document's TASK 14.1 version did
+not yet have: business-logo upload/delete
+(`apps/api/src/modules/admin/branding/`) against MinIO's S3-compatible
+API. Re-verified at TASK 15.0 Phase 9 by reading the actual code path
+(not just its own doc comment) — see `docs/RC_PRODUCTION_CONFIG.md`
+section 5 for the full evidence trail. The short version:
+
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_PORT` are real,
+  consumed environment variables — read directly via `process.env` by
+  `brandingStorageConfigFromEnv()`
+  (`apps/api/src/modules/admin/branding/branding.storage.ts`), **not**
+  through the Zod-validated `packages/config` schema (they are not, and
+  as of this task still are not, declared in `sharedSchema`/`apiSchema`).
+  This is a deliberate architectural choice mirroring
+  `MERCADO_PAGO_ACCESS_TOKEN`'s own "optional external dependency, fails
+  cleanly when actually invoked" pattern, applied at the route-
+  registration boundary instead of at request time.
+- **All three are optional as a group, with a fail-open-to-absent (never
+  fail-closed-to-crash) posture**: `brandingStorageConfigFromEnv()`
+  returns `undefined` — a normal value, never a thrown error — when any
+  of the three is missing/empty/malformed.
+  `apps/api/src/bootstrap/register-plugins.ts` only calls
+  `registerBrandingRoutes(...)` when that value is defined; when it is
+  `undefined`, the plain `if` guard is simply skipped and every other
+  route in `registerPlugins` (auth, sales, cash, payments, refunds,
+  inventory, customers, loyalty, rewards, reports, dashboard, and
+  everything else) registers exactly as it always does. There is no
+  `try/catch` anywhere in this path because nothing in it can throw.
+- **Practical effect**: with no `MINIO_*` variables set, the API boots
+  normally and every POS capability except the two branding routes
+  (`POST`/`DELETE .../branding/logo`) works. Those two routes simply
+  don't exist — a request to either gets Fastify's ordinary 404 for an
+  unmatched route, not a 503 or a crash. This is NOT a launch blocker for
+  the POS itself; it only determines whether the optional
+  topbar/receipt/café-watermark logo feature is available.
+- **Example** (only meaningful if the business-logo feature is wanted at
+  launch): `MINIO_ROOT_USER=asone_prod_minio`,
+  `MINIO_ROOT_PASSWORD=<high-entropy value>`, `MINIO_API_PORT=9000`,
+  pointed at a real, network-reachable MinIO (or other S3-compatible)
+  deployment — `BrandingObjectStorage` currently always connects to
+  `127.0.0.1` (see that file's own header comment for why, matching this
+  codebase's existing `DATABASE_URL`/`REDIS_URL` `*_PORT`-on-localhost
+  convention), so a genuinely remote object-storage host is not yet
+  configurable through these three variables alone; that is a scope note
+  for a future task, not a defect this task's certification is blocked
+  by, since local/loopback MinIO alongside the API host is a fully valid
+  topology for a single-store launch.
+
 ## Variables that do **not** exist in `packages/config`
 
 Confirmed by grepping `packages/config/src/index.ts` in full — these are
 **not real configuration keys today**, despite appearing in
-architecture-stage documentation or `compose.yaml` as local-dev-parity
-services:
+architecture-stage documentation, `compose.yaml`, or (for MinIO, see
+above) real application code, as local-dev-parity services or
+non-`packages/config` configuration:
 
-- **MinIO** — no `MINIO_*` variable exists anywhere in `packages/config`.
-  `docs/PRODUCTION_GAPS.md` §6 confirms zero application-code references to
-  MinIO outside `compose.yaml` (local dev convenience only, never wired
-  into a request path).
+- **MinIO** — no `MINIO_*` variable exists in `packages/config`'s Zod
+  schema, but as of TASK 14.5A (see the section immediately above) three
+  of them ARE real, consumed application configuration read directly via
+  `process.env` — this is different from "not wired" (the TASK 14.1-era
+  state this document previously described here); it is "wired, but
+  intentionally outside the Zod-validated schema, with a documented
+  optional/fail-open posture."
 - **RabbitMQ** — no `RABBITMQ_*`/`AMQP_*` variable exists. Not present in
   `compose.yaml`, not referenced anywhere in `apps/api/src` or
   `apps/worker/src` — an aspirational future option in architecture docs
   only, not a real dependency today.
-- **Mailpit** — same as MinIO: local dev convenience only, no config key,
-  no application-code reference outside tests/dev tooling.
+- **Mailpit** — local dev convenience only, no config key, no
+  application-code reference outside tests/dev tooling — unlike MinIO,
+  still genuinely unwired as of this task.
 
-If any of these become real dependencies in the future, they will need
+If RabbitMQ/Mailpit become real dependencies in the future, they will need
 their own `packages/config` schema entries (with the same required/optional,
 production-constraint, fail-closed treatment as everything else in this
-document) — inventing config keys ahead of the actual wiring was out of
-scope for this task.
+document) — inventing config keys ahead of the actual wiring remains out
+of scope. MinIO's three variables could be moved into the Zod schema in a
+future task too (trading the current fail-open-to-absent posture for a
+fail-closed one gated on an explicit "branding enabled" toggle) — not done
+in this task, which is re-verification only, not a redesign (see
+`docs/RC_FREEZE_POLICY.md`).
 
 ---
 

@@ -1012,6 +1012,15 @@ export class PeopleRepository {
         return new PeopleError('validation_error', 'A day off must have no scheduled times, and a shift must have scheduled_end after scheduled_start.');
       case 'employees_user_scope_fk':
         return new PeopleError('validation_error', 'user_id must reference an active membership of this company.');
+      // TASK 15.0 RC certification: a real, live rehearsal caught this
+      // raw Postgres 23505 leaking through as an unhandled 500 — a
+      // payroll period for the same (branch_id, period_start, period_end)
+      // already exists. Same class of bug the RC security pass already
+      // fixed for a malformed-UUID path param; this is the people
+      // module's own missing case for an already-real, already-enforced
+      // DB constraint.
+      case 'payroll_periods_branch_range_uq':
+        return new PeopleError('resource_conflict', 'A payroll period already exists for this branch and date range.');
       default:
         return error;
     }

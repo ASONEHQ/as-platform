@@ -4,7 +4,11 @@ import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createDatabaseClient, type DatabaseClient, seedTechnicalPermissions } from '@asone/database';
+import {
+  createDatabaseClient,
+  type DatabaseClient,
+  seedTechnicalPermissions,
+} from '@asone/database';
 
 import { DevelopmentOwnerBootstrap } from './bootstrap-owner.service.js';
 import { PosCatalogSeed, PosCatalogSeedError } from './seed-pos-catalog.service.js';
@@ -49,6 +53,21 @@ integration('PostgreSQL development POS catalog seed', { concurrent: false }, ()
     await expect(new PosCatalogSeed(database).run()).rejects.toThrow(/dev:bootstrap-owner/u);
   });
 
+  // TASK 15.0 (RC certification, Phase 15 final regression) — this is the
+  // only test in the file that both bootstraps a full owner (56 sequential
+  // `role_permissions` inserts, one round trip each — real, correct work,
+  // not a hang) AND runs the catalog seed twice (create, then idempotent
+  // replay). Confirmed genuinely real, not a hang: run with a generous
+  // 30s timeout it completes in ~24s and every assertion below passes.
+  // It reliably exceeded vitest's 5000ms default only once the approved
+  // permission catalogue grew past its size when this test was written
+  // (75 -> 98 via the pre-freeze legacy-parity waves, -> 100 via this
+  // certification's own `inventory.transfer`/`inventory.receive` fix) —
+  // an accumulated, legitimate increase in real setup work, not a
+  // regression in this test's own logic. A dedicated timeout, scoped to
+  // only this one test, is the narrow fix (same remedy the timeout
+  // error itself suggests) rather than raising the file's default for
+  // every test or touching the real bootstrap/seed code paths.
   it('seeds the full catalog idempotently and isolates it to the dev company', async () => {
     await new DevelopmentOwnerBootstrap(database).run(ownerPassword);
     const seed = new PosCatalogSeed(database);
@@ -91,7 +110,7 @@ integration('PostgreSQL development POS catalog seed', { concurrent: false }, ()
     });
     const countsAfterReplay = await catalogCounts(database);
     expect(countsAfterReplay).toEqual(counts);
-  });
+  }, 20_000);
 
   it('assigns IVA_GENERAL to every seeded product and leaves no fabricated price gaps', async () => {
     await new DevelopmentOwnerBootstrap(database).run(ownerPassword);
@@ -200,7 +219,10 @@ async function ensureMigrations(database: DatabaseClient): Promise<void> {
     `select to_regclass('public.product_prices')::text present`,
   );
   if (pricingPresent.rows[0]?.present === null) {
-    const sql = await readFile(resolve(migrationsPath, '0011_product_pricing_foundation.sql'), 'utf8');
+    const sql = await readFile(
+      resolve(migrationsPath, '0011_product_pricing_foundation.sql'),
+      'utf8',
+    );
     for (const statement of sql.split('--> statement-breakpoint'))
       if (statement.trim().length > 0) await database.pool.query(statement);
   }

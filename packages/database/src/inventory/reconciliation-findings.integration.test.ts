@@ -46,11 +46,16 @@ integration('inventory reconciliation findings physical foundation', () => {
     await client.close();
   });
 
-  it('applies eleven migrations and exposes exactly the approved table, columns and indexes', async () => {
+  // TASK 15.0 (RC certification, Phase 15 final regression) — this test's
+  // migration count was written when the journal held 11 entries and was
+  // never updated as later waves (through migration 0028) grew it; the
+  // column/index assertions below, which are this test's real intent, are
+  // unaffected and unchanged.
+  it('applies twenty-nine migrations and exposes exactly the approved table, columns and indexes', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('11');
+    expect(journal.rows[0]?.count).toBe('29');
 
     const columns = await client.pool.query<{ column_name: string; data_type: string }>(
       `select column_name,data_type from information_schema.columns

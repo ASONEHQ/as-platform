@@ -88,23 +88,26 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  // TASK 14.1 — updated from its original "exactly twelve, ending in
-  // product pricing foundation" snapshot: this codebase has since grown
-  // to 24 migrations across many later tasks (promotions/coupons,
-  // customers/memberships/loyalty, reward entitlements, reward benefit
-  // application). The test's actual intent — the journal is sequential,
-  // contiguous, and its last entry matches the newest real migration
-  // file — is unchanged; only the specific numbers needed to track
-  // reality, exactly like `_journal.json` itself already does.
+  // TASK 15.0 (RC certification, Phase 15 final regression) — updated from
+  // a stale 24-entry snapshot: the legacy-parity closure waves that landed
+  // immediately before the RC freeze (commits d367272, 1035a58) added five
+  // more migrations (0024-0028) without updating this tracker, so it was
+  // failing against the real, correct journal even though nothing in this
+  // certification's own fixes touched migrations. Verified independently
+  // (`_journal.json` really does have 29 sequential entries 0-28 ending at
+  // `0028_crazy_nightcrawler`) before bumping the numbers — same precedent
+  // as TASK 14.1's own update to this test. The test's actual intent —
+  // the journal is sequential, contiguous, and its last entry matches the
+  // newest real migration file — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(24);
+    expect(journal.entries).toHaveLength(29);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 24 }, (_, index) => index),
+      Array.from({ length: 29 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0023_tan_luke_cage');
+    expect(journal.entries.at(-1)?.tag).toBe('0028_crazy_nightcrawler');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {
@@ -317,20 +320,29 @@ describe('database foundation schema', () => {
     expect(outboxColumns).not.toContain('deleted_at');
   });
 
-  // TASK 14.1 — updated from a stale hardcoded 56: later tasks
-  // (promotions/coupons, customers/memberships/loyalty, reward
-  // entitlements, reward benefit application, and TASK 14.0's own
-  // `role.permission.manage` launch-blocker fix) have grown the real
-  // approved catalogue to 75. The uniqueness check and the specific
-  // spot-checked codes are the test's real intent and are unchanged.
+  // TASK 15.0 (RC certification, Phase 15 final regression) — updated from
+  // a stale hardcoded 75: the legacy-parity closure waves just before the
+  // RC freeze (commits d367272, 1035a58) grew the real catalogue to 98,
+  // then this certification's own narrowly-scoped fix (`technical-
+  // permissions.ts`: `inventory.transfer` + `inventory.receive`, a real
+  // 403-for-everyone bug — see that file's own comment) brought it to 100,
+  // without either change updating this tracker. Verified independently
+  // (the array really does hold exactly 100 unique codes, matching
+  // `db:seed`'s own "Inserted 100 approved permission definitions." output
+  // against a fresh database) before bumping the number — same precedent
+  // as TASK 14.1's own update to this test. The uniqueness check and the
+  // specific spot-checked codes are the test's real intent and are
+  // unchanged.
   it('contains exactly the current approved permission definitions, each unique', () => {
-    expect(technicalPermissionCodes).toHaveLength(75);
-    expect(new Set(technicalPermissionCodes).size).toBe(75);
+    expect(technicalPermissionCodes).toHaveLength(100);
+    expect(new Set(technicalPermissionCodes).size).toBe(100);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');
     expect(technicalPermissionCodes).toContain('inventory.reconcile');
     expect(technicalPermissionCodes).toContain('role.permission.manage');
+    expect(technicalPermissionCodes).toContain('inventory.transfer');
+    expect(technicalPermissionCodes).toContain('inventory.receive');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {

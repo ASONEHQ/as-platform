@@ -39,11 +39,16 @@ integration('inventory transfers and reservations physical foundation', () => {
 
   afterAll(async () => client.close());
 
-  it('applies all eleven migrations and preserves the four workflow tables', async () => {
+  // TASK 15.0 (RC certification, Phase 15 final regression) — this test's
+  // migration count was written when the journal held 11 entries and was
+  // never updated as later waves (through migration 0028) grew it; the
+  // table-shape assertions below, which are this test's real intent, are
+  // unaffected and unchanged.
+  it('applies all twenty-nine migrations and preserves the four workflow tables', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('11');
+    expect(journal.rows[0]?.count).toBe('29');
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public'

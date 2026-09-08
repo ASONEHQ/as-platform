@@ -495,6 +495,20 @@ describe('API foundation', () => {
     expect(unknown.body).not.toContain('C:\\private');
   });
 
+  // RC 15.0 Phase 8 (Security Certification): a malformed UUID in a route
+  // param/body field previously reached Postgres unvalidated and surfaced
+  // as a raw 500 `internal_error` (confirmed live via `GET
+  // /api/v1/sales/:id`) instead of a clean 400 — see `error-handler.ts`'s
+  // `22P02` mapping.
+  it('maps a Postgres invalid-UUID error (22P02) to a clean 400, not a 500', async () => {
+    const app = await appFor();
+    const response = await app.inject({ method: 'GET', url: '/__test/postgres-invalid-uuid' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_error' } });
+    expect(response.body).not.toContain('not-a-uuid');
+  });
+
   it('enforces the global rate limit and returns retry-after', async () => {
     const app = await appFor({ RATE_LIMIT_MAX: '1', RATE_LIMIT_WINDOW_MS: '60000' });
     const first = await app.inject({ method: 'GET', url: '/api/v1' });

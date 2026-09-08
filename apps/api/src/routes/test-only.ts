@@ -27,4 +27,15 @@ export function registerTestOnlyRoutes(app: FastifyInstance): void {
       message: 'The technical dependency is unavailable.',
     });
   });
+  // RC 15.0 Phase 8 (Security Certification): reproduces the exact shape of
+  // a real `pg` `DatabaseError` for an invalid UUID cast (Postgres code
+  // `22P02`) without requiring a live database, so `error-handler.ts`'s
+  // mapping of that code to a clean 400 is covered by a fast unit test.
+  app.get('/__test/postgres-invalid-uuid', () => {
+    const error = new Error('invalid input syntax for type uuid: "not-a-uuid"') as Error & {
+      code: string;
+    };
+    error.code = '22P02';
+    throw error;
+  });
 }

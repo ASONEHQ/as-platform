@@ -425,4 +425,29 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
     const closeAttempt = await call('POST', `/api/v1/payroll-periods/${otherPeriodId}/close`, `payroll-tenant-close-${randomUUID()}`, {});
     expect(closeAttempt.statusCode).toBe(404);
   });
+
+  // TASK 15.0 RC certification: a real live rehearsal caught this exact
+  // scenario leaking an unhandled 500 (raw Postgres 23505 on
+  // payroll_periods_branch_range_uq) instead of a clean 409 — the module's
+  // own mapDatabaseError switch was simply missing this one constraint
+  // case, even though the DB-level uniqueness itself was already real and
+  // correctly enforced. Fixed in people.repository.ts; this test is the
+  // regression guard.
+  it('creating a payroll period for a branch/date-range that already has one is a real, clean 409 — never an unhandled 500', async () => {
+    authContext = contextFor(companyId, branchId, userId, fullPermissions);
+    const first = await call('POST', '/api/v1/payroll-periods', `payroll-dup-first-${randomUUID()}`, {
+      branch_id: branchId,
+      period_start: '2026-07-01',
+      period_end: '2026-07-07',
+    });
+    expect(first.statusCode).toBe(201);
+
+    const duplicate = await call('POST', '/api/v1/payroll-periods', `payroll-dup-second-${randomUUID()}`, {
+      branch_id: branchId,
+      period_start: '2026-07-01',
+      period_end: '2026-07-07',
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({ error: { code: 'resource_conflict' } });
+  });
 });

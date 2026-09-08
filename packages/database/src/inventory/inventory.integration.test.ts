@@ -38,7 +38,12 @@ integration('inventory physical foundation', () => {
     await client.close();
   });
 
-  it('applies all eleven migrations and creates the inventory foundation tables', async () => {
+  // TASK 15.0 (RC certification, Phase 15 final regression) — this test's
+  // migration count was written when the journal held 11 entries and was
+  // never updated as later waves (through migration 0028) grew it; the
+  // table-shape assertions below, which are this test's real intent, are
+  // unaffected and unchanged.
+  it('applies all twenty-nine migrations and creates the inventory foundation tables', async () => {
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public' and table_name like 'inventory_%'
@@ -60,7 +65,7 @@ integration('inventory physical foundation', () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('11');
+    expect(journal.rows[0]?.count).toBe('29');
   });
 
   it('enforces location scope, lifecycle, types, codes, and one active default', async () => {

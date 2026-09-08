@@ -363,7 +363,20 @@ export function registerSaleRoutes(
                 scope: { type: 'string', enum: ['line', 'ticket'] },
                 line_index: { type: 'integer', minimum: 0 },
                 type: { type: 'string', enum: ['percentage', 'fixed_amount'] },
-                value: { type: 'string', minLength: 1, maxLength: 20 },
+                // RC 15.0 Phase 8 (Security Certification): a non-numeric
+                // `value` (e.g. "abc") reached `pricing.service.ts`'s
+                // `moneyUnits`/`manualDiscountUnits` completely unvalidated
+                // and threw a raw, uncaught `SyntaxError` from `BigInt()`
+                // — confirmed live via `POST /api/v1/sales` with
+                // `manual_discount.value: "abc"`, surfacing as a 500 inside
+                // the sale-creation DB transaction instead of a clean 400.
+                // This exact pattern (`^\d+(\.\d{1,4})?$`, matching this
+                // field's own `numeric(19,4)` MONEY_SCALE) already guards
+                // the equivalent `benefit_fixed_amount` field in
+                // `promotions.routes.ts` (see lines 119/353 there) — this
+                // was the one money-string field missing it, not a new
+                // convention.
+                value: { type: 'string', minLength: 1, maxLength: 20, pattern: '^\\d+(\\.\\d{1,4})?$' },
                 reason_code: { type: 'string', minLength: 1, maxLength: 200 },
               },
             },

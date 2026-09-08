@@ -216,9 +216,18 @@ class PosCashSessionSummary {
       // TASK 14.4 (Wave 2, Part F.2) — new named breakdowns, each a strict
       // subset already folded into cash_in_total/cash_out_total above;
       // never a second, separately-authoritative total.
-      withdrawalTotal: json['withdrawal_total']! as String,
-      expenseTotal: json['expense_total']! as String,
-      externalIncomeTotal: json['external_income_total']! as String,
+      // TASK 15.0 (Phase 12, RC certification): a real backend was
+      // observed answering `.../summary` 200 OK WITHOUT these three
+      // fields (older deployment/process predating their addition) —
+      // that must never take down the entire Corte de Caja screen (which
+      // also carries the session, opening amount and expected cash a
+      // cashier needs to close a real drawer). This is a narrow recovery
+      // fix per `docs/RC_FREEZE_POLICY.md`: tolerate their absence with
+      // the same "no movement of that kind yet" zero every other total
+      // here already uses, never a silent guess at a nonzero figure.
+      withdrawalTotal: json['withdrawal_total'] as String? ?? '0.0000',
+      expenseTotal: json['expense_total'] as String? ?? '0.0000',
+      externalIncomeTotal: json['external_income_total'] as String? ?? '0.0000',
     );
   }
 

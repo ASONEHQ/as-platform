@@ -92,6 +92,23 @@ export function registerErrorHandler(app: FastifyInstance, observability: Observ
         415,
         'The request media type is not supported.',
       ],
+      // RC 15.0 Phase 8 (Security Certification): a route param/body field
+      // typed as a bare JSON-Schema `string` (no `format: 'uuid'`) that is
+      // then passed straight into a parameterized query against a `uuid`
+      // column reaches Postgres unvalidated. Postgres itself then rejects a
+      // non-UUID value with `22P02` (`invalid_text_representation`), which
+      // previously fell through every mapping below and surfaced as a raw
+      // 500 `internal_error` instead of a clean 400 — confirmed live via
+      // `GET /api/v1/sales/:id` with a malformed id. `22P02` is Postgres's
+      // generic "input string could not be cast to its column type" error
+      // and is by construction always caused by malformed client input
+      // (never a server-side logic fault), so mapping it centrally, here,
+      // to the same `validation_error`/400 shape every other bad-input case
+      // already returns is safe for every route/table in the app — this
+      // fixes the exact defect for every route affected by the same
+      // missing-`format:'uuid'` gap without touching each of those route
+      // schemas individually.
+      '22P02': ['validation_error', 400, 'The request is invalid.'],
     };
     const errorCode = typeof error.code === 'string' ? error.code : '';
     const mapped = transportErrors[errorCode];

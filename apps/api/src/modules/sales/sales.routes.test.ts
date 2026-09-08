@@ -235,6 +235,30 @@ describe('sale HTTP routes (TASK 12.4A.1)', () => {
     expect(service.createSale).not.toHaveBeenCalled();
   });
 
+  // RC 15.0 Phase 8 (Security Certification): a non-numeric
+  // `manual_discount.value` (e.g. "abc") previously had no schema pattern
+  // and reached `pricing.service.ts`'s `moneyUnits` unvalidated, throwing a
+  // raw, uncaught `SyntaxError` from `BigInt()` — confirmed live via
+  // `POST /api/v1/sales`, surfacing as an unhandled 500 from inside the
+  // sale-creation DB transaction instead of a clean 400. This schema
+  // boundary must reject it before the service is ever called, exactly
+  // like the empty-item-list case above.
+  it('rejects a non-numeric manual_discount.value at the schema boundary before it ever reaches the service', async () => {
+    const { app, service } = await fixture(['sale.create', 'discount.apply']);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sales',
+      headers: { authorization: 'Bearer token', 'idempotency-key': 'sale-bad-discount' },
+      payload: {
+        branch_id: branchId,
+        items: [{ product_id: productId, quantity: '1' }],
+        manual_discount: { scope: 'ticket', type: 'fixed_amount', value: 'abc', reason_code: 'test' },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(service.createSale).not.toHaveBeenCalled();
+  });
+
   it('reads a sale under sale.read and rejects without it', async () => {
     const allowed = await fixture(['sale.read']);
     const ok = await allowed.app.inject({

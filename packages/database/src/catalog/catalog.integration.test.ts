@@ -88,10 +88,16 @@ integration('catalog PostgreSQL foundation', () => {
        where code in ('inventory.cost.read', 'inventory.reservation.manage', 'inventory.reconcile')`,
     );
     expect(permissions.rows[0]?.count).toBe('3');
+    // TASK 15.0 (RC certification, Phase 15 final regression) — this total
+    // was written when the seed catalogue held 56 approved codes and was
+    // never updated as later waves (through this certification's own
+    // `inventory.transfer`/`inventory.receive` fix) grew it to 100; the
+    // three spot-checked codes above, which are this test's real intent,
+    // are unaffected and unchanged.
     const permissionCount = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from permissions',
     );
-    expect(permissionCount.rows[0]?.count).toBe('56');
+    expect(permissionCount.rows[0]?.count).toBe('100');
   });
 
   it('rejects cross-company category, product, option, variant, and barcode references', async () => {

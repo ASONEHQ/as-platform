@@ -62,6 +62,20 @@ export const technicalPermissionCodes = [
   'inventory.reverse',
   'inventory.reservation.manage',
   'inventory.reconcile',
+  // TASK 15.0 RC certification: `inventory-transfers.routes.ts` has always
+  // required these two codes (create/ship/cancel a transfer =
+  // `inventory.transfer`, receive one = `inventory.receive`, deliberately
+  // separate — see that file's own comment), but neither was ever added to
+  // this seed. Since `role_permissions.permission_id` is FK-constrained to
+  // `permissions.id` and this seed is the only source of `permissions`
+  // rows, no role in any real environment could ever be granted either
+  // code — every transfer create/ship/receive/cancel call 403'd for every
+  // user, unconditionally. Real correctness fix, not a new capability: the
+  // transfer backend/schema/atomicity were already fully real and correct
+  // (TASK 15.0 Phase 1 inventory), only the permission catalog was
+  // incomplete.
+  'inventory.transfer',
+  'inventory.receive',
   'sale.read',
   'sale.create',
   'sale.complete',

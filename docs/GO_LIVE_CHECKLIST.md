@@ -5,6 +5,10 @@ that document explains *how*; this one is what you physically check off on
 launch day. Every item below was exercised at least once during TASK
 14.1's own staging rehearsal against a disposable database.
 
+**Re-verified at TASK 15.0 Phase 9** (RC certification) against current
+HEAD; one new optional item added below (Branding / logo) for TASK
+14.5A's object-storage dependency — see `docs/RC_PRODUCTION_CONFIG.md`.
+
 ## Infrastructure
 
 - [ ] DNS records created for the chosen domains (e.g. `app.asone.mx`, `api.asone.mx`)
@@ -75,6 +79,21 @@ launch day. Every item below was exercised at least once during TASK
 - [ ] A completed sale's receipt opens reliably in the browser print path
 - [ ] Reprinting a historical sale produces an identical receipt
 - [ ] No PII (phone/email) or raw internal tokens appear on the receipt
+
+## Branding / logo (optional — NOT a launch blocker)
+
+- [ ] Decided whether the business-logo upload feature (topbar/receipt/
+      café watermark) is wanted at launch
+- [ ] If yes: `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`/`MINIO_API_PORT` set
+      to a real, reachable MinIO/S3-compatible deployment before starting
+      the API (see `docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md` step 3)
+- [ ] If no: confirmed this is safe to skip entirely — the API boots
+      normally with these unset, the two branding routes return an
+      ordinary 404, and every other POS capability (login, sale, payment,
+      receipt, cash, inventory, refunds, customers, loyalty, rewards,
+      reports) is completely unaffected (verified directly in
+      `apps/api/src/bootstrap/register-plugins.ts` — see
+      `docs/RC_PRODUCTION_CONFIG.md` section 5)
 
 ## Backup
 
