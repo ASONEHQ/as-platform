@@ -33,6 +33,12 @@ class MoneyFormatException implements Exception {
 final RegExp _decimalPattern = RegExp(r'^(\d{1,15})(?:\.(\d{1,4}))?$');
 final RegExp _currencyPattern = RegExp(r'^[A-Z]{3}$');
 
+/// TASK 14.3 (Wave 1, Part B.3): a non-negative decimal with up to 6
+/// fractional digits — the same scale the backend's own held-sale-cart/
+/// sale-item `quantity` column carries (never 4, like [Money] itself),
+/// used only for [Money.multiplyByDecimalQuantity] below.
+final RegExp _quantityDecimalPattern = RegExp(r'^(\d{1,15})(?:\.(\d{1,6}))?$');
+
 class Money {
   const Money._(this._minorUnits, this.currencyCode);
 
@@ -93,6 +99,30 @@ class Money {
     const denominator = 10000;
     final rounded =
         (numerator + BigInt.from(denominator ~/ 2)) ~/ BigInt.from(denominator);
+    return Money._(rounded, currencyCode);
+  }
+
+  /// TASK 14.3 (Wave 1, Part B.3): multiplies by an exact decimal
+  /// quantity carrying up to 6 fractional digits — e.g. a weight-based
+  /// line's `"2.350000"` kg — never a `double`. Both operands stay exact
+  /// `BigInt`s: this money's own 4-decimal minor units times the
+  /// quantity's 6-decimal micro-units, then divided back down to this
+  /// money's own scale, rounding half-up exactly like
+  /// [multiplyByRateBasisPoints]. Throws [MoneyFormatException] for a
+  /// negative or malformed [quantity] — a weight-based line total is
+  /// never silently computed from garbage input.
+  Money multiplyByDecimalQuantity(String quantity) {
+    final match = _quantityDecimalPattern.firstMatch(quantity.trim());
+    if (match == null) {
+      throw MoneyFormatException('"$quantity" is not a valid decimal quantity.');
+    }
+    final whole = BigInt.parse(match.group(1)!);
+    final fraction = (match.group(2) ?? '').padRight(6, '0');
+    final quantityMicros =
+        whole * BigInt.from(1000000) + BigInt.parse(fraction.isEmpty ? '0' : fraction);
+    final numerator = _minorUnits * quantityMicros;
+    const denominator = 1000000;
+    final rounded = (numerator + BigInt.from(denominator ~/ 2)) ~/ BigInt.from(denominator);
     return Money._(rounded, currencyCode);
   }
 

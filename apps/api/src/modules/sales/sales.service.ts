@@ -83,6 +83,18 @@ function nonBlank(value: string, field: string): string {
   if (clean.length > 200) throw new SaleError('validation_error', `${field} is too long.`);
   return clean;
 }
+// TASK 14.3 (Wave 1, Part B.4) — a whitespace-only note normalizes to
+// `null` (the same "omitted entirely" outcome), never a stored empty
+// string — see `SaleRow.note`'s own doc comment for why this field
+// exists at all (the legacy app's own save button never actually
+// persisted it).
+function saleNote(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const clean = value.trim();
+  if (clean.length === 0) return null;
+  if (clean.length > 2000) throw new SaleError('validation_error', 'note is too long.');
+  return clean;
+}
 
 export class SalesService {
   public constructor(
@@ -132,6 +144,7 @@ export class SalesService {
       return { productId: item.productId, quantityUnits: units, quantity: formatQuantity(units) };
     });
     const requestedCurrency = input.currencyCode === undefined ? null : currency(input.currencyCode);
+    const note = saleNote(input.note);
     const normalized = {
       id: input.id ?? randomUUID(),
       branchId: input.branchId,
@@ -147,6 +160,7 @@ export class SalesService {
       items: normalized.items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
       id: input.id ?? null,
       rewardEntitlementId: input.rewardEntitlementId ?? null,
+      note,
     });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
@@ -346,6 +360,7 @@ export class SalesService {
             discountTotal: formatMoney(pricing.discountTotalUnits),
             taxTotal: formatMoney(pricing.taxTotalUnits),
             total: formatMoney(pricing.totalUnits),
+            note,
           });
           // Sequential, never `Promise.all` — every one of these shares
           // the same transaction `client`, and `pg` does not support two

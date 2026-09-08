@@ -135,6 +135,19 @@ export class AdministrationService {
       entityId: id,
       eventType: 'branch.created',
       mutation: async (client) => {
+        // TASK 14.2 (launch-blocker fix): `values.address ?? null` first
+        // coerces a genuinely-omitted address to the JS value `null`,
+        // which `JSON.stringify` then turns into the STRING `"null"` —
+        // cast via `::jsonb` that becomes a real JSON `null` stored in
+        // the column, not a SQL NULL. `branches_address_object_ck`
+        // (`address is null or jsonb_typeof(address) = 'object'`)
+        // correctly rejects that (a JSON `null` is not SQL NULL, and
+        // `jsonb_typeof` of it is `'null'`, not `'object'`) — so calling
+        // this with no address at all (a normal, expected case; address
+        // is optional) always failed. Fixed to mirror `updateBranch`'s
+        // own already-correct sibling pattern two branches below: only
+        // stringify when an address was actually supplied, otherwise
+        // bind a real JS `null` (a true SQL NULL once cast).
         await client.query(
           `insert into branches (id,company_id,code,name,status,timezone,address) values ($1,$2,$3,$4,'active',$5,$6::jsonb)`,
           [
@@ -143,7 +156,7 @@ export class AdministrationService {
             values.code,
             values.name,
             values.timezone,
-            JSON.stringify(values.address ?? null),
+            values.address === undefined ? null : JSON.stringify(values.address),
           ],
         );
       },

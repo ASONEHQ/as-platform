@@ -1,0 +1,185 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://asone.example/schemas/launch-config.schema.json",
+  "title": "AS ONE launch business configuration",
+  "description": "TASK 14.2 Section C — validates the shape of a launch config JSON file consumed by 'pnpm --filter @asone/api provision:business-config'. This is a structural/documentation reference; apps/api/src/business-config/launch-config.validate.ts implements the same rules at runtime (importing the real enum lists from apps/api/src/modules/catalog/product-catalog.types.ts rather than duplicating them a THIRD time) — keep both in sync if either changes. The literal string 'REQUIRED_OPERATOR_INPUT' is a valid value for any field documented below as accepting it, but the CLI refuses to write anything while any such placeholder remains in a config that is about to be applied for real.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["company", "branches", "registers", "roles", "users", "categories", "products", "inventory_opening_balances", "rewards", "promotions"],
+  "properties": {
+    "_launch_note": { "type": "string" },
+    "_registers_note": { "type": "string" },
+    "_users_note": { "type": "string" },
+    "_inventory_opening_balances_note": { "type": "string" },
+    "_promotions_note": { "type": "string" },
+
+    "company": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legal_name", "display_name", "slug", "timezone", "currency_code", "locale"],
+      "properties": {
+        "legal_name": { "type": "string", "minLength": 1 },
+        "display_name": { "type": "string", "minLength": 1 },
+        "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "timezone": { "type": "string", "minLength": 1 },
+        "currency_code": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "locale": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "code", "timezone"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "code": { "type": "string", "minLength": 1 },
+          "timezone": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+
+    "registers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["branch_code", "code", "name"],
+        "properties": {
+          "branch_code": { "type": "string", "minLength": 1 },
+          "code": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'." },
+          "name": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'." }
+        }
+      }
+    },
+
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name", "permissions"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+          "name": { "type": "string", "minLength": 1 },
+          "_comment": { "type": "string" },
+          "permissions": {
+            "oneOf": [
+              { "type": "string", "const": "ALL_PERMISSIONS_IN_CATALOGUE" },
+              { "type": "array", "items": { "type": "string", "pattern": "^[a-z_]+\\.[a-z_.]+$" }, "minItems": 1 }
+            ]
+          }
+        }
+      }
+    },
+
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["display_name", "email", "role_code", "branch_code"],
+        "properties": {
+          "display_name": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'." },
+          "email": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'; otherwise must look like an email address." },
+          "role_code": { "type": "string", "minLength": 1 },
+          "branch_code": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'." }
+        },
+        "not": { "required": ["password"] }
+      }
+    },
+
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "sort_order": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+
+    "products": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code", "sku", "name", "category_code", "product_type", "tracks_inventory",
+          "tax_code", "status", "unit_price", "unit_price_is_confirmed_final"
+        ],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "sku": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "category_code": { "type": "string", "minLength": 1 },
+          "product_type": { "type": "string", "enum": ["simple", "variable", "kit", "service"] },
+          "tracks_inventory": { "type": "boolean" },
+          "tax_code": { "type": "string", "enum": ["IVA_GENERAL", "IVA_EXEMPT"] },
+          "status": {
+            "type": "string",
+            "enum": ["draft", "active", "inactive"],
+            "description": "'retired' is intentionally excluded — the real product-creation route (catalog/product-catalog.routes.ts) does not accept it at creation time either."
+          },
+          "unit_price": { "type": "string", "minLength": 1, "description": "Decimal string, may be 'REQUIRED_OPERATOR_INPUT'." },
+          "unit_price_is_confirmed_final": {
+            "type": "boolean",
+            "description": "Must be false unless the business has explicitly confirmed this exact price for real launch — a QA-fixture price copied verbatim is never 'confirmed final'."
+          }
+        }
+      }
+    },
+
+    "inventory_opening_balances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product_code", "branch_code", "quantity"],
+        "properties": {
+          "product_code": { "type": "string", "minLength": 1 },
+          "branch_code": { "type": "string", "minLength": 1, "description": "May be the literal 'REQUIRED_OPERATOR_INPUT'." },
+          "quantity": { "type": "string", "minLength": 1, "description": "Decimal string; may be the literal 'REQUIRED_OPERATOR_INPUT' — a real starting count must never be fabricated." }
+        }
+      }
+    },
+
+    "rewards": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled", "program_name", "unit_type", "earn_quantity_per_sale", "reward_threshold",
+        "reward_type", "reward_benefit_type", "reward_benefit_scope_product_codes"
+      ],
+      "properties": {
+        "_comment": { "type": "string" },
+        "enabled": { "type": "boolean", "description": "Launch default is false — Rewards must never be a launch dependency." },
+        "program_name": { "type": "string", "minLength": 1 },
+        "unit_type": { "type": "string", "enum": ["stamp", "point"] },
+        "earn_quantity_per_sale": { "type": "integer", "minimum": 1 },
+        "reward_threshold": { "type": "integer", "minimum": 1 },
+        "reward_type": { "type": "string", "enum": ["vip_pass"] },
+        "reward_benefit_type": {
+          "type": "string",
+          "enum": ["percentage_discount", "fixed_amount_discount", "fixed_price", "free_eligible_item"]
+        },
+        "reward_benefit_scope_product_codes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+
+    "promotions": {
+      "type": "array",
+      "maxItems": 0,
+      "description": "Always empty in this pass — provision:business-config refuses (rather than silently ignoring) a non-empty array; promotion creation is out of scope for TASK 14.2."
+    }
+  }
+}

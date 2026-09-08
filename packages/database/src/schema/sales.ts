@@ -99,6 +99,15 @@ export const sales = pgTable(
     cancelledAt: timestamp('cancelled_at', { withTimezone: true, mode: 'date' }),
     cancelledBy: uuid('cancelled_by'),
     reasonCode: text('reason_code'),
+    // TASK 14.3 (Wave 1, Part B.4) — "Nota de venta," recovered from
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md`'s UI-flows section. The legacy
+    // version's own save button never actually wrote into the field it
+    // claimed to persist — every legacy sale's note was permanently
+    // empty. Fixed for real here: an optional free-text note attached at
+    // sale-creation time, immutable afterward (a completed sale's own
+    // commercial facts don't change — see ADR-0012), surfaced on the
+    // receipt/detail view exactly like every other frozen sale field.
+    note: text('note'),
     createdBy: uuid('created_by').notNull(),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
@@ -153,6 +162,7 @@ export const sales = pgTable(
       'sales_customer_display_name_ck',
       sql`${table.customerId} is null or (${table.customerDisplayName} is not null and length(btrim(${table.customerDisplayName})) > 0)`,
     ),
+    check('sales_note_length_ck', sql`${table.note} is null or length(${table.note}) <= 2000`),
     check('sales_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check(
       'sales_status_ck',

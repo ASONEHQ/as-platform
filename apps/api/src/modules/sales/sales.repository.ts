@@ -95,6 +95,7 @@ interface SaleDb {
   cancelled_at: Date | string | null;
   cancelled_by: string | null;
   reason_code: string | null;
+  note: string | null;
   created_by: string;
   version: string;
   created_at: Date | string;
@@ -142,7 +143,7 @@ interface PriceLookupDb {
 }
 
 const SALE_COLUMNS =
-  'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,customer_id,customer_display_name,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,created_by,version,created_at,updated_at';
+  'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,customer_id,customer_display_name,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,note,created_by,version,created_at,updated_at';
 const SALE_ITEM_COLUMNS =
   'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,tax_total,line_total,tax_snapshot,created_at';
 
@@ -171,6 +172,7 @@ function sale(row: SaleDb): SaleRow {
     cancelledAt: row.cancelled_at === null ? null : new Date(row.cancelled_at),
     cancelledBy: row.cancelled_by,
     reasonCode: row.reason_code,
+    note: row.note,
     createdBy: row.created_by,
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
@@ -423,14 +425,17 @@ export class SalesRepository {
       discountTotal: string;
       taxTotal: string;
       total: string;
+      // TASK 14.3 (Wave 1, Part B.4) — optional, frozen at creation; see
+      // `SaleRow.note`'s own doc comment.
+      note: string | null;
     },
   ): Promise<SaleRow> {
     const row = result<SaleDb>(
       await client.query(
         `insert into sales
          (id,company_id,branch_id,device_id,customer_id,customer_display_name,sale_number,status,currency_code,
-          subtotal,discount_total,tax_total,total,occurred_at,created_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,'pending_payment',$8,$9,$10,$11,$12,$13,$14,$15,$15)
+          subtotal,discount_total,tax_total,total,occurred_at,created_by,note,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,'pending_payment',$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
          returning ${SALE_COLUMNS}`,
         [
           input.id,
@@ -447,6 +452,7 @@ export class SalesRepository {
           input.total,
           input.timestamp,
           input.actorId,
+          input.note,
           input.timestamp,
         ],
       ),

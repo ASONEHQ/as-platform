@@ -51,6 +51,15 @@ class PosReceiptSale {
   final String discountTotal;
   final String taxTotal;
   final String total;
+
+  // TASK 14.3 (Wave 1, Part B.4): deliberately NO `note` field here — the
+  // backend's own `GET /sales/{id}/receipt` response (`receiptHttp` in
+  // `sales.routes.ts`) is a curated subset of the sale and does not
+  // return one (unlike `saleHttp`, which `POST /sales`'s own response
+  // uses — see `PosSaleCreated.note`). Mirrors this class's own
+  // `customerDisplayName` precedent in `buildReceiptHtml`: a caller
+  // threads the sale's already-known note through as a plain parameter
+  // instead of reading it off this model.
 }
 
 /// `null` only if the backend's own join found nothing (defensive —

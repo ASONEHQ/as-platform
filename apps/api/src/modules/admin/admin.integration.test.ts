@@ -108,6 +108,21 @@ integration('PostgreSQL administration foundation', () => {
     expect(await service.listBranches(first.actor)).toHaveLength(1);
   });
 
+  // TASK 14.2 (launch-blocker regression): omitting `address` entirely is
+  // the normal case for a real admin who has no street address to enter
+  // yet — this must succeed cleanly, never a `branches_address_object_ck`
+  // violation (found when `JSON.stringify(values.address ?? null)`
+  // produced a real JSON `null` value instead of a true SQL NULL).
+  it('creates a branch with no address at all', async () => {
+    const tenant = await tenantFixture(database, 'no-address');
+    const created = await service.createBranch(tenant.actor, {
+      code: 'NOADDR',
+      name: 'No Address Branch',
+      timezone: 'UTC',
+    });
+    expect(created).toMatchObject({ company_id: tenant.companyId, address: null });
+  });
+
   it('discovers only active companies and authoritative branch scope', async () => {
     const tenant = await tenantFixture(database, 'context');
     const eligibleCompanyId = randomUUID();

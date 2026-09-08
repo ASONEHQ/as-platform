@@ -46,6 +46,9 @@ import { InventoryReservationService } from '../modules/inventory/reservation.se
 import { InventoryCountRepository } from '../modules/inventory/inventory-counts.repository.js';
 import { registerInventoryCountRoutes } from '../modules/inventory/inventory-counts.routes.js';
 import { InventoryCountService } from '../modules/inventory/inventory-counts.service.js';
+import { HeldSaleCartsRepository } from '../modules/held-sales/held-sales.repository.js';
+import { registerHeldSaleCartRoutes } from '../modules/held-sales/held-sales.routes.js';
+import { HeldSaleCartsService } from '../modules/held-sales/held-sales.service.js';
 import { registerInventoryRoutes } from '../modules/inventory/inventory.routes.js';
 import {
   InventoryBalanceReadService,
@@ -73,6 +76,16 @@ import { RewardsService } from '../modules/rewards/rewards.service.js';
 import { PromotionsRepository } from '../modules/promotions/promotions.repository.js';
 import { registerPromotionRoutes } from '../modules/promotions/promotions.routes.js';
 import { PromotionsService } from '../modules/promotions/promotions.service.js';
+import { PartiesRepository } from '../modules/parties/parties.repository.js';
+import { registerPartyRoomRoutes } from '../modules/parties/party-rooms.routes.js';
+import { PartyRoomsService } from '../modules/parties/party-rooms.service.js';
+import { registerPartyPackageRoutes } from '../modules/parties/party-packages.routes.js';
+import { PartyPackagesService } from '../modules/parties/party-packages.service.js';
+import { registerPartyReservationRoutes } from '../modules/parties/party-reservations.routes.js';
+import { PartyReservationsService } from '../modules/parties/party-reservations.service.js';
+import { PurchasingRepository } from '../modules/purchasing/purchasing.repository.js';
+import { registerPurchasingRoutes } from '../modules/purchasing/purchasing.routes.js';
+import { PurchasingService } from '../modules/purchasing/purchasing.service.js';
 import { RefundsRepository } from '../modules/refunds/refunds.repository.js';
 import { registerRefundRoutes } from '../modules/refunds/refunds.routes.js';
 import { RefundsService } from '../modules/refunds/refunds.service.js';
@@ -295,8 +308,40 @@ export async function registerPlugins(
       registerSaleRoutes(app, authentication, salesService, paymentService);
       registerPaymentRoutes(app, authentication, paymentService, salesService);
       registerCashRoutes(app, authentication, cashService);
+      // TASK 14.3 (Wave 1, Part B.1) — constructed after `salesRepository`
+      // (already built above): `linkSale`'s optional existence check
+      // reads through it directly, never a second/duplicate sales
+      // repository instance.
+      registerHeldSaleCartRoutes(
+        app,
+        authentication,
+        new HeldSaleCartsService(new HeldSaleCartsRepository(options.infrastructure.database), salesRepository),
+      );
       registerRefundRoutes(app, authentication, refundsService);
+      // TASK 14.3 (Wave 1, Part C) — "Compra Directa": a thin commercial
+      // record alongside a real `receipt` inventory movement, posted via
+      // `postDirectPurchaseReceipt` (see `purchasing.service.ts`). No
+      // dependency on any other module's repository/service.
+      registerPurchasingRoutes(
+        app,
+        authentication,
+        new PurchasingService(new PurchasingRepository(options.infrastructure.database)),
+      );
       registerPromotionRoutes(app, authentication, promotionsService);
+      // TASK 14.3 (Wave 1, Part A) — Fiestas/party reservations. Reuses
+      // the already-built `cashRepository` directly (never a second
+      // instance) — `PartyReservationsService.recordPayment` posts its
+      // cash-in movement through it inside its OWN transaction, exactly
+      // like `RefundsService` already does for a refund's drawer
+      // movement (see that service's own doc comment).
+      const partiesRepository = new PartiesRepository(options.infrastructure.database);
+      registerPartyRoomRoutes(app, authentication, new PartyRoomsService(partiesRepository));
+      registerPartyPackageRoutes(app, authentication, new PartyPackagesService(partiesRepository));
+      registerPartyReservationRoutes(
+        app,
+        authentication,
+        new PartyReservationsService(partiesRepository, cashRepository),
+      );
       registerCustomerRoutes(app, authentication, customersService);
       registerMembershipRoutes(app, authentication, membershipsService);
       registerLoyaltyRoutes(app, authentication, loyaltyService);

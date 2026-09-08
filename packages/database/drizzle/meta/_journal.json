@@ -169,6 +169,13 @@
       "when": 1788800829060,
       "tag": "0023_tan_luke_cage",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788835089029,
+      "tag": "0024_vengeful_metal_master",
+      "breakpoints": true
     }
   ]
 }

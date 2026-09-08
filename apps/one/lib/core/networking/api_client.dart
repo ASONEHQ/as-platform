@@ -51,6 +51,22 @@ class ApiClient {
     retryAfterRefresh: retryAfterRefresh,
   );
 
+  /// TASK 14.3 (Wave 1, Part A): the first Flutter caller whose success
+  /// response is NOT a JSON envelope — `GET /party-reservations/{id}/
+  /// documents/{type}` (`party-reservations.routes.ts`) replies
+  /// `text/html; charset=utf-8` with a real, server-generated contract/
+  /// waiver document. An error response is still the same JSON envelope
+  /// every other endpoint uses, so this reuses [_decode]'s exact error
+  /// parsing (honest [ApiException], never fabricated) and only bypasses
+  /// JSON decoding for a genuine 2xx body.
+  Future<String> getText(String path, {bool authenticated = true}) async {
+    final response = await _perform('GET', path, authenticated: authenticated);
+    if (response.statusCode >= 400) {
+      _decode(response);
+    }
+    return response.body;
+  }
+
   Future<Map<String, Object?>> postJson(
     String path, {
     Map<String, Object?> body = const {},

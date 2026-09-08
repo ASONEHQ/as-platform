@@ -75,11 +75,20 @@ String _paymentMethodLabel(String method) => switch (method) {
 /// that opened a reprint) through here instead. `null` renders the
 /// receipt byte-identical to before this task — never phone, email, or
 /// birth date, per Part AB.
+/// [note], when given, is rendered as one extra line beneath the payment
+/// section — TASK 14.3 (Wave 1, Part B.4). Deliberately a plain
+/// caller-supplied `String?`, never read off [receipt] itself: the
+/// backend's own `GET /sales/{id}/receipt` response carries no `note`
+/// field (unlike `POST /sales`'s own response — see
+/// `PosSaleCreated.note`), mirroring [customerDisplayName]'s own
+/// identical precedent above. `null`/empty renders the receipt
+/// byte-identical to before this task.
 String buildReceiptHtml({
   required PosReceipt receipt,
   String? logoDataUri,
   double paperWidthMm = 80,
   String? customerDisplayName,
+  String? note,
 }) {
   final sale = receipt.sale;
   final business = receipt.business;
@@ -233,6 +242,9 @@ String buildReceiptHtml({
       '</table>'
       '<hr class="divider">'
       '$paymentHtml'
+      // TASK 14.3 (Wave 1, Part B.4): a real, non-empty note only — never
+      // an empty placeholder line.
+      '${note == null || note.isEmpty ? '' : '<hr class="divider"><div class="meta">Nota: ${_escape(note)}</div>'}'
       '<hr class="divider">'
       '<div class="footer">'
       '¡Gracias por tu compra!<br>'

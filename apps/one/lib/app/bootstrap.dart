@@ -11,10 +11,13 @@ import '../features/authentication/auth_gateway.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_held_sales_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
+import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
+import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
@@ -64,6 +67,9 @@ void bootstrap() {
       posMembershipsGateway: ApiPosMembershipsGateway(api),
       posLoyaltyGateway: ApiPosLoyaltyGateway(api),
       posRewardsGateway: ApiPosRewardsGateway(api),
+      posPartiesGateway: ApiPosPartiesGateway(api),
+      posHeldSalesGateway: ApiPosHeldSalesGateway(api),
+      posPurchasingGateway: ApiPosPurchasingGateway(api),
     ),
   );
   authController.bootstrapSession();

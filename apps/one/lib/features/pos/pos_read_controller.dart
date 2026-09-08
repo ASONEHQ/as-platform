@@ -28,6 +28,13 @@ class PosReadController extends ChangeNotifier {
   );
   PosReadState<PosUser> users = const PosReadState(PosReadPhase.idle);
 
+  /// TASK 14.3 (Wave 1, Part B.2): a plain, read-only, one-off barcode
+  /// lookup — never mutates [products]' own cached state, and never
+  /// caught/swallowed here: [ApiException]/other errors propagate so the
+  /// caller (the ticket search box) can show the exact real failure.
+  Future<PosProduct?> lookupByBarcode(String barcode, {String? branchId}) =>
+      _gateway.productByBarcode(barcode, branchId: branchId);
+
   Future<void> loadProducts({String? branchId, bool refresh = false}) async {
     if (!refresh && products.phase != PosReadPhase.idle) return;
     products = const PosReadState(PosReadPhase.loading);

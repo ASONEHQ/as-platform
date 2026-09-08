@@ -10,6 +10,8 @@ import 'package:as_one/features/pos/pos_loyalty_gateway.dart';
 import 'package:as_one/features/pos/pos_memberships_gateway.dart';
 import 'package:as_one/features/pos/pos_models.dart';
 import 'package:as_one/features/pos/pos_navigation.dart';
+import 'package:as_one/features/pos/pos_parties_gateway.dart';
+import 'package:as_one/features/pos/pos_parties_models.dart';
 import 'package:as_one/features/pos/pos_payments_gateway.dart';
 import 'package:as_one/features/pos/pos_promotions_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
@@ -155,6 +157,7 @@ void main() {
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
             rewardsGateway: const EmptyPosRewardsGateway(),
+            partiesGateway: const EmptyPosPartiesGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -190,6 +193,7 @@ void main() {
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
             rewardsGateway: const EmptyPosRewardsGateway(),
+            partiesGateway: const EmptyPosPartiesGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -219,6 +223,7 @@ void main() {
             membershipsGateway: const EmptyPosMembershipsGateway(),
             loyaltyGateway: const EmptyPosLoyaltyGateway(),
             rewardsGateway: const EmptyPosRewardsGateway(),
+            partiesGateway: const EmptyPosPartiesGateway(),
             onLogout: () {},
             onBranchSelected: _noopBranchSelected,
           ),
@@ -314,10 +319,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // The payment-method grid, coupon/cash fields, and the ticket
-      // header's Nota/Limpiar actions are untouched by TASK 12.3 — still
-      // visually faithful, still wired to the generic read-only notice.
-      await tester.tap(find.byTooltip('Nota de venta'));
+      // The payment-method grid and coupon/cash fields are untouched by
+      // TASK 12.3 — still visually faithful, still wired to the generic
+      // read-only notice. TASK 14.3 (Wave 1, Part B.4) made "Nota de
+      // venta" a real action instead (see the dedicated note-dialog test
+      // below) — "Limpiar ticket" is the remaining stub in this header.
+      await tester.tap(find.byTooltip('Limpiar ticket'));
       // `hideCurrentSnackBar()` animates the previous SnackBar out before
       // the new one queues in — settle, not just one frame, so the
       // replacement is visible.
@@ -326,6 +333,39 @@ void main() {
         find.textContaining('Modo de solo lectura: disponible'),
         findsOneWidget,
       );
+      expect(tester.takeException(), isNull);
+    });
+
+    // TASK 14.3 (Wave 1, Part B.4): "Nota de venta" is now a real action —
+    // opens a text-entry dialog bound to `SaleSession.note`, never the
+    // generic read-only stub the rest of this header still uses.
+    testWidgets('Nota de venta opens a real note dialog instead of the '
+        'read-only stub', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+
+      await tester.tap(find.byKey(const Key('pos-ticket-note-button')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nota de venta'), findsOneWidget);
+      expect(find.byKey(const Key('pos-ticket-note-field')), findsOneWidget);
+      expect(
+        find.textContaining('Modo de solo lectura: disponible'),
+        findsNothing,
+      );
+
+      await tester.enterText(
+        find.byKey(const Key('pos-ticket-note-field')),
+        'Sin bolsa',
+      );
+      await tester.tap(find.byKey(const Key('pos-ticket-note-save')));
+      await tester.pumpAndSettle();
+
+      // Re-opening the dialog shows the note was really persisted on
+      // `SaleSession`.
+      await tester.tap(find.byKey(const Key('pos-ticket-note-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Sin bolsa'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -3333,6 +3373,7 @@ void main() {
               membershipsGateway: const EmptyPosMembershipsGateway(),
               loyaltyGateway: const EmptyPosLoyaltyGateway(),
               rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -3371,6 +3412,7 @@ void main() {
               membershipsGateway: const EmptyPosMembershipsGateway(),
               loyaltyGateway: const EmptyPosLoyaltyGateway(),
               rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
               onLogout: () {},
               onBranchSelected: _noopBranchSelected,
             ),
@@ -6402,6 +6444,230 @@ void main() {
       },
     );
   });
+
+  group('Fiestas (TASK 14.3 Wave 1 Part A)', () {
+    testWidgets('the nav entry is gated on party.read — no permission shows an honest permission state, never real data', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(reservationsResult: [_fixturePartyReservation()]);
+      await _pump(tester, const Size(1440, 900), context: _context, partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      expect(find.text('Acceso no autorizado'), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-reservation-reservation-1')), findsNothing);
+    });
+
+    testWidgets('Lista shows an honest empty state when the gateway returns no reservations', (
+      tester,
+    ) async {
+      final emptyGateway = _FakePartiesGateway();
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: emptyGateway);
+      await _navigateToFiestas(tester);
+      expect(find.text('No hay reservaciones registradas.'), findsOneWidget);
+    });
+
+    testWidgets('Lista renders real rows from the fake gateway', (tester) async {
+      final populatedGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [_fixturePartyReservation()],
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: populatedGateway);
+      await _navigateToFiestas(tester);
+      expect(find.byKey(const Key('pos-fiestas-reservation-reservation-1')), findsOneWidget);
+      expect(find.text('Festejado de prueba'), findsOneWidget);
+    });
+
+    testWidgets('creating a reservation calls the gateway with the real form values', (tester) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: const [],
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-new-reservation')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-room')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Salón Arcoíris').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-package')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquete Fiesta').last);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-reservation-celebrant-name')), 'Sofía');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-reservation-children')), '12');
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-date')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-start-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-end-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-save')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.createReservationCalls, hasLength(1));
+      final call = partiesGateway.createReservationCalls.single;
+      expect(call.roomId, 'room-1');
+      expect(call.packageId, 'package-1');
+      expect(call.celebrantName, 'Sofía');
+      expect(call.childrenCount, 12);
+      expect(call.branchId, 'branch-id');
+    });
+
+    testWidgets('a 409 party_conflict response surfaces the backend\'s own honest error, never a generic message or a silent retry', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: const [],
+        createReservationFailure: const ApiException(
+          AppFailure(AppErrorKind.validation, 'ignored', code: 'party_conflict'),
+          statusCode: 409,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-new-reservation')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-room')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Salón Arcoíris').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-package')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquete Fiesta').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-date')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-start-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-end-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-save')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Ese salón ya tiene una reservación en un horario que se traslapa con la fecha y hora elegidas.'),
+        findsOneWidget,
+      );
+      expect(partiesGateway.createReservationCalls, hasLength(1));
+      expect(find.byKey(const Key('pos-fiestas-reservation-form-error')), findsOneWidget);
+    });
+
+    testWidgets('Cotizador computes/displays from the fake gateway\'s real returned breakdown, never a client computation', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        packagesResult: [_fixturePartyPackage()],
+        quoteResult: const PosPartyQuote(
+          packageId: 'package-1',
+          currencyCode: 'MXN',
+          base: '500.00',
+          childrenExtra: '120.00',
+          adultsExtra: '80.00',
+          timeExtra: '200.00',
+          total: '900.00',
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cotizador'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.quoteCalls, hasLength(1));
+      expect(find.text('900.00 MXN'), findsOneWidget);
+      expect(find.text('500.00 MXN'), findsOneWidget);
+      expect(find.text('120.00 MXN'), findsOneWidget);
+      expect(find.text('80.00 MXN'), findsOneWidget);
+      expect(find.text('200.00 MXN'), findsOneWidget);
+    });
+
+    testWidgets('the detail view\'s financial section reflects the fake balance response, never a client computation', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [_fixturePartyReservation()],
+        balanceResult: const PosPartyBalance(quotedTotal: '1000.00', totalPaid: '400.00', outstandingBalance: '600.00'),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('400.00 MXN'), findsOneWidget);
+      expect(find.text('600.00 MXN'), findsOneWidget);
+    });
+
+    testWidgets('cancelling with hasPriorPayments: true shows the expected honest message, never hidden', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [_fixturePartyReservation()],
+        cancelResult: PosPartyCancellationResult(
+          reservation: _fixturePartyReservation(status: 'cancelled'),
+          hasPriorPayments: true,
+          totalPaid: '350.00',
+        ),
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(cancel: true),
+        partiesGateway: partiesGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-detail-cancel')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-cancel-reason')), 'Cliente canceló el evento.');
+      await tester.tap(find.byKey(const Key('pos-fiestas-cancel-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.cancelCalls, ['Cliente canceló el evento.']);
+      expect(
+        find.text('Reservación cancelada. Tenía pagos previos por 350.00 MXN — el reembolso debe gestionarse por separado.'),
+        findsOneWidget,
+      );
+    });
+  });
 }
 
 Future<void> _pump(
@@ -6417,6 +6683,7 @@ Future<void> _pump(
   PosMembershipsGateway? membershipsGateway,
   PosLoyaltyGateway? loyaltyGateway,
   PosRewardsGateway? rewardsGateway,
+  PosPartiesGateway? partiesGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -6462,6 +6729,11 @@ Future<void> _pump(
         // state; the dedicated reward tests inject their own explicit
         // fake instead.
         rewardsGateway: rewardsGateway ?? const EmptyPosRewardsGateway(),
+        // TASK 14.3 Wave 1 Part A: defaults to an empty-but-successful
+        // fake — every pre-existing test keeps seeing an honest empty
+        // Fiestas state; the dedicated Fiestas tests below inject their
+        // own explicit fake instead.
+        partiesGateway: partiesGateway ?? const EmptyPosPartiesGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -6518,6 +6790,40 @@ Future<void> _navigateToCaja(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('nav-cash')));
   await tester.pumpAndSettle();
 }
+
+// TASK 14.3 Wave 1 Part A: Fiestas lives under "Clientes" (`PosModule.events`)
+// — mirrors `_navigateToCaja` exactly.
+Future<void> _navigateToFiestas(WidgetTester tester) async {
+  if (find.byKey(const Key('nav-events')).evaluate().isEmpty) {
+    await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(find.byKey(const Key('nav-events')));
+  await tester.pumpAndSettle();
+}
+
+/// A session identical to [_context] but additionally authorized for the
+/// Fiestas domain — [manage]/[cancel]/[recordPayment] add the mutating
+/// permissions only when a test actually needs them (mirrors
+/// `_contextWithSaleRead`/`_contextWithRewardPermissions`'s own shape).
+AuthenticatedContext _contextWithParties({
+  bool manage = false,
+  bool cancel = false,
+  bool recordPayment = false,
+}) => AuthenticatedContext(
+  session: _context.session,
+  user: _context.user,
+  companies: _context.companies,
+  branches: _context.branches,
+  companyWideAccess: false,
+  permissions: [
+    ..._context.permissions,
+    'party.read',
+    if (manage) 'party.manage',
+    if (cancel) 'party.cancel',
+    if (recordPayment) 'party.payment.record',
+  ],
+);
 
 // TASK 12.7: mirrors `_formatClockTime`/`_formatCajaDate` in
 // `pos_shell.dart` exactly (those are private to that library) — computed
@@ -6943,6 +7249,7 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     membershipsGateway: const EmptyPosMembershipsGateway(),
     loyaltyGateway: const EmptyPosLoyaltyGateway(),
     rewardsGateway: const EmptyPosRewardsGateway(),
+    partiesGateway: const EmptyPosPartiesGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -6962,6 +7269,9 @@ class _TrackingReadGateway implements PosReadGateway {
     productBranchIdCalls.add(branchId);
     return _catalogFixture();
   }
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
 
   @override
   Future<List<PosCategory>> categories() async => const [
@@ -7063,6 +7373,7 @@ class _FakeSalesGateway implements PosSalesGateway {
         PosManualDiscountRequest? manualDiscount,
         String? customerId,
         String? rewardEntitlementId,
+        String? note,
       })>
   calls = [];
 
@@ -7089,6 +7400,7 @@ class _FakeSalesGateway implements PosSalesGateway {
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
     String? rewardEntitlementId,
+    String? note,
   }) async {
     calls.add((
       branchId: branchId,
@@ -7097,6 +7409,7 @@ class _FakeSalesGateway implements PosSalesGateway {
       manualDiscount: manualDiscount,
       customerId: customerId,
       rewardEntitlementId: rewardEntitlementId,
+      note: note,
     ));
     if (failure != null) throw failure!;
     return result ??
@@ -7534,6 +7847,13 @@ class _FakeReadGateway implements PosReadGateway {
   Future<List<PosProduct>> products({String? branchId}) async =>
       _catalogFixture();
 
+  // TASK 14.3 (Wave 1, Part B.2): never found by default — every
+  // pre-existing test that doesn't exercise barcode lookup keeps seeing
+  // an honest "not found" answer, never a fabricated match. Dedicated
+  // barcode tests use `_BarcodeReadGateway` instead.
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
   @override
   Future<List<PosCategory>> categories() async => const [
     PosCategory(id: 'cat-1', name: 'Bebidas', status: 'active'),
@@ -7570,6 +7890,10 @@ class _SlowPosReadGateway implements PosReadGateway {
       Completer<List<PosProduct>>().future;
 
   @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) =>
+      Completer<PosProduct?>().future;
+
+  @override
   Future<List<PosCategory>> categories() async => const [];
 
   @override
@@ -7586,6 +7910,9 @@ class _EmptyPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosProduct>> products({String? branchId}) async => const [];
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
 
   @override
   Future<List<PosCategory>> categories() async => const [];
@@ -7610,6 +7937,9 @@ class _ClienteCatalogGateway implements PosReadGateway {
   @override
   Future<List<PosProduct>> products({String? branchId}) async =>
       _catalogFixture();
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
 
   @override
   Future<List<PosCategory>> categories() async => const [
@@ -7642,6 +7972,10 @@ class _FailingPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosProduct>> products({String? branchId}) async =>
+      throw const FormatException('boom');
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async =>
       throw const FormatException('boom');
 
   @override
@@ -8269,6 +8603,277 @@ PosCustomerMembership _fixtureMembership({
   renewedFromMembershipId: null,
   cancelledAt: null,
   version: 1,
+);
+
+/// TASK 14.3 Wave 1 Part A: a controllable fake for the "Fiestas" (party
+/// reservations) domain — rooms/packages/reservations/quote/detail/
+/// balance/cancel are all directly injectable so a test can assert
+/// exactly what the UI displays/sends is the real, backend-shaped value,
+/// never a client computation.
+class _FakePartiesGateway implements PosPartiesGateway {
+  _FakePartiesGateway({
+    this.roomsResult,
+    this.packagesResult,
+    this.reservationsResult,
+    this.createReservationFailure,
+    this.quoteResult,
+    this.balanceResult,
+    this.cancelResult,
+  });
+
+  final List<PosPartyRoom>? roomsResult;
+  final List<PosPartyPackage>? packagesResult;
+  final List<PosPartyReservation>? reservationsResult;
+
+  final ApiException? createReservationFailure;
+  final List<PosPartyReservationInput> createReservationCalls = [];
+
+  final PosPartyQuote? quoteResult;
+  final List<String> quoteCalls = [];
+
+  final PosPartyBalance? balanceResult;
+
+  final PosPartyCancellationResult? cancelResult;
+  final List<String> cancelCalls = [];
+
+  @override
+  Future<PosPartyRoom> createRoom(PosPartyRoomInput input) async => _fixturePartyRoom();
+
+  @override
+  Future<PosPartyPage<PosPartyRoom>> listRooms({String? cursor, int limit = 50, String? branchId, String? status}) async =>
+      PosPartyPage(items: roomsResult ?? const [], nextCursor: null);
+
+  @override
+  Future<PosPartyRoom> room(String id) async => _fixturePartyRoom(id: id);
+
+  @override
+  Future<PosPartyRoom> updateRoom(String id, PosPartyRoomInput input, {required int version}) async => _fixturePartyRoom(id: id);
+
+  @override
+  Future<PosPartyPackage> createPackage(PosPartyPackageInput input) async => _fixturePartyPackage();
+
+  @override
+  Future<PosPartyPage<PosPartyPackage>> listPackages({String? cursor, int limit = 50, String? branchId, String? status}) async =>
+      PosPartyPage(items: packagesResult ?? const [], nextCursor: null);
+
+  @override
+  Future<PosPartyPackage> packageRow(String id) async => _fixturePartyPackage(id: id);
+
+  @override
+  Future<PosPartyPackage> updatePackage(String id, PosPartyPackageInput input, {required int version}) async => _fixturePartyPackage(id: id);
+
+  @override
+  Future<PosPartyQuote> quotePackage(String id, {int children = 0, int adults = 0, int extraHalfHours = 0}) async {
+    quoteCalls.add(id);
+    return quoteResult ??
+        const PosPartyQuote(
+          packageId: 'package-1',
+          currencyCode: 'MXN',
+          base: '1000.00',
+          childrenExtra: '0.00',
+          adultsExtra: '0.00',
+          timeExtra: '0.00',
+          total: '1000.00',
+        );
+  }
+
+  @override
+  Future<PosPartyReservation> createReservation(PosPartyReservationInput input) async {
+    createReservationCalls.add(input);
+    if (createReservationFailure != null) throw createReservationFailure!;
+    return _fixturePartyReservation();
+  }
+
+  @override
+  Future<PosPartyPage<PosPartyReservation>> listReservations({
+    String? cursor,
+    int limit = 50,
+    String? branchId,
+    String? status,
+    String? roomId,
+    String? customerId,
+    String? sellerUserId,
+    String? eventDateFrom,
+    String? eventDateTo,
+  }) async => PosPartyPage(items: reservationsResult ?? const [], nextCursor: null);
+
+  @override
+  Future<List<PosPartyCalendarEntry>> calendar({
+    required String from,
+    required String to,
+    int limit = 500,
+    String? branchId,
+    String? status,
+    String? roomId,
+    String? sellerUserId,
+  }) async => const [];
+
+  @override
+  Future<PosPartyReservationDetail> reservationDetail(String id) async => _fixturePartyDetail(id: id);
+
+  @override
+  Future<PosPartyReservation> updateReservation(String id, PosPartyReservationInput input, {required int version}) async =>
+      _fixturePartyReservation(id: id);
+
+  @override
+  Future<PosPartyReservation> transitionStatus(String id, String newStatus, {required int version}) async =>
+      _fixturePartyReservation(id: id, status: newStatus);
+
+  @override
+  Future<PosPartyCancellationResult> cancelReservation(String id, {required String reasonCode, required int version}) async {
+    cancelCalls.add(reasonCode);
+    return cancelResult ??
+        PosPartyCancellationResult(
+          reservation: _fixturePartyReservation(id: id, status: 'cancelled'),
+          hasPriorPayments: false,
+          totalPaid: '0.00',
+        );
+  }
+
+  @override
+  Future<PosPartySnack> addSnack(String reservationId, PosPartySnackInput input) async => PosPartySnack(
+    id: 'snack-1',
+    reservationId: reservationId,
+    productId: input.productId,
+    nameSnapshot: input.nameSnapshot ?? 'Snack',
+    unitPriceSnapshot: input.unitPriceSnapshot ?? '0.00',
+    quantity: input.quantity,
+    lineTotal: input.unitPriceSnapshot ?? '0.00',
+    createdAt: DateTime.utc(2026, 9, 4),
+  );
+
+  @override
+  Future<List<PosPartySnack>> listSnacks(String reservationId) async => const [];
+
+  @override
+  Future<PosPartySock> addSock(String reservationId, PosPartySockInput input) async => PosPartySock(
+    id: 'sock-1',
+    reservationId: reservationId,
+    size: input.size,
+    quantity: input.quantity,
+    productVariantId: input.productVariantId,
+    stockDeducted: 'pending',
+    stockDeductedAt: null,
+    createdAt: DateTime.utc(2026, 9, 4),
+  );
+
+  @override
+  Future<List<PosPartySock>> listSocks(String reservationId) async => const [];
+
+  @override
+  Future<PosPartySock> deductSock(String reservationId, String sockId) async => PosPartySock(
+    id: sockId,
+    reservationId: reservationId,
+    size: 'CH',
+    quantity: 1,
+    productVariantId: 'variant-1',
+    stockDeducted: 'deducted',
+    stockDeductedAt: DateTime.utc(2026, 9, 4),
+    createdAt: DateTime.utc(2026, 9, 4),
+  );
+
+  @override
+  Future<PosPartyPayment> recordPayment(
+    String reservationId, {
+    required String purpose,
+    required String amount,
+    required String cashSessionId,
+  }) async => PosPartyPayment(
+    id: 'payment-1',
+    branchId: 'branch-id',
+    reservationId: reservationId,
+    cashMovementId: 'movement-1',
+    purpose: purpose,
+    amount: amount,
+    createdBy: 'user-id',
+    createdAt: DateTime.utc(2026, 9, 4),
+  );
+
+  @override
+  Future<PosPartyBalance> balance(String reservationId) async =>
+      balanceResult ?? const PosPartyBalance(quotedTotal: '1000.00', totalPaid: '0.00', outstandingBalance: '1000.00');
+
+  @override
+  Future<String> generateDocument(String reservationId, String type) async => '<html><body>Documento $type</body></html>';
+}
+
+PosPartyRoom _fixturePartyRoom({String id = 'room-1', String name = 'Salón Arcoíris'}) => PosPartyRoom(
+  id: id,
+  branchId: 'branch-id',
+  code: 'SALA-1',
+  name: name,
+  status: 'active',
+  capacityChildren: 20,
+  capacityAdults: 10,
+  capacityTotal: 30,
+  color: null,
+  notes: null,
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 4),
+  updatedAt: DateTime.utc(2026, 9, 4),
+);
+
+PosPartyPackage _fixturePartyPackage({String id = 'package-1', String name = 'Paquete Fiesta'}) => PosPartyPackage(
+  id: id,
+  branchId: null,
+  code: 'PKG-1',
+  name: name,
+  description: null,
+  status: 'active',
+  price: '1000.00',
+  currencyCode: 'MXN',
+  durationMinutes: 120,
+  childrenIncluded: 10,
+  adultsIncluded: 5,
+  childExtraCost: '50.00',
+  adultExtraCost: '80.00',
+  capacityMax: 30,
+  extraHalfHourCost: '200.00',
+  includes: const {'pastel': 'incluido'},
+  restrictions: const {'edad_maxima': '12'},
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 4),
+  updatedAt: DateTime.utc(2026, 9, 4),
+);
+
+PosPartyReservation _fixturePartyReservation({String id = 'reservation-1', String status = 'held'}) => PosPartyReservation(
+  id: id,
+  branchId: 'branch-id',
+  reservationNumber: 'RES-0001',
+  customerId: null,
+  customerDisplayName: 'Cliente de prueba',
+  customerPhone: null,
+  celebrantName: 'Festejado de prueba',
+  celebrantAge: 7,
+  roomId: 'room-1',
+  packageId: 'package-1',
+  eventDate: '2026-10-01',
+  startTime: '12:00:00',
+  endTime: '14:00:00',
+  childrenCount: 10,
+  sellerUserId: null,
+  status: status,
+  accountStatus: 'open',
+  quotedTotal: '1000.00',
+  currencyCode: 'MXN',
+  notes: null,
+  cancelledAt: null,
+  cancelledBy: null,
+  cancellationReason: null,
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 4),
+  updatedAt: DateTime.utc(2026, 9, 4),
+);
+
+PosPartyReservationDetail _fixturePartyDetail({String id = 'reservation-1'}) => PosPartyReservationDetail(
+  reservation: _fixturePartyReservation(id: id),
+  snacks: const [],
+  socks: const [],
+  paymentsTotalPaid: '0.00',
+  paymentsCount: 0,
+  documentsCount: 0,
+  documentsLastGeneratedAt: null,
+  documentsLastDocumentType: null,
 );
 
 /// TASK 13.0: a controllable fake for AS Rewards+ programs/summary/adjust.

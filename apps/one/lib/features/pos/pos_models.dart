@@ -116,6 +116,8 @@ class PosProduct {
     this.sku,
     this.taxCode,
     this.pricing = const PosPricing.missing(),
+    this.unitOfMeasureCode,
+    this.quantityScale = 0,
   });
 
   factory PosProduct.fromJson(Map<String, Object?> json) {
@@ -123,6 +125,7 @@ class PosProduct {
       final Map<String, Object?> value => value,
       _ => null,
     };
+    final rawScale = variant?['quantity_scale'];
     return PosProduct(
       id: json.string('id'),
       code: json.string('code'),
@@ -138,6 +141,13 @@ class PosProduct {
       sku: variant?['sku'] as String?,
       taxCode: json['tax_code'] as String?,
       pricing: PosPricing.fromJson(json['effective_price']),
+      // TASK 14.3 (Wave 1, Part B.3): the default variant's own
+      // `unit_of_measure_code`/`quantity_scale` — always present on a
+      // real variant (`product-catalog.routes.ts`'s `variantHttp`),
+      // `null`/`0` here only when `default_variant` itself was absent
+      // from this response.
+      unitOfMeasureCode: variant?['unit_of_measure_code'] as String?,
+      quantityScale: rawScale is int ? rawScale : 0,
     );
   }
 
@@ -161,6 +171,38 @@ class PosProduct {
   /// The backend-resolved effective price, honestly `missing` when the
   /// JSON carried none.
   final PosPricing pricing;
+
+  /// The default variant's own `unit_of_measure_code` (e.g. `unit`, `kg`,
+  /// `g`, `l`, `ml`) — `null` only when `default_variant` itself was
+  /// absent from the response. See [posIsWeightBased].
+  final String? unitOfMeasureCode;
+
+  /// The default variant's own `quantity_scale` — how many fractional
+  /// digits its quantity is tracked at (0 for whole-unit products).
+  final int quantityScale;
+}
+
+/// TASK 14.3 (Wave 1, Part B.3): the platform seeds a small, fixed,
+/// non-tenant-specific set of units of measure
+/// (`packages/database/drizzle/0004_pink_nehzno.sql`) — `kg`/`g` are the
+/// only `dimension: 'mass'` codes today (`l`/`ml` are `volume`, `unit` is
+/// `count`). No `GET`-listable "units of measure with their dimension"
+/// endpoint exists in this backend today (checked `apps/api/src` for
+/// `units_of_measure`/`unitOfMeasure` routes) — this constant is the
+/// documented, explicitly-allowed fallback for that case, exactly like
+/// currency formatting: a real, platform-level fact every tenant shares,
+/// never an Inflapark-specific hardcode of a product/price/policy. If a
+/// real units-of-measure listing endpoint is added later, prefer calling
+/// it over this constant.
+const Set<String> posWeightBasedUnitOfMeasureCodes = {'kg', 'g'};
+
+/// `true` only when [PosProduct.unitOfMeasureCode] is a real,
+/// platform-seeded mass-dimension code — see
+/// [posWeightBasedUnitOfMeasureCodes]. A product with no resolved unit
+/// (`null`) is never treated as weight-based.
+bool posIsWeightBased(PosProduct product) {
+  final code = product.unitOfMeasureCode;
+  return code != null && posWeightBasedUnitOfMeasureCodes.contains(code);
 }
 
 /// Pure, backend-data-only stock check — TASK 12.3, extended in TASK 12.3C

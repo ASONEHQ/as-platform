@@ -1,0 +1,83 @@
+{
+  "_staging_note": "TASK 14.2 FINAL STAGING REHEARSAL config — NOT a real launch config. Concrete values below are STAGING-ONLY placeholders (clearly labeled), used to exercise the full end-to-end park workflow against a disposable database. Real operator input (real staff names/emails, real opening stock counts, the real first-launch branch, real final pricing) must still replace these before any real launch — see config/launch/inflapark.launch.example.json, the actual reviewable template. Rewards is enabled here (unlike the real launch default of false) specifically to exercise the earn/redeem/zero-total paths this rehearsal is required to prove.",
+
+  "company": {
+    "legal_name": "Inflapark Group",
+    "display_name": "Inflapark Group",
+    "slug": "inflapark-group",
+    "timezone": "America/Mexico_City",
+    "currency_code": "MXN",
+    "locale": "es-MX"
+  },
+
+  "branches": [
+    { "name": "Puerta La Victoria", "code": "PLV", "timezone": "America/Mexico_City" }
+  ],
+
+  "registers": [
+    { "branch_code": "PLV", "code": "CAJA-1", "name": "Caja 1" }
+  ],
+
+  "roles": [
+    { "code": "owner", "name": "Owner", "permissions": "ALL_PERMISSIONS_IN_CATALOGUE" },
+    {
+      "code": "cashier",
+      "name": "Cajero",
+      "permissions": [
+        "catalog.read", "inventory.read", "cash_register.read", "cash_session.open",
+        "cash_session.read", "cash_movement.create", "cash_session.close",
+        "sale.create", "sale.read", "payment.create", "customer.read", "customer.create",
+        "reward.read", "reward.redeem"
+      ]
+    },
+    {
+      "code": "manager",
+      "name": "Gerente",
+      "permissions": [
+        "catalog.read", "inventory.read", "cash_register.read", "cash_session.open",
+        "cash_session.read", "cash_movement.create", "cash_session.close",
+        "sale.create", "sale.read", "payment.create", "customer.read", "customer.create",
+        "reward.read", "reward.redeem",
+        "refund.read", "refund.create", "refund.approve", "refund.complete"
+      ]
+    }
+  ],
+
+  "users": [
+    { "display_name": "Cajero Staging (TEST ACCOUNT)", "email": "cajero-staging@inflapark.local", "role_code": "cashier", "branch_code": "PLV" },
+    { "display_name": "Gerente Staging (TEST ACCOUNT)", "email": "gerente-staging@inflapark.local", "role_code": "manager", "branch_code": "PLV" }
+  ],
+
+  "categories": [
+    { "code": "ENTRADAS", "name": "Entradas", "sort_order": 0 },
+    { "code": "PAQUETES", "name": "Paquetes", "sort_order": 1 },
+    { "code": "ATRACCIONES", "name": "Atracciones", "sort_order": 2 },
+    { "code": "TIENDA", "name": "Tienda", "sort_order": 3 },
+    { "code": "MEMBRESIAS", "name": "Membresías", "sort_order": 4 },
+    { "code": "EXTRAS", "name": "Extras", "sort_order": 5 }
+  ],
+
+  "products": [
+    { "code": "ENT-90MIN", "sku": "ENT-90MIN", "name": "Entrada 90 minutos", "category_code": "ENTRADAS", "product_type": "simple", "tracks_inventory": false, "tax_code": "IVA_GENERAL", "status": "active", "unit_price": "149.00", "unit_price_is_confirmed_final": false },
+    { "code": "ENT-DAYPASS", "sku": "ENT-DAYPASS", "name": "Day Pass", "category_code": "ENTRADAS", "product_type": "simple", "tracks_inventory": false, "tax_code": "IVA_GENERAL", "status": "active", "unit_price": "279.00", "unit_price_is_confirmed_final": false },
+    { "code": "TDA-AGUA", "sku": "TDA-AGUA", "name": "Agua", "category_code": "TIENDA", "product_type": "simple", "tracks_inventory": true, "tax_code": "IVA_GENERAL", "status": "active", "unit_price": "25.00", "unit_price_is_confirmed_final": false },
+    { "code": "EXT-LOCKER", "sku": "EXT-LOCKER", "name": "Locker", "category_code": "EXTRAS", "product_type": "simple", "tracks_inventory": false, "tax_code": "IVA_GENERAL", "status": "active", "unit_price": "49.00", "unit_price_is_confirmed_final": false }
+  ],
+
+  "inventory_opening_balances": [
+    { "product_code": "TDA-AGUA", "branch_code": "PLV", "quantity": "50" }
+  ],
+
+  "rewards": {
+    "enabled": true,
+    "program_name": "Sellos VIP (5+1)",
+    "unit_type": "stamp",
+    "earn_quantity_per_sale": 1,
+    "reward_threshold": 5,
+    "reward_type": "vip_pass",
+    "reward_benefit_type": "free_eligible_item",
+    "reward_benefit_scope_product_codes": ["ENT-90MIN"]
+  },
+
+  "promotions": []
+}

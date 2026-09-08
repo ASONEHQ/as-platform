@@ -541,6 +541,67 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
     ).rejects.toBeInstanceOf(SaleError);
   });
 
+  // --- Sale notes (TASK 14.3 Wave 1 Part B.4) -----------------------------
+  // The legacy app's own save button never actually persisted this field —
+  // every legacy sale note was permanently empty (see
+  // `docs/LEGACY_FUNCTIONAL_PARITY.md`). This is the real, working fix:
+  // written once at creation, immutable thereafter (no PATCH endpoint), and
+  // it must round-trip through a real fetch, never just the in-memory
+  // create response.
+  describe('sale notes', () => {
+    it('creates a sale with a note and the exact note string round-trips through a real fetch', async () => {
+      const created = await sales.createSale(context, branchIds, 'sale-note-present-1', {
+        branchId,
+        items: [{ productId, quantity: '1' }],
+        note: '  Cliente pidió factura — llamar antes de entregar.  ',
+      });
+      expect(created.value.sale.note).toBe('Cliente pidió factura — llamar antes de entregar.');
+
+      const reread = await sales.sale(companyId, branchIds, created.value.sale.id);
+      expect(reread.sale.note).toBe('Cliente pidió factura — llamar antes de entregar.');
+
+      const raw = await database.pool.query<{ note: string | null }>(`select note from sales where id=$1`, [
+        created.value.sale.id,
+      ]);
+      expect(raw.rows[0]?.note).toBe('Cliente pidió factura — llamar antes de entregar.');
+    });
+
+    it('creates a sale with no note and it reads back as null — never a silently-dropped empty string', async () => {
+      const created = await sales.createSale(context, branchIds, 'sale-note-absent-1', {
+        branchId,
+        items: [{ productId, quantity: '1' }],
+      });
+      expect(created.value.sale.note).toBeNull();
+
+      const reread = await sales.sale(companyId, branchIds, created.value.sale.id);
+      expect(reread.sale.note).toBeNull();
+
+      const raw = await database.pool.query<{ note: string | null }>(`select note from sales where id=$1`, [
+        created.value.sale.id,
+      ]);
+      expect(raw.rows[0]?.note).toBeNull();
+    });
+
+    it('a whitespace-only note normalizes to null rather than being stored as an empty string', async () => {
+      const created = await sales.createSale(context, branchIds, 'sale-note-blank-1', {
+        branchId,
+        items: [{ productId, quantity: '1' }],
+        note: '   ',
+      });
+      expect(created.value.sale.note).toBeNull();
+    });
+
+    it('rejects a note over 2000 characters', async () => {
+      await expect(
+        sales.createSale(context, branchIds, 'sale-note-toolong-1', {
+          branchId,
+          items: [{ productId, quantity: '1' }],
+          note: 'x'.repeat(2001),
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+  });
+
   // --- Receipt (TASK 12.5B) -----------------------------------------------
   // The HTTP composition itself (`GET /sales/{id}/receipt`) is covered
   // with mocks in sales.routes.test.ts — this exercises the real,

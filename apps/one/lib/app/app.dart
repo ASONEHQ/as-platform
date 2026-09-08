@@ -6,10 +6,13 @@ import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_held_sales_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
+import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
+import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
@@ -31,6 +34,9 @@ class AsOneApp extends StatefulWidget {
     this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
     this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
     this.posRewardsGateway = const EmptyPosRewardsGateway(),
+    this.posPartiesGateway = const EmptyPosPartiesGateway(),
+    this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
     super.key,
   });
 
@@ -57,6 +63,17 @@ class AsOneApp extends StatefulWidget {
   // TASK 13.1: reward entitlements/redemption, layered on the TASK 13.0
   // foundation above — see `pos_rewards_gateway.dart` and ADR-0018.
   final PosRewardsGateway posRewardsGateway;
+  // TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — rooms,
+  // packages, reservations, Cotizador, snacks/socks, payments, contract/
+  // waiver documents — see `pos_parties_gateway.dart` and
+  // `docs/LEGACY_FIESTAS_RECOVERY.md`.
+  final PosPartiesGateway posPartiesGateway;
+  // TASK 14.3 Wave 1 Part B.1: suspend/list/resume/link-sale/discard a
+  // held-sale cart — see `pos_held_sales_gateway.dart`.
+  final PosHeldSalesGateway posHeldSalesGateway;
+  // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
+  // `pos_purchasing_gateway.dart`.
+  final PosPurchasingGateway posPurchasingGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -86,6 +103,9 @@ class _AsOneAppState extends State<AsOneApp> {
       posMembershipsGateway: widget.posMembershipsGateway,
       posLoyaltyGateway: widget.posLoyaltyGateway,
       posRewardsGateway: widget.posRewardsGateway,
+      posPartiesGateway: widget.posPartiesGateway,
+      posHeldSalesGateway: widget.posHeldSalesGateway,
+      posPurchasingGateway: widget.posPurchasingGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -107,6 +127,9 @@ class PlatformScope extends InheritedWidget {
     this.posMembershipsGateway = const EmptyPosMembershipsGateway(),
     this.posLoyaltyGateway = const EmptyPosLoyaltyGateway(),
     this.posRewardsGateway = const EmptyPosRewardsGateway(),
+    this.posPartiesGateway = const EmptyPosPartiesGateway(),
+    this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -151,6 +174,18 @@ class PlatformScope extends InheritedWidget {
   /// `pos_rewards_gateway.dart` and ADR-0018.
   final PosRewardsGateway posRewardsGateway;
 
+  /// TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — see
+  /// `pos_parties_gateway.dart` and `docs/LEGACY_FIESTAS_RECOVERY.md`.
+  final PosPartiesGateway posPartiesGateway;
+
+  /// TASK 14.3 Wave 1 Part B.1: suspend/list/resume/link-sale/discard a
+  /// held-sale cart — see `pos_held_sales_gateway.dart`.
+  final PosHeldSalesGateway posHeldSalesGateway;
+
+  /// TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
+  /// `pos_purchasing_gateway.dart`.
+  final PosPurchasingGateway posPurchasingGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -174,6 +209,9 @@ class PlatformScope extends InheritedWidget {
       posMembershipsGateway != oldWidget.posMembershipsGateway ||
       posLoyaltyGateway != oldWidget.posLoyaltyGateway ||
       posRewardsGateway != oldWidget.posRewardsGateway ||
+      posPartiesGateway != oldWidget.posPartiesGateway ||
+      posHeldSalesGateway != oldWidget.posHeldSalesGateway ||
+      posPurchasingGateway != oldWidget.posPurchasingGateway ||
       environment != oldWidget.environment;
 }
 

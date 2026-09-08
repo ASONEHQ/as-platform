@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'money.dart';
+import 'pos_held_sales_gateway.dart';
 import 'pos_models.dart';
 import 'pos_promotions_gateway.dart';
 
@@ -28,16 +29,55 @@ class SaleLine {
     required this.quantity,
     required this.unitPrice,
     required this.taxCode,
+    this.weightQuantity,
+    this.unitOfMeasureCode = 'unit',
   }) : assert(quantity > 0, 'A ticket line must have a positive quantity.');
 
   final String productId;
   final String name;
   final String sku;
+
+  /// Whole-unit count — always `1` (never incremented) for a
+  /// [isWeightBased] line; [weightQuantity] carries that line's real
+  /// quantity instead. Kept non-nullable/positive so every pre-existing
+  /// whole-unit call site is unaffected.
   final int quantity;
   final Money unitPrice;
   final String taxCode;
 
-  Money get subtotal => unitPrice * quantity;
+  /// TASK 14.3 (Wave 1, Part B.3): non-`null` only for a weight-based
+  /// (`kg`/`g`, see `posIsWeightBased`) line — the cashier-entered exact
+  /// decimal weight (up to 6 fractional digits, matching the backend's
+  /// own sale-item/held-sale-cart quantity scale), e.g. `"2.350000"`.
+  /// Never derived from [quantity], which stays a meaningless `1` for
+  /// this kind of line.
+  final String? weightQuantity;
+
+  /// The default variant's own `unit_of_measure_code` this line was
+  /// added under (e.g. `kg`, `g`) — `'unit'` for a plain whole-unit line.
+  final String unitOfMeasureCode;
+
+  bool get isWeightBased => weightQuantity != null;
+
+  Money get subtotal =>
+      weightQuantity != null ? unitPrice.multiplyByDecimalQuantity(weightQuantity!) : unitPrice * quantity;
+
+  /// The exact quantity this line must be sent to the backend as (`POST
+  /// /sales`, `POST /sales/pricing-quotes`, `POST /held-sale-carts`) —
+  /// the real decimal weight for a weight-based line, the plain
+  /// whole-unit count otherwise. Never `line.quantity.toString()` alone,
+  /// which would silently drop a weight-based line's real quantity.
+  String get quantityForApi => weightQuantity ?? quantity.toString();
+
+  /// A human-readable quantity for the ticket UI — e.g. `"2.350 kg"` for
+  /// a weight-based line (trims trailing fractional zeros down to a
+  /// minimum of 3 decimals, a real weight-display convention, never
+  /// rounded to a whole number), or the plain unit count otherwise.
+  String get displayQuantity {
+    final weight = weightQuantity;
+    if (weight == null) return '$quantity';
+    return '${_trimWeightDisplay(weight)} $unitOfMeasureCode';
+  }
 
   /// This line's own IVA, from its own tax code — `null` only if
   /// [taxCode] is not a recognized classification, which
@@ -56,7 +96,39 @@ class SaleLine {
     quantity: quantity ?? this.quantity,
     unitPrice: unitPrice,
     taxCode: taxCode,
+    weightQuantity: weightQuantity,
+    unitOfMeasureCode: unitOfMeasureCode,
   );
+}
+
+String _trimWeightDisplay(String value) {
+  final parts = value.split('.');
+  if (parts.length == 1) return value;
+  var fraction = parts[1];
+  while (fraction.length > 3 && fraction.endsWith('0')) {
+    fraction = fraction.substring(0, fraction.length - 1);
+  }
+  return '${parts[0]}.$fraction';
+}
+
+final RegExp _weightMicrosPattern = RegExp(r'^(\d{1,9})(?:\.(\d{1,6}))?$');
+
+/// Parses an exact decimal weight string into an integer count of
+/// 1/1,000,000ths — matching the backend's own sale-item/held-sale-cart
+/// quantity scale (never `double`). `null` for a malformed, empty, or
+/// negative value.
+BigInt? _parseWeightMicros(String value) {
+  final match = _weightMicrosPattern.firstMatch(value.trim());
+  if (match == null) return null;
+  final whole = BigInt.parse(match.group(1)!);
+  final fraction = (match.group(2) ?? '').padRight(6, '0');
+  return whole * BigInt.from(1000000) + BigInt.parse(fraction.isEmpty ? '0' : fraction);
+}
+
+String _formatWeightMicros(BigInt micros) {
+  final whole = micros ~/ BigInt.from(1000000);
+  final fraction = (micros % BigInt.from(1000000)).toString().padLeft(6, '0');
+  return '$whole.$fraction';
 }
 
 /// The real, reactive state of the current sale ticket — TASK 12.3, wired
@@ -128,6 +200,34 @@ class SaleSession extends ChangeNotifier {
   String? _rewardEntitlementId;
 
   String? get rewardEntitlementId => _rewardEntitlementId;
+
+  // TASK 14.3 (Wave 1, Part B.4): an optional, cashier-entered note for
+  // this ticket — plain *intent*, threaded straight into `POST /sales`'s
+  // own optional `note` field (frozen at creation, never edited after —
+  // see `sales.routes.ts`'s own doc comment on `SaleBody.note`). `null`/
+  // empty means no note, exactly matching every sale created before this
+  // task.
+  String? _note;
+
+  String? get note => _note;
+
+  void setNote(String? value) {
+    final normalized = (value == null || value.trim().isEmpty) ? null : value.trim();
+    if (normalized == _note) return;
+    _note = normalized;
+    notifyListeners();
+  }
+
+  // TASK 14.3 (Wave 1, Part B.1): non-`null` only while this ticket was
+  // built by resuming a held-sale cart (see [resumeFromHeldCart]) —
+  // carries the cart's own id forward so the checkout path can call the
+  // real `POST /held-sale-carts/{id}/link-sale` handshake once the
+  // resulting sale genuinely exists (see `held-sales.routes.ts`'s own
+  // doc comment on `link-sale`). Cleared on [clearAll] exactly like every
+  // other per-ticket intent above.
+  String? _resumedHeldCartId;
+
+  String? get resumedHeldCartId => _resumedHeldCartId;
 
   void setCustomer({required String customerId, required String displayName}) {
     _customerId = customerId;
@@ -347,9 +447,128 @@ class SaleSession extends ChangeNotifier {
     return true;
   }
 
+  /// TASK 14.3 (Wave 1, Part B.3): adds a weight-based (`kg`/`g`, see
+  /// `posIsWeightBased`) [product] as a line carrying the cashier-entered
+  /// [weightDecimal] (an exact decimal string, up to 6 fractional digits)
+  /// as its real quantity, instead of the whole-unit `1` [addProduct]
+  /// always uses. Merges into an existing line for the same product by
+  /// SUMMING the weight (never overwriting it) — mirrors [addProduct]'s
+  /// own dedupe-by-product-id behavior. Returns `false`, changing
+  /// nothing, for the same reasons [addProduct] can refuse, or when
+  /// [weightDecimal] itself is missing/zero/malformed.
+  bool addWeightedProduct(
+    PosProduct product,
+    String weightDecimal,
+    List<PosInventoryBalance> balances,
+  ) {
+    if (posAddabilityBlock(product, balances) != null) return false;
+    final unitPrice = product.pricing.amount;
+    final taxCode = product.taxCode;
+    if (unitPrice == null || taxCode == null) return false;
+    final parsed = _parseWeightMicros(weightDecimal);
+    if (parsed == null || parsed <= BigInt.zero) return false;
+    if (_lines.isNotEmpty && unitPrice.currencyCode != _currencyCode) {
+      throw StateError(
+        'Cannot add a ${unitPrice.currencyCode} line to a $_currencyCode ticket.',
+      );
+    }
+    _currencyCode = unitPrice.currencyCode;
+    final unitOfMeasureCode = product.unitOfMeasureCode ?? 'unit';
+    final index = _lines.indexWhere((line) => line.productId == product.id);
+    if (index == -1) {
+      _lines.add(
+        SaleLine(
+          productId: product.id,
+          name: product.name,
+          sku: product.sku ?? product.code,
+          quantity: 1,
+          unitPrice: unitPrice,
+          taxCode: taxCode,
+          weightQuantity: _formatWeightMicros(parsed),
+          unitOfMeasureCode: unitOfMeasureCode,
+        ),
+      );
+    } else {
+      final existing = _lines[index];
+      final existingMicros = _parseWeightMicros(existing.weightQuantity ?? '0') ?? BigInt.zero;
+      _lines[index] = SaleLine(
+        productId: existing.productId,
+        name: existing.name,
+        sku: existing.sku,
+        quantity: existing.quantity,
+        unitPrice: existing.unitPrice,
+        taxCode: existing.taxCode,
+        weightQuantity: _formatWeightMicros(existingMicros + parsed),
+        unitOfMeasureCode: existing.unitOfMeasureCode,
+      );
+    }
+    _quote = null;
+    notifyListeners();
+    return true;
+  }
+
+  /// TASK 14.3 (Wave 1, Part B.1): repopulates this (freshly-cleared)
+  /// ticket from a resumed held-sale cart's raw `{product_id, quantity}`
+  /// pairs — never trusting a stale snapshot: each item's price/name/tax
+  /// code is re-resolved fresh through [products], the exact same
+  /// currently-loaded catalog the product grid itself uses (see
+  /// `held-sales.service.ts`'s own `resumeCart` doc comment — resuming
+  /// always re-prices fresh through the real catalog; this only rebuilds
+  /// the CLIENT-side ticket so the cashier can see/adjust it before that
+  /// real re-price happens at `POST /sales` time). Records [cartId] so
+  /// the checkout path can later call the real `link-sale` handshake.
+  /// Returns the ids of any items that could not be restored (product no
+  /// longer found in [products], or no longer addable per
+  /// [posAddabilityBlock]) — the caller must surface these honestly,
+  /// never silently drop them.
+  List<String> resumeFromHeldCart({
+    required String cartId,
+    required List<PosHeldSaleCartItem> items,
+    required List<PosProduct> products,
+    required List<PosInventoryBalance> balances,
+  }) {
+    clearAll();
+    final skipped = <String>[];
+    for (final item in items) {
+      PosProduct? product;
+      for (final candidate in products) {
+        if (candidate.id == item.productId) {
+          product = candidate;
+          break;
+        }
+      }
+      if (product == null) {
+        skipped.add(item.productId);
+        continue;
+      }
+      if (posIsWeightBased(product)) {
+        if (!addWeightedProduct(product, item.quantity, balances)) {
+          skipped.add(item.productId);
+        }
+        continue;
+      }
+      final micros = _parseWeightMicros(item.quantity);
+      final wholeUnits = micros == null || micros % BigInt.from(1000000) != BigInt.zero
+          ? null
+          : (micros ~/ BigInt.from(1000000)).toInt();
+      if (wholeUnits == null || wholeUnits <= 0) {
+        skipped.add(item.productId);
+        continue;
+      }
+      var addedAny = false;
+      for (var i = 0; i < wholeUnits; i++) {
+        if (addProduct(product, balances)) addedAny = true;
+      }
+      if (!addedAny) skipped.add(item.productId);
+    }
+    _resumedHeldCartId = cartId;
+    notifyListeners();
+    return skipped;
+  }
+
   void increaseQuantity(String productId) {
     final index = _lines.indexWhere((line) => line.productId == productId);
-    if (index == -1) return;
+    if (index == -1 || _lines[index].isWeightBased) return;
     _lines[index] = _lines[index].copyWith(
       quantity: _lines[index].quantity + 1,
     );
@@ -361,7 +580,7 @@ class SaleSession extends ChangeNotifier {
   /// `decQty()`: quantity can never be shown as 0 while a line exists).
   void decreaseQuantity(String productId) {
     final index = _lines.indexWhere((line) => line.productId == productId);
-    if (index == -1) return;
+    if (index == -1 || _lines[index].isWeightBased) return;
     final next = _lines[index].quantity - 1;
     if (next <= 0) {
       _lines.removeAt(index);
@@ -397,12 +616,20 @@ class SaleSession extends ChangeNotifier {
   /// TASK 13.2: also clears any attached reward entitlement, for the same
   /// reason — it belongs to the previous ticket's customer and can never
   /// legitimately carry over.
+  ///
+  /// TASK 14.3 (Wave 1, Part B): also clears any sale note and any
+  /// resumed-held-cart id, for the same reason — both belong to the
+  /// ticket that just completed (or was suspended again) and can never
+  /// legitimately carry over to a brand-new one.
   void clearAll() {
     final hadDiscountState =
         _couponCodes.isNotEmpty || _manualDiscount != null || _quote != null;
     final hadCustomer = _customerId != null;
     final hadReward = _rewardEntitlementId != null;
-    if (_lines.isEmpty && !hadDiscountState && !hadCustomer && !hadReward) return;
+    final hadNoteOrResume = _note != null || _resumedHeldCartId != null;
+    if (_lines.isEmpty && !hadDiscountState && !hadCustomer && !hadReward && !hadNoteOrResume) {
+      return;
+    }
     _lines.clear();
     _couponCodes = const [];
     _manualDiscount = null;
@@ -410,6 +637,8 @@ class SaleSession extends ChangeNotifier {
     _customerId = null;
     _customerDisplayName = null;
     _rewardEntitlementId = null;
+    _note = null;
+    _resumedHeldCartId = null;
     notifyListeners();
   }
 }

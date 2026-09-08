@@ -40,6 +40,13 @@ export interface SaleRow {
   cancelledAt: Date | null;
   cancelledBy: string | null;
   reasonCode: string | null;
+  // TASK 14.3 (Wave 1, Part B.4) — an optional free-text note captured at
+  // sale-creation time only; immutable thereafter, exactly like
+  // `reasonCode` above (no PATCH endpoint exists for either). The legacy
+  // app's own equivalent save button never actually persisted this field
+  // at all — every legacy sale note was permanently empty (see
+  // `docs/LEGACY_FUNCTIONAL_PARITY.md`) — this is the real, working fix.
+  note: string | null;
   createdBy: string;
   version: bigint;
   createdAt: Date;
@@ -112,6 +119,9 @@ export interface CreateSaleInput {
    * validated fresh here, never trusted from a prior quote — see
    * `SalesService.createSale`/ADR-0019 "Quote vs Sale creation". */
   rewardEntitlementId?: string;
+  // TASK 14.3 (Wave 1, Part B.4) — optional, ≤2000 chars, frozen at
+  // creation (see `SaleRow.note`'s own doc comment above).
+  note?: string;
 }
 
 export interface SaleMutationContext {

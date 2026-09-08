@@ -211,6 +211,34 @@ class AppFailure {
       'El código de la recompensa no es válido.',
       code: 'reward_token_invalid',
     ),
+    // TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — the four
+    // codes `parties.types.ts`'s `PartyErrorCode` reserves beyond the
+    // generic ones already mapped above (`validation_error`,
+    // `idempotency_conflict`, `resource_not_found`, `resource_conflict`,
+    // `version_conflict`). See `pos_parties_gateway.dart` for how a caller
+    // builds a more specific, context-aware message from these codes where
+    // the generic text here would be misleading (e.g. `resource_conflict`
+    // stays refund-scoped above; a party caller never trusts it blindly).
+    'party_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'Ese salón ya tiene una reservación en un horario que se traslapa con la fecha y hora elegidas.',
+      code: 'party_conflict',
+    ),
+    'invalid_reservation_state' => const AppFailure(
+      AppErrorKind.validation,
+      'Esa reservación no puede cambiar a ese estado desde su estado actual.',
+      code: 'invalid_reservation_state',
+    ),
+    'insufficient_inventory' => const AppFailure(
+      AppErrorKind.validation,
+      'No hay inventario suficiente para descontar esas calcetas.',
+      code: 'insufficient_inventory',
+    ),
+    'inventory_location_not_found' => const AppFailure(
+      AppErrorKind.unavailable,
+      'No se encontró una ubicación de inventario válida para esa talla.',
+      code: 'inventory_location_not_found',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

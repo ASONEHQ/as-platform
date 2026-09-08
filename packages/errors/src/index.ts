@@ -144,6 +144,22 @@ export const infrastructureErrorCodes = [
   'product_not_found',
   'product_not_active',
   'price_not_found',
+  // TASK 14.3 (Wave 1, Part A): party reservations/rooms/packages — this
+  // domain is not pre-reserved anywhere. Every other lookup/validation
+  // failure reuses an existing generic code (`resource_not_found`,
+  // `resource_conflict`, `validation_error`, `version_conflict`,
+  // `branch_scope_mismatch`, `insufficient_inventory`,
+  // `inventory_location_not_found`), matching this codebase's own
+  // convention (see TASK 13.0/13.1's own precedent above). These two are
+  // genuinely new semantic concepts a generic code cannot express:
+  // `party_conflict` is the room double-booking rejection (the database's
+  // own `party_reservations_room_time_excl` GIST exclusion constraint,
+  // translated to a clean error — see `parties.http-errors.ts`);
+  // `invalid_reservation_state` is a rejected status-machine transition
+  // or an edit/cancel attempted against a `completed`/`cancelled`
+  // reservation.
+  'party_conflict',
+  'invalid_reservation_state',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

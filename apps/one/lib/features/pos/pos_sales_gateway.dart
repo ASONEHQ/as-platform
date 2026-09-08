@@ -20,6 +20,7 @@ class PosSaleCreated {
     required this.status,
     required this.total,
     this.discountTotal = '0.0000',
+    this.note,
   });
 
   factory PosSaleCreated.fromJson(Map<String, Object?> json) => PosSaleCreated(
@@ -28,6 +29,10 @@ class PosSaleCreated {
     status: json['status']! as String,
     total: json['total']! as String,
     discountTotal: json['discount_total'] as String? ?? '0.0000',
+    // TASK 14.3 (Wave 1, Part B.4): the same real, optional note
+    // `sales.routes.ts`'s own `saleHttp` now returns (`POST /sales`'s
+    // response uses it) — `null` for every sale created without one.
+    note: json['note'] as String?,
   );
 
   final String id;
@@ -35,6 +40,7 @@ class PosSaleCreated {
   final String status;
   final String total;
   final String discountTotal;
+  final String? note;
 }
 
 /// One line of the ticket as the backend needs it — `productId` and a raw
@@ -201,6 +207,11 @@ abstract interface class PosSalesGateway {
   /// independently re-validates and only actually consumes the
   /// entitlement once this Sale genuinely settles, never on this call
   /// alone (which only creates a `pending_payment` row).
+  ///
+  /// TASK 14.3 (Wave 1, Part B.4): [note] is an optional, ≤2000-character
+  /// free-text note frozen at creation (`sales.routes.ts`'s own
+  /// `SaleBody.note`) — omitted entirely reproduces the exact pre-TASK-
+  /// 14.3 request shape.
   Future<PosSaleCreated> createSale({
     required String branchId,
     required List<PosSaleLineRequest> items,
@@ -208,6 +219,7 @@ abstract interface class PosSalesGateway {
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
     String? rewardEntitlementId,
+    String? note,
   });
 
   /// `GET /api/v1/sales/{sale_id}/receipt` — TASK 12.5B. A plain,
@@ -256,6 +268,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
     String? rewardEntitlementId,
+    String? note,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales',
@@ -270,6 +283,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
         if (manualDiscount != null) 'manual_discount': manualDiscount.toJson(),
         if (customerId != null) 'customer_id': customerId,
         if (rewardEntitlementId != null) 'reward_entitlement_id': rewardEntitlementId,
+        if (note != null && note.isNotEmpty) 'note': note,
       },
     );
     final data = envelope['data'];
@@ -343,6 +357,7 @@ class EmptyPosSalesGateway implements PosSalesGateway {
     PosManualDiscountRequest? manualDiscount,
     String? customerId,
     String? rewardEntitlementId,
+    String? note,
   }) => Future.error(StateError('No sales gateway is configured.'));
 
   @override

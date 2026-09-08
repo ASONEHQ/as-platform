@@ -1,0 +1,252 @@
+{
+  "_launch_note": "TASK 14.2 EXAMPLE launch configuration for Inflapark Group (company slug 'inflapark-group'), the identity already established in apps/api/src/development/bootstrap-owner.service.ts and reused faithfully here (NOT invented). This file is a TEMPLATE, not a ready-to-run config: every literal string \"REQUIRED_OPERATOR_INPUT\" below MUST be replaced by a human operator with real, business-confirmed data before 'provision:business-config' is run against it — the CLI refuses to run while any such placeholder remains. IMPORTANT — branches: this file lists all six branches already established in local/dev fixtures (Puerta La Victoria, Portal Centro, Universidad, Juriquilla, CDMX, Campeche). Do NOT assume all six launch simultaneously — the operator MUST confirm, before running this tool, which of these branches (if any, or a different one entirely) is the actual FIRST launch branch, and should delete/adjust the 'branches', 'registers', 'users', and 'inventory_opening_balances' entries below to match that real decision. Pricing note: every unit_price below is copied from apps/api/src/development/seed-pos-catalog.service.ts, which is explicitly a development/QA fixture, NOT confirmed final production pricing — see each product's own \"unit_price_is_confirmed_final\": false marker.",
+
+  "company": {
+    "legal_name": "Inflapark Group",
+    "display_name": "Inflapark Group",
+    "slug": "inflapark-group",
+    "timezone": "America/Mexico_City",
+    "currency_code": "MXN",
+    "locale": "es-MX"
+  },
+
+  "branches": [
+    { "name": "Puerta La Victoria", "code": "PLV", "timezone": "America/Mexico_City" },
+    { "name": "Portal Centro", "code": "PCE", "timezone": "America/Mexico_City" },
+    { "name": "Universidad", "code": "UNI", "timezone": "America/Mexico_City" },
+    { "name": "Juriquilla", "code": "JUR", "timezone": "America/Mexico_City" },
+    { "name": "CDMX", "code": "CDMX", "timezone": "America/Mexico_City" },
+    { "name": "Campeche", "code": "CAM", "timezone": "America/Mexico_City" }
+  ],
+
+  "_registers_note": "No real register configuration exists anywhere yet for Inflapark. Each entry below defaults to exactly ONE register per listed branch ('Caja 1' / 'CAJA-1') as a sensible, clearly-labeled starting point — override the name/code, add more registers per branch, or delete entries for branches that are not actually launching, as the operator decides. The count of registers per branch is NOT a confirmed business fact.",
+  "registers": [
+    { "branch_code": "PLV", "code": "CAJA-1", "name": "Caja 1" },
+    { "branch_code": "PCE", "code": "CAJA-1", "name": "Caja 1" },
+    { "branch_code": "UNI", "code": "CAJA-1", "name": "Caja 1" },
+    { "branch_code": "JUR", "code": "CAJA-1", "name": "Caja 1" },
+    { "branch_code": "CDMX", "code": "CAJA-1", "name": "Caja 1" },
+    { "branch_code": "CAM", "code": "CAJA-1", "name": "Caja 1" }
+  ],
+
+  "roles": [
+    {
+      "code": "owner",
+      "name": "Owner",
+      "_comment": "The owner role/user already exists — created by 'provision:production-owner' (TASK 14.1) with every permission currently in the permission catalogue. This entry is here for documentation completeness only; 'provision:business-config' looks it up by code, finds it already exists, and skips it (it never creates or re-creates the owner role itself — see business-config.service.ts's own doc comment for why).",
+      "permissions": "ALL_PERMISSIONS_IN_CATALOGUE"
+    },
+    {
+      "code": "cashier",
+      "name": "Cajero",
+      "_comment": "Explicit permission list — never company-wide/full access. Add 'reward.read' and 'reward.redeem' to this array ONLY if this same file's rewards.enabled is true.",
+      "permissions": [
+        "catalog.read",
+        "inventory.read",
+        "cash_register.read",
+        "cash_session.open",
+        "cash_session.read",
+        "cash_movement.create",
+        "cash_session.close",
+        "sale.create",
+        "sale.read",
+        "payment.create",
+        "customer.read",
+        "customer.create"
+      ]
+    },
+    {
+      "code": "manager",
+      "name": "Gerente",
+      "_comment": "OPTIONAL role — create only if business policy requires manager-gated refunds. The launch default in THIS example is TRUE: cashiers do NOT self-approve refunds, this manager role does, holding the cashier permission set PLUS refund.read/refund.create/refund.approve/refund.complete. To change that policy, delete this role entry entirely and add refund.read/refund.create/refund.approve/refund.complete to the cashier role's own 'permissions' array instead (letting cashiers self-approve refunds).",
+      "permissions": [
+        "catalog.read",
+        "inventory.read",
+        "cash_register.read",
+        "cash_session.open",
+        "cash_session.read",
+        "cash_movement.create",
+        "cash_session.close",
+        "sale.create",
+        "sale.read",
+        "payment.create",
+        "customer.read",
+        "customer.create",
+        "refund.read",
+        "refund.create",
+        "refund.approve",
+        "refund.complete"
+      ]
+    }
+  ],
+
+  "_users_note": "The owner user is already provisioned separately by 'provision:production-owner' — this array only ever contains NEW staff. Real display_name/email are unknown right now, so both are marked REQUIRED_OPERATOR_INPUT below; branch_code is also left as REQUIRED_OPERATOR_INPUT since the actual first launch branch has not been confirmed (see _launch_note). NEVER add a password field here — see the CLI's own --users-password-env-prefix / interactive-prompt documentation for how passwords are supplied, separately from this file.",
+  "users": [
+    {
+      "display_name": "REQUIRED_OPERATOR_INPUT",
+      "email": "REQUIRED_OPERATOR_INPUT",
+      "role_code": "cashier",
+      "branch_code": "REQUIRED_OPERATOR_INPUT"
+    },
+    {
+      "display_name": "REQUIRED_OPERATOR_INPUT",
+      "email": "REQUIRED_OPERATOR_INPUT",
+      "role_code": "manager",
+      "branch_code": "REQUIRED_OPERATOR_INPUT"
+    }
+  ],
+
+  "categories": [
+    { "code": "ENTRADAS", "name": "Entradas", "sort_order": 0 },
+    { "code": "PAQUETES", "name": "Paquetes", "sort_order": 1 },
+    { "code": "ATRACCIONES", "name": "Atracciones", "sort_order": 2 },
+    { "code": "TIENDA", "name": "Tienda", "sort_order": 3 },
+    { "code": "MEMBRESIAS", "name": "Membresías", "sort_order": 4 },
+    { "code": "EXTRAS", "name": "Extras", "sort_order": 5 }
+  ],
+
+  "products": [
+    {
+      "code": "ENT-90MIN",
+      "sku": "ENT-90MIN",
+      "name": "Entrada 90 minutos",
+      "category_code": "ENTRADAS",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "149.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "ENT-DAYPASS",
+      "sku": "ENT-DAYPASS",
+      "name": "Day Pass",
+      "category_code": "ENTRADAS",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "279.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "PAQ-FAM2",
+      "sku": "PAQ-FAM2",
+      "name": "Family Pack 2 personas",
+      "category_code": "PAQUETES",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "269.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "PAQ-FAM4",
+      "sku": "PAQ-FAM4",
+      "name": "Family Pack 4 personas",
+      "category_code": "PAQUETES",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "499.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "ATR-GARRA",
+      "sku": "ATR-GARRA",
+      "name": "Garra humana",
+      "category_code": "ATRACCIONES",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "59.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "TDA-CALCETAS",
+      "sku": "TDA-CALCETAS",
+      "name": "Calcetas antiderrapantes",
+      "category_code": "TIENDA",
+      "product_type": "simple",
+      "tracks_inventory": true,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "65.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "TDA-AGUA",
+      "sku": "TDA-AGUA",
+      "name": "Agua",
+      "category_code": "TIENDA",
+      "product_type": "simple",
+      "tracks_inventory": true,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "25.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "TDA-REFRESCO",
+      "sku": "TDA-REFRESCO",
+      "name": "Refresco",
+      "category_code": "TIENDA",
+      "product_type": "simple",
+      "tracks_inventory": true,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "30.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "MEM-MENSUAL",
+      "sku": "MEM-MENSUAL",
+      "name": "Membresía mensual",
+      "category_code": "MEMBRESIAS",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "899.00",
+      "unit_price_is_confirmed_final": false
+    },
+    {
+      "code": "EXT-LOCKER",
+      "sku": "EXT-LOCKER",
+      "name": "Locker",
+      "category_code": "EXTRAS",
+      "product_type": "simple",
+      "tracks_inventory": false,
+      "tax_code": "IVA_GENERAL",
+      "status": "active",
+      "unit_price": "49.00",
+      "unit_price_is_confirmed_final": false
+    }
+  ],
+
+  "_inventory_opening_balances_note": "Stock-tracked products only (tracks_inventory=true above: TDA-CALCETAS, TDA-AGUA, TDA-REFRESCO). Quantities are marked REQUIRED_OPERATOR_INPUT — a real starting stock count must never be invented by this template.",
+  "inventory_opening_balances": [
+    { "product_code": "TDA-CALCETAS", "branch_code": "REQUIRED_OPERATOR_INPUT", "quantity": "REQUIRED_OPERATOR_INPUT" },
+    { "product_code": "TDA-AGUA", "branch_code": "REQUIRED_OPERATOR_INPUT", "quantity": "REQUIRED_OPERATOR_INPUT" },
+    { "product_code": "TDA-REFRESCO", "branch_code": "REQUIRED_OPERATOR_INPUT", "quantity": "REQUIRED_OPERATOR_INPUT" }
+  ],
+
+  "rewards": {
+    "_comment": "Launch default: enabled=false — do not force launch dependency on Rewards; if not enabled, provision:business-config leaves the program inactive (it creates nothing). The fields below still describe a realistic, ready-to-use template — mirroring the 'Sellos VIP (5+1)' dev fixture in apps/api/src/development/seed-loyalty-rewards.service.ts — so flipping enabled to true later is a one-line change, not a redesign.",
+    "enabled": false,
+    "program_name": "Sellos VIP (5+1)",
+    "unit_type": "stamp",
+    "earn_quantity_per_sale": 1,
+    "reward_threshold": 5,
+    "reward_type": "vip_pass",
+    "reward_benefit_type": "free_eligible_item",
+    "reward_benefit_scope_product_codes": ["ENT-90MIN"]
+  },
+
+  "promotions": [],
+  "_promotions_note": "Launch with promotions empty and still operate correctly; populate only with real, business-confirmed promotions. provision:business-config does not yet create promotions — it refuses (rather than silently ignoring) if this array is non-empty."
+}

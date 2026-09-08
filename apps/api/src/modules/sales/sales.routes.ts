@@ -57,6 +57,9 @@ interface SaleBody {
   // TASK 13.2 — requires `customer_id`; re-validated fresh here, never
   // trusted from a prior quote (Part X).
   reward_entitlement_id?: string;
+  // TASK 14.3 (Wave 1, Part B.4) — optional, ≤2000 chars, frozen at
+  // creation; see `SaleRow.note`'s own doc comment.
+  note?: string;
 }
 interface ReasonBody {
   reason_code: string;
@@ -149,6 +152,7 @@ function saleHttp(
     cancelled_at: value.cancelledAt?.toISOString() ?? null,
     cancelled_by: value.cancelledBy,
     reason_code: value.reasonCode,
+    note: value.note,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -364,6 +368,7 @@ export function registerSaleRoutes(
               },
             },
             reward_entitlement_id: { type: 'string', format: 'uuid' },
+            note: { type: 'string', maxLength: 2000 },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -399,6 +404,7 @@ export function registerSaleRoutes(
             ...(request.body.currency_code === undefined ? {} : { currencyCode: request.body.currency_code }),
             ...(deviceId === undefined ? {} : { deviceId }),
             ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
+            ...(request.body.note === undefined ? {} : { note: request.body.note }),
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
             ...(request.body.coupon_codes === undefined ? {} : { couponCodes: request.body.coupon_codes }),
             ...(request.body.reward_entitlement_id === undefined

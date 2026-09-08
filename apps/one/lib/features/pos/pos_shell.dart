@@ -11,12 +11,16 @@ import '../authentication/startup_visuals.dart';
 import 'money.dart';
 import 'pos_cash_gateway.dart';
 import 'pos_customers_gateway.dart';
+import 'pos_held_sales_gateway.dart';
 import 'pos_loyalty_gateway.dart';
 import 'pos_memberships_gateway.dart';
 import 'pos_models.dart';
 import 'pos_navigation.dart';
+import 'pos_parties_gateway.dart';
+import 'pos_parties_models.dart';
 import 'pos_payments_gateway.dart';
 import 'pos_promotions_gateway.dart';
+import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
 import 'pos_refunds_gateway.dart';
@@ -42,6 +46,9 @@ class PosShell extends StatefulWidget {
     required this.membershipsGateway,
     required this.loyaltyGateway,
     required this.rewardsGateway,
+    required this.partiesGateway,
+    this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
+    this.purchasingGateway = const EmptyPosPurchasingGateway(),
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -71,6 +78,15 @@ class PosShell extends StatefulWidget {
   // TASK 13.1: reward entitlements/redemption, layered on the foundation
   // above — see `pos_rewards_gateway.dart` and ADR-0018.
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — see
+  // `pos_parties_gateway.dart` and `docs/LEGACY_FIESTAS_RECOVERY.md`.
+  final PosPartiesGateway partiesGateway;
+  // TASK 14.3 Wave 1 Part B.1: suspend/list/resume/link-sale/discard a
+  // held-sale cart — see `pos_held_sales_gateway.dart`.
+  final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
+  // `pos_purchasing_gateway.dart`.
+  final PosPurchasingGateway purchasingGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -270,6 +286,9 @@ class _PosShellState extends State<PosShell> {
                             membershipsGateway: widget.membershipsGateway,
                             loyaltyGateway: widget.loyaltyGateway,
                             rewardsGateway: widget.rewardsGateway,
+                            partiesGateway: widget.partiesGateway,
+                            heldSalesGateway: widget.heldSalesGateway,
+                            purchasingGateway: widget.purchasingGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -1116,12 +1135,17 @@ class _RoundAction extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.color,
+    // TASK 14.3 (Wave 1, Part B.1): a real in-flight indicator for the
+    // now-real "Suspender venta" action — never a fake instant success.
+    this.busy = false,
+    super.key,
   });
 
   final String tooltip;
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final Color? color;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -1129,7 +1153,13 @@ class _RoundAction extends StatelessWidget {
     return IconButton(
       tooltip: tooltip,
       onPressed: onPressed,
-      icon: Icon(icon, size: 18),
+      icon: busy
+          ? SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: color ?? palette.textSecondary),
+            )
+          : Icon(icon, size: 18),
       color: color ?? palette.textSecondary,
       style: IconButton.styleFrom(
         minimumSize: const Size.square(40),
@@ -1213,6 +1243,7 @@ Future<void> _submitSaleForPayment(
   required PosPaymentsGateway paymentsGateway,
   required String? branchId,
   required ValueChanged<String?> onStatusUpdate,
+  PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1222,6 +1253,11 @@ Future<void> _submitSaleForPayment(
     _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
     return;
   }
+  // TASK 14.3 (Wave 1, Part B.1): captured before any await resolves the
+  // real sale/payment — see the `link-sale` call below, mirrored on
+  // `customerDisplayName`'s own "capture before it can be cleared"
+  // precedent in the cash path.
+  final resumedHeldCartId = saleSession.resumedHeldCartId;
   try {
     final sale = await salesGateway.createSale(
       branchId: branchId,
@@ -1229,7 +1265,7 @@ Future<void> _submitSaleForPayment(
         for (final line in saleSession.lines)
           PosSaleLineRequest(
             productId: line.productId,
-            quantity: line.quantity.toString(),
+            quantity: line.quantityForApi,
           ),
       ],
       // TASK 12.9: the SAME coupon/manual-discount intent the last
@@ -1247,6 +1283,8 @@ Future<void> _submitSaleForPayment(
       // and only actually consumes it once the sale genuinely settles
       // (ADR-0019).
       rewardEntitlementId: saleSession.rewardEntitlementId,
+      // TASK 14.3 (Wave 1, Part B.4).
+      note: saleSession.note,
     );
     if (!context.mounted) return;
 
@@ -1302,6 +1340,18 @@ Future<void> _submitSaleForPayment(
     }
 
     onStatusUpdate(null);
+    // TASK 14.3 (Wave 1, Part B.1): the resumed held cart's second
+    // handshake call — only once the sale genuinely settled (see
+    // `held-sales.routes.ts`'s own doc comment on `link-sale`). Best-
+    // effort: a failure here never blocks or reverses the real, already-
+    // approved sale/payment above.
+    if (resumedHeldCartId != null && latestAttempt.status == 'approved') {
+      try {
+        await heldSalesGateway.linkSale(id: resumedHeldCartId, saleId: sale.id);
+      } on Object {
+        // Intentionally swallowed — see doc comment above.
+      }
+    }
     if (!context.mounted) return;
     _showNotice(
       context,
@@ -1341,6 +1391,7 @@ Future<void> _submitCashSaleForPayment(
   required PosPaymentsGateway paymentsGateway,
   required String? branchId,
   required VoidCallback onDialogAboutToOpen,
+  PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1350,6 +1401,9 @@ Future<void> _submitCashSaleForPayment(
     _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
     return;
   }
+  // TASK 14.3 (Wave 1, Part B.1): see the identical capture in
+  // `_submitSaleForPayment`.
+  final resumedHeldCartId = saleSession.resumedHeldCartId;
   final PosSaleCreated sale;
   try {
     sale = await salesGateway.createSale(
@@ -1358,7 +1412,7 @@ Future<void> _submitCashSaleForPayment(
         for (final line in saleSession.lines)
           PosSaleLineRequest(
             productId: line.productId,
-            quantity: line.quantity.toString(),
+            quantity: line.quantityForApi,
           ),
       ],
       // TASK 12.9: same rationale as `_submitSaleForPayment` above.
@@ -1368,6 +1422,8 @@ Future<void> _submitCashSaleForPayment(
       customerId: saleSession.customerId,
       // TASK 13.2: same rationale as `_submitSaleForPayment` above.
       rewardEntitlementId: saleSession.rewardEntitlementId,
+      // TASK 14.3 (Wave 1, Part B.4).
+      note: saleSession.note,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1428,7 +1484,20 @@ Future<void> _submitCashSaleForPayment(
   // `GET /sales/{id}/receipt` response carries none either (unlike
   // `GET /sales`) — see `buildReceiptHtml`'s own doc comment.
   final customerDisplayName = saleSession.customerDisplayName;
+  final note = saleSession.note;
+  // TASK 14.3 (Wave 1, Part B.1): the resumed held cart's second
+  // handshake call — the cash payment above already genuinely settled
+  // this sale. Best-effort: a failure here never reverses the real,
+  // already-confirmed cash payment.
+  if (resumedHeldCartId != null) {
+    try {
+      await heldSalesGateway.linkSale(id: resumedHeldCartId, saleId: sale.id);
+    } on Object {
+      // Intentionally swallowed — see doc comment above.
+    }
+  }
   saleSession.clearAll();
+  if (!context.mounted) return;
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -1439,6 +1508,7 @@ Future<void> _submitCashSaleForPayment(
       change: change,
       salesGateway: salesGateway,
       customerDisplayName: customerDisplayName,
+      note: note,
     ),
   );
 }
@@ -1459,6 +1529,7 @@ Future<void> _submitZeroTotalSale(
   required PosSalesGateway salesGateway,
   required String? branchId,
   required VoidCallback onBeforeReceiptDialog,
+  PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1468,6 +1539,9 @@ Future<void> _submitZeroTotalSale(
     _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
     return;
   }
+  // TASK 14.3 (Wave 1, Part B.1): see the identical capture in
+  // `_submitSaleForPayment`.
+  final resumedHeldCartId = saleSession.resumedHeldCartId;
   final PosSaleCreated sale;
   try {
     sale = await salesGateway.createSale(
@@ -1476,13 +1550,15 @@ Future<void> _submitZeroTotalSale(
         for (final line in saleSession.lines)
           PosSaleLineRequest(
             productId: line.productId,
-            quantity: line.quantity.toString(),
+            quantity: line.quantityForApi,
           ),
       ],
       couponCodes: saleSession.couponCodes,
       manualDiscount: saleSession.manualDiscount,
       customerId: saleSession.customerId,
       rewardEntitlementId: saleSession.rewardEntitlementId,
+      // TASK 14.3 (Wave 1, Part B.4).
+      note: saleSession.note,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1522,7 +1598,19 @@ Future<void> _submitZeroTotalSale(
     return;
   }
   final customerDisplayName = saleSession.customerDisplayName;
+  final note = saleSession.note;
+  // TASK 14.3 (Wave 1, Part B.1): the resumed held cart's second
+  // handshake call — the zero-total completion above already genuinely
+  // settled this sale. Best-effort: a failure here never reverses it.
+  if (resumedHeldCartId != null) {
+    try {
+      await heldSalesGateway.linkSale(id: resumedHeldCartId, saleId: completed.id);
+    } on Object {
+      // Intentionally swallowed — see doc comment above.
+    }
+  }
   saleSession.clearAll();
+  if (!context.mounted) return;
   // Mirrors `_submitCashSaleForPayment`'s own `onDialogAboutToOpen`: the
   // Cobrar button's busy/spinner state covers only the two network calls
   // above, never however long the cashier leaves the completed-sale
@@ -1538,6 +1626,7 @@ Future<void> _submitZeroTotalSale(
       change: Money.zero('MXN'),
       salesGateway: salesGateway,
       customerDisplayName: customerDisplayName,
+      note: note,
     ),
   );
 }
@@ -1586,6 +1675,7 @@ class _ReceiptSuccessDialog extends StatefulWidget {
     required this.change,
     required this.salesGateway,
     this.customerDisplayName,
+    this.note,
   });
   final String saleId;
   final String saleNumber;
@@ -1596,6 +1686,10 @@ class _ReceiptSuccessDialog extends StatefulWidget {
   // see `buildReceiptHtml`'s own doc comment for why this isn't read off
   // the receipt itself.
   final String? customerDisplayName;
+  // TASK 14.3 (Wave 1, Part B.4): same "captured before clearAll(), never
+  // read off the receipt" rationale as [customerDisplayName] above — the
+  // backend's own receipt response carries no `note` field either.
+  final String? note;
 
   @override
   State<_ReceiptSuccessDialog> createState() => _ReceiptSuccessDialogState();
@@ -1657,6 +1751,7 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
       receipt: receipt,
       logoDataUri: logoDataUri,
       customerDisplayName: widget.customerDisplayName,
+      note: widget.note,
     );
     final opened = openReceiptPrintWindow(html);
     if (!mounted) return;
@@ -1716,6 +1811,12 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
                     label: 'Cliente',
                     value: widget.customerDisplayName!,
                   ),
+                ],
+                // TASK 14.3 (Wave 1, Part B.4): a real, non-empty note
+                // only — never an empty placeholder row.
+                if (widget.note != null && widget.note!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  _CashSummaryRow(label: 'Nota', value: widget.note!),
                 ],
                 const SizedBox(height: 6),
                 _CashSummaryRow(label: 'Total', value: _money(widget.total)),
@@ -2417,6 +2518,9 @@ class _Content extends StatelessWidget {
     required this.membershipsGateway,
     required this.loyaltyGateway,
     required this.rewardsGateway,
+    required this.partiesGateway,
+    required this.heldSalesGateway,
+    required this.purchasingGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2441,6 +2545,15 @@ class _Content extends StatelessWidget {
   // TASK 13.1: reward entitlements/redemption — see
   // `pos_rewards_gateway.dart` and ADR-0018.
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — see
+  // `pos_parties_gateway.dart` and `docs/LEGACY_FIESTAS_RECOVERY.md`.
+  final PosPartiesGateway partiesGateway;
+  // TASK 14.3 Wave 1 Part B.1: suspend/list/resume/link-sale/discard a
+  // held-sale cart — see `pos_held_sales_gateway.dart`.
+  final PosHeldSalesGateway heldSalesGateway;
+  // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
+  // `pos_purchasing_gateway.dart`.
+  final PosPurchasingGateway purchasingGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2489,6 +2602,7 @@ class _Content extends StatelessWidget {
                         promotionsGateway: promotionsGateway,
                         customersGateway: customersGateway,
                         rewardsGateway: rewardsGateway,
+                        heldSalesGateway: heldSalesGateway,
                         onEnterCliente: onEnterCliente,
                       ),
               )
@@ -2510,6 +2624,7 @@ class _Content extends StatelessWidget {
                       branchId: this.context.session.branchId,
                       refresh: true,
                     ),
+                    onOpenDirectPurchase: () => onNavigateToModule(PosModule.purchases),
                   ),
                   PosModule.users => _Users(
                     state: controller.users,
@@ -2574,6 +2689,37 @@ class _Content extends StatelessWidget {
                   PosModule.memberships => _MembershipsAdmin(
                     context: this.context,
                     membershipsGateway: membershipsGateway,
+                  ),
+                  // TASK 14.3 Wave 1 Part A: the pre-reserved
+                  // `PosModule.events` slot ("Fiestas") — real
+                  // reservation Lista/Calendario/Cotizador/Ajustes, wired
+                  // to the already-tested `apps/api/.../parties` module.
+                  // See `docs/LEGACY_FIESTAS_RECOVERY.md`.
+                  PosModule.events => _FiestasAdmin(
+                    context: this.context,
+                    controller: controller,
+                    partiesGateway: partiesGateway,
+                    customersGateway: customersGateway,
+                    cashGateway: cashGateway,
+                  ),
+                  // TASK 14.3 Wave 1 Part B.1: the pre-reserved
+                  // `PosModule.suspended` slot ("Ventas Suspendidas") —
+                  // real, backend-persisted held-cart list/resume/discard.
+                  PosModule.suspended => _HeldSales(
+                    context: this.context,
+                    controller: controller,
+                    saleSession: saleSession,
+                    heldSalesGateway: heldSalesGateway,
+                    onNavigateToPos: () => onNavigateToModule(PosModule.pos),
+                  ),
+                  // TASK 14.3 Wave 1 Part C: the pre-reserved
+                  // `PosModule.purchases` slot ("Compras") — "Compra
+                  // Directa" (direct purchase / quick restock) form plus
+                  // its real history.
+                  PosModule.purchases => _DirectPurchases(
+                    context: this.context,
+                    controller: controller,
+                    purchasingGateway: purchasingGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -2837,6 +2983,7 @@ class _PosSale extends StatefulWidget {
     required this.promotionsGateway,
     required this.customersGateway,
     required this.rewardsGateway,
+    required this.heldSalesGateway,
     required this.onEnterCliente,
   });
   final AuthenticatedContext context;
@@ -2855,6 +3002,9 @@ class _PosSale extends StatefulWidget {
   // TASK 13.1: the CAJERO-only reward lookup/redeem affordance — see
   // `_TicketFooter` and ADR-0018.
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 Wave 1 Part B.1: "Suspender venta" (F5) — see
+  // `pos_held_sales_gateway.dart`.
+  final PosHeldSalesGateway heldSalesGateway;
   final VoidCallback onEnterCliente;
 
   @override
@@ -2865,11 +3015,125 @@ class _PosSaleState extends State<_PosSale> {
   String? selectedCategoryId;
   String query = '';
   final searchFocusNode = FocusNode(debugLabel: 'pos-sale-search');
+  final _searchController = TextEditingController();
+  bool _searchBusy = false;
+  bool _suspendBusy = false;
 
   @override
   void dispose() {
     searchFocusNode.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  /// TASK 14.3 (Wave 1, Part B.2): a real cash-register keyboard-wedge-
+  /// scanner UX — typing/scanning a value and pressing Enter first tries
+  /// an EXACT barcode lookup through the already-working backend
+  /// `GET /products?barcode=` filter (never a fake/random match — the
+  /// exact fix for the legacy screen's own fake "adds a random item
+  /// regardless of input" behavior). A hit adds the product directly (or
+  /// opens the weight dialog for a `kg`/`g` product); a miss shows an
+  /// honest "not found" notice and falls back to the plain name filter
+  /// already driving the grid via [query].
+  Future<void> _handleSearchSubmit(String value) async {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty || _searchBusy) return;
+    setState(() => _searchBusy = true);
+    PosProduct? product;
+    String? errorMessage;
+    try {
+      product = await widget.controller.lookupByBarcode(
+        trimmed,
+        branchId: widget.context.session.branchId,
+      );
+    } on ApiException catch (error) {
+      errorMessage = error.failure.message;
+    } on Object {
+      errorMessage = 'No fue posible buscar por código de barras.';
+    }
+    if (!mounted) return;
+    setState(() => _searchBusy = false);
+    if (errorMessage != null) {
+      _showNotice(context, errorMessage);
+      return;
+    }
+    if (product == null) {
+      _showNotice(context, 'No se encontró ningún producto con el código «$trimmed».');
+      return;
+    }
+    final balances = widget.controller.balances.items;
+    final block = posAddabilityBlock(product, balances);
+    if (block != null) {
+      _showNotice(context, _addabilityMessage(block));
+      return;
+    }
+    if (posIsWeightBased(product)) {
+      await _openWeightDialog(product);
+    } else {
+      widget.saleSession.addProduct(product, balances);
+    }
+    _searchController.clear();
+    setState(() => query = '');
+  }
+
+  Future<void> _openWeightDialog(PosProduct product) async {
+    final weight = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _WeightEntryDialog(product: product),
+    );
+    if (weight == null || !mounted) return;
+    final added = widget.saleSession.addWeightedProduct(
+      product,
+      weight,
+      widget.controller.balances.items,
+    );
+    if (!added && mounted) {
+      _showNotice(context, 'No fue posible agregar el peso capturado.');
+    }
+  }
+
+  /// TASK 14.3 (Wave 1, Part B.1): "Suspender venta" (F5) — snapshots the
+  /// current ticket's real product/quantity pairs server-side, then
+  /// clears the on-screen cart. Mirrors — but never copies — the
+  /// legacy's own visual suspend button; this one is real and
+  /// server-persisted.
+  Future<void> _handleSuspend() async {
+    if (_suspendBusy) return;
+    final saleSession = widget.saleSession;
+    if (saleSession.isEmpty) {
+      _showNotice(context, 'Agrega al menos un producto al ticket.');
+      return;
+    }
+    final branchId = widget.context.session.branchId;
+    if (branchId == null) {
+      _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
+      return;
+    }
+    if (!widget.context.permissions.contains('held_sale.manage')) {
+      _showNotice(context, 'Tu sesión no incluye el permiso para suspender ventas.');
+      return;
+    }
+    setState(() => _suspendBusy = true);
+    try {
+      await widget.heldSalesGateway.createCart(
+        branchId: branchId,
+        items: [
+          for (final line in saleSession.lines)
+            PosHeldSaleCartItemRequest(productId: line.productId, quantity: line.quantityForApi),
+        ],
+      );
+      if (!mounted) return;
+      saleSession.clearAll();
+      _showNotice(context, 'Venta suspendida.');
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible suspender la venta.');
+    } finally {
+      if (mounted) setState(() => _suspendBusy = false);
+    }
   }
 
   @override
@@ -2881,6 +3145,11 @@ class _PosSaleState extends State<_PosSale> {
         if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.f2) {
           searchFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.f5) {
+          unawaited(_handleSuspend());
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -2904,6 +3173,7 @@ class _PosSaleState extends State<_PosSale> {
                     promotionsGateway: widget.promotionsGateway,
                     customersGateway: widget.customersGateway,
                     rewardsGateway: widget.rewardsGateway,
+                    heldSalesGateway: widget.heldSalesGateway,
                     branchId: widget.context.session.branchId,
                     permissions: widget.context.permissions,
                     selectedCategoryId: selectedCategoryId,
@@ -2912,6 +3182,11 @@ class _PosSaleState extends State<_PosSale> {
                     query: query,
                     onQueryChanged: (value) => setState(() => query = value),
                     searchFocusNode: searchFocusNode,
+                    searchController: _searchController,
+                    onSearchSubmitted: _handleSearchSubmit,
+                    searchBusy: _searchBusy,
+                    onSuspend: _handleSuspend,
+                    suspendBusy: _suspendBusy,
                     onEnterCliente: widget.onEnterCliente,
                   ),
           ),
@@ -2960,6 +3235,7 @@ class _PosSaleBody extends StatelessWidget {
     required this.promotionsGateway,
     required this.customersGateway,
     required this.rewardsGateway,
+    required this.heldSalesGateway,
     required this.branchId,
     required this.permissions,
     required this.selectedCategoryId,
@@ -2967,6 +3243,11 @@ class _PosSaleBody extends StatelessWidget {
     required this.query,
     required this.onQueryChanged,
     required this.searchFocusNode,
+    required this.searchController,
+    required this.onSearchSubmitted,
+    required this.searchBusy,
+    required this.onSuspend,
+    required this.suspendBusy,
     required this.onEnterCliente,
   });
 
@@ -2978,6 +3259,10 @@ class _PosSaleBody extends StatelessWidget {
   final PosPromotionsGateway promotionsGateway;
   final PosCustomersGateway customersGateway;
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 Wave 1 Part B.1: threaded only so `_TicketPanel` can pass it
+  // to a future held-carts affordance if needed — the real suspend call
+  // itself is owned by `_PosSaleState._handleSuspend`.
+  final PosHeldSalesGateway heldSalesGateway;
   final String? branchId;
   final List<String> permissions;
   final String? selectedCategoryId;
@@ -2985,6 +3270,11 @@ class _PosSaleBody extends StatelessWidget {
   final String query;
   final ValueChanged<String> onQueryChanged;
   final FocusNode searchFocusNode;
+  final TextEditingController searchController;
+  final ValueChanged<String> onSearchSubmitted;
+  final bool searchBusy;
+  final VoidCallback onSuspend;
+  final bool suspendBusy;
   final VoidCallback onEnterCliente;
 
   @override
@@ -3000,7 +3290,15 @@ class _PosSaleBody extends StatelessWidget {
       children: [
         _PosModeSwitch(onEnterCliente: onEnterCliente),
         const SizedBox(height: 8),
-        _PosSearchRow(focusNode: searchFocusNode, onChanged: onQueryChanged),
+        _PosSearchRow(
+          focusNode: searchFocusNode,
+          controller: searchController,
+          onChanged: onQueryChanged,
+          onSubmitted: onSearchSubmitted,
+          busy: searchBusy,
+          onSuspend: onSuspend,
+          suspendBusy: suspendBusy,
+        ),
         const SizedBox(height: 8),
         _CategoryStrip(
           state: controller.categories,
@@ -3038,6 +3336,7 @@ class _PosSaleBody extends StatelessWidget {
       promotionsGateway: promotionsGateway,
       customersGateway: customersGateway,
       rewardsGateway: rewardsGateway,
+      heldSalesGateway: heldSalesGateway,
       branchId: branchId,
       permissions: permissions,
     );
@@ -3390,9 +3689,26 @@ class _PosModeLabel extends StatelessWidget {
 /// are visually faithful, disabled placeholders — none of suspend, cancel,
 /// reprint, or customer linking exist as capabilities in this shell.
 class _PosSearchRow extends StatelessWidget {
-  const _PosSearchRow({required this.focusNode, required this.onChanged});
+  const _PosSearchRow({
+    required this.focusNode,
+    required this.controller,
+    required this.onChanged,
+    required this.onSubmitted,
+    required this.busy,
+    required this.onSuspend,
+    required this.suspendBusy,
+  });
   final FocusNode focusNode;
+  final TextEditingController controller;
   final ValueChanged<String> onChanged;
+  // TASK 14.3 (Wave 1, Part B.2): Enter/scanner-submit — tries an exact
+  // barcode lookup first (see `_PosSaleState._handleSearchSubmit`).
+  final ValueChanged<String> onSubmitted;
+  final bool busy;
+  // TASK 14.3 (Wave 1, Part B.1): "Suspender venta" (F5) — now a real,
+  // server-persisted suspend instead of the legacy read-only stub.
+  final VoidCallback onSuspend;
+  final bool suspendBusy;
 
   @override
   Widget build(BuildContext context) {
@@ -3403,10 +3719,22 @@ class _PosSearchRow extends StatelessWidget {
           child: TextField(
             key: const Key('pos-sale-search'),
             focusNode: focusNode,
+            controller: controller,
             onChanged: onChanged,
+            onSubmitted: onSubmitted,
+            textInputAction: TextInputAction.search,
             decoration: InputDecoration(
               hintText: 'Escanear código o buscar por nombre... (F2)',
-              prefixIcon: const Icon(Icons.search),
+              prefixIcon: busy
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : const Icon(Icons.search),
               suffixIcon: Icon(
                 Icons.qr_code_scanner_outlined,
                 size: 18,
@@ -3429,10 +3757,12 @@ class _PosSearchRow extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         _RoundAction(
+          key: const Key('pos-ticket-suspend'),
           tooltip: 'Suspender venta (F5)',
           icon: Icons.pause_circle_outline,
           color: palette.warning,
-          onPressed: () => _showReadOnlyNotice(context),
+          busy: suspendBusy,
+          onPressed: suspendBusy ? null : onSuspend,
         ),
         const SizedBox(width: 6),
         _RoundAction(
@@ -3588,14 +3918,40 @@ class _PosProductGrid extends StatelessWidget {
             return _PosProductCard(
               item: item,
               block: block,
-              onTap: block == null
-                  ? () => saleSession.addProduct(item, balances)
-                  : () => _showNotice(context, _addabilityMessage(block)),
+              onTap: block != null
+                  ? () => _showNotice(context, _addabilityMessage(block))
+                  // TASK 14.3 (Wave 1, Part B.3): a weight-based (`kg`/
+                  // `g`) product opens the weight-entry dialog instead of
+                  // adding 1 unit directly.
+                  : posIsWeightBased(item)
+                  ? () => _openWeightDialogFor(context, item, balances, saleSession)
+                  : () => saleSession.addProduct(item, balances),
             );
           },
         );
       },
     );
+  }
+}
+
+/// Shared by [_PosProductGrid] and [_PosSaleState]'s own barcode-hit path
+/// — opens [_WeightEntryDialog] for a weight-based product and, once the
+/// cashier confirms a weight, adds the real fractional-quantity line via
+/// [SaleSession.addWeightedProduct].
+Future<void> _openWeightDialogFor(
+  BuildContext context,
+  PosProduct product,
+  List<PosInventoryBalance> balances,
+  SaleSession saleSession,
+) async {
+  final weight = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => _WeightEntryDialog(product: product),
+  );
+  if (weight == null) return;
+  final added = saleSession.addWeightedProduct(product, weight, balances);
+  if (!added && context.mounted) {
+    _showNotice(context, 'No fue posible agregar el peso capturado.');
   }
 }
 
@@ -3608,6 +3964,113 @@ String _addabilityMessage(PosAddabilityBlock block) => switch (block) {
   PosAddabilityBlock.malformedPrice =>
     'El precio de este producto no es válido.',
 };
+
+/// TASK 14.3 (Wave 1, Part B.3): the weight-entry dialog for a `kg`/`g`
+/// product — the cashier types a weight and live-sees
+/// `weight × unit_price = line total`, computed via [Money.
+/// multiplyByDecimalQuantity] (this codebase's real fixed-point money
+/// utility — never raw `double` arithmetic). Confirming pops the exact
+/// weight decimal string for the caller to hand to
+/// [SaleSession.addWeightedProduct]; cancelling pops `null`.
+class _WeightEntryDialog extends StatefulWidget {
+  const _WeightEntryDialog({required this.product});
+  final PosProduct product;
+
+  @override
+  State<_WeightEntryDialog> createState() => _WeightEntryDialogState();
+}
+
+class _WeightEntryDialogState extends State<_WeightEntryDialog> {
+  final _controller = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Money? get _unitPrice => widget.product.pricing.amount;
+
+  /// `null` for empty/malformed/non-positive input — never a fabricated
+  /// fallback value.
+  Money? get _lineTotal {
+    final unitPrice = _unitPrice;
+    final raw = _controller.text.trim();
+    if (unitPrice == null || raw.isEmpty) return null;
+    try {
+      return unitPrice.multiplyByDecimalQuantity(raw);
+    } on MoneyFormatException {
+      return null;
+    }
+  }
+
+  bool get _isPositiveWeight {
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) return false;
+    final parsed = double.tryParse(raw);
+    return parsed != null && parsed > 0;
+  }
+
+  void _confirm() {
+    final raw = _controller.text.trim();
+    if (!_isPositiveWeight || _lineTotal == null) {
+      setState(() => _error = 'Captura un peso válido, mayor a cero.');
+      return;
+    }
+    Navigator.of(context).pop<String>(raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final unit = widget.product.unitOfMeasureCode ?? 'unit';
+    final total = _lineTotal;
+    return AlertDialog(
+      title: Text('Pesar — ${widget.product.name}'),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Precio: ${_unitPrice == null ? '—' : _money(_unitPrice!)}/$unit'),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('pos-weight-input'),
+              controller: _controller,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Peso ($unit)',
+                errorText: _error,
+                suffixText: unit,
+              ),
+              onChanged: (_) => setState(() => _error = null),
+              onSubmitted: (_) => _confirm(),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Total de la línea: ${total == null ? '—' : _money(total)}',
+              key: const Key('pos-weight-line-total'),
+              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop<String>(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          key: const Key('pos-weight-confirm'),
+          onPressed: _confirm,
+          child: const Text('Agregar'),
+        ),
+      ],
+    );
+  }
+}
 
 class _PosProductCard extends StatelessWidget {
   const _PosProductCard({
@@ -3729,6 +4192,7 @@ class _TicketPanel extends StatelessWidget {
     required this.promotionsGateway,
     required this.customersGateway,
     required this.rewardsGateway,
+    this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     required this.branchId,
     required this.permissions,
   });
@@ -3744,6 +4208,9 @@ class _TicketPanel extends StatelessWidget {
   // TASK 13.1: the CAJERO-only reward lookup/redeem affordance — see
   // `_TicketFooter` and ADR-0018.
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 (Wave 1, Part B.1): the resumed-held-cart `link-sale`
+  // handshake — see `_TicketFooter`/`_PosCobrarButton`.
+  final PosHeldSalesGateway heldSalesGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -3811,8 +4278,16 @@ class _TicketPanel extends StatelessWidget {
                   ),
                   const Spacer(),
                   _TicketHeaderAction(
-                    tooltip: 'Nota de venta',
-                    icon: Icons.notes_outlined,
+                    key: const Key('pos-ticket-note-button'),
+                    tooltip: saleSession.note == null ? 'Nota de venta' : 'Nota de venta (agregada)',
+                    icon: saleSession.note == null ? Icons.notes_outlined : Icons.speaker_notes,
+                    onPressed: () async {
+                      final result = await showDialog<String>(
+                        context: context,
+                        builder: (dialogContext) => _NoteDialog(initialNote: saleSession.note),
+                      );
+                      if (result != null) saleSession.setNote(result);
+                    },
                   ),
                   _TicketHeaderAction(
                     tooltip: 'Limpiar ticket',
@@ -3845,6 +4320,7 @@ class _TicketPanel extends StatelessWidget {
               promotionsGateway: promotionsGateway,
               customersGateway: customersGateway,
               rewardsGateway: rewardsGateway,
+              heldSalesGateway: heldSalesGateway,
               branchId: branchId,
               permissions: permissions,
             ),
@@ -5367,17 +5843,75 @@ class _TvKey extends StatelessWidget {
 }
 
 class _TicketHeaderAction extends StatelessWidget {
-  const _TicketHeaderAction({required this.tooltip, required this.icon});
+  const _TicketHeaderAction({
+    required this.tooltip,
+    required this.icon,
+    this.onPressed,
+    super.key,
+  });
   final String tooltip;
   final IconData icon;
+  // TASK 14.3 (Wave 1, Part B.4): a real handler when given (e.g. "Nota de
+  // venta") — falls back to the pre-existing read-only stub for every
+  // action this task doesn't touch (e.g. "Limpiar ticket").
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) => IconButton(
     tooltip: tooltip,
-    onPressed: () => _showReadOnlyNotice(context),
+    onPressed: onPressed ?? () => _showReadOnlyNotice(context),
     icon: Icon(icon, size: 16, color: Colors.white),
     padding: const EdgeInsets.all(4),
     constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+  );
+}
+
+/// TASK 14.3 (Wave 1, Part B.4): "Nota de venta" — a small text-entry
+/// dialog bound to [SaleSession.note], threaded straight into
+/// `POST /sales`'s own optional `note` field. Pre-fills with the current
+/// note, if any; clearing the field and confirming removes it.
+class _NoteDialog extends StatefulWidget {
+  const _NoteDialog({required this.initialNote});
+  final String? initialNote;
+
+  @override
+  State<_NoteDialog> createState() => _NoteDialogState();
+}
+
+class _NoteDialogState extends State<_NoteDialog> {
+  late final _controller = TextEditingController(text: widget.initialNote ?? '');
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Nota de venta'),
+    content: SizedBox(
+      width: 360,
+      child: TextField(
+        key: const Key('pos-ticket-note-field'),
+        controller: _controller,
+        autofocus: true,
+        maxLength: 2000,
+        maxLines: 4,
+        decoration: const InputDecoration(hintText: 'Ej. Sin bolsa, entregar en caja 2…'),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop<String?>(null),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        key: const Key('pos-ticket-note-save'),
+        onPressed: () => Navigator.of(context).pop<String?>(_controller.text),
+        child: const Text('Guardar'),
+      ),
+    ],
   );
 }
 
@@ -5400,6 +5934,7 @@ class _TicketFooter extends StatefulWidget {
     required this.promotionsGateway,
     required this.customersGateway,
     required this.rewardsGateway,
+    this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     required this.branchId,
     required this.permissions,
   });
@@ -5414,6 +5949,9 @@ class _TicketFooter extends StatefulWidget {
   // TASK 13.1: the attached customer's reward lookup/redeem affordance —
   // see `_TicketRewardsDialog` and ADR-0018 Part V.
   final PosRewardsGateway rewardsGateway;
+  // TASK 14.3 (Wave 1, Part B.1): the resumed-held-cart `link-sale`
+  // handshake — see `_PosCobrarButton`.
+  final PosHeldSalesGateway heldSalesGateway;
   final String? branchId;
   final List<String> permissions;
 
@@ -5473,7 +6011,7 @@ class _TicketFooterState extends State<_TicketFooter> {
 
   String _cartSignature() {
     final saleSession = widget.saleSession;
-    final lines = saleSession.lines.map((line) => '${line.productId}:${line.quantity}').join(',');
+    final lines = saleSession.lines.map((line) => '${line.productId}:${line.quantityForApi}').join(',');
     final coupons = saleSession.couponCodes.join(',');
     final manual = saleSession.manualDiscount?.toJson().toString() ?? '';
     // TASK 13.2: the attached reward entitlement is part of the same
@@ -5575,7 +6113,7 @@ class _TicketFooterState extends State<_TicketFooter> {
         branchId: branchId,
         items: [
           for (final line in saleSession.lines)
-            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantityForApi),
         ],
         couponCodes: saleSession.couponCodes,
         manualDiscount: saleSession.manualDiscount,
@@ -5610,7 +6148,7 @@ class _TicketFooterState extends State<_TicketFooter> {
         branchId: branchId,
         items: [
           for (final line in saleSession.lines)
-            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantityForApi),
         ],
         couponCodes: saleSession.couponCodes,
         manualDiscount: saleSession.manualDiscount,
@@ -5657,7 +6195,7 @@ class _TicketFooterState extends State<_TicketFooter> {
         branchId: branchId,
         items: [
           for (final line in saleSession.lines)
-            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantityForApi),
         ],
         couponCodes: candidateCodes,
         manualDiscount: saleSession.manualDiscount,
@@ -5935,6 +6473,7 @@ class _TicketFooterState extends State<_TicketFooter> {
             salesGateway: widget.salesGateway,
             paymentsGateway: widget.paymentsGateway,
             cashGateway: widget.cashGateway,
+            heldSalesGateway: widget.heldSalesGateway,
             branchId: widget.branchId,
             selectedMethod: _selectedMethod,
           ),
@@ -6189,7 +6728,7 @@ class _ManualDiscountDialogState extends State<_ManualDiscountDialog> {
         branchId: branchId,
         items: [
           for (final line in widget.saleSession.lines)
-            PosPricingQuoteItem(productId: line.productId, quantity: line.quantity.toString()),
+            PosPricingQuoteItem(productId: line.productId, quantity: line.quantityForApi),
         ],
         couponCodes: widget.saleSession.couponCodes,
         manualDiscount: request,
@@ -6549,6 +7088,7 @@ class _PosCobrarButton extends StatefulWidget {
     required this.salesGateway,
     required this.paymentsGateway,
     required this.cashGateway,
+    this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     required this.branchId,
     required this.selectedMethod,
   });
@@ -6556,6 +7096,7 @@ class _PosCobrarButton extends StatefulWidget {
   final PosSalesGateway salesGateway;
   final PosPaymentsGateway paymentsGateway;
   final PosCashGateway cashGateway;
+  final PosHeldSalesGateway heldSalesGateway;
   final String selectedMethod;
   final String? branchId;
 
@@ -6585,6 +7126,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         saleSession: widget.saleSession,
         salesGateway: widget.salesGateway,
         branchId: widget.branchId,
+        heldSalesGateway: widget.heldSalesGateway,
         onBeforeReceiptDialog: () {
           if (mounted) setState(() => _busy = false);
         },
@@ -6634,6 +7176,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         salesGateway: widget.salesGateway,
         paymentsGateway: widget.paymentsGateway,
         branchId: widget.branchId,
+        heldSalesGateway: widget.heldSalesGateway,
         onDialogAboutToOpen: () {
           if (mounted) setState(() => _busy = false);
         },
@@ -6645,6 +7188,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         salesGateway: widget.salesGateway,
         paymentsGateway: widget.paymentsGateway,
         branchId: widget.branchId,
+        heldSalesGateway: widget.heldSalesGateway,
         onStatusUpdate: (message) {
           if (mounted) setState(() => _statusMessage = message);
         },
@@ -6859,7 +7403,10 @@ class _TicketLineRow extends StatelessWidget {
                   ],
                 ),
                 Text(
-                  '${line.sku} · ${_money(line.unitPrice)}/u',
+                  // TASK 14.3 (Wave 1, Part B.3): a weight-based line
+                  // shows its real unit (e.g. "/kg"), never the generic
+                  // "/u" a per-kilogram price would misrepresent.
+                  '${line.sku} · ${_money(line.unitPrice)}/${line.isWeightBased ? line.unitOfMeasureCode : 'u'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 10, color: palette.textMuted),
@@ -6928,40 +7475,59 @@ class _DiscountBadgeChip extends StatelessWidget {
 }
 
 /// Matches V1's `.qty-stepper`/`.tqty`: a minus button, the quantity, and
-/// a plus button.
+/// a plus button. TASK 14.3 (Wave 1, Part B.3): a weight-based line has
+/// no meaningful "+1 unit" — it shows its real decimal weight instead
+/// (e.g. `"2.350 kg"`), with no stepper buttons.
 class _QtyStepper extends StatelessWidget {
   const _QtyStepper({required this.line, required this.saleSession});
   final SaleLine line;
   final SaleSession saleSession;
 
   @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      _QtyButton(
-        buttonKey: Key('pos-ticket-qty-minus-${line.productId}'),
-        icon: Icons.remove,
-        onTap: () => saleSession.decreaseQuantity(line.productId),
-      ),
-      SizedBox(
-        width: 26,
+  Widget build(BuildContext context) {
+    if (line.isWeightBased) {
+      return SizedBox(
+        key: Key('pos-ticket-qty-${line.productId}'),
+        width: 62,
         child: Text(
-          '${line.quantity}',
+          line.displayQuantity,
           textAlign: TextAlign.center,
           style: TextStyle(
             fontWeight: FontWeight.w700,
-            fontSize: 13,
+            fontSize: 12,
             color: PosPalette.of(context).text,
           ),
         ),
-      ),
-      _QtyButton(
-        buttonKey: Key('pos-ticket-qty-plus-${line.productId}'),
-        icon: Icons.add,
-        onTap: () => saleSession.increaseQuantity(line.productId),
-      ),
-    ],
-  );
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _QtyButton(
+          buttonKey: Key('pos-ticket-qty-minus-${line.productId}'),
+          icon: Icons.remove,
+          onTap: () => saleSession.decreaseQuantity(line.productId),
+        ),
+        SizedBox(
+          width: 26,
+          child: Text(
+            '${line.quantity}',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: PosPalette.of(context).text,
+            ),
+          ),
+        ),
+        _QtyButton(
+          buttonKey: Key('pos-ticket-qty-plus-${line.productId}'),
+          icon: Icons.add,
+          onTap: () => saleSession.increaseQuantity(line.productId),
+        ),
+      ],
+    );
+  }
 }
 
 class _QtyButton extends StatelessWidget {
@@ -7287,10 +7853,14 @@ class _Inventory extends StatelessWidget {
     required this.state,
     required this.allowed,
     required this.onRefresh,
+    required this.onOpenDirectPurchase,
   });
   final PosReadState<PosInventoryBalance> state;
   final bool allowed;
   final VoidCallback onRefresh;
+  // TASK 14.3 (Wave 1, Part C): "Compra Directa" (direct purchase / quick
+  // restock) — navigates to the real `PosModule.purchases` screen.
+  final VoidCallback onOpenDirectPurchase;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -7300,7 +7870,19 @@ class _Inventory extends StatelessWidget {
         title: 'Inventario',
         description:
             'Balances autorizados. Ningún control modifica existencias.',
-        action: _ReadOnlyButton(onPressed: onRefresh),
+        action: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            OutlinedButton.icon(
+              key: const Key('pos-inventory-direct-purchase'),
+              onPressed: onOpenDirectPurchase,
+              icon: const Icon(Icons.add_shopping_cart_outlined, size: 17),
+              label: const Text('Compra Directa'),
+            ),
+            const SizedBox(width: 8),
+            _ReadOnlyButton(onPressed: onRefresh),
+          ],
+        ),
       ),
       if (!allowed)
         const _PermissionState()
@@ -7347,6 +7929,798 @@ class _InventoryTable extends StatelessWidget {
                     DataCell(Text(item.onHand)),
                     DataCell(Text(item.reserved)),
                     DataCell(Text(item.inTransit)),
+                  ],
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+  }
+}
+
+// --- TASK 14.3 (Wave 1, Part B.1): Ventas Suspendidas ------------------
+
+enum _HeldSalesPhase { loading, ready, empty, failure }
+
+class _HeldSales extends StatefulWidget {
+  const _HeldSales({
+    required this.context,
+    required this.controller,
+    required this.saleSession,
+    required this.heldSalesGateway,
+    required this.onNavigateToPos,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final SaleSession saleSession;
+  final PosHeldSalesGateway heldSalesGateway;
+  final VoidCallback onNavigateToPos;
+
+  @override
+  State<_HeldSales> createState() => _HeldSalesState();
+}
+
+class _HeldSalesState extends State<_HeldSales> {
+  _HeldSalesPhase _phase = _HeldSalesPhase.loading;
+  List<PosHeldSaleCart> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+  // Only one row's action may be in flight at a time — a real network
+  // call, never a fake instant success.
+  String? _busyCartId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  PosHeldSaleCartListFilter get _filter => PosHeldSaleCartListFilter(
+    status: 'held',
+    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
+  );
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _HeldSalesPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.heldSalesGateway.listCarts(filter: _filter);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _HeldSalesPhase.empty : _HeldSalesPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _HeldSalesPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _HeldSalesPhase.failure;
+        _errorMessage = 'No fue posible cargar las ventas suspendidas.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.heldSalesGateway.listCarts(filter: _filter, cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  /// Mirrors `held-sales.service.ts`'s own `discardCart` gate: the cart's
+  /// own creator, or an actor with `sale.cancel`, may discard it — never
+  /// shown as available when it would just 403.
+  bool _canDiscard(PosHeldSaleCart cart) =>
+      cart.createdBy == widget.context.session.userId ||
+      widget.context.permissions.contains('sale.cancel');
+
+  Future<void> _resume(PosHeldSaleCart cart) async {
+    if (_busyCartId != null) return;
+    if (widget.saleSession.isNotEmpty) {
+      _showNotice(context, 'Termina o suspende el ticket actual antes de restaurar otro.');
+      return;
+    }
+    setState(() => _busyCartId = cart.id);
+    try {
+      if (widget.controller.products.phase == PosReadPhase.idle) {
+        await widget.controller.loadProducts();
+      }
+      if (widget.controller.balances.phase == PosReadPhase.idle) {
+        await widget.controller.loadBalances(branchId: widget.context.session.branchId);
+      }
+      // TASK 14.3: the real recovery call — hands back only the cart's
+      // raw items; every price/name below is re-resolved fresh through
+      // the currently-loaded catalog, never trusted from this response.
+      final resumed = await widget.heldSalesGateway.resumeCart(cart.id);
+      if (!mounted) return;
+      final skipped = widget.saleSession.resumeFromHeldCart(
+        cartId: resumed.id,
+        items: resumed.items,
+        products: widget.controller.products.items,
+        balances: widget.controller.balances.items,
+      );
+      if (skipped.isNotEmpty) {
+        _showNotice(
+          context,
+          '${skipped.length} artículo(s) de la venta suspendida ya no están disponibles y no se repusieron.',
+        );
+      }
+      await _load();
+      if (!mounted) return;
+      widget.onNavigateToPos();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible restaurar la venta suspendida.');
+    } finally {
+      if (mounted) setState(() => _busyCartId = null);
+    }
+  }
+
+  Future<void> _discard(PosHeldSaleCart cart) async {
+    if (_busyCartId != null) return;
+    // A real, slightly destructive action — confirmed explicitly, never
+    // discarded on a single accidental tap.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Descartar venta suspendida'),
+        content: Text(
+          '¿Descartar la venta suspendida ${_compactId(cart.id)}'
+          '${cart.label == null ? '' : ' («${cart.label}»)'}? '
+          'Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            key: const Key('pos-held-sale-discard-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: PosPalette.of(context).error),
+            child: const Text('Descartar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busyCartId = cart.id);
+    try {
+      await widget.heldSalesGateway.discardCart(id: cart.id);
+      if (!mounted) return;
+      await _load();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible descartar la venta suspendida.');
+    } finally {
+      if (mounted) setState(() => _busyCartId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed = widget.context.permissions.contains('held_sale.manage');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Ventas Suspendidas',
+          description: allowed && (_phase == _HeldSalesPhase.ready || _phase == _HeldSalesPhase.empty)
+              ? '${_items.length} venta(s) suspendida(s) actualmente.'
+              : 'Tickets pausados por un cajero, listos para restaurarse.',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (!allowed)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _HeldSalesPhase.loading => const _LoadingState(),
+            _HeldSalesPhase.empty => const _EmptyState(message: 'No hay ventas suspendidas.'),
+            _HeldSalesPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar las ventas suspendidas.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _HeldSalesPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _HeldSalesTable(
+                  items: _items,
+                  busyCartId: _busyCartId,
+                  canDiscard: _canDiscard,
+                  onResume: _resume,
+                  onDiscard: _discard,
+                ),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-held-sales-load-more'),
+                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _HeldSalesTable extends StatelessWidget {
+  const _HeldSalesTable({
+    required this.items,
+    required this.busyCartId,
+    required this.canDiscard,
+    required this.onResume,
+    required this.onDiscard,
+  });
+  final List<PosHeldSaleCart> items;
+  final String? busyCartId;
+  final bool Function(PosHeldSaleCart) canDiscard;
+  final ValueChanged<PosHeldSaleCart> onResume;
+  final ValueChanged<PosHeldSaleCart> onDiscard;
+
+  String _formatDateTime(DateTime value) {
+    final local = value.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(local.day)}/${two(local.month)}/${local.year} ${two(local.hour)}:${two(local.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _PosCard(
+      padding: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          headingTextStyle: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800),
+          columns: const [
+            DataColumn(label: Text('Ticket')),
+            DataColumn(label: Text('Etiqueta')),
+            DataColumn(label: Text('Artículos'), numeric: true),
+            DataColumn(label: Text('Suspendida')),
+            DataColumn(label: Text('Acciones')),
+          ],
+          rows: items.map((cart) {
+            final busy = busyCartId == cart.id;
+            final canDiscardThis = canDiscard(cart);
+            return DataRow(
+              key: ValueKey('pos-held-sale-row-${cart.id}'),
+              cells: [
+                DataCell(Text(_compactId(cart.id))),
+                DataCell(Text(cart.label ?? '—')),
+                DataCell(Text('${cart.items.length}')),
+                DataCell(Text(_formatDateTime(cart.createdAt))),
+                DataCell(
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        key: Key('pos-held-sale-resume-${cart.id}'),
+                        onPressed: busy ? null : () => onResume(cart),
+                        child: busy
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('Restaurar'),
+                      ),
+                      const SizedBox(width: 4),
+                      Tooltip(
+                        message: canDiscardThis
+                            ? 'Descartar'
+                            : 'Solo el cajero que suspendió esta venta, o un actor con '
+                                  'permiso sale.cancel, puede descartarla.',
+                        child: TextButton(
+                          key: Key('pos-held-sale-discard-${cart.id}'),
+                          onPressed: busy || !canDiscardThis ? null : () => onDiscard(cart),
+                          style: TextButton.styleFrom(foregroundColor: palette.error),
+                          child: const Text('Descartar'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+}
+
+// --- TASK 14.3 (Wave 1, Part C): Compra Directa / quick restock --------
+
+enum _DirectPurchaseHistoryPhase { loading, ready, empty, failure }
+
+class _DirectPurchases extends StatefulWidget {
+  const _DirectPurchases({
+    required this.context,
+    required this.controller,
+    required this.purchasingGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPurchasingGateway purchasingGateway;
+
+  @override
+  State<_DirectPurchases> createState() => _DirectPurchasesState();
+}
+
+class _DirectPurchasesState extends State<_DirectPurchases> {
+  _DirectPurchaseHistoryPhase _phase = _DirectPurchaseHistoryPhase.loading;
+  List<PosDirectPurchase> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.controller.products.phase == PosReadPhase.idle) {
+      // Deferred to a microtask — `controller` is also observed by an
+      // ancestor `AnimatedBuilder` (`_Content`) that is still mid-build
+      // the very first time this screen mounts; calling
+      // `notifyListeners()` synchronously here would try to rebuild that
+      // ancestor while it is still building this same frame.
+      unawaited(Future.microtask(() => widget.controller.loadProducts()));
+    }
+    unawaited(_load());
+  }
+
+  PosDirectPurchaseListFilter get _filter => PosDirectPurchaseListFilter(
+    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
+  );
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _DirectPurchaseHistoryPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _DirectPurchaseHistoryPhase.empty : _DirectPurchaseHistoryPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DirectPurchaseHistoryPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DirectPurchaseHistoryPhase.failure;
+        _errorMessage = 'No fue posible cargar el historial de compras.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter, cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canCreate = widget.context.permissions.contains('purchase.create');
+    final canRead = widget.context.permissions.contains('purchase.read');
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Compras',
+          description: 'Compra Directa: registra existencia recién llegada y ya pagada.',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (canCreate)
+          _DirectPurchaseForm(
+            context: widget.context,
+            controller: widget.controller,
+            purchasingGateway: widget.purchasingGateway,
+            onCreated: () => unawaited(_load()),
+          )
+        else
+          const _PermissionState(),
+        const SizedBox(height: 20),
+        Text(
+          'Historial',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: palette.text),
+        ),
+        const SizedBox(height: 10),
+        if (!canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _DirectPurchaseHistoryPhase.loading => const _LoadingState(),
+            _DirectPurchaseHistoryPhase.empty => const _EmptyState(
+              message: 'No hay compras directas registradas.',
+            ),
+            _DirectPurchaseHistoryPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar el historial de compras.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _DirectPurchaseHistoryPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _DirectPurchaseTable(items: _items),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-direct-purchases-load-more'),
+                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+/// The "Compra Directa" form itself — product/variant picker, quantity,
+/// unit cost (live total = quantity × unit cost via the real
+/// `Money.multiplyByDecimalQuantity` fixed-point utility), optional
+/// supplier name, purchase date, notes. On success, shows the REAL
+/// resulting stock level from the response (never a fabricated
+/// confirmation) when the backend included one.
+class _DirectPurchaseForm extends StatefulWidget {
+  const _DirectPurchaseForm({
+    required this.context,
+    required this.controller,
+    required this.purchasingGateway,
+    required this.onCreated,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPurchasingGateway purchasingGateway;
+  final VoidCallback onCreated;
+
+  @override
+  State<_DirectPurchaseForm> createState() => _DirectPurchaseFormState();
+}
+
+class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
+  PosProduct? _selectedProduct;
+  final _quantityController = TextEditingController();
+  final _unitCostController = TextEditingController();
+  final _supplierController = TextEditingController();
+  final _notesController = TextEditingController();
+  DateTime _purchaseDate = DateTime.now();
+  bool _submitting = false;
+  String? _error;
+  PosDirectPurchase? _lastCreated;
+
+  @override
+  void dispose() {
+    _quantityController.dispose();
+    _unitCostController.dispose();
+    _supplierController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Money? get _unitCostMoney {
+    final raw = _unitCostController.text.trim();
+    if (raw.isEmpty) return null;
+    try {
+      return Money.parse(raw, 'MXN');
+    } on MoneyFormatException {
+      return null;
+    }
+  }
+
+  /// `null` for empty/malformed input — never a fabricated fallback.
+  Money? get _lineTotal {
+    final unitCost = _unitCostMoney;
+    final quantity = _quantityController.text.trim();
+    if (unitCost == null || quantity.isEmpty) return null;
+    try {
+      return unitCost.multiplyByDecimalQuantity(quantity);
+    } on MoneyFormatException {
+      return null;
+    }
+  }
+
+  String _isoDate(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _purchaseDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (picked != null) setState(() => _purchaseDate = picked);
+  }
+
+  Future<void> _submit() async {
+    final product = _selectedProduct;
+    final variantId = product?.defaultVariantId;
+    final branchId = widget.context.session.branchId;
+    if (product == null || variantId == null) {
+      setState(() => _error = 'Selecciona un producto.');
+      return;
+    }
+    if (branchId == null) {
+      setState(() => _error = 'Esta sesión no tiene una sucursal asignada.');
+      return;
+    }
+    final quantity = _quantityController.text.trim();
+    final parsedQuantity = double.tryParse(quantity);
+    if (quantity.isEmpty || parsedQuantity == null || parsedQuantity <= 0) {
+      setState(() => _error = 'Captura una cantidad válida, mayor a cero.');
+      return;
+    }
+    final unitCost = _unitCostMoney;
+    if (unitCost == null) {
+      setState(() => _error = 'Captura un costo unitario válido.');
+      return;
+    }
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+    try {
+      final created = await widget.purchasingGateway.createDirectPurchase(
+        branchId: branchId,
+        supplierName: _supplierController.text.trim().isEmpty ? null : _supplierController.text.trim(),
+        productVariantId: variantId,
+        quantity: quantity,
+        unitCost: unitCost.toApiString(),
+        currencyCode: 'MXN',
+        purchaseDate: _isoDate(_purchaseDate),
+        notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _lastCreated = created;
+        _selectedProduct = null;
+        _quantityController.clear();
+        _unitCostController.clear();
+        _supplierController.clear();
+        _notesController.clear();
+        _purchaseDate = DateTime.now();
+      });
+      widget.onCreated();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = 'No fue posible registrar la compra.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final products = widget.controller.products.items
+        .where((product) => product.defaultVariantId != null)
+        .toList(growable: false);
+    final total = _lineTotal;
+    final lastCreated = _lastCreated;
+    return _PosCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (lastCreated != null) ...[
+            Container(
+              key: const Key('pos-direct-purchase-success'),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: palette.success.withValues(alpha: .12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                lastCreated.movement?.currentQuantityOnHand == null
+                    ? 'Compra registrada.'
+                    : 'Compra registrada. Existencia actual: '
+                          '${lastCreated.movement!.currentQuantityOnHand}.',
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          DropdownButtonFormField<PosProduct>(
+            key: const Key('pos-direct-purchase-product'),
+            initialValue: _selectedProduct,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Producto / variante'),
+            items: [
+              for (final product in products)
+                DropdownMenuItem(
+                  value: product,
+                  child: Text('${product.name} (${product.sku ?? product.code})'),
+                ),
+            ],
+            onChanged: (value) => setState(() => _selectedProduct = value),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('pos-direct-purchase-quantity'),
+                  controller: _quantityController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Cantidad'),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  key: const Key('pos-direct-purchase-unit-cost'),
+                  controller: _unitCostController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Costo unitario (MXN)'),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-direct-purchase-supplier'),
+            controller: _supplierController,
+            decoration: const InputDecoration(labelText: 'Proveedor (opcional)'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            key: const Key('pos-direct-purchase-date'),
+            onPressed: _pickDate,
+            icon: const Icon(Icons.calendar_today_outlined, size: 16),
+            label: Text(_isoDate(_purchaseDate)),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-direct-purchase-notes'),
+            controller: _notesController,
+            decoration: const InputDecoration(labelText: 'Notas (opcional)'),
+            maxLines: 2,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Total: ${total == null ? '—' : _money(total)}',
+            key: const Key('pos-direct-purchase-total'),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 6),
+            Text(_error!, style: TextStyle(color: palette.error)),
+          ],
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              key: const Key('pos-direct-purchase-submit'),
+              onPressed: _submitting ? null : _submit,
+              icon: _submitting
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.check),
+              label: const Text('Registrar compra'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DirectPurchaseTable extends StatelessWidget {
+  const _DirectPurchaseTable({required this.items});
+  final List<PosDirectPurchase> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _PosCard(
+      padding: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          headingTextStyle: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800),
+          columns: const [
+            DataColumn(label: Text('Fecha')),
+            DataColumn(label: Text('Variante')),
+            DataColumn(label: Text('Proveedor')),
+            DataColumn(label: Text('Cantidad'), numeric: true),
+            DataColumn(label: Text('Costo unitario'), numeric: true),
+            DataColumn(label: Text('Total'), numeric: true),
+          ],
+          rows: items
+              .map(
+                (item) => DataRow(
+                  key: ValueKey('pos-direct-purchase-row-${item.id}'),
+                  cells: [
+                    DataCell(Text(item.purchaseDate)),
+                    DataCell(Text(_compactId(item.productVariantId))),
+                    DataCell(Text(item.supplierName ?? '—')),
+                    DataCell(Text(item.quantity)),
+                    DataCell(Text(_formatMoney(item.unitCost, item.currencyCode))),
+                    DataCell(Text(_formatMoney(item.totalCost, item.currencyCode))),
                   ],
                 ),
               )
@@ -15522,6 +16896,3410 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// =============================================================================
+// TASK 14.3 Wave 1 Part A: "Fiestas" (party reservations) — real Lista/
+// Calendario/Cotizador/Ajustes wired to the already-tested
+// `apps/api/src/modules/parties/` module (27/27 integration tests passing
+// server-side). See `docs/LEGACY_FIESTAS_RECOVERY.md` for the legacy
+// behavioral spec this UI is recognizably descended from, using this
+// platform's own design system (never a redesign into a generic admin
+// dashboard) — mirrors `_CustomersAdmin`/`_MembershipsAdmin`'s exact
+// architecture: `_AdminListPhase`/`_PosCard`/`_SectionHeader`/
+// `_LoadingState`/`_EmptyState`/`_PermissionState`/`_FailureState`/
+// `_ReadOnlyButton` are all reused verbatim, never redefined.
+// =============================================================================
+
+String _partyStatusLabel(String status) => switch (status) {
+  'held' => 'Apartada',
+  'pending_deposit' => 'Pendiente de anticipo',
+  'confirmed' => 'Confirmada',
+  'completed' => 'Completada',
+  'cancelled' => 'Cancelada',
+  _ => status,
+};
+
+Color _partyStatusColor(PosPalette palette, String status) => switch (status) {
+  'held' => palette.textMuted,
+  'pending_deposit' => palette.warning,
+  'confirmed' => palette.action,
+  'completed' => palette.success,
+  'cancelled' => palette.error,
+  _ => palette.textMuted,
+};
+
+String _paymentPurposeLabel(String purpose) => switch (purpose) {
+  'deposit' => 'Anticipo',
+  'balance' => 'Liquidación',
+  'additional' => 'Adicional',
+  _ => purpose,
+};
+
+/// `HH:MM:SS` (or `HH:MM`) -> `HH:MM`, for display only — never re-parsed
+/// from this truncated form.
+String _hhmm(String value) => value.length >= 5 ? value.substring(0, 5) : value;
+
+/// `YYYY-MM-DD`, matching every date the parties API sends/accepts exactly
+/// — distinct from this file's other `_formatDate` (a display-only
+/// dd/mm/yyyy helper scoped to a different class).
+String _isoDate(DateTime value) =>
+    '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+String _formatPartyMoney(String amount, String currencyCode) {
+  try {
+    return '${Money.parse(amount, currencyCode).toDisplayString()} $currencyCode';
+  } on MoneyFormatException {
+    return '$amount $currencyCode';
+  }
+}
+
+class _PartyStatusChip extends StatelessWidget {
+  const _PartyStatusChip({required this.status});
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = _partyStatusColor(palette, status);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(_partyStatusLabel(status), style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+class _RoomStatusChip extends StatelessWidget {
+  const _RoomStatusChip({required this.status});
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = switch (status) {
+      'active' => palette.success,
+      'maintenance' => palette.warning,
+      _ => palette.error,
+    };
+    final label = switch (status) {
+      'active' => 'Activo',
+      'maintenance' => 'Mantenimiento',
+      _ => 'Fuera de servicio',
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+class _PartyKpiChip extends StatelessWidget {
+  const _PartyKpiChip({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(10)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuoteLine extends StatelessWidget {
+  const _QuoteLine({required this.label, required this.amount, required this.currency, this.emphasize = false});
+  final String label;
+  final String amount;
+  final String currency;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label, style: TextStyle(color: palette.textSecondary, fontWeight: emphasize ? FontWeight.w800 : FontWeight.w500)),
+          ),
+          Text(
+            _formatPartyMoney(amount, currency),
+            style: TextStyle(color: palette.text, fontWeight: emphasize ? FontWeight.w800 : FontWeight.w600, fontSize: emphasize ? 15 : 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _FiestasTab { lista, calendario, cotizador, ajustes }
+
+/// `PosModule.events` ("Fiestas") — gated on `party.read`, matching every
+/// other admin section's own "permission-less actor never sees real data,
+/// sees an honest permission state" pattern exactly (`_CustomersAdmin`/
+/// `_MembershipsAdmin`'s `_canRead`/`_PermissionState()`).
+class _FiestasAdmin extends StatefulWidget {
+  const _FiestasAdmin({
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+    required this.cashGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_FiestasAdmin> createState() => _FiestasAdminState();
+}
+
+class _FiestasAdminState extends State<_FiestasAdmin> {
+  _FiestasTab _tab = _FiestasTab.lista;
+
+  bool get _canRead => widget.context.permissions.contains('party.read');
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _SectionHeader(
+        title: 'Fiestas',
+        description: 'Reservaciones, calendario, cotizador y administración de salones/paquetes.',
+        action: _canRead
+            ? SegmentedButton<_FiestasTab>(
+                key: const Key('pos-fiestas-tabs'),
+                segments: const [
+                  ButtonSegment(value: _FiestasTab.lista, label: Text('Lista')),
+                  ButtonSegment(value: _FiestasTab.calendario, label: Text('Calendario')),
+                  ButtonSegment(value: _FiestasTab.cotizador, label: Text('Cotizador')),
+                  ButtonSegment(value: _FiestasTab.ajustes, label: Text('Ajustes')),
+                ],
+                selected: {_tab},
+                onSelectionChanged: (value) => setState(() => _tab = value.first),
+              )
+            : null,
+      ),
+      if (!_canRead)
+        const _PermissionState()
+      else
+        switch (_tab) {
+          _FiestasTab.lista => _FiestasLista(
+            context: widget.context,
+            controller: widget.controller,
+            partiesGateway: widget.partiesGateway,
+            customersGateway: widget.customersGateway,
+            cashGateway: widget.cashGateway,
+          ),
+          _FiestasTab.calendario => _FiestasCalendario(
+            context: widget.context,
+            controller: widget.controller,
+            partiesGateway: widget.partiesGateway,
+          ),
+          _FiestasTab.cotizador => _FiestasCotizador(
+            context: widget.context,
+            controller: widget.controller,
+            partiesGateway: widget.partiesGateway,
+            customersGateway: widget.customersGateway,
+          ),
+          _FiestasTab.ajustes => _FiestasAjustes(context: widget.context, partiesGateway: widget.partiesGateway),
+        },
+    ],
+  );
+}
+
+/// Lista — real, API-backed reservation list. KPIs are counted from the
+/// real, currently-loaded page (never hardcoded sample numbers).
+class _FiestasLista extends StatefulWidget {
+  const _FiestasLista({
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+    required this.cashGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_FiestasLista> createState() => _FiestasListaState();
+}
+
+class _FiestasListaState extends State<_FiestasLista> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosPartyReservation> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+  Map<String, PosPartyRoom> _roomsById = const {};
+  Map<String, PosPartyPackage> _packagesById = const {};
+  String? _statusFilter;
+  String? _roomFilter;
+
+  bool get _canRead => widget.context.permissions.contains('party.read');
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+  String? get _branchId => widget.context.session.branchId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final roomsPage = await widget.partiesGateway.listRooms(branchId: _branchId, limit: 100);
+      final packagesPage = await widget.partiesGateway.listPackages(limit: 100);
+      final page = await widget.partiesGateway.listReservations(
+        branchId: _branchId,
+        status: _statusFilter,
+        roomId: _roomFilter,
+        limit: 100,
+      );
+      if (!mounted) return;
+      setState(() {
+        _roomsById = {for (final room in roomsPage.items) room.id: room};
+        _packagesById = {for (final pkg in packagesPage.items) pkg.id: pkg};
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar las reservaciones.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.partiesGateway.listReservations(
+        branchId: _branchId,
+        status: _statusFilter,
+        roomId: _roomFilter,
+        cursor: cursor,
+        limit: 100,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  Future<void> _openCreate() async {
+    final branchId = _branchId;
+    if (branchId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Esta sesión no tiene una sucursal asignada.')),
+      );
+      return;
+    }
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        branchId: branchId,
+      ),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
+  Future<void> _openDetail(PosPartyReservation reservation) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationDetailDialog(
+        reservationId: reservation.id,
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+    if (changed == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final counts = <String, int>{
+      for (final status in partyReservationStatuses) status: _items.where((item) => item.status == status).length,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [for (final status in partyReservationStatuses) _PartyKpiChip(label: _partyStatusLabel(status), value: '${counts[status] ?? 0}')],
+              ),
+            ),
+            _ReadOnlyButton(onPressed: () => unawaited(_load())),
+            if (_canManage) ...[
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                key: const Key('pos-fiestas-new-reservation'),
+                onPressed: () => unawaited(_openCreate()),
+                style: FilledButton.styleFrom(backgroundColor: palette.action),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Nueva reservación'),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-fiestas-filter-status'),
+                initialValue: _statusFilter,
+                decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todos')),
+                  for (final status in partyReservationStatuses) DropdownMenuItem(value: status, child: Text(_partyStatusLabel(status))),
+                ],
+                onChanged: (value) {
+                  setState(() => _statusFilter = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-fiestas-filter-room'),
+                initialValue: _roomFilter,
+                decoration: const InputDecoration(isDense: true, labelText: 'Salón'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todos')),
+                  for (final room in _roomsById.values) DropdownMenuItem(value: room.id, child: Text(room.name)),
+                ],
+                onChanged: (value) {
+                  setState(() => _roomFilter = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (!_canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _AdminListPhase.loading => const _LoadingState(),
+            _AdminListPhase.empty => const _EmptyState(message: 'No hay reservaciones registradas.'),
+            _AdminListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar las reservaciones.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _AdminListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final item in _items)
+                  _PartyReservationRow(
+                    reservation: item,
+                    room: _roomsById[item.roomId],
+                    package: _packagesById[item.packageId],
+                    onTap: () => unawaited(_openDetail(item)),
+                  ),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-load-more'),
+                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _PartyReservationRow extends StatelessWidget {
+  const _PartyReservationRow({required this.reservation, required this.room, required this.package, required this.onTap});
+  final PosPartyReservation reservation;
+  final PosPartyRoom? room;
+  final PosPartyPackage? package;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final title = reservation.celebrantName?.isNotEmpty == true
+        ? reservation.celebrantName!
+        : (reservation.customerDisplayName ?? 'Sin festejado');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        key: Key('pos-fiestas-reservation-${reservation.id}'),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: _PosCard(
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 13)),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${reservation.eventDate} · ${_hhmm(reservation.startTime)}-${_hhmm(reservation.endTime)} · '
+                      '${room?.name ?? 'Salón'} · ${package?.name ?? 'Paquete'}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
+                    if (reservation.customerDisplayName != null && reservation.celebrantName?.isNotEmpty == true)
+                      Text(reservation.customerDisplayName!, style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                  ],
+                ),
+              ),
+              Text(
+                _formatPartyMoney(reservation.quotedTotal, reservation.currencyCode),
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+              ),
+              const SizedBox(width: 10),
+              _PartyStatusChip(status: reservation.status),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _CalGranularity { month, week, day, list }
+
+/// Calendario — Mes/Semana/Día/Lista sub-views of the SAME real data via
+/// `GET /party-reservations/calendar`, grouped by day client-side (a
+/// grouped-list rendering rather than a bespoke grid-calendar widget —
+/// correctness/real-data over visual complexity, per task scope).
+class _FiestasCalendario extends StatefulWidget {
+  const _FiestasCalendario({required this.context, required this.controller, required this.partiesGateway});
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+
+  @override
+  State<_FiestasCalendario> createState() => _FiestasCalendarioState();
+}
+
+class _FiestasCalendarioState extends State<_FiestasCalendario> {
+  _CalGranularity _granularity = _CalGranularity.month;
+  DateTime _anchor = DateTime.now();
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosPartyCalendarEntry> _entries = const [];
+  Map<String, PosPartyRoom> _roomsById = const {};
+  String? _errorMessage;
+
+  String? get _branchId => widget.context.session.branchId;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onControllerChanged);
+    unawaited(Future.microtask(widget.controller.loadUsers));
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onControllerChanged);
+    super.dispose();
+  }
+
+  void _onControllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  (DateTime, DateTime) _range() {
+    switch (_granularity) {
+      case _CalGranularity.month:
+        final first = DateTime(_anchor.year, _anchor.month);
+        final last = DateTime(_anchor.year, _anchor.month + 1, 0);
+        return (first, last);
+      case _CalGranularity.week:
+        final start = _anchor.subtract(Duration(days: _anchor.weekday - 1));
+        return (start, start.add(const Duration(days: 6)));
+      case _CalGranularity.day:
+        return (_anchor, _anchor);
+      case _CalGranularity.list:
+        return (_anchor, _anchor.add(const Duration(days: 30)));
+    }
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    final (from, to) = _range();
+    try {
+      final rooms = await widget.partiesGateway.listRooms(branchId: _branchId, limit: 100);
+      final entries = await widget.partiesGateway.calendar(from: _isoDate(from), to: _isoDate(to), branchId: _branchId);
+      if (!mounted) return;
+      setState(() {
+        _roomsById = {for (final room in rooms.items) room.id: room};
+        _entries = entries;
+        _phase = entries.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar el calendario.';
+      });
+    }
+  }
+
+  void _nav(int direction) {
+    setState(() {
+      _anchor = switch (_granularity) {
+        _CalGranularity.month => DateTime(_anchor.year, _anchor.month + direction),
+        _CalGranularity.week => _anchor.add(Duration(days: 7 * direction)),
+        _CalGranularity.day => _anchor.add(Duration(days: direction)),
+        _CalGranularity.list => _anchor.add(Duration(days: 30 * direction)),
+      };
+    });
+    unawaited(_load());
+  }
+
+  String _sellerLabel(String? id) {
+    if (id == null) return 'Sin vendedor';
+    final user = widget.controller.users.items.where((u) => u.id == id).firstOrNull;
+    return user?.displayName ?? id;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final grouped = <String, List<PosPartyCalendarEntry>>{};
+    for (final entry in _entries) {
+      grouped.putIfAbsent(entry.eventDate, () => []).add(entry);
+    }
+    final sortedDates = grouped.keys.toList()..sort();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: SegmentedButton<_CalGranularity>(
+                key: const Key('pos-fiestas-cal-granularity'),
+                segments: const [
+                  ButtonSegment(value: _CalGranularity.month, label: Text('Mes')),
+                  ButtonSegment(value: _CalGranularity.week, label: Text('Semana')),
+                  ButtonSegment(value: _CalGranularity.day, label: Text('Día')),
+                  ButtonSegment(value: _CalGranularity.list, label: Text('Lista')),
+                ],
+                selected: {_granularity},
+                onSelectionChanged: (value) {
+                  setState(() => _granularity = value.first);
+                  unawaited(_load());
+                },
+              ),
+            ),
+            IconButton(key: const Key('pos-fiestas-cal-prev'), onPressed: () => _nav(-1), icon: const Icon(Icons.chevron_left)),
+            TextButton(
+              key: const Key('pos-fiestas-cal-today'),
+              onPressed: () {
+                setState(() => _anchor = DateTime.now());
+                unawaited(_load());
+              },
+              child: const Text('Hoy'),
+            ),
+            IconButton(key: const Key('pos-fiestas-cal-next'), onPressed: () => _nav(1), icon: const Icon(Icons.chevron_right)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        switch (_phase) {
+          _AdminListPhase.loading => const _LoadingState(),
+          _AdminListPhase.empty => const _EmptyState(message: 'No hay reservaciones en este periodo.'),
+          _AdminListPhase.failure => _FailureState(
+            message: _errorMessage ?? 'No fue posible cargar el calendario.',
+            onRetry: () => unawaited(_load()),
+          ),
+          _AdminListPhase.ready => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final date in sortedDates) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(date, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12)),
+                ),
+                for (final entry in (grouped[date]!..sort((a, b) => a.startTime.compareTo(b.startTime))))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _PosCard(
+                      key: Key('pos-fiestas-cal-entry-${entry.id}'),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  entry.celebrantName?.isNotEmpty == true
+                                      ? entry.celebrantName!
+                                      : (entry.customerDisplayName ?? 'Sin festejado'),
+                                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                                ),
+                                Text(
+                                  '${_hhmm(entry.startTime)}-${_hhmm(entry.endTime)} · ${_roomsById[entry.roomId]?.name ?? 'Salón'} · '
+                                  '${_sellerLabel(entry.sellerUserId)}',
+                                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                          _PartyStatusChip(status: entry.status),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        },
+      ],
+    );
+  }
+}
+
+/// Cotizador — a real quoting form, calling the real `.../quote` endpoint;
+/// every displayed figure is exactly what the backend returned, never
+/// client-computed. "Convertir a reservación" pre-fills the create-
+/// reservation form with the chosen package/guest counts — never a
+/// client-computed total.
+class _FiestasCotizador extends StatefulWidget {
+  const _FiestasCotizador({
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+
+  @override
+  State<_FiestasCotizador> createState() => _FiestasCotizadorState();
+}
+
+class _FiestasCotizadorState extends State<_FiestasCotizador> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosPartyPackage> _packages = const [];
+  String? _errorMessage;
+  String? _packageId;
+  final _childrenController = TextEditingController(text: '0');
+  final _adultsController = TextEditingController(text: '0');
+  final _extraHalfHoursController = TextEditingController(text: '0');
+  bool _quoting = false;
+  String? _quoteError;
+  PosPartyQuote? _quote;
+
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _childrenController.dispose();
+    _adultsController.dispose();
+    _extraHalfHoursController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.partiesGateway.listPackages(status: 'active', limit: 100);
+      if (!mounted) return;
+      setState(() {
+        _packages = page.items;
+        _packageId = _packages.isEmpty ? null : _packages.first.id;
+        _phase = _packages.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los paquetes.';
+      });
+    }
+  }
+
+  Future<void> _quotePackage() async {
+    final packageId = _packageId;
+    if (packageId == null) return;
+    final children = int.tryParse(_childrenController.text.trim()) ?? 0;
+    final adults = int.tryParse(_adultsController.text.trim()) ?? 0;
+    final extraHalfHours = int.tryParse(_extraHalfHoursController.text.trim()) ?? 0;
+    setState(() {
+      _quoting = true;
+      _quoteError = null;
+    });
+    try {
+      final quote = await widget.partiesGateway.quotePackage(packageId, children: children, adults: adults, extraHalfHours: extraHalfHours);
+      if (!mounted) return;
+      setState(() {
+        _quote = quote;
+        _quoting = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _quoting = false;
+        _quoteError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _quoting = false;
+        _quoteError = 'No fue posible calcular la cotización.';
+      });
+    }
+  }
+
+  Future<void> _convertToReservation() async {
+    final packageId = _packageId;
+    final branchId = widget.context.session.branchId;
+    if (packageId == null || branchId == null) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        branchId: branchId,
+        prefillPackageId: packageId,
+        prefillChildren: int.tryParse(_childrenController.text.trim()),
+        prefillAdults: int.tryParse(_adultsController.text.trim()),
+        prefillExtraHalfHours: int.tryParse(_extraHalfHoursController.text.trim()),
+      ),
+    );
+    if (saved == true && mounted) {
+      _showNotice(context, 'Reservación creada.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        switch (_phase) {
+          _AdminListPhase.loading => const _LoadingState(),
+          _AdminListPhase.empty => const _EmptyState(message: 'No hay paquetes activos para cotizar.'),
+          _AdminListPhase.failure => _FailureState(
+            message: _errorMessage ?? 'No fue posible cargar los paquetes.',
+            onRetry: () => unawaited(_load()),
+          ),
+          _AdminListPhase.ready => _PosCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DropdownButtonFormField<String>(
+                  key: const Key('pos-fiestas-quote-package'),
+                  initialValue: _packageId,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
+                  items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
+                  onChanged: (value) => setState(() {
+                    _packageId = value;
+                    _quote = null;
+                  }),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-quote-children'),
+                        controller: _childrenController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Niños'),
+                        onChanged: (_) => setState(() => _quote = null),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-quote-adults'),
+                        controller: _adultsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Adultos'),
+                        onChanged: (_) => setState(() => _quote = null),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-quote-extra-time'),
+                        controller: _extraHalfHoursController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Medias horas extra'),
+                        onChanged: (_) => setState(() => _quote = null),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  key: const Key('pos-fiestas-quote-submit'),
+                  onPressed: _quoting ? null : () => unawaited(_quotePackage()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  icon: _quoting
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.calculate_outlined, size: 16),
+                  label: const Text('Cotizar'),
+                ),
+                if (_quoteError != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_quoteError!, key: const Key('pos-fiestas-quote-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                if (_quote != null) ...[
+                  const SizedBox(height: 14),
+                  Divider(color: palette.border),
+                  const SizedBox(height: 10),
+                  _QuoteLine(label: 'Base', amount: _quote!.base, currency: _quote!.currencyCode),
+                  _QuoteLine(label: 'Niños extra', amount: _quote!.childrenExtra, currency: _quote!.currencyCode),
+                  _QuoteLine(label: 'Adultos extra', amount: _quote!.adultsExtra, currency: _quote!.currencyCode),
+                  _QuoteLine(label: 'Tiempo extra', amount: _quote!.timeExtra, currency: _quote!.currencyCode),
+                  const SizedBox(height: 6),
+                  _QuoteLine(label: 'Total', amount: _quote!.total, currency: _quote!.currencyCode, emphasize: true),
+                  if (_canManage) ...[
+                    const SizedBox(height: 14),
+                    FilledButton.icon(
+                      key: const Key('pos-fiestas-quote-convert'),
+                      onPressed: () => unawaited(_convertToReservation()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.actionStrong),
+                      icon: const Icon(Icons.event_available_outlined, size: 16),
+                      label: const Text('Convertir a reservación'),
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        },
+      ],
+    );
+  }
+}
+
+enum _AjustesTab { salones, paquetes }
+
+/// Ajustes — Salones/Paquetes admin CRUD, mirroring `_MembershipsAdmin`'s
+/// exact list+create+edit shape.
+class _FiestasAjustes extends StatefulWidget {
+  const _FiestasAjustes({required this.context, required this.partiesGateway});
+  final AuthenticatedContext context;
+  final PosPartiesGateway partiesGateway;
+
+  @override
+  State<_FiestasAjustes> createState() => _FiestasAjustesState();
+}
+
+class _FiestasAjustesState extends State<_FiestasAjustes> {
+  _AjustesTab _tab = _AjustesTab.salones;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: SegmentedButton<_AjustesTab>(
+            key: const Key('pos-fiestas-ajustes-tabs'),
+            segments: const [
+              ButtonSegment(value: _AjustesTab.salones, label: Text('Salones')),
+              ButtonSegment(value: _AjustesTab.paquetes, label: Text('Paquetes')),
+            ],
+            selected: {_tab},
+            onSelectionChanged: (value) => setState(() => _tab = value.first),
+          ),
+        ),
+      ),
+      if (_tab == _AjustesTab.salones)
+        _RoomsAdmin(context: widget.context, partiesGateway: widget.partiesGateway)
+      else
+        _PackagesAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
+    ],
+  );
+}
+
+class _RoomsAdmin extends StatefulWidget {
+  const _RoomsAdmin({required this.context, required this.partiesGateway});
+  final AuthenticatedContext context;
+  final PosPartiesGateway partiesGateway;
+
+  @override
+  State<_RoomsAdmin> createState() => _RoomsAdminState();
+}
+
+class _RoomsAdminState extends State<_RoomsAdmin> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosPartyRoom> _rooms = const [];
+  String? _errorMessage;
+
+  bool get _canRead => widget.context.permissions.contains('party.read');
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.partiesGateway.listRooms(limit: 100);
+      if (!mounted) return;
+      setState(() {
+        _rooms = page.items;
+        _phase = _rooms.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los salones.';
+      });
+    }
+  }
+
+  Future<void> _openForm({PosPartyRoom? existing}) async {
+    final branchId = existing?.branchId ?? widget.context.session.branchId;
+    if (branchId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Esta sesión no tiene una sucursal asignada.')),
+      );
+      return;
+    }
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _RoomFormDialog(partiesGateway: widget.partiesGateway, branchId: branchId, existing: existing),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Salones',
+          description: 'Salones de fiestas — capacidad y disponibilidad.',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (_canManage)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: FilledButton.icon(
+                key: const Key('pos-fiestas-room-new'),
+                onPressed: () => unawaited(_openForm()),
+                style: FilledButton.styleFrom(backgroundColor: palette.action),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Nuevo salón'),
+              ),
+            ),
+          ),
+        if (!_canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _AdminListPhase.loading => const _LoadingState(),
+            _AdminListPhase.empty => const _EmptyState(message: 'No hay salones registrados.'),
+            _AdminListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar los salones.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _AdminListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [for (final room in _rooms) _RoomRow(room: room, canManage: _canManage, onEdit: () => unawaited(_openForm(existing: room)))],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _RoomRow extends StatelessWidget {
+  const _RoomRow({required this.room, required this.canManage, required this.onEdit});
+  final PosPartyRoom room;
+  final bool canManage;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final capacity = [
+      if (room.capacityChildren != null) '${room.capacityChildren} niños',
+      if (room.capacityAdults != null) '${room.capacityAdults} adultos',
+      if (room.capacityTotal != null) '${room.capacityTotal} total',
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: _PosCard(
+        key: Key('pos-fiestas-room-row-${room.id}'),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${room.name} (${room.code})', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  if (capacity.isNotEmpty) Text(capacity, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                ],
+              ),
+            ),
+            _RoomStatusChip(status: room.status),
+            if (canManage)
+              IconButton(
+                key: Key('pos-fiestas-room-edit-${room.id}'),
+                tooltip: 'Editar salón',
+                onPressed: onEdit,
+                icon: Icon(Icons.edit_outlined, size: 18, color: palette.blueDeep),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// `POST/PATCH /party-rooms/{id}` — note the real PATCH schema only ever
+/// accepts `status`/`capacity_*`/`color`/`notes` (never `name`/`code`/
+/// `branch_id`, immutable after creation) — the name/code are shown as
+/// read-only on edit rather than as a misleadingly-editable field that
+/// would silently not apply.
+class _RoomFormDialog extends StatefulWidget {
+  const _RoomFormDialog({required this.partiesGateway, required this.branchId, this.existing});
+  final PosPartiesGateway partiesGateway;
+  final String branchId;
+  final PosPartyRoom? existing;
+
+  @override
+  State<_RoomFormDialog> createState() => _RoomFormDialogState();
+}
+
+class _RoomFormDialogState extends State<_RoomFormDialog> {
+  late final _codeController = TextEditingController();
+  late final _nameController = TextEditingController();
+  late final _childrenController = TextEditingController(text: widget.existing?.capacityChildren?.toString() ?? '');
+  late final _adultsController = TextEditingController(text: widget.existing?.capacityAdults?.toString() ?? '');
+  late final _totalController = TextEditingController(text: widget.existing?.capacityTotal?.toString() ?? '');
+  late final _notesController = TextEditingController(text: widget.existing?.notes ?? '');
+  late String _status = widget.existing?.status ?? 'active';
+  bool _busy = false;
+  String? _error;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _nameController.dispose();
+    _childrenController.dispose();
+    _adultsController.dispose();
+    _totalController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    int? parseOrNull(String text) => text.trim().isEmpty ? null : int.tryParse(text.trim());
+    final notes = _notesController.text.trim();
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (_isEdit) {
+        await widget.partiesGateway.updateRoom(
+          widget.existing!.id,
+          PosPartyRoomInput(
+            status: _status,
+            capacityChildren: parseOrNull(_childrenController.text),
+            capacityAdults: parseOrNull(_adultsController.text),
+            capacityTotal: parseOrNull(_totalController.text),
+            notes: notes.isEmpty ? null : notes,
+          ),
+          version: widget.existing!.version,
+        );
+      } else {
+        final code = _codeController.text.trim();
+        final name = _nameController.text.trim();
+        if (code.isEmpty || name.isEmpty) {
+          setState(() {
+            _busy = false;
+            _error = 'El código y el nombre son obligatorios.';
+          });
+          return;
+        }
+        await widget.partiesGateway.createRoom(
+          PosPartyRoomInput(
+            branchId: widget.branchId,
+            code: code,
+            name: name,
+            capacityChildren: parseOrNull(_childrenController.text),
+            capacityAdults: parseOrNull(_adultsController.text),
+            capacityTotal: parseOrNull(_totalController.text),
+            notes: notes.isEmpty ? null : notes,
+          ),
+        );
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar el salón.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 620),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(_isEdit ? 'Editar salón' : 'Nuevo salón', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                const SizedBox(height: 14),
+                if (_isEdit) ...[
+                  Text(
+                    '${widget.existing!.code} · ${widget.existing!.name}',
+                    style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 10),
+                ] else ...[
+                  TextField(
+                    key: const Key('pos-fiestas-room-code'),
+                    controller: _codeController,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Código'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('pos-fiestas-room-name'),
+                    controller: _nameController,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-room-capacity-children'),
+                        controller: _childrenController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Cap. niños'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-room-capacity-adults'),
+                        controller: _adultsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Cap. adultos'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-room-capacity-total'),
+                  controller: _totalController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Cap. total'),
+                ),
+                if (_isEdit) ...[
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-fiestas-room-status'),
+                    initialValue: _status,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                    items: [for (final status in partyRoomStatuses) DropdownMenuItem(value: status, child: Text(status))],
+                    onChanged: (value) => setState(() => _status = value ?? _status),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-room-notes'),
+                  controller: _notesController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Notas (opcional)'),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-fiestas-room-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-fiestas-room-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PackagesAdmin extends StatefulWidget {
+  const _PackagesAdmin({required this.context, required this.partiesGateway});
+  final AuthenticatedContext context;
+  final PosPartiesGateway partiesGateway;
+
+  @override
+  State<_PackagesAdmin> createState() => _PackagesAdminState();
+}
+
+class _PackagesAdminState extends State<_PackagesAdmin> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  List<PosPartyPackage> _packages = const [];
+  String? _errorMessage;
+
+  bool get _canRead => widget.context.permissions.contains('party.read');
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.partiesGateway.listPackages(limit: 100);
+      if (!mounted) return;
+      setState(() {
+        _packages = page.items;
+        _phase = _packages.isEmpty ? _AdminListPhase.empty : _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los paquetes.';
+      });
+    }
+  }
+
+  Future<void> _openForm({PosPartyPackage? existing}) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PackageFormDialog(
+        partiesGateway: widget.partiesGateway,
+        branchId: existing?.branchId ?? widget.context.session.branchId,
+        existing: existing,
+      ),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionHeader(
+          title: 'Paquetes',
+          description: 'Paquetes de fiestas — precio, duración e incluye/restricciones.',
+          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+        if (_canManage)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: FilledButton.icon(
+                key: const Key('pos-fiestas-package-new'),
+                onPressed: () => unawaited(_openForm()),
+                style: FilledButton.styleFrom(backgroundColor: palette.action),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Nuevo paquete'),
+              ),
+            ),
+          ),
+        if (!_canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _AdminListPhase.loading => const _LoadingState(),
+            _AdminListPhase.empty => const _EmptyState(message: 'No hay paquetes registrados.'),
+            _AdminListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar los paquetes.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _AdminListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final pkg in _packages)
+                  _PackageRow(package: pkg, canManage: _canManage, onEdit: () => unawaited(_openForm(existing: pkg))),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _PackageRow extends StatelessWidget {
+  const _PackageRow({required this.package, required this.canManage, required this.onEdit});
+  final PosPartyPackage package;
+  final bool canManage;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: _PosCard(
+        key: Key('pos-fiestas-package-row-${package.id}'),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${package.name} (${package.code})', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  Text(
+                    '${_formatPartyMoney(package.price, package.currencyCode)} · ${package.durationMinutes} min · '
+                    '${package.childrenIncluded} niños / ${package.adultsIncluded} adultos incluidos',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            _StatusChip(label: package.status),
+            if (canManage)
+              IconButton(
+                key: Key('pos-fiestas-package-edit-${package.id}'),
+                tooltip: 'Editar paquete',
+                onPressed: onEdit,
+                icon: Icon(Icons.edit_outlined, size: 18, color: palette.blueDeep),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _JsonTagRow {
+  _JsonTagRow({String key = '', String value = ''})
+    : keyController = TextEditingController(text: key),
+      valueController = TextEditingController(text: value);
+  final TextEditingController keyController;
+  final TextEditingController valueController;
+  void dispose() {
+    keyController.dispose();
+    valueController.dispose();
+  }
+}
+
+/// `POST/PATCH /party-packages` — General (name/code/price/duration/
+/// capacity), plus [_includeRows]/[_restrictionRows]: a simple key/value
+/// tag editor over the real `includes`/`restrictions` JSON (recovery doc
+/// Capability 5), never a raw-JSON textarea.
+class _PackageFormDialog extends StatefulWidget {
+  const _PackageFormDialog({required this.partiesGateway, required this.branchId, this.existing});
+  final PosPartiesGateway partiesGateway;
+  final String? branchId;
+  final PosPartyPackage? existing;
+
+  @override
+  State<_PackageFormDialog> createState() => _PackageFormDialogState();
+}
+
+class _PackageFormDialogState extends State<_PackageFormDialog> {
+  late final _codeController = TextEditingController(text: widget.existing?.code ?? '');
+  late final _nameController = TextEditingController(text: widget.existing?.name ?? '');
+  late final _descriptionController = TextEditingController(text: widget.existing?.description ?? '');
+  late final _priceController = TextEditingController(text: widget.existing?.price ?? '');
+  late final _durationController = TextEditingController(text: widget.existing?.durationMinutes.toString() ?? '');
+  late final _childrenIncludedController = TextEditingController(text: widget.existing?.childrenIncluded.toString() ?? '0');
+  late final _adultsIncludedController = TextEditingController(text: widget.existing?.adultsIncluded.toString() ?? '0');
+  late final _childExtraController = TextEditingController(text: widget.existing?.childExtraCost ?? '0');
+  late final _adultExtraController = TextEditingController(text: widget.existing?.adultExtraCost ?? '0');
+  late final _capacityMaxController = TextEditingController(text: widget.existing?.capacityMax?.toString() ?? '');
+  late final _extraHalfHourController = TextEditingController(text: widget.existing?.extraHalfHourCost ?? '0');
+  late String _status = widget.existing?.status ?? 'active';
+  late final List<_JsonTagRow> _includeRows = _rowsFrom(widget.existing?.includes);
+  late final List<_JsonTagRow> _restrictionRows = _rowsFrom(widget.existing?.restrictions);
+  bool _busy = false;
+  String? _error;
+
+  bool get _isEdit => widget.existing != null;
+
+  static List<_JsonTagRow> _rowsFrom(Map<String, Object?>? map) {
+    if (map == null || map.isEmpty) return [_JsonTagRow()];
+    return [for (final entry in map.entries) _JsonTagRow(key: entry.key, value: '${entry.value}')];
+  }
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _priceController.dispose();
+    _durationController.dispose();
+    _childrenIncludedController.dispose();
+    _adultsIncludedController.dispose();
+    _childExtraController.dispose();
+    _adultExtraController.dispose();
+    _capacityMaxController.dispose();
+    _extraHalfHourController.dispose();
+    for (final row in _includeRows) row.dispose();
+    for (final row in _restrictionRows) row.dispose();
+    super.dispose();
+  }
+
+  Map<String, Object?>? _mapFrom(List<_JsonTagRow> rows) {
+    final entries = <String, Object?>{};
+    for (final row in rows) {
+      final key = row.keyController.text.trim();
+      if (key.isEmpty) continue;
+      entries[key] = row.valueController.text.trim();
+    }
+    return entries.isEmpty ? null : entries;
+  }
+
+  Future<void> _submit() async {
+    final name = _nameController.text.trim();
+    final price = _priceController.text.trim();
+    final duration = int.tryParse(_durationController.text.trim());
+    if (!_isEdit && _codeController.text.trim().isEmpty) {
+      setState(() => _error = 'El código es obligatorio.');
+      return;
+    }
+    if (name.isEmpty) {
+      setState(() => _error = 'El nombre es obligatorio.');
+      return;
+    }
+    if (price.isEmpty) {
+      setState(() => _error = 'El precio es obligatorio.');
+      return;
+    }
+    if (duration == null || duration <= 0) {
+      setState(() => _error = 'La duración debe ser un número de minutos mayor a cero.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    int? parseIntOrNull(String text) => text.trim().isEmpty ? null : int.tryParse(text.trim());
+    String costOrZero(TextEditingController controller) => controller.text.trim().isEmpty ? '0' : controller.text.trim();
+    final description = _descriptionController.text.trim();
+    try {
+      if (_isEdit) {
+        await widget.partiesGateway.updatePackage(
+          widget.existing!.id,
+          PosPartyPackageInput(
+            name: name,
+            description: description.isEmpty ? null : description,
+            status: _status,
+            price: price,
+            durationMinutes: duration,
+            childrenIncluded: parseIntOrNull(_childrenIncludedController.text) ?? 0,
+            adultsIncluded: parseIntOrNull(_adultsIncludedController.text) ?? 0,
+            childExtraCost: costOrZero(_childExtraController),
+            adultExtraCost: costOrZero(_adultExtraController),
+            capacityMax: parseIntOrNull(_capacityMaxController.text),
+            extraHalfHourCost: costOrZero(_extraHalfHourController),
+            includes: _mapFrom(_includeRows),
+            restrictions: _mapFrom(_restrictionRows),
+          ),
+          version: widget.existing!.version,
+        );
+      } else {
+        await widget.partiesGateway.createPackage(
+          PosPartyPackageInput(
+            branchId: widget.branchId,
+            code: _codeController.text.trim(),
+            name: name,
+            description: description.isEmpty ? null : description,
+            price: price,
+            durationMinutes: duration,
+            childrenIncluded: parseIntOrNull(_childrenIncludedController.text) ?? 0,
+            adultsIncluded: parseIntOrNull(_adultsIncludedController.text) ?? 0,
+            childExtraCost: costOrZero(_childExtraController),
+            adultExtraCost: costOrZero(_adultExtraController),
+            capacityMax: parseIntOrNull(_capacityMaxController.text),
+            extraHalfHourCost: costOrZero(_extraHalfHourController),
+            includes: _mapFrom(_includeRows),
+            restrictions: _mapFrom(_restrictionRows),
+          ),
+        );
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar el paquete.';
+      });
+    }
+  }
+
+  Widget _tagEditor(String title, List<_JsonTagRow> rows, Key addKey) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 6),
+        for (var i = 0; i < rows.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                Expanded(child: TextField(controller: rows[i].keyController, decoration: const InputDecoration(isDense: true, hintText: 'Campo'))),
+                const SizedBox(width: 6),
+                Expanded(child: TextField(controller: rows[i].valueController, decoration: const InputDecoration(isDense: true, hintText: 'Valor'))),
+                IconButton(
+                  onPressed: () => setState(() {
+                    rows[i].dispose();
+                    rows.removeAt(i);
+                    if (rows.isEmpty) rows.add(_JsonTagRow());
+                  }),
+                  icon: const Icon(Icons.remove_circle_outline, size: 18),
+                ),
+              ],
+            ),
+          ),
+        TextButton.icon(
+          key: addKey,
+          onPressed: () => setState(() => rows.add(_JsonTagRow())),
+          icon: const Icon(Icons.add, size: 16),
+          label: const Text('Agregar campo'),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 680),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(_isEdit ? 'Editar paquete' : 'Nuevo paquete', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                const SizedBox(height: 10),
+                Text('General', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+                const SizedBox(height: 8),
+                if (!_isEdit) ...[
+                  TextField(
+                    key: const Key('pos-fiestas-package-code'),
+                    controller: _codeController,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Código'),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                TextField(
+                  key: const Key('pos-fiestas-package-name'),
+                  controller: _nameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-package-description'),
+                  controller: _descriptionController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Descripción (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-price'),
+                        controller: _priceController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(isDense: true, labelText: 'Precio'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-duration'),
+                        controller: _durationController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Duración (min)'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-children-included'),
+                        controller: _childrenIncludedController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Niños incluidos'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-adults-included'),
+                        controller: _adultsIncludedController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Adultos incluidos'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-child-extra'),
+                        controller: _childExtraController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(isDense: true, labelText: 'Costo niño extra'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-adult-extra'),
+                        controller: _adultExtraController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(isDense: true, labelText: 'Costo adulto extra'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-capacity-max'),
+                        controller: _capacityMaxController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Capacidad máxima (opcional)'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-package-extra-half-hour'),
+                        controller: _extraHalfHourController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(isDense: true, labelText: 'Costo media hora extra'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_isEdit) ...[
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-fiestas-package-status'),
+                    initialValue: _status,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                    items: [for (final status in partyPackageStatuses) DropdownMenuItem(value: status, child: Text(status))],
+                    onChanged: (value) => setState(() => _status = value ?? _status),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                _tagEditor('Incluye', _includeRows, const Key('pos-fiestas-package-includes-add')),
+                const SizedBox(height: 16),
+                _tagEditor('Restricciones', _restrictionRows, const Key('pos-fiestas-package-restrictions-add')),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-fiestas-package-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-fiestas-package-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Create/Edit reservation — customer (via `_CustomerSelectorDialog`,
+/// reused verbatim) or walk-in, room/package dropdowns filtered to the
+/// branch/active status, seller from the real `PosReadController.users`
+/// (the same real `user.read`-gated "list users" the Usuarios screen
+/// itself uses — no bespoke staff-picker gateway needed). A 409
+/// `party_conflict` surfaces via [posPartyErrorMessage] honestly, never
+/// retried automatically.
+class _PartyReservationFormDialog extends StatefulWidget {
+  const _PartyReservationFormDialog({
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+    required this.branchId,
+    this.existing,
+    this.prefillPackageId,
+    this.prefillChildren,
+    this.prefillAdults,
+    this.prefillExtraHalfHours,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+  final String branchId;
+  final PosPartyReservation? existing;
+  final String? prefillPackageId;
+  final int? prefillChildren;
+  final int? prefillAdults;
+  final int? prefillExtraHalfHours;
+
+  @override
+  State<_PartyReservationFormDialog> createState() => _PartyReservationFormDialogState();
+}
+
+class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog> {
+  bool get _isEdit => widget.existing != null;
+
+  late final _celebrantNameController = TextEditingController(text: widget.existing?.celebrantName ?? '');
+  late final _celebrantAgeController = TextEditingController(text: widget.existing?.celebrantAge?.toString() ?? '');
+  late final _childrenController = TextEditingController(
+    text: widget.existing?.childrenCount.toString() ?? (widget.prefillChildren?.toString() ?? '0'),
+  );
+  late final _adultsController = TextEditingController(text: widget.prefillAdults?.toString() ?? '0');
+  late final _extraHalfHoursController = TextEditingController(text: widget.prefillExtraHalfHours?.toString() ?? '0');
+  late final _notesController = TextEditingController(text: widget.existing?.notes ?? '');
+
+  String? _customerId;
+  String? _customerDisplayName;
+  String? _roomId;
+  String? _packageId;
+  DateTime? _eventDate;
+  TimeOfDay? _startTime;
+  TimeOfDay? _endTime;
+  String? _sellerUserId;
+
+  _AdminListPhase _loadPhase = _AdminListPhase.loading;
+  List<PosPartyRoom> _rooms = const [];
+  List<PosPartyPackage> _packages = const [];
+  String? _loadError;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _customerId = widget.existing?.customerId;
+    _customerDisplayName = widget.existing?.customerDisplayName;
+    _roomId = widget.existing?.roomId;
+    _packageId = widget.existing?.packageId ?? widget.prefillPackageId;
+    final existing = widget.existing;
+    if (existing != null) {
+      final parts = existing.eventDate.split('-');
+      if (parts.length == 3) {
+        _eventDate = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+      }
+      _startTime = _parseTimeOfDay(existing.startTime);
+      _endTime = _parseTimeOfDay(existing.endTime);
+      _sellerUserId = existing.sellerUserId;
+    }
+    widget.controller.addListener(_onControllerChanged);
+    unawaited(Future.microtask(widget.controller.loadUsers));
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onControllerChanged);
+    _celebrantNameController.dispose();
+    _celebrantAgeController.dispose();
+    _childrenController.dispose();
+    _adultsController.dispose();
+    _extraHalfHoursController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  void _onControllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  static TimeOfDay? _parseTimeOfDay(String value) {
+    final parts = value.split(':');
+    if (parts.length < 2) return null;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return null;
+    return TimeOfDay(hour: hour, minute: minute);
+  }
+
+  static String _formatTimeOfDay(TimeOfDay time) => '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+  Future<void> _load() async {
+    setState(() {
+      _loadPhase = _AdminListPhase.loading;
+      _loadError = null;
+    });
+    try {
+      final roomsPage = await widget.partiesGateway.listRooms(branchId: widget.branchId, status: 'active', limit: 100);
+      final packagesPage = await widget.partiesGateway.listPackages(status: 'active', limit: 100);
+      if (!mounted) return;
+      setState(() {
+        _rooms = roomsPage.items;
+        _packages = packagesPage.items;
+        _loadPhase = _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadPhase = _AdminListPhase.failure;
+        _loadError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loadPhase = _AdminListPhase.failure;
+        _loadError = 'No fue posible cargar salones y paquetes.';
+      });
+    }
+  }
+
+  Future<void> _pickCustomer() async {
+    final selected = await showDialog<_CustomerSelectorResult>(
+      context: context,
+      builder: (dialogContext) => _CustomerSelectorDialog(customersGateway: widget.customersGateway),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _customerId = selected.id;
+      _customerDisplayName = selected.displayName;
+    });
+  }
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(context: context, initialDate: _eventDate ?? now, firstDate: DateTime(now.year - 1), lastDate: DateTime(now.year + 3));
+    if (picked != null) setState(() => _eventDate = picked);
+  }
+
+  Future<void> _pickStartTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _startTime ?? const TimeOfDay(hour: 12, minute: 0));
+    if (picked != null) setState(() => _startTime = picked);
+  }
+
+  Future<void> _pickEndTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _endTime ?? const TimeOfDay(hour: 14, minute: 0));
+    if (picked != null) setState(() => _endTime = picked);
+  }
+
+  Future<void> _submit() async {
+    final roomId = _roomId;
+    final packageId = _packageId;
+    final eventDate = _eventDate;
+    final startTime = _startTime;
+    final endTime = _endTime;
+    if (roomId == null || packageId == null || eventDate == null || startTime == null || endTime == null) {
+      setState(() => _error = 'Selecciona salón, paquete, fecha y horario.');
+      return;
+    }
+    final children = int.tryParse(_childrenController.text.trim()) ?? 0;
+    final adults = int.tryParse(_adultsController.text.trim()) ?? 0;
+    final extraHalfHours = int.tryParse(_extraHalfHoursController.text.trim()) ?? 0;
+    final celebrantName = _celebrantNameController.text.trim();
+    final celebrantAge = int.tryParse(_celebrantAgeController.text.trim());
+    final notes = _notesController.text.trim();
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    // `branch_id` is create-only — the reservation PATCH schema never
+    // accepts it (`additionalProperties: false`), so it must never be sent
+    // on an edit.
+    final input = PosPartyReservationInput(
+      branchId: _isEdit ? null : widget.branchId,
+      customerId: _customerId,
+      celebrantName: celebrantName.isEmpty ? null : celebrantName,
+      celebrantAge: celebrantAge,
+      roomId: roomId,
+      packageId: packageId,
+      eventDate: _isoDate(eventDate),
+      startTime: _formatTimeOfDay(startTime),
+      endTime: _formatTimeOfDay(endTime),
+      childrenCount: children,
+      adultsCount: adults,
+      extraHalfHours: extraHalfHours,
+      sellerUserId: _sellerUserId,
+      notes: notes.isEmpty ? null : notes,
+    );
+    try {
+      if (_isEdit) {
+        await widget.partiesGateway.updateReservation(widget.existing!.id, input, version: widget.existing!.version);
+      } else {
+        await widget.partiesGateway.createReservation(input);
+      }
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar la reservación.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 700),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(_isEdit ? 'Editar reservación' : 'Nueva reservación', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(_customerDisplayName ?? 'Sin cliente (walk-in)', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                    ),
+                    TextButton(
+                      key: const Key('pos-fiestas-reservation-pick-customer'),
+                      onPressed: () => unawaited(_pickCustomer()),
+                      child: Text(_customerId == null ? 'Buscar cliente' : 'Cambiar cliente'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  key: const Key('pos-fiestas-reservation-celebrant-name'),
+                  controller: _celebrantNameController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre del festejado (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-reservation-celebrant-age'),
+                  controller: _celebrantAgeController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Edad del festejado (opcional)'),
+                ),
+                const SizedBox(height: 10),
+                if (_loadPhase == _AdminListPhase.loading)
+                  const Center(child: CircularProgressIndicator())
+                else if (_loadPhase == _AdminListPhase.failure)
+                  Text(_loadError ?? 'No fue posible cargar salones y paquetes.', style: TextStyle(color: palette.error, fontSize: 12))
+                else ...[
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-fiestas-reservation-room'),
+                    initialValue: _roomId,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Salón'),
+                    items: [for (final room in _rooms) DropdownMenuItem(value: room.id, child: Text(room.name))],
+                    onChanged: (value) => setState(() => _roomId = value),
+                  ),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-fiestas-reservation-package'),
+                    initialValue: _packageId,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
+                    items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
+                    onChanged: (value) => setState(() => _packageId = value),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-reservation-date'),
+                        onPressed: () => unawaited(_pickDate()),
+                        icon: const Icon(Icons.calendar_today_outlined, size: 15),
+                        label: Text(_eventDate == null ? 'Fecha' : _isoDate(_eventDate!)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-reservation-start-time'),
+                        onPressed: () => unawaited(_pickStartTime()),
+                        icon: const Icon(Icons.schedule_outlined, size: 15),
+                        label: Text(_startTime == null ? 'Inicio' : _formatTimeOfDay(_startTime!)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-reservation-end-time'),
+                        onPressed: () => unawaited(_pickEndTime()),
+                        icon: const Icon(Icons.schedule_outlined, size: 15),
+                        label: Text(_endTime == null ? 'Fin' : _formatTimeOfDay(_endTime!)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-reservation-children'),
+                        controller: _childrenController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Niños'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-reservation-adults'),
+                        controller: _adultsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Adultos'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-fiestas-reservation-extra-time'),
+                        controller: _extraHalfHoursController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Medias horas extra'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-fiestas-reservation-seller'),
+                  initialValue: _sellerUserId,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Vendedor (opcional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Sin vendedor asignado')),
+                    for (final user in widget.controller.users.items) DropdownMenuItem(value: user.id, child: Text(user.displayName)),
+                  ],
+                  onChanged: (value) => setState(() => _sellerUserId = value),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-reservation-notes'),
+                  controller: _notesController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Notas (opcional)'),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, key: const Key('pos-fiestas-reservation-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-fiestas-reservation-save'),
+                        onPressed: _busy ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A required-reason confirmation, mirroring `_ManualDiscountDialog`'s
+/// own focused-dialog shape — pops the reason string, or `null` on
+/// "Volver" (never auto-confirms).
+class _CancelReservationDialog extends StatefulWidget {
+  const _CancelReservationDialog();
+
+  @override
+  State<_CancelReservationDialog> createState() => _CancelReservationDialogState();
+}
+
+class _CancelReservationDialogState extends State<_CancelReservationDialog> {
+  final _reasonController = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Cancelar reservación', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(height: 12),
+              TextField(
+                key: const Key('pos-fiestas-cancel-reason'),
+                controller: _reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo de cancelación'),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, key: const Key('pos-fiestas-cancel-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Volver'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-fiestas-cancel-confirm'),
+                      onPressed: () {
+                        final reason = _reasonController.text.trim();
+                        if (reason.isEmpty) {
+                          setState(() => _error = 'El motivo es obligatorio.');
+                          return;
+                        }
+                        Navigator.of(context).pop(reason);
+                      },
+                      style: FilledButton.styleFrom(backgroundColor: palette.error),
+                      child: const Text('Cancelar reservación'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A real "Registrar pago" action — looks up the branch's real open cash
+/// session (`PosCashGateway.openSessionForBranch`, the same mechanism Caja
+/// itself uses); with none open, this shows the same honest
+/// `cash_session_required` story rather than a fake success or a made-up
+/// session id.
+class _RecordPaymentDialog extends StatefulWidget {
+  const _RecordPaymentDialog({
+    required this.partiesGateway,
+    required this.cashGateway,
+    required this.reservationId,
+    required this.branchId,
+  });
+  final PosPartiesGateway partiesGateway;
+  final PosCashGateway cashGateway;
+  final String reservationId;
+  final String branchId;
+
+  @override
+  State<_RecordPaymentDialog> createState() => _RecordPaymentDialogState();
+}
+
+class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
+  final _amountController = TextEditingController();
+  String _purpose = 'deposit';
+  bool _loadingSession = true;
+  PosCashSession? _session;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSession());
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadSession() async {
+    setState(() => _loadingSession = true);
+    try {
+      final session = await widget.cashGateway.openSessionForBranch(widget.branchId);
+      if (!mounted) return;
+      setState(() {
+        _session = session;
+        _loadingSession = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _session = null;
+        _loadingSession = false;
+      });
+    }
+  }
+
+  Future<void> _submit() async {
+    final session = _session;
+    if (session == null) return;
+    final amount = _amountController.text.trim();
+    if (amount.isEmpty) {
+      setState(() => _error = 'El monto es obligatorio.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.partiesGateway.recordPayment(widget.reservationId, purpose: _purpose, amount: amount, cashSessionId: session.id);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible registrar el pago.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Registrar pago', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(height: 12),
+              if (_loadingSession)
+                const Center(child: CircularProgressIndicator())
+              else if (_session == null)
+                Text(
+                  'Abre la caja de esta sucursal para poder registrar pagos.',
+                  key: const Key('pos-fiestas-payment-no-session'),
+                  style: TextStyle(color: palette.error, fontSize: 12),
+                )
+              else ...[
+                DropdownButtonFormField<String>(
+                  key: const Key('pos-fiestas-payment-purpose'),
+                  initialValue: _purpose,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Tipo de pago'),
+                  items: [for (final purpose in partyReservationPaymentPurposes) DropdownMenuItem(value: purpose, child: Text(_paymentPurposeLabel(purpose)))],
+                  onChanged: (value) => setState(() => _purpose = value ?? _purpose),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-fiestas-payment-amount'),
+                  controller: _amountController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(isDense: true, labelText: 'Monto'),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, key: const Key('pos-fiestas-payment-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: const Key('pos-fiestas-payment-save'),
+                      onPressed: (_session == null || _busy) ? null : () => unawaited(_submit()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      child: _busy
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Guardar'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SnacksSection extends StatefulWidget {
+  const _SnacksSection({
+    required this.reservationId,
+    required this.partiesGateway,
+    required this.snacks,
+    required this.currencyCode,
+    required this.canManage,
+    required this.onChanged,
+  });
+  final String reservationId;
+  final PosPartiesGateway partiesGateway;
+  final List<PosPartySnack> snacks;
+  final String currencyCode;
+  final bool canManage;
+  final VoidCallback onChanged;
+
+  @override
+  State<_SnacksSection> createState() => _SnacksSectionState();
+}
+
+class _SnacksSectionState extends State<_SnacksSection> {
+  bool _adding = false;
+  final _nameController = TextEditingController();
+  final _priceController = TextEditingController();
+  final _quantityController = TextEditingController(text: '1');
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _priceController.dispose();
+    _quantityController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final name = _nameController.text.trim();
+    final price = _priceController.text.trim();
+    final quantity = _quantityController.text.trim();
+    if (name.isEmpty || price.isEmpty || quantity.isEmpty) {
+      setState(() => _error = 'Nombre, precio y cantidad son obligatorios.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.partiesGateway.addSnack(widget.reservationId, PosPartySnackInput(nameSnapshot: name, unitPriceSnapshot: price, quantity: quantity));
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _adding = false;
+        _nameController.clear();
+        _priceController.clear();
+        _quantityController.text = '1';
+      });
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible agregar el snack.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.snacks.isEmpty)
+          Text('Sin snacks agregados.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+        else
+          for (final snack in widget.snacks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(child: Text('${snack.nameSnapshot} × ${snack.quantity}', style: TextStyle(color: palette.text, fontSize: 12))),
+                  Text(_formatPartyMoney(snack.lineTotal, widget.currencyCode), style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                ],
+              ),
+            ),
+        if (widget.canManage) ...[
+          const SizedBox(height: 6),
+          if (!_adding)
+            TextButton.icon(
+              key: const Key('pos-fiestas-snack-add-toggle'),
+              onPressed: () => setState(() => _adding = true),
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Agregar snack'),
+            )
+          else ...[
+            TextField(
+              key: const Key('pos-fiestas-snack-name'),
+              controller: _nameController,
+              decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-fiestas-snack-price'),
+                    controller: _priceController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Precio unitario'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-fiestas-snack-quantity'),
+                    controller: _quantityController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Cantidad'),
+                  ),
+                ),
+              ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 6),
+              Text(_error!, key: const Key('pos-fiestas-snack-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+            ],
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                TextButton(onPressed: () => setState(() => _adding = false), child: const Text('Cancelar')),
+                const SizedBox(width: 8),
+                FilledButton(
+                  key: const Key('pos-fiestas-snack-save'),
+                  onPressed: _busy ? null : () => unawaited(_submit()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  child: _busy
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Guardar'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _SocksSection extends StatefulWidget {
+  const _SocksSection({
+    required this.reservationId,
+    required this.partiesGateway,
+    required this.socks,
+    required this.canManage,
+    required this.onChanged,
+  });
+  final String reservationId;
+  final PosPartiesGateway partiesGateway;
+  final List<PosPartySock> socks;
+  final bool canManage;
+  final VoidCallback onChanged;
+
+  @override
+  State<_SocksSection> createState() => _SocksSectionState();
+}
+
+class _SocksSectionState extends State<_SocksSection> {
+  bool _adding = false;
+  final _sizeController = TextEditingController();
+  final _quantityController = TextEditingController(text: '1');
+  final _variantController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  String? _deductingId;
+
+  @override
+  void dispose() {
+    _sizeController.dispose();
+    _quantityController.dispose();
+    _variantController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final size = _sizeController.text.trim();
+    final quantity = int.tryParse(_quantityController.text.trim());
+    if (size.isEmpty || quantity == null || quantity <= 0) {
+      setState(() => _error = 'Talla y cantidad son obligatorias.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final variantId = _variantController.text.trim();
+    try {
+      await widget.partiesGateway.addSock(widget.reservationId, PosPartySockInput(size: size, quantity: quantity, productVariantId: variantId.isEmpty ? null : variantId));
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _adding = false;
+        _sizeController.clear();
+        _quantityController.text = '1';
+        _variantController.clear();
+      });
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible agregar la calceta.';
+      });
+    }
+  }
+
+  Future<void> _deduct(PosPartySock sock) async {
+    setState(() => _deductingId = sock.id);
+    try {
+      await widget.partiesGateway.deductSock(widget.reservationId, sock.id);
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      _showNotice(context, posPartyErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      _showNotice(context, 'No fue posible descontar el inventario.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (widget.socks.isEmpty)
+          Text('Sin calcetas agregadas.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+        else
+          for (final sock in widget.socks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Expanded(child: Text('Talla ${sock.size} × ${sock.quantity}', style: TextStyle(color: palette.text, fontSize: 12))),
+                  Text(
+                    switch (sock.stockDeducted) {
+                      'deducted' => 'Descontado',
+                      'not_applicable' => 'No aplica',
+                      _ => 'Pendiente',
+                    },
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                  if (widget.canManage && sock.canDeduct) ...[
+                    const SizedBox(width: 8),
+                    TextButton(
+                      key: Key('pos-fiestas-sock-deduct-${sock.id}'),
+                      onPressed: _deductingId == sock.id ? null : () => unawaited(_deduct(sock)),
+                      child: _deductingId == sock.id
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Descontar stock'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        if (widget.canManage) ...[
+          const SizedBox(height: 6),
+          if (!_adding)
+            TextButton.icon(
+              key: const Key('pos-fiestas-sock-add-toggle'),
+              onPressed: () => setState(() => _adding = true),
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Agregar calceta'),
+            )
+          else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-fiestas-sock-size'),
+                    controller: _sizeController,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Talla'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-fiestas-sock-quantity'),
+                    controller: _quantityController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Cantidad'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              key: const Key('pos-fiestas-sock-variant'),
+              controller: _variantController,
+              decoration: const InputDecoration(isDense: true, labelText: 'ID de variante de inventario (opcional)'),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 6),
+              Text(_error!, key: const Key('pos-fiestas-sock-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+            ],
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                TextButton(onPressed: () => setState(() => _adding = false), child: const Text('Cancelar')),
+                const SizedBox(width: 8),
+                FilledButton(
+                  key: const Key('pos-fiestas-sock-save'),
+                  onPressed: _busy ? null : () => unawaited(_submit()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  child: _busy
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Guardar'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+class _DocumentsSection extends StatelessWidget {
+  const _DocumentsSection({required this.busy, required this.error, required this.onGenerate});
+  final bool busy;
+  final String? error;
+  final void Function(String type) onGenerate;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                key: const Key('pos-fiestas-doc-contract'),
+                onPressed: busy ? null : () => onGenerate('contract'),
+                icon: const Icon(Icons.description_outlined, size: 16),
+                label: const Text('Generar Contrato'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                key: const Key('pos-fiestas-doc-waiver'),
+                onPressed: busy ? null : () => onGenerate('waiver'),
+                icon: const Icon(Icons.gavel_outlined, size: 16),
+                label: const Text('Generar Deslinde'),
+              ),
+            ),
+          ],
+        ),
+        if (busy) ...[const SizedBox(height: 8), const Center(child: CircularProgressIndicator())],
+        if (error != null) ...[
+          const SizedBox(height: 8),
+          Text(error!, key: const Key('pos-fiestas-doc-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+        ],
+      ],
+    );
+  }
+}
+
+enum _PartyDetailTab { snacks, socks, documents }
+
+/// Reservation Detail — status transition restricted to
+/// `partyReservationTransitions`'s real allowed edges (never an invalid
+/// jump), financial section backed by the real balance endpoint, Cancel
+/// gated on `party.cancel` and never hiding a `hasPriorPayments: true`
+/// response.
+class _PartyReservationDetailDialog extends StatefulWidget {
+  const _PartyReservationDetailDialog({
+    required this.reservationId,
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+    required this.cashGateway,
+  });
+  final String reservationId;
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_PartyReservationDetailDialog> createState() => _PartyReservationDetailDialogState();
+}
+
+class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDialog> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  PosPartyReservationDetail? _detail;
+  PosPartyBalance? _balance;
+  PosPartyRoom? _room;
+  PosPartyPackage? _package;
+  String? _errorMessage;
+  bool _changed = false;
+  _PartyDetailTab _tab = _PartyDetailTab.snacks;
+  bool _statusBusy = false;
+  String? _statusError;
+  String? _pendingStatus;
+  bool _cancelled = false;
+  bool? _cancelHasPriorPayments;
+  String? _cancelTotalPaid;
+  String? _docError;
+  bool _docBusy = false;
+
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+  bool get _canCancel => widget.context.permissions.contains('party.cancel');
+  bool get _canRecordPayment => widget.context.permissions.contains('party.payment.record');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(Future.microtask(widget.controller.loadUsers));
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final detail = await widget.partiesGateway.reservationDetail(widget.reservationId);
+      final balance = await widget.partiesGateway.balance(widget.reservationId);
+      PosPartyRoom? room;
+      PosPartyPackage? package;
+      try {
+        room = await widget.partiesGateway.room(detail.reservation.roomId);
+      } on Object {
+        room = null;
+      }
+      try {
+        package = await widget.partiesGateway.packageRow(detail.reservation.packageId);
+      } on Object {
+        package = null;
+      }
+      if (!mounted) return;
+      setState(() {
+        _detail = detail;
+        _balance = balance;
+        _room = room;
+        _package = package;
+        _pendingStatus = null;
+        _phase = _AdminListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar la reservación.';
+      });
+    }
+  }
+
+  PosPartyReservationDetail _withReservation(PosPartyReservationDetail detail, PosPartyReservation reservation) => PosPartyReservationDetail(
+    reservation: reservation,
+    snacks: detail.snacks,
+    socks: detail.socks,
+    paymentsTotalPaid: detail.paymentsTotalPaid,
+    paymentsCount: detail.paymentsCount,
+    documentsCount: detail.documentsCount,
+    documentsLastGeneratedAt: detail.documentsLastGeneratedAt,
+    documentsLastDocumentType: detail.documentsLastDocumentType,
+  );
+
+  Future<void> _changeStatus() async {
+    final detail = _detail;
+    final newStatus = _pendingStatus;
+    if (detail == null || newStatus == null) return;
+    setState(() {
+      _statusBusy = true;
+      _statusError = null;
+    });
+    try {
+      final updated = await widget.partiesGateway.transitionStatus(widget.reservationId, newStatus, version: detail.reservation.version);
+      if (!mounted) return;
+      _changed = true;
+      setState(() {
+        _detail = _withReservation(detail, updated);
+        _pendingStatus = null;
+        _statusBusy = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _statusBusy = false;
+        _statusError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _statusBusy = false;
+        _statusError = 'No fue posible cambiar el estado.';
+      });
+    }
+  }
+
+  Future<void> _cancel() async {
+    final detail = _detail;
+    if (detail == null) return;
+    final reason = await showDialog<String>(context: context, builder: (dialogContext) => const _CancelReservationDialog());
+    if (reason == null || !mounted) return;
+    try {
+      final result = await widget.partiesGateway.cancelReservation(widget.reservationId, reasonCode: reason, version: detail.reservation.version);
+      if (!mounted) return;
+      _changed = true;
+      setState(() {
+        _detail = _withReservation(detail, result.reservation);
+        _cancelled = true;
+        _cancelHasPriorPayments = result.hasPriorPayments;
+        _cancelTotalPaid = result.totalPaid;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, posPartyErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible cancelar la reservación.');
+    }
+  }
+
+  Future<void> _editReservation() async {
+    final detail = _detail;
+    if (detail == null) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        branchId: detail.reservation.branchId,
+        existing: detail.reservation,
+      ),
+    );
+    if (saved == true && mounted) {
+      _changed = true;
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _recordPayment() async {
+    final branchId = _detail?.reservation.branchId;
+    if (branchId == null) return;
+    final recorded = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _RecordPaymentDialog(
+        partiesGateway: widget.partiesGateway,
+        cashGateway: widget.cashGateway,
+        reservationId: widget.reservationId,
+        branchId: branchId,
+      ),
+    );
+    if (recorded == true && mounted) {
+      _changed = true;
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _generateDocument(String type) async {
+    setState(() {
+      _docBusy = true;
+      _docError = null;
+    });
+    try {
+      final html = await widget.partiesGateway.generateDocument(widget.reservationId, type);
+      if (!mounted) return;
+      final opened = openReceiptPrintWindow(html);
+      setState(() {
+        _docBusy = false;
+        _docError = opened ? null : 'El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para ver el documento.';
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _docBusy = false;
+        _docError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _docBusy = false;
+        _docError = 'No fue posible generar el documento.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 760),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text('Reservación', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+                  IconButton(
+                    key: const Key('pos-fiestas-detail-close'),
+                    onPressed: () => Navigator.of(context).pop(_changed),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: switch (_phase) {
+                    _AdminListPhase.loading => const _LoadingState(),
+                    _AdminListPhase.empty => const _EmptyState(message: 'No hay información de esta reservación.'),
+                    _AdminListPhase.failure => _FailureState(
+                      message: _errorMessage ?? 'No fue posible cargar la reservación.',
+                      onRetry: () => unawaited(_load()),
+                    ),
+                    _AdminListPhase.ready => _buildReady(palette),
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReady(PosPalette palette) {
+    final detail = _detail!;
+    final reservation = detail.reservation;
+    final allowedNext = partyReservationTransitions[reservation.status] ?? const <String>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    reservation.celebrantName?.isNotEmpty == true
+                        ? reservation.celebrantName!
+                        : (reservation.customerDisplayName ?? 'Sin festejado'),
+                    style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15),
+                  ),
+                  const SizedBox(height: 2),
+                  Text('Folio ${reservation.reservationNumber}', style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                ],
+              ),
+            ),
+            if (_canManage)
+              TextButton.icon(
+                key: const Key('pos-fiestas-detail-edit'),
+                onPressed: () => unawaited(_editReservation()),
+                icon: const Icon(Icons.edit_outlined, size: 16),
+                label: const Text('Editar'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 12,
+          runSpacing: 4,
+          children: [
+            Text('${reservation.eventDate} · ${_hhmm(reservation.startTime)}-${_hhmm(reservation.endTime)}', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text(_room?.name ?? 'Salón', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text(_package?.name ?? 'Paquete', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text('${reservation.childrenCount} niños', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+          ],
+        ),
+        if (reservation.customerDisplayName != null) ...[
+          const SizedBox(height: 4),
+          Text('Cliente: ${reservation.customerDisplayName}', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+        ],
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _PartyStatusChip(status: reservation.status),
+            const Spacer(),
+            if (_canManage && allowedNext.isNotEmpty) ...[
+              SizedBox(
+                width: 180,
+                child: DropdownButtonFormField<String>(
+                  key: const Key('pos-fiestas-detail-status-select'),
+                  initialValue: _pendingStatus,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Cambiar a'),
+                  items: [for (final status in allowedNext) DropdownMenuItem(value: status, child: Text(_partyStatusLabel(status)))],
+                  onChanged: (value) => setState(() => _pendingStatus = value),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                key: const Key('pos-fiestas-detail-status-submit'),
+                onPressed: (_pendingStatus == null || _statusBusy) ? null : () => unawaited(_changeStatus()),
+                style: FilledButton.styleFrom(backgroundColor: palette.action),
+                child: _statusBusy
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Aplicar'),
+              ),
+            ],
+          ],
+        ),
+        if (_statusError != null) ...[
+          const SizedBox(height: 6),
+          Text(_statusError!, key: const Key('pos-fiestas-detail-status-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+        ],
+        const SizedBox(height: 14),
+        Divider(color: palette.border),
+        const SizedBox(height: 10),
+        Text('Finanzas', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 6),
+        if (_balance != null) ...[
+          _QuoteLine(label: 'Total cotizado', amount: _balance!.quotedTotal, currency: reservation.currencyCode),
+          _QuoteLine(label: 'Pagado', amount: _balance!.totalPaid, currency: reservation.currencyCode),
+          _QuoteLine(label: 'Saldo pendiente', amount: _balance!.outstandingBalance, currency: reservation.currencyCode, emphasize: true),
+        ],
+        if (_canRecordPayment) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('pos-fiestas-detail-record-payment'),
+              onPressed: () => unawaited(_recordPayment()),
+              icon: const Icon(Icons.payments_outlined, size: 16),
+              label: const Text('Registrar pago'),
+            ),
+          ),
+        ],
+        if (_cancelled) ...[
+          const SizedBox(height: 10),
+          Container(
+            key: const Key('pos-fiestas-detail-cancel-banner'),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: palette.error.withValues(alpha: .08), borderRadius: BorderRadius.circular(10)),
+            child: Text(
+              _cancelHasPriorPayments == true
+                  ? 'Reservación cancelada. Tenía pagos previos por ${_formatPartyMoney(_cancelTotalPaid ?? '0', reservation.currencyCode)} — '
+                        'el reembolso debe gestionarse por separado.'
+                  : 'Reservación cancelada.',
+              style: TextStyle(color: palette.error, fontSize: 12),
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
+        Divider(color: palette.border),
+        const SizedBox(height: 10),
+        SegmentedButton<_PartyDetailTab>(
+          key: const Key('pos-fiestas-detail-tabs'),
+          segments: const [
+            ButtonSegment(value: _PartyDetailTab.snacks, label: Text('Snacks')),
+            ButtonSegment(value: _PartyDetailTab.socks, label: Text('Calcetas')),
+            ButtonSegment(value: _PartyDetailTab.documents, label: Text('Documentos')),
+          ],
+          selected: {_tab},
+          onSelectionChanged: (value) => setState(() => _tab = value.first),
+        ),
+        const SizedBox(height: 10),
+        switch (_tab) {
+          _PartyDetailTab.snacks => _SnacksSection(
+            reservationId: widget.reservationId,
+            partiesGateway: widget.partiesGateway,
+            snacks: detail.snacks,
+            currencyCode: reservation.currencyCode,
+            canManage: _canManage,
+            onChanged: () => unawaited(_load()),
+          ),
+          _PartyDetailTab.socks => _SocksSection(
+            reservationId: widget.reservationId,
+            partiesGateway: widget.partiesGateway,
+            socks: detail.socks,
+            canManage: _canManage,
+            onChanged: () => unawaited(_load()),
+          ),
+          _PartyDetailTab.documents => _DocumentsSection(busy: _docBusy, error: _docError, onGenerate: _generateDocument),
+        },
+        if (_canCancel && reservation.status != 'cancelled' && reservation.status != 'completed') ...[
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('pos-fiestas-detail-cancel'),
+              onPressed: () => unawaited(_cancel()),
+              style: OutlinedButton.styleFrom(foregroundColor: palette.error, side: BorderSide(color: palette.error)),
+              icon: const Icon(Icons.cancel_outlined, size: 16),
+              label: const Text('Cancelar reservación'),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

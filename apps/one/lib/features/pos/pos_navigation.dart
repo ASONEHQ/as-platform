@@ -64,6 +64,18 @@ enum PosModule {
     // a customer's own issued memberships live in Customer Detail instead
     // of a second, duplicate list here.
     PosModule.memberships,
+    // TASK 14.3 Wave 1 Part A: Fiestas — real, backend-wired reservation
+    // list/calendar/quoting tool/room+package admin — see
+    // `pos_parties_gateway.dart` and `docs/LEGACY_FIESTAS_RECOVERY.md`.
+    PosModule.events,
+    // TASK 14.3 Wave 1 Part B.1: Ventas Suspendidas — real, backend-
+    // persisted held-cart suspend/list/resume/discard — see
+    // `pos_held_sales_gateway.dart`.
+    PosModule.suspended,
+    // TASK 14.3 Wave 1 Part C: Compras — "Compra Directa" (direct
+    // purchase / quick restock) form plus its real history — see
+    // `pos_purchasing_gateway.dart`.
+    PosModule.purchases,
   }.contains(this);
 }
 

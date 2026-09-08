@@ -121,6 +121,42 @@ export const technicalPermissionCodes = [
   'sync.execute',
   'audit.read',
   'recovery.read',
+  // TASK 14.3 (Wave 1, Part A.13) — the Fiestas/party-reservations
+  // domain. `party.read` is the day-to-day view (list/calendar/detail);
+  // `party.manage` covers create/edit of reservations, rooms, and
+  // packages (kept as one code, mirroring `catalog.read`'s own
+  // deliberately-coarse precedent, rather than splitting rooms/packages/
+  // reservations into three separate manage codes with no evidence any
+  // real park needs that granularity yet); `party.cancel` is separated
+  // out because cancelling a reservation with existing payment history
+  // is a materially higher-risk action than an ordinary edit — mirroring
+  // `sale.cancel`'s own separation from `sale.create`; `party.payment.
+  // record` gates recording a deposit/balance/additional payment against
+  // a reservation, deliberately separate from `party.manage` the same
+  // way `discount.apply`/`membership.issue`/`reward.redeem` are each
+  // kept separate from their own domain's `*.manage` code (see this
+  // seed file's own established precedent above). Legacy defined
+  // `verFiestas`/`gestionarFiestas` but never actually enforced them
+  // anywhere in code (see `docs/LEGACY_FIESTAS_RECOVERY.md` Capability
+  // 13) — these four are real, server-enforced from day one.
+  'party.read',
+  'party.manage',
+  'party.cancel',
+  'party.payment.record',
+  // TASK 14.3 (Wave 1, Part B.1) — suspended/held sales. Deliberately
+  // its own code rather than reusing `sale.create`: holding/resuming a
+  // cart is a distinct cashier action a business may want to permit or
+  // withhold independently of who can ring up a sale at all.
+  'held_sale.manage',
+  // TASK 14.3 (Wave 1, Part C) — "Compra Directa" quick restock,
+  // recovered from `docs/LEGACY_FUNCTIONAL_PARITY.md`'s Compras section.
+  // Deliberately separate from `inventory.adjust`: receiving newly
+  // arrived, paid-for stock is a different real-world authorization than
+  // an arbitrary stock-count correction, mirroring this file's own
+  // established `cash_movement.create` vs. `cash_register.manage`
+  // separation (TASK 12.7).
+  'purchase.read',
+  'purchase.create',
 ] as const;
 
 export async function seedTechnicalPermissions(db: Database): Promise<number> {
