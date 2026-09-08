@@ -239,6 +239,32 @@ class AppFailure {
       'No se encontró una ubicación de inventario válida para esa talla.',
       code: 'inventory_location_not_found',
     ),
+    // TASK 14.4 Wave 2: "People" (Empleados/Horarios/Checador/Nómina) —
+    // the four genuinely new codes `people.types.ts`'s `PeopleErrorCode`
+    // introduces beyond the generic ones already mapped above
+    // (`validation_error`, `resource_not_found`, `resource_conflict`,
+    // `version_conflict`, `idempotency_conflict`, `permission_denied`).
+    // See `people.http-errors.ts`'s own doc comment.
+    'employee_inactive' => const AppFailure(
+      AppErrorKind.validation,
+      'Este empleado está inactivo y no puede registrar entrada.',
+      code: 'employee_inactive',
+    ),
+    'duplicate_clock_in' => const AppFailure(
+      AppErrorKind.validation,
+      'Este empleado ya tiene una entrada abierta.',
+      code: 'duplicate_clock_in',
+    ),
+    'invalid_clock_out' => const AppFailure(
+      AppErrorKind.validation,
+      'No hay una entrada abierta para registrar la salida de este empleado.',
+      code: 'invalid_clock_out',
+    ),
+    'payroll_period_closed' => const AppFailure(
+      AppErrorKind.validation,
+      'Un periodo de nómina cerrado ya no puede recalcularse.',
+      code: 'payroll_period_closed',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

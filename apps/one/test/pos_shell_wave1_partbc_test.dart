@@ -216,6 +216,8 @@ void main() {
           ],
           status: 'held',
           createdBy: 'user-id',
+          claimedAt: null,
+          claimedBy: null,
           resumedAt: null,
           resumedBy: null,
           resumedSaleId: null,
@@ -256,6 +258,8 @@ void main() {
           ],
           status: 'held',
           createdBy: 'user-id',
+          claimedAt: null,
+          claimedBy: null,
           resumedAt: null,
           resumedBy: null,
           resumedSaleId: null,
@@ -269,6 +273,13 @@ void main() {
         await _pump(tester, heldSalesGateway: gateway);
         await _navigateToSuspended(tester);
 
+        // TASK 14.4 (Wave 2, Part A) widened the Acciones column with a
+        // new "Liberar" button — Descartar can now sit past the
+        // horizontally-scrollable table's initial viewport, so it must be
+        // scrolled into view before tapping it (mirrors this same file's
+        // own `_openGroupIfNeeded` care about only interacting with
+        // actually-visible widgets).
+        await tester.ensureVisible(find.byKey(const Key('pos-held-sale-discard-cart-1')));
         await tester.tap(find.byKey(const Key('pos-held-sale-discard-cart-1')));
         await tester.pumpAndSettle();
 
@@ -486,13 +497,18 @@ class _RecordingSalesGateway implements PosSalesGateway {
 }
 
 class _RecordingHeldSalesGateway implements PosHeldSalesGateway {
-  _RecordingHeldSalesGateway({this.listResult, this.resumeResult, this.discardResult});
+  _RecordingHeldSalesGateway({
+    this.listResult,
+    this.resumeResult,
+    this.discardResult,
+  });
   final PosHeldSaleCartPage? listResult;
   final PosHeldSaleCart? resumeResult;
   final PosHeldSaleCart? discardResult;
 
   final List<({String branchId, List<PosHeldSaleCartItemRequest> items})> createCalls = [];
   final List<String> resumeCalls = [];
+  final List<String> releaseCalls = [];
   final List<String> discardCalls = [];
 
   @override
@@ -515,6 +531,8 @@ class _RecordingHeldSalesGateway implements PosHeldSalesGateway {
       ],
       status: 'held',
       createdBy: 'user-id',
+      claimedAt: null,
+      claimedBy: null,
       resumedAt: null,
       resumedBy: null,
       resumedSaleId: null,
@@ -529,7 +547,18 @@ class _RecordingHeldSalesGateway implements PosHeldSalesGateway {
     PosHeldSaleCartListFilter filter = const PosHeldSaleCartListFilter(),
     String? cursor,
     int limit = 50,
-  }) async => listResult ?? const PosHeldSaleCartPage(items: [], nextCursor: null);
+  }) async {
+    final page = listResult ?? const PosHeldSaleCartPage(items: [], nextCursor: null);
+    // TASK 14.4 (Wave 2, Part A.2) — `_HeldSalesState` now issues one call
+    // per status (`held` and `resuming`) and merges the results; this fake
+    // must honor `filter.status` itself, or a fixture's single page would
+    // otherwise come back twice (once per call) and duplicate every row.
+    if (filter.status == null) return page;
+    return PosHeldSaleCartPage(
+      items: page.items.where((cart) => cart.status == filter.status).toList(growable: false),
+      nextCursor: page.nextCursor,
+    );
+  }
 
   @override
   Future<PosHeldSaleCart> resumeCart(String id) async {
@@ -540,6 +569,12 @@ class _RecordingHeldSalesGateway implements PosHeldSalesGateway {
   @override
   Future<PosHeldSaleCart> linkSale({required String id, required String saleId}) async =>
       resumeResult!;
+
+  @override
+  Future<PosHeldSaleCart> releaseCart(String id) async {
+    releaseCalls.add(id);
+    return resumeResult!;
+  }
 
   @override
   Future<PosHeldSaleCart> discardCart({required String id, String? reason}) async {
@@ -553,6 +588,7 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
       ({
         String branchId,
         String? supplierName,
+        String? supplierId,
         String productVariantId,
         String quantity,
         String unitCost,
@@ -566,6 +602,7 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
   Future<PosDirectPurchase> createDirectPurchase({
     required String branchId,
     String? supplierName,
+    String? supplierId,
     required String productVariantId,
     required String quantity,
     required String unitCost,
@@ -576,6 +613,7 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
     createCalls.add((
       branchId: branchId,
       supplierName: supplierName,
+      supplierId: supplierId,
       productVariantId: productVariantId,
       quantity: quantity,
       unitCost: unitCost,
@@ -587,6 +625,7 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
       id: 'purchase-1',
       branchId: branchId,
       supplierName: supplierName,
+      supplierId: supplierId,
       productVariantId: productVariantId,
       quantity: quantity,
       unitCost: unitCost,

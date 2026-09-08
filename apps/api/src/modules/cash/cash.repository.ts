@@ -5,10 +5,12 @@ import type { DatabaseClient } from '@asone/database';
 import {
   CashError,
   cashMovementDirection,
+  type CashMovementCategory,
   type CashMovementRow,
   type CashMovementType,
   type CashMutationContext,
   type CashRegisterRow,
+  type CashSessionPartialCloseRow,
   type CashSessionRow,
   type CashSessionStatus,
   type DenominationCount,
@@ -58,7 +60,9 @@ const REGISTER_COLUMNS =
 const SESSION_COLUMNS =
   'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,version,created_at,updated_at';
 const MOVEMENT_COLUMNS =
-  'id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,reference_type,reference_id,occurred_at,created_by,device_id,reversal_of_id,created_at';
+  'id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,reference_type,reference_id,occurred_at,created_by,device_id,reversal_of_id,created_at,category';
+const PARTIAL_CLOSE_COLUMNS =
+  'id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at';
 
 interface RegisterDb {
   id: string;
@@ -111,6 +115,21 @@ interface MovementDb {
   created_by: string;
   device_id: string | null;
   reversal_of_id: string | null;
+  created_at: Date | string;
+  category: string | null;
+}
+interface PartialCloseDb {
+  id: string;
+  company_id: string;
+  branch_id: string;
+  cash_session_id: string;
+  taken_at: Date | string;
+  opening_amount: string;
+  cash_sales_total: string;
+  cash_in_total: string;
+  cash_out_total: string;
+  expected_cash: string;
+  created_by: string;
   created_at: Date | string;
 }
 interface IdempotencyDb {
@@ -183,6 +202,23 @@ function movement(row: MovementDb): CashMovementRow {
     createdBy: row.created_by,
     deviceId: row.device_id,
     reversalOfId: row.reversal_of_id,
+    createdAt: new Date(row.created_at),
+    category: row.category === null ? null : (row.category as CashMovementCategory),
+  };
+}
+function partialClose(row: PartialCloseDb): CashSessionPartialCloseRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    branchId: row.branch_id,
+    cashSessionId: row.cash_session_id,
+    takenAt: new Date(row.taken_at),
+    openingAmount: row.opening_amount,
+    cashSalesTotal: row.cash_sales_total,
+    cashInTotal: row.cash_in_total,
+    cashOutTotal: row.cash_out_total,
+    expectedCash: row.expected_cash,
+    createdBy: row.created_by,
     createdAt: new Date(row.created_at),
   };
 }
@@ -259,7 +295,7 @@ export class CashRepository {
     context: CashMutationContext,
     input: {
       action: string;
-      resourceType: 'cash_register' | 'cash_session' | 'cash_movement';
+      resourceType: 'cash_register' | 'cash_session' | 'cash_movement' | 'cash_session_partial_close';
       resourceId: string;
       eventType: string;
       branchId: string;
@@ -658,14 +694,18 @@ export class CashRepository {
       occurredAt: Date;
       createdBy: string;
       deviceId: string | null;
+      /** TASK 14.4 (Wave 2, Part F.1) — optional; `undefined`/omitted
+       * behaves exactly like `null` (system-posted movements and
+       * uncategorized manual movements never pass this). */
+      category?: CashMovementCategory | null;
     },
   ): Promise<CashMovementRow> {
     const row = result<MovementDb>(
       await client.query(
         `insert into cash_movements
          (id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,
-          reference_type,reference_id,occurred_at,created_by,device_id,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12)
+          reference_type,reference_id,occurred_at,created_by,device_id,created_at,category)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12,$15)
          returning ${MOVEMENT_COLUMNS}`,
         [
           input.id,
@@ -682,6 +722,7 @@ export class CashRepository {
           input.occurredAt,
           input.createdBy,
           input.deviceId,
+          input.category ?? null,
         ],
       ),
     ).rows[0];
@@ -822,6 +863,72 @@ export class CashRepository {
     return formatMoney(units);
   }
 
+  // --- Partial closes ("corte parcial") (TASK 14.4 Wave 2 Part F.3) -------
+
+  /** Inserts one persisted snapshot row of an already-computed
+   * `summary()` result. Deliberately takes the figures as plain input
+   * rather than re-computing them — the caller (`CashService.partialClose`)
+   * is the single place that folds `movementsForSession`, exactly
+   * mirroring `closeSession`'s own division of responsibility. Never
+   * touches `cash_sessions.status`. */
+  public async insertPartialClose(
+    client: CashTransaction,
+    input: {
+      id: string;
+      companyId: string;
+      branchId: string;
+      cashSessionId: string;
+      takenAt: Date;
+      openingAmount: string;
+      cashSalesTotal: string;
+      cashInTotal: string;
+      cashOutTotal: string;
+      expectedCash: string;
+      createdBy: string;
+    },
+  ): Promise<CashSessionPartialCloseRow> {
+    const row = result<PartialCloseDb>(
+      await client.query(
+        `insert into cash_session_partial_closes
+         (id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$5)
+         returning ${PARTIAL_CLOSE_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.branchId,
+          input.cashSessionId,
+          input.takenAt,
+          input.openingAmount,
+          input.cashSalesTotal,
+          input.cashInTotal,
+          input.cashOutTotal,
+          input.expectedCash,
+          input.createdBy,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Partial-close insertion did not return a row.');
+    return partialClose(row);
+  }
+
+  /** The audit trail Part F.3 requires — every snapshot ever taken for
+   * this session, oldest first (matching every other history list this
+   * module already exposes as chronological, e.g. `movementsForSession`). */
+  public async partialClosesForSession(
+    companyId: string,
+    cashSessionId: string,
+  ): Promise<CashSessionPartialCloseRow[]> {
+    const rows = result<PartialCloseDb>(
+      await this.database.pool.query(
+        `select ${PARTIAL_CLOSE_COLUMNS} from cash_session_partial_closes
+         where company_id=$1 and cash_session_id=$2 order by taken_at asc, id asc`,
+        [companyId, cashSessionId],
+      ),
+    ).rows;
+    return rows.map(partialClose);
+  }
+
   private mapDatabaseError(error: unknown): unknown {
     switch (constraint(error)) {
       case 'cash_registers_company_branch_code_active_uq':
@@ -830,6 +937,13 @@ export class CashRepository {
         return new CashError('cash_session_already_open', 'The register already has an open session.');
       case 'cash_movements_payment_reference_uq':
         return new CashError('validation_error', 'A cash movement for this payment was already recorded.');
+      // Defense in depth only — `CashService.createMovement` already
+      // validates the exact same rule server-side before this insert is
+      // ever attempted (see `validateMovementCategory`), so a real
+      // request should never reach this constraint.
+      case 'cash_movements_category_ck':
+      case 'cash_movements_category_direction_ck':
+        return new CashError('validation_error', 'The category is not valid for this movement type.');
       default:
         return error;
     }

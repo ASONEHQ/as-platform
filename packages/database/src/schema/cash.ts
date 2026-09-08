@@ -239,6 +239,16 @@ export const cashMovements = pgTable(
     currencyCode: char('currency_code', { length: 3 }).notNull(),
     reasonCode: text('reason_code').notNull(),
     note: text('note'),
+    // TASK 14.4 (Wave 2, Part F.1) — recovers the legacy's real distinct
+    // Retiro/Gasto/Ingreso-extra categorization (see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md`'s Caja section) as a real
+    // reporting/UX dimension ON TOP OF the existing, unchanged, real
+    // `cash_in`/`cash_out` direction — never a second amount/direction
+    // source of truth. Nullable and only ever meaningful for a
+    // client-postable `cash_in`/`cash_out` movement (never set on
+    // `opening_float`/`cash_sale`/`cash_refund`, which are already fully
+    // self-describing via `movement_type`).
+    category: text('category'),
     // TASK 12.7 Part F: beyond CORE_DATA_MODEL §6.3's baseline field
     // list — a `cash_sale` movement's durable link back to the captured
     // cash Payment it came from, the exact "uniqueness/reference boundary
@@ -317,6 +327,21 @@ export const cashMovements = pgTable(
     check('cash_movements_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check('cash_movements_reason_code_nonblank_ck', sql`length(btrim(${table.reasonCode})) > 0`),
     check(
+      'cash_movements_category_ck',
+      sql`${table.category} is null or ${table.category} in ('withdrawal', 'expense', 'external_income', 'other')`,
+    ),
+    // A category, when present, must match a real direction it can
+    // actually describe — `withdrawal`/`expense` only ever make sense on
+    // a `cash_out`; `external_income` only on a `cash_in`. `other` is
+    // valid on either.
+    check(
+      'cash_movements_category_direction_ck',
+      sql`${table.category} is null
+        or ${table.category} = 'other'
+        or (${table.category} in ('withdrawal', 'expense') and ${table.movementType} = 'cash_out')
+        or (${table.category} = 'external_income' and ${table.movementType} = 'cash_in')`,
+    ),
+    check(
       'cash_movements_not_self_reversal_ck',
       sql`${table.reversalOfId} is null or ${table.reversalOfId} <> ${table.id}`,
     ),
@@ -327,6 +352,55 @@ export const cashMovements = pgTable(
   ],
 );
 
+/**
+ * TASK 14.4 (Wave 2, Part F.3) — "Corte parcial," recovered from
+ * `docs/LEGACY_FUNCTIONAL_PARITY.md`'s Caja section: a real mid-shift
+ * snapshot that does NOT close the session (`cash_sessions.status`
+ * never changes because of this). Deliberately a pure, persisted,
+ * audited SNAPSHOT of the already-authoritative `GET .../summary`
+ * computation at the moment it was taken — never a second drawer-
+ * balance source of truth; the live summary endpoint remains the one
+ * real-time calculation, this table only remembers what it said at a
+ * point in time, for history/print/audit.
+ */
+export const cashSessionPartialCloses = pgTable(
+  'cash_session_partial_closes',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id').notNull(),
+    cashSessionId: uuid('cash_session_id').notNull(),
+    takenAt: timestamp('taken_at', { withTimezone: true, mode: 'date' }).notNull(),
+    openingAmount: numeric('opening_amount', { precision: 19, scale: 4 }).notNull(),
+    cashSalesTotal: numeric('cash_sales_total', { precision: 19, scale: 4 }).notNull(),
+    cashInTotal: numeric('cash_in_total', { precision: 19, scale: 4 }).notNull(),
+    cashOutTotal: numeric('cash_out_total', { precision: 19, scale: 4 }).notNull(),
+    expectedCash: numeric('expected_cash', { precision: 19, scale: 4 }).notNull(),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    unique('cash_session_partial_closes_company_id_id_uq').on(table.companyId, table.id),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'cash_session_partial_closes_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.cashSessionId],
+      foreignColumns: [cashSessions.companyId, cashSessions.id],
+      name: 'cash_session_partial_closes_session_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.createdBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'cash_session_partial_closes_created_by_membership_fk',
+    }).onDelete('restrict'),
+    index('cash_session_partial_closes_company_session_idx').on(table.companyId, table.cashSessionId, table.takenAt),
+  ],
+);
+
 export type CashRegister = typeof cashRegisters.$inferSelect;
 export type CashSession = typeof cashSessions.$inferSelect;
 export type CashMovement = typeof cashMovements.$inferSelect;
+export type CashSessionPartialClose = typeof cashSessionPartialCloses.$inferSelect;

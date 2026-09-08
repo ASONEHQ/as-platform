@@ -4,16 +4,19 @@ import { PurchaseInventoryPostingError } from '../inventory/purchase-receipt.js'
 import { PurchaseError } from './purchasing.types.js';
 
 // Mirrors `refunds.http-errors.ts`'s own established shape exactly:
-// every code below is already a member of `InfrastructureErrorCode`
+// every code below is a member of `InfrastructureErrorCode`
 // (packages/errors) — this domain reuses existing generic codes rather
 // than inventing new ones, the same restraint TASK 13.0/13.1 documented
-// for their own new domains.
+// for their own new domains. The one exception is `supplier_inactive`
+// (TASK 14.4, Wave 2, Part C.2), added to `infrastructureErrorCodes`
+// alongside this module's own `PurchaseErrorCode`.
 const purchaseErrorStatus: Readonly<Record<string, number>> = {
   validation_error: 400,
   idempotency_conflict: 409,
   resource_not_found: 404,
   product_variant_not_found: 404,
   inventory_location_not_found: 404,
+  supplier_inactive: 409,
 };
 
 export function mapPurchaseError(error: unknown): Error {
@@ -21,6 +24,9 @@ export function mapPurchaseError(error: unknown): Error {
     return new AppError({ code: error.code, message: error.message, statusCode: 404 });
   if (!(error instanceof PurchaseError)) return error instanceof Error ? error : new Error('Unknown error');
   const statusCode = purchaseErrorStatus[error.code] ?? 409;
+  // TASK 14.4 (Wave 2, Part C.2) — `supplier_inactive` was added to the
+  // central `InfrastructureErrorCode` union alongside this module's own
+  // `PurchaseErrorCode`, so no cast is needed here.
   return new AppError({ code: error.code, message: error.message, statusCode });
 }
 

@@ -157,6 +157,37 @@ export const technicalPermissionCodes = [
   // separation (TASK 12.7).
   'purchase.read',
   'purchase.create',
+  // TASK 14.4 (Wave 2, Part B) — the People domain (Planilla/Horarios/
+  // Checador/Nómina). `payroll.close` is deliberately separate from
+  // `payroll.manage` — closing a period is a materially higher-risk,
+  // harder-to-undo action than an ordinary edit, mirroring this file's
+  // own established `refund.approve`/`role.permission.manage`-style
+  // separation of a sensitive terminal action from routine management.
+  'employee.read',
+  'employee.manage',
+  'schedule.read',
+  'schedule.manage',
+  'attendance.read',
+  'attendance.manage',
+  'payroll.read',
+  'payroll.manage',
+  'payroll.close',
+  // TASK 14.4 (Wave 2, Part C) — suppliers.
+  'supplier.read',
+  'supplier.manage',
+  // TASK 14.4 (Wave 2, Part D) — reports/BI. Deliberately one coarse
+  // `report.read` code covering every report tab (sales/financial/
+  // inventory/customers/employees/parties/access) — mirrors
+  // `catalog.read`'s own precedent for a broad, low-risk read surface;
+  // each underlying report still only returns what the actor's other
+  // real permissions/branch access already allow it to see.
+  'report.read',
+  // TASK 14.4 (Wave 2, Part E) — access/occupancy. `access.scan` is the
+  // day-to-day gate-staff action (issuing/scanning); `access.manage` is
+  // reserved for administrative actions (voiding a credential).
+  'access.scan',
+  'access.read',
+  'access.manage',
 ] as const;
 
 export async function seedTechnicalPermissions(db: Database): Promise<number> {

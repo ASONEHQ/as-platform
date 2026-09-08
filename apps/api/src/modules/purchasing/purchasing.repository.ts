@@ -27,13 +27,14 @@ function jsonValue(_key: string, value: unknown): unknown {
 }
 
 const DIRECT_PURCHASE_COLUMNS =
-  'id,company_id,branch_id,supplier_name,product_variant_id,quantity,unit_cost,currency_code,total_cost,purchase_date,notes,inventory_movement_id,created_by,created_at';
+  'id,company_id,branch_id,supplier_name,supplier_id,product_variant_id,quantity,unit_cost,currency_code,total_cost,purchase_date,notes,inventory_movement_id,created_by,created_at';
 
 interface DirectPurchaseDb {
   id: string;
   company_id: string;
   branch_id: string;
   supplier_name: string | null;
+  supplier_id: string | null;
   product_variant_id: string;
   quantity: string;
   unit_cost: string;
@@ -56,6 +57,7 @@ function directPurchase(row: DirectPurchaseDb): DirectPurchaseRow {
     companyId: row.company_id,
     branchId: row.branch_id,
     supplierName: row.supplier_name,
+    supplierId: row.supplier_id,
     productVariantId: row.product_variant_id,
     quantity: row.quantity,
     unitCost: row.unit_cost,
@@ -200,6 +202,7 @@ export class PurchasingRepository {
       companyId: string;
       branchId: string;
       supplierName: string | null;
+      supplierId: string | null;
       productVariantId: string;
       quantity: string;
       unitCost: string;
@@ -215,15 +218,16 @@ export class PurchasingRepository {
     const row = result<DirectPurchaseDb>(
       await client.query(
         `insert into direct_purchases
-         (id,company_id,branch_id,supplier_name,product_variant_id,quantity,unit_cost,currency_code,
+         (id,company_id,branch_id,supplier_name,supplier_id,product_variant_id,quantity,unit_cost,currency_code,
           total_cost,purchase_date,notes,inventory_movement_id,created_by,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          returning ${DIRECT_PURCHASE_COLUMNS}`,
         [
           input.id,
           input.companyId,
           input.branchId,
           input.supplierName,
+          input.supplierId,
           input.productVariantId,
           input.quantity,
           input.unitCost,
@@ -312,6 +316,7 @@ export class PurchasingRepository {
       cursor?: string;
       branchId?: string;
       productVariantId?: string;
+      supplierId?: string;
       purchaseDateFrom?: string;
       purchaseDateTo?: string;
     },
@@ -325,6 +330,10 @@ export class PurchasingRepository {
     if (input.productVariantId !== undefined) {
       values.push(input.productVariantId);
       where.push(`product_variant_id=$${String(values.length)}`);
+    }
+    if (input.supplierId !== undefined) {
+      values.push(input.supplierId);
+      where.push(`supplier_id=$${String(values.length)}`);
     }
     if (input.purchaseDateFrom !== undefined) {
       values.push(input.purchaseDateFrom);

@@ -97,12 +97,20 @@ class ApiClient {
   /// TASK 12.9: the first Flutter caller of a `PUT` update — promotions/
   /// coupons admin edits (`promotions.routes.ts`'s `PUT .../:id`), each
   /// requiring the resource's own strong `If-Match` version header (never
-  /// an `Idempotency-Key` — the backend route schema for these endpoints
+  /// an `Idempotency-Key` — the backend route schema for those endpoints
   /// carries no such requirement, unlike `postJson`'s creation calls).
+  ///
+  /// TASK 14.4 (Wave 2): [idempotencyKey] is optional and additive — the
+  /// first `PUT` caller that DOES also require `Idempotency-Key` is
+  /// `PUT /api/v1/schedules` (`schedules.routes.ts`'s own genuine
+  /// upsert-on-conflict route, which carries no `If-Match` at all — see
+  /// `pos_people_gateway.dart`'s `upsertSchedule`). Every pre-existing
+  /// `putJson` call site is unaffected.
   Future<Map<String, Object?>> putJson(
     String path, {
     Map<String, Object?> body = const {},
     String? ifMatch,
+    String? idempotencyKey,
     bool authenticated = true,
   }) => _send(
     'PUT',
@@ -111,6 +119,7 @@ class ApiClient {
     authenticated: authenticated,
     retryAfterRefresh: false,
     ifMatch: ifMatch,
+    idempotencyKey: idempotencyKey,
   );
 
   /// TASK 13.0: the first Flutter caller of a `PATCH` update —

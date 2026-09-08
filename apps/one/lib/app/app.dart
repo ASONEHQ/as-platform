@@ -4,6 +4,7 @@ import '../core/config/app_config.dart';
 import '../core/telemetry/telemetry.dart';
 import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
+import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
@@ -11,12 +12,15 @@ import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
+import '../features/pos/pos_people_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
+import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
+import '../features/pos/pos_suppliers_gateway.dart';
 import 'router.dart';
 
 class AsOneApp extends StatefulWidget {
@@ -37,6 +41,13 @@ class AsOneApp extends StatefulWidget {
     this.posPartiesGateway = const EmptyPosPartiesGateway(),
     this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
+    this.posSuppliersGateway = const EmptyPosSuppliersGateway(),
+    this.posReportsGateway = const EmptyPosReportsGateway(),
+    this.posAccessGateway = const EmptyPosAccessGateway(),
+    this.posEmployeesGateway = const EmptyPosEmployeesGateway(),
+    this.posSchedulesGateway = const EmptyPosSchedulesGateway(),
+    this.posTimeClockGateway = const EmptyPosTimeClockGateway(),
+    this.posPayrollGateway = const EmptyPosPayrollGateway(),
     super.key,
   });
 
@@ -74,6 +85,21 @@ class AsOneApp extends StatefulWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway posPurchasingGateway;
+  // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
+  // `pos_suppliers_gateway.dart`.
+  final PosSuppliersGateway posSuppliersGateway;
+  // TASK 14.4 (Wave 2, Part D): Report Center — see
+  // `pos_reports_gateway.dart`.
+  final PosReportsGateway posReportsGateway;
+  // TASK 14.4 (Wave 2, Part E): Control de Acceso — see
+  // `pos_access_gateway.dart`.
+  final PosAccessGateway posAccessGateway;
+  // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina — see
+  // `pos_people_gateway.dart`.
+  final PosEmployeesGateway posEmployeesGateway;
+  final PosSchedulesGateway posSchedulesGateway;
+  final PosTimeClockGateway posTimeClockGateway;
+  final PosPayrollGateway posPayrollGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -106,6 +132,13 @@ class _AsOneAppState extends State<AsOneApp> {
       posPartiesGateway: widget.posPartiesGateway,
       posHeldSalesGateway: widget.posHeldSalesGateway,
       posPurchasingGateway: widget.posPurchasingGateway,
+      posSuppliersGateway: widget.posSuppliersGateway,
+      posReportsGateway: widget.posReportsGateway,
+      posAccessGateway: widget.posAccessGateway,
+      posEmployeesGateway: widget.posEmployeesGateway,
+      posSchedulesGateway: widget.posSchedulesGateway,
+      posTimeClockGateway: widget.posTimeClockGateway,
+      posPayrollGateway: widget.posPayrollGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -130,6 +163,13 @@ class PlatformScope extends InheritedWidget {
     this.posPartiesGateway = const EmptyPosPartiesGateway(),
     this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
+    this.posSuppliersGateway = const EmptyPosSuppliersGateway(),
+    this.posReportsGateway = const EmptyPosReportsGateway(),
+    this.posAccessGateway = const EmptyPosAccessGateway(),
+    this.posEmployeesGateway = const EmptyPosEmployeesGateway(),
+    this.posSchedulesGateway = const EmptyPosSchedulesGateway(),
+    this.posTimeClockGateway = const EmptyPosTimeClockGateway(),
+    this.posPayrollGateway = const EmptyPosPayrollGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -186,6 +226,25 @@ class PlatformScope extends InheritedWidget {
   /// `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway posPurchasingGateway;
 
+  /// TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
+  /// `pos_suppliers_gateway.dart`.
+  final PosSuppliersGateway posSuppliersGateway;
+
+  /// TASK 14.4 (Wave 2, Part D): Report Center — see
+  /// `pos_reports_gateway.dart`.
+  final PosReportsGateway posReportsGateway;
+
+  /// TASK 14.4 (Wave 2, Part E): Control de Acceso — see
+  /// `pos_access_gateway.dart`.
+  final PosAccessGateway posAccessGateway;
+
+  /// TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina — see
+  /// `pos_people_gateway.dart`.
+  final PosEmployeesGateway posEmployeesGateway;
+  final PosSchedulesGateway posSchedulesGateway;
+  final PosTimeClockGateway posTimeClockGateway;
+  final PosPayrollGateway posPayrollGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -212,6 +271,13 @@ class PlatformScope extends InheritedWidget {
       posPartiesGateway != oldWidget.posPartiesGateway ||
       posHeldSalesGateway != oldWidget.posHeldSalesGateway ||
       posPurchasingGateway != oldWidget.posPurchasingGateway ||
+      posSuppliersGateway != oldWidget.posSuppliersGateway ||
+      posReportsGateway != oldWidget.posReportsGateway ||
+      posAccessGateway != oldWidget.posAccessGateway ||
+      posEmployeesGateway != oldWidget.posEmployeesGateway ||
+      posSchedulesGateway != oldWidget.posSchedulesGateway ||
+      posTimeClockGateway != oldWidget.posTimeClockGateway ||
+      posPayrollGateway != oldWidget.posPayrollGateway ||
       environment != oldWidget.environment;
 }
 

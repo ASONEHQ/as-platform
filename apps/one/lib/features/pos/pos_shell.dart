@@ -9,6 +9,8 @@ import '../../design_system/tokens/as_tokens.dart';
 import '../authentication/auth_models.dart';
 import '../authentication/startup_visuals.dart';
 import 'money.dart';
+import 'pos_access_gateway.dart';
+import 'pos_access_screen.dart';
 import 'pos_cash_gateway.dart';
 import 'pos_customers_gateway.dart';
 import 'pos_held_sales_gateway.dart';
@@ -19,13 +21,19 @@ import 'pos_navigation.dart';
 import 'pos_parties_gateway.dart';
 import 'pos_parties_models.dart';
 import 'pos_payments_gateway.dart';
+import 'pos_people_gateway.dart';
+import 'pos_people_screen.dart';
 import 'pos_promotions_gateway.dart';
 import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
 import 'pos_refunds_gateway.dart';
+import 'pos_reports_gateway.dart';
+import 'pos_reports_screen.dart';
 import 'pos_rewards_gateway.dart';
 import 'pos_sales_gateway.dart';
+import 'pos_suppliers_gateway.dart';
+import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
 import 'receipt_html.dart';
 import 'receipt_print.dart';
@@ -49,6 +57,13 @@ class PosShell extends StatefulWidget {
     required this.partiesGateway,
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.purchasingGateway = const EmptyPosPurchasingGateway(),
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
+    this.reportsGateway = const EmptyPosReportsGateway(),
+    this.accessGateway = const EmptyPosAccessGateway(),
+    this.employeesGateway = const EmptyPosEmployeesGateway(),
+    this.schedulesGateway = const EmptyPosSchedulesGateway(),
+    this.timeClockGateway = const EmptyPosTimeClockGateway(),
+    this.payrollGateway = const EmptyPosPayrollGateway(),
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -87,6 +102,21 @@ class PosShell extends StatefulWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway purchasingGateway;
+  // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
+  // `pos_suppliers_gateway.dart`.
+  final PosSuppliersGateway suppliersGateway;
+  // TASK 14.4 (Wave 2, Part D): Report Center — see
+  // `pos_reports_gateway.dart`.
+  final PosReportsGateway reportsGateway;
+  // TASK 14.4 (Wave 2, Part E): Control de Acceso — see
+  // `pos_access_gateway.dart`.
+  final PosAccessGateway accessGateway;
+  // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina — see
+  // `pos_people_gateway.dart`.
+  final PosEmployeesGateway employeesGateway;
+  final PosSchedulesGateway schedulesGateway;
+  final PosTimeClockGateway timeClockGateway;
+  final PosPayrollGateway payrollGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -289,6 +319,13 @@ class _PosShellState extends State<PosShell> {
                             partiesGateway: widget.partiesGateway,
                             heldSalesGateway: widget.heldSalesGateway,
                             purchasingGateway: widget.purchasingGateway,
+                            suppliersGateway: widget.suppliersGateway,
+                            reportsGateway: widget.reportsGateway,
+                            accessGateway: widget.accessGateway,
+                            employeesGateway: widget.employeesGateway,
+                            schedulesGateway: widget.schedulesGateway,
+                            timeClockGateway: widget.timeClockGateway,
+                            payrollGateway: widget.payrollGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -2521,6 +2558,13 @@ class _Content extends StatelessWidget {
     required this.partiesGateway,
     required this.heldSalesGateway,
     required this.purchasingGateway,
+    required this.suppliersGateway,
+    required this.reportsGateway,
+    required this.accessGateway,
+    required this.employeesGateway,
+    required this.schedulesGateway,
+    required this.timeClockGateway,
+    required this.payrollGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2554,6 +2598,21 @@ class _Content extends StatelessWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway purchasingGateway;
+  // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
+  // `pos_suppliers_gateway.dart`.
+  final PosSuppliersGateway suppliersGateway;
+  // TASK 14.4 (Wave 2, Part D): Report Center — see
+  // `pos_reports_gateway.dart`.
+  final PosReportsGateway reportsGateway;
+  // TASK 14.4 (Wave 2, Part E): Control de Acceso — see
+  // `pos_access_gateway.dart`.
+  final PosAccessGateway accessGateway;
+  // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina — see
+  // `pos_people_gateway.dart`.
+  final PosEmployeesGateway employeesGateway;
+  final PosSchedulesGateway schedulesGateway;
+  final PosTimeClockGateway timeClockGateway;
+  final PosPayrollGateway payrollGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2720,6 +2779,39 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     controller: controller,
                     purchasingGateway: purchasingGateway,
+                    suppliersGateway: suppliersGateway,
+                  ),
+                  // TASK 14.4 (Wave 2, Part C.1): the pre-reserved
+                  // `PosModule.suppliers` slot ("Proveedores") — real
+                  // supplier directory (list/create/edit/deactivate).
+                  PosModule.suppliers => PosSuppliersScreen(
+                    context: this.context,
+                    suppliersGateway: suppliersGateway,
+                  ),
+                  // TASK 14.4 (Wave 2, Part D): the pre-reserved
+                  // `PosModule.reports` slot ("Reportes") — real,
+                  // server-aggregated Report Center.
+                  PosModule.reports => PosReportsScreen(
+                    context: this.context,
+                    reportsGateway: reportsGateway,
+                  ),
+                  // TASK 14.4 (Wave 2, Part E): the pre-reserved
+                  // `PosModule.access` slot ("Control Acceso") — real
+                  // credential issue/scan/void and occupancy, replacing
+                  // the legacy's own fake ticket scanner.
+                  PosModule.access => PosAccessScreen(
+                    context: this.context,
+                    accessGateway: accessGateway,
+                  ),
+                  // TASK 14.4 (Wave 2, Part B): the pre-reserved
+                  // `PosModule.employees` slot ("Empleados") —
+                  // Empleados/Horarios/Checador/Nómina.
+                  PosModule.employees => PosPeopleScreen(
+                    context: this.context,
+                    employeesGateway: employeesGateway,
+                    schedulesGateway: schedulesGateway,
+                    timeClockGateway: timeClockGateway,
+                    payrollGateway: payrollGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -7964,7 +8056,13 @@ class _HeldSales extends StatefulWidget {
 class _HeldSalesState extends State<_HeldSales> {
   _HeldSalesPhase _phase = _HeldSalesPhase.loading;
   List<PosHeldSaleCart> _items = const [];
-  String? _nextCursor;
+  // TASK 14.4 (Wave 2, Part A.2) — one cursor per status, since the
+  // backend's own `GET /held-sale-carts` querystring only ever accepts a
+  // single `status` value (never an array — see `held-sales.routes.ts`'s
+  // real query contract). Both `held` and `resuming` carts are fetched and
+  // merged so a claimed (`resuming`) cart is never silently hidden.
+  String? _heldCursor;
+  String? _resumingCursor;
   bool _loadingMore = false;
   String? _errorMessage;
   // Only one row's action may be in flight at a time — a real network
@@ -7977,10 +8075,7 @@ class _HeldSalesState extends State<_HeldSales> {
     unawaited(_load());
   }
 
-  PosHeldSaleCartListFilter get _filter => PosHeldSaleCartListFilter(
-    status: 'held',
-    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
-  );
+  String? get _branchId => widget.context.companyWideAccess ? null : widget.context.session.branchId;
 
   Future<void> _load() async {
     setState(() {
@@ -7988,11 +8083,21 @@ class _HeldSalesState extends State<_HeldSales> {
       _errorMessage = null;
     });
     try {
-      final page = await widget.heldSalesGateway.listCarts(filter: _filter);
+      final results = await Future.wait([
+        widget.heldSalesGateway.listCarts(
+          filter: PosHeldSaleCartListFilter(status: 'held', branchId: _branchId),
+        ),
+        widget.heldSalesGateway.listCarts(
+          filter: PosHeldSaleCartListFilter(status: 'resuming', branchId: _branchId),
+        ),
+      ]);
       if (!mounted) return;
+      final held = results[0];
+      final resuming = results[1];
       setState(() {
-        _items = page.items;
-        _nextCursor = page.nextCursor;
+        _items = [...held.items, ...resuming.items];
+        _heldCursor = held.nextCursor;
+        _resumingCursor = resuming.nextCursor;
         _phase = _items.isEmpty ? _HeldSalesPhase.empty : _HeldSalesPhase.ready;
       });
     } on ApiException catch (error) {
@@ -8011,15 +8116,33 @@ class _HeldSalesState extends State<_HeldSales> {
   }
 
   Future<void> _loadMore() async {
-    final cursor = _nextCursor;
-    if (cursor == null || _loadingMore) return;
+    final heldCursor = _heldCursor;
+    final resumingCursor = _resumingCursor;
+    if ((heldCursor == null && resumingCursor == null) || _loadingMore) return;
     setState(() => _loadingMore = true);
     try {
-      final page = await widget.heldSalesGateway.listCarts(filter: _filter, cursor: cursor);
+      final heldPage = heldCursor == null
+          ? null
+          : await widget.heldSalesGateway.listCarts(
+              filter: PosHeldSaleCartListFilter(status: 'held', branchId: _branchId),
+              cursor: heldCursor,
+            );
+      final resumingPage = resumingCursor == null
+          ? null
+          : await widget.heldSalesGateway.listCarts(
+              filter: PosHeldSaleCartListFilter(status: 'resuming', branchId: _branchId),
+              cursor: resumingCursor,
+            );
       if (!mounted) return;
       setState(() {
-        _items = [..._items, ...page.items];
-        _nextCursor = page.nextCursor;
+        if (heldPage != null) {
+          _items = [..._items, ...heldPage.items];
+          _heldCursor = heldPage.nextCursor;
+        }
+        if (resumingPage != null) {
+          _items = [..._items, ...resumingPage.items];
+          _resumingCursor = resumingPage.nextCursor;
+        }
         _loadingMore = false;
       });
     } on Object {
@@ -8033,6 +8156,13 @@ class _HeldSalesState extends State<_HeldSales> {
   /// shown as available when it would just 403.
   bool _canDiscard(PosHeldSaleCart cart) =>
       cart.createdBy == widget.context.session.userId ||
+      widget.context.permissions.contains('sale.cancel');
+
+  /// TASK 14.4 (Wave 2, Part A.3) — mirrors `held-sales.service.ts`'s own
+  /// `releaseCart` gate EXACTLY: only the cart's own claimant, or an actor
+  /// with `sale.cancel`, may release it — never looser, never stricter.
+  bool _canRelease(PosHeldSaleCart cart) =>
+      cart.claimedBy == widget.context.session.userId ||
       widget.context.permissions.contains('sale.cancel');
 
   Future<void> _resume(PosHeldSaleCart cart) async {
@@ -8075,6 +8205,52 @@ class _HeldSalesState extends State<_HeldSales> {
     } on Object {
       if (!mounted) return;
       _showNotice(context, 'No fue posible restaurar la venta suspendida.');
+    } finally {
+      if (mounted) setState(() => _busyCartId = null);
+    }
+  }
+
+  /// TASK 14.4 (Wave 2, Part A.3) — "Liberar": the explicit, audited
+  /// recovery action for an abandoned claim (`resuming -> held`), making
+  /// the cart available to be claimed again. Follows the exact same
+  /// `_busyCartId`-guard / confirmation-dialog / `ApiException`+`on Object`
+  /// catch-pair shape as `_resume`/`_discard` above.
+  Future<void> _release(PosHeldSaleCart cart) async {
+    if (_busyCartId != null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Liberar venta suspendida'),
+        content: Text(
+          '¿Liberar la venta suspendida ${_compactId(cart.id)}'
+          '${cart.label == null ? '' : ' («${cart.label}»)'}? '
+          'Quedará disponible para que cualquier cajero autorizado la reclame de nuevo.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            key: const Key('pos-held-sale-release-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Liberar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busyCartId = cart.id);
+    try {
+      await widget.heldSalesGateway.releaseCart(cart.id);
+      if (!mounted) return;
+      await _load();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showNotice(context, 'No fue posible liberar la venta suspendida.');
     } finally {
       if (mounted) setState(() => _busyCartId = null);
     }
@@ -8154,10 +8330,12 @@ class _HeldSalesState extends State<_HeldSales> {
                   items: _items,
                   busyCartId: _busyCartId,
                   canDiscard: _canDiscard,
+                  canRelease: _canRelease,
                   onResume: _resume,
+                  onRelease: _release,
                   onDiscard: _discard,
                 ),
-                if (_nextCursor != null)
+                if (_heldCursor != null || _resumingCursor != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: Center(
@@ -8183,25 +8361,66 @@ class _HeldSalesState extends State<_HeldSales> {
   }
 }
 
+String _formatHeldSaleTimestamp(DateTime value) {
+  final local = value.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(local.day)}/${two(local.month)}/${local.year} ${two(local.hour)}:${two(local.minute)}';
+}
+
+/// TASK 14.4 (Wave 2, Part A.2) — a held-sale cart's real status, rendered
+/// distinctly for `held` (available) vs `resuming` (claimed by someone) —
+/// mirrors `_StatusChip`'s own Container/pill styling exactly, but needs a
+/// 3rd, non-boolean state the shared, file-wide `_StatusChip` doesn't
+/// model (that widget only ever distinguishes "active" from everything
+/// else). A `resuming` cart is never silently hidden or left
+/// unexplained — the tooltip names who claimed it and since when.
+class _HeldSaleStatusChip extends StatelessWidget {
+  const _HeldSaleStatusChip({required this.cart});
+  final PosHeldSaleCart cart;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final resuming = cart.isResuming;
+    final color = resuming ? palette.warning : palette.success;
+    final label = resuming ? 'reclamada' : 'disponible';
+    return Tooltip(
+      message: resuming
+          ? 'Reclamada por ${cart.claimedBy ?? '—'} desde '
+                '${cart.claimedAt == null ? '—' : _formatHeldSaleTimestamp(cart.claimedAt!)}.'
+          : 'Disponible para restaurar.',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: .12),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800),
+        ),
+      ),
+    );
+  }
+}
+
 class _HeldSalesTable extends StatelessWidget {
   const _HeldSalesTable({
     required this.items,
     required this.busyCartId,
     required this.canDiscard,
+    required this.canRelease,
     required this.onResume,
+    required this.onRelease,
     required this.onDiscard,
   });
   final List<PosHeldSaleCart> items;
   final String? busyCartId;
   final bool Function(PosHeldSaleCart) canDiscard;
+  final bool Function(PosHeldSaleCart) canRelease;
   final ValueChanged<PosHeldSaleCart> onResume;
+  final ValueChanged<PosHeldSaleCart> onRelease;
   final ValueChanged<PosHeldSaleCart> onDiscard;
-
-  String _formatDateTime(DateTime value) {
-    final local = value.toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(local.day)}/${two(local.month)}/${local.year} ${two(local.hour)}:${two(local.minute)}';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -8216,33 +8435,61 @@ class _HeldSalesTable extends StatelessWidget {
             DataColumn(label: Text('Ticket')),
             DataColumn(label: Text('Etiqueta')),
             DataColumn(label: Text('Artículos'), numeric: true),
+            DataColumn(label: Text('Estado')),
             DataColumn(label: Text('Suspendida')),
             DataColumn(label: Text('Acciones')),
           ],
           rows: items.map((cart) {
             final busy = busyCartId == cart.id;
             final canDiscardThis = canDiscard(cart);
+            final canReleaseThis = cart.isResuming && canRelease(cart);
             return DataRow(
               key: ValueKey('pos-held-sale-row-${cart.id}'),
               cells: [
                 DataCell(Text(_compactId(cart.id))),
                 DataCell(Text(cart.label ?? '—')),
                 DataCell(Text('${cart.items.length}')),
-                DataCell(Text(_formatDateTime(cart.createdAt))),
+                DataCell(_HeldSaleStatusChip(cart: cart)),
+                DataCell(Text(_formatHeldSaleTimestamp(cart.createdAt))),
                 DataCell(
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      TextButton(
-                        key: Key('pos-held-sale-resume-${cart.id}'),
-                        onPressed: busy ? null : () => onResume(cart),
-                        child: busy
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('Restaurar'),
+                      Tooltip(
+                        message: cart.isHeld
+                            ? 'Restaurar'
+                            : 'Esta venta ya fue reclamada — solo una venta '
+                                  'disponible (held) puede restaurarse.',
+                        child: TextButton(
+                          key: Key('pos-held-sale-resume-${cart.id}'),
+                          onPressed: busy || !cart.isHeld ? null : () => onResume(cart),
+                          child: busy
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Text('Restaurar'),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      // TASK 14.4 (Wave 2, Part A.3) — "Liberar", only for
+                      // a `resuming` cart, gated by the exact same rule
+                      // `held-sales.service.ts`'s own `releaseCart`
+                      // enforces server-side: the cart's own claimant, or
+                      // an actor with `sale.cancel`.
+                      Tooltip(
+                        message: !cart.isResuming
+                            ? 'Solo una venta reclamada (en curso) puede liberarse.'
+                            : canReleaseThis
+                            ? 'Liberar'
+                            : 'Solo quien reclamó esta venta, o un actor con '
+                                  'permiso sale.cancel, puede liberarla.',
+                        child: TextButton(
+                          key: Key('pos-held-sale-release-${cart.id}'),
+                          onPressed: busy || !canReleaseThis ? null : () => onRelease(cart),
+                          child: const Text('Liberar'),
+                        ),
                       ),
                       const SizedBox(width: 4),
                       Tooltip(
@@ -8278,10 +8525,19 @@ class _DirectPurchases extends StatefulWidget {
     required this.context,
     required this.controller,
     required this.purchasingGateway,
+    // TASK 14.4 (Wave 2, Part C.2): optional real-supplier picker for the
+    // "Compra Directa" form — see `_DirectPurchaseForm`'s own doc comment.
+    // Defaults to `EmptyPosSuppliersGateway` (an empty picker, never a
+    // crash) so this stays additive for every existing call site that has
+    // not yet threaded a real `PosSuppliersGateway` down from
+    // `PosShell`/`_Content` — see this wave's own report for the exact
+    // wiring the orchestrator still needs to apply centrally.
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
   });
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPurchasingGateway purchasingGateway;
+  final PosSuppliersGateway suppliersGateway;
 
   @override
   State<_DirectPurchases> createState() => _DirectPurchasesState();
@@ -8376,6 +8632,7 @@ class _DirectPurchasesState extends State<_DirectPurchases> {
             context: widget.context,
             controller: widget.controller,
             purchasingGateway: widget.purchasingGateway,
+            suppliersGateway: widget.suppliersGateway,
             onCreated: () => unawaited(_load()),
           )
         else
@@ -8430,9 +8687,11 @@ class _DirectPurchasesState extends State<_DirectPurchases> {
 
 /// The "Compra Directa" form itself — product/variant picker, quantity,
 /// unit cost (live total = quantity × unit cost via the real
-/// `Money.multiplyByDecimalQuantity` fixed-point utility), optional
-/// supplier name, purchase date, notes. On success, shows the REAL
-/// resulting stock level from the response (never a fabricated
+/// `Money.multiplyByDecimalQuantity` fixed-point utility), an optional
+/// REAL supplier link (TASK 14.4 Wave 2 Part C.2 — a searchable picker
+/// sourced from [suppliersGateway], alongside the pre-existing free-text
+/// supplier name field) plus purchase date and notes. On success, shows
+/// the REAL resulting stock level from the response (never a fabricated
 /// confirmation) when the backend included one.
 class _DirectPurchaseForm extends StatefulWidget {
   const _DirectPurchaseForm({
@@ -8440,11 +8699,18 @@ class _DirectPurchaseForm extends StatefulWidget {
     required this.controller,
     required this.purchasingGateway,
     required this.onCreated,
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
   });
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPurchasingGateway purchasingGateway;
   final VoidCallback onCreated;
+  // TASK 14.4 (Wave 2, Part C.2): optional — defaults to an empty picker
+  // (no options, never a crash) so every pre-existing call site that has
+  // not yet threaded a real `PosSuppliersGateway` down keeps working
+  // exactly as before (the free-text `_supplierController` field is
+  // untouched either way).
+  final PosSuppliersGateway suppliersGateway;
 
   @override
   State<_DirectPurchaseForm> createState() => _DirectPurchaseFormState();
@@ -8460,6 +8726,32 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
   bool _submitting = false;
   String? _error;
   PosDirectPurchase? _lastCreated;
+  // TASK 14.4 (Wave 2, Part C.2): the optional real supplier link — `null`
+  // keeps the pre-existing free-text `_supplierController` behavior
+  // completely unchanged; a non-null value freezes that supplier's
+  // CURRENT real name server-side at write time (see
+  // `CreateDirectPurchaseInput.supplierId`'s own doc comment) and
+  // disables the free-text field in the UI so the two never compete.
+  PosSupplier? _selectedSupplier;
+  List<PosSupplier> _supplierOptions = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSuppliers());
+  }
+
+  Future<void> _loadSuppliers() async {
+    try {
+      final page = await widget.suppliersGateway.listSuppliers(status: 'active');
+      if (!mounted) return;
+      setState(() => _supplierOptions = page.items);
+    } on Object {
+      // Leaves the picker honestly empty on failure — the pre-existing
+      // free-text field remains a complete fallback, never a fabricated
+      // option list.
+    }
+  }
 
   @override
   void dispose() {
@@ -8535,7 +8827,14 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
     try {
       final created = await widget.purchasingGateway.createDirectPurchase(
         branchId: branchId,
-        supplierName: _supplierController.text.trim().isEmpty ? null : _supplierController.text.trim(),
+        // A selected real supplier takes over entirely — the backend
+        // ignores `supplierName` whenever `supplierId` is set anyway (see
+        // `CreateDirectPurchaseInput.supplierId`'s own doc comment), so
+        // this never even sends the stale free-text alongside it.
+        supplierName: _selectedSupplier != null
+            ? null
+            : (_supplierController.text.trim().isEmpty ? null : _supplierController.text.trim()),
+        supplierId: _selectedSupplier?.id,
         productVariantId: variantId,
         quantity: quantity,
         unitCost: unitCost.toApiString(),
@@ -8548,6 +8847,7 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
         _submitting = false;
         _lastCreated = created;
         _selectedProduct = null;
+        _selectedSupplier = null;
         _quantityController.clear();
         _unitCostController.clear();
         _supplierController.clear();
@@ -8638,10 +8938,69 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
             ],
           ),
           const SizedBox(height: 10),
+          // TASK 14.4 (Wave 2, Part C.2): an optional REAL supplier link,
+          // alongside (never replacing) the pre-existing free-text field
+          // below — a searchable picker over `PosSuppliersGateway.list()`.
+          // Picking a real supplier here freezes ITS CURRENT name
+          // server-side at write time (see `CreateDirectPurchaseInput.
+          // supplierId`'s own doc comment) — the copy below says so
+          // explicitly, and the free-text field is disabled while a real
+          // supplier stays selected so the two never silently compete.
+          Autocomplete<PosSupplier>(
+            key: const Key('pos-direct-purchase-supplier-picker'),
+            displayStringForOption: (supplier) => supplier.name,
+            optionsBuilder: (textEditingValue) {
+              final query = textEditingValue.text.trim().toLowerCase();
+              if (query.isEmpty) return _supplierOptions;
+              return _supplierOptions.where((supplier) => supplier.name.toLowerCase().contains(query));
+            },
+            onSelected: (supplier) => setState(() {
+              _selectedSupplier = supplier;
+              _supplierController.clear();
+            }),
+            fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) => TextField(
+              key: const Key('pos-direct-purchase-supplier-search'),
+              controller: controller,
+              focusNode: focusNode,
+              decoration: const InputDecoration(labelText: 'Proveedor registrado (opcional, buscar)'),
+            ),
+          ),
+          if (_selectedSupplier != null) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(8)),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Se usará el nombre actual del proveedor «${_selectedSupplier!.name}» '
+                      '(se congela al guardar la compra).',
+                      key: const Key('pos-direct-purchase-supplier-selected'),
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('pos-direct-purchase-supplier-clear'),
+                    tooltip: 'Quitar proveedor registrado',
+                    icon: const Icon(Icons.close, size: 16),
+                    onPressed: () => setState(() => _selectedSupplier = null),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
           TextField(
             key: const Key('pos-direct-purchase-supplier'),
             controller: _supplierController,
-            decoration: const InputDecoration(labelText: 'Proveedor (opcional)'),
+            enabled: _selectedSupplier == null,
+            decoration: InputDecoration(
+              labelText: 'Proveedor (texto libre, opcional)',
+              helperText: _selectedSupplier == null
+                  ? null
+                  : 'Deshabilitado: ya hay un proveedor registrado seleccionado arriba.',
+            ),
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
@@ -12469,6 +12828,10 @@ class _CajaCurrentState extends State<_CajaCurrent> {
   PosCashSession? _session;
   PosCashSessionSummary? _summary;
   List<PosCashMovement> _movements = const [];
+  // TASK 14.4 (Wave 2, Part F.4) — owned the same way `_movements` is:
+  // loaded alongside the session and passed down to `_CajaOpenView`,
+  // refreshed after a new partial close is taken.
+  List<PosCashSessionPartialClose> _partialCloses = const [];
   String? _errorMessage;
 
   String? get _branchId => widget.context.session.branchId;
@@ -12538,17 +12901,20 @@ class _CajaCurrentState extends State<_CajaCurrent> {
           _session = null;
           _summary = null;
           _movements = const [];
+          _partialCloses = const [];
           _phase = _CajaPhase.closed;
         });
         return;
       }
       final summary = await widget.cashGateway.summary(session.id);
       final movementsPage = await widget.cashGateway.listMovements(session.id);
+      final partialCloses = await widget.cashGateway.listPartialCloses(session.id);
       if (!mounted) return;
       setState(() {
         _session = session;
         _summary = summary;
         _movements = movementsPage.items;
+        _partialCloses = partialCloses;
         _phase = _CajaPhase.open;
       });
     } on ApiException catch (error) {
@@ -12615,6 +12981,38 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       builder: (dialogContext) => _CloseResultDialog(session: closed),
     );
     await _load();
+  }
+
+  /// TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a real mutation (a
+  /// persisted, audited snapshot) that CRITICALLY never transitions the
+  /// session to closed — only `_loadSessionForSelectedRegister` (not
+  /// `_load`'s own register-list re-fetch, and never any `_phase` write to
+  /// `_CajaPhase.closed`) runs afterward, and that call itself only ever
+  /// reads `currentSession`, which still reports `status: 'open'`.
+  Future<void> _postPartialClose() async {
+    final session = _session;
+    final currencyCode = session?.currencyCode;
+    if (session == null || currencyCode == null) return;
+    final snapshot = await showDialog<PosCashSessionPartialClose>(
+      context: context,
+      builder: (dialogContext) => _PartialCloseDialog(
+        cashSessionId: session.id,
+        currencyCode: currencyCode,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+    if (snapshot == null) return;
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) =>
+          _PartialCloseResultDialog(snapshot: snapshot, currencyCode: currencyCode),
+    );
+    // The session's own status is untouched by a partial close — this
+    // just re-reads the (still-open) session plus the fresh movement and
+    // partial-close lists, never `_load()`'s own "closed/no register"
+    // re-evaluation.
+    await _loadSessionForSelectedRegister();
   }
 
   @override
@@ -12684,9 +13082,11 @@ class _CajaCurrentState extends State<_CajaCurrent> {
           session: _session!,
           summary: _summary!,
           movements: _movements,
+          partialCloses: _partialCloses,
           onCashIn: () => unawaited(_postMovement('cash_in')),
           onCashOut: () => unawaited(_postMovement('cash_out')),
           onClose: _closeRegister,
+          onPartialClose: () => unawaited(_postPartialClose()),
           onRefresh: () => unawaited(_loadSessionForSelectedRegister()),
         );
     }
@@ -12700,9 +13100,11 @@ class _CajaOpenView extends StatelessWidget {
     required this.session,
     required this.summary,
     required this.movements,
+    required this.partialCloses,
     required this.onCashIn,
     required this.onCashOut,
     required this.onClose,
+    required this.onPartialClose,
     required this.onRefresh,
   });
 
@@ -12711,9 +13113,16 @@ class _CajaOpenView extends StatelessWidget {
   final PosCashSession session;
   final PosCashSessionSummary summary;
   final List<PosCashMovement> movements;
+  // TASK 14.4 (Wave 2, Part F.4) — this session's own persisted "Corte
+  // parcial" snapshots; see this class's own doc comment for the
+  // placement decision (a section here rather than a top-level `_Caja`
+  // tab, since `GET .../partial-closes` is itself scoped to one session,
+  // never a cross-session/branch listing).
+  final List<PosCashSessionPartialClose> partialCloses;
   final VoidCallback onCashIn;
   final VoidCallback onCashOut;
   final VoidCallback onClose;
+  final VoidCallback onPartialClose;
   final VoidCallback onRefresh;
 
   @override
@@ -12779,6 +13188,22 @@ class _CajaOpenView extends StatelessWidget {
                 label: 'Salidas',
                 value: _formatMoney(summary.cashOutTotal, session.currencyCode),
               ),
+              // TASK 14.4 (Wave 2, Part F.2) — named breakdowns, each a
+              // strict subset already folded into Entradas/Salidas above;
+              // real numbers straight from the summary response, never
+              // fabricated or recomputed here.
+              _CajaInfoRow(
+                label: 'Retiros',
+                value: _formatMoney(summary.withdrawalTotal, session.currencyCode),
+              ),
+              _CajaInfoRow(
+                label: 'Gastos',
+                value: _formatMoney(summary.expenseTotal, session.currencyCode),
+              ),
+              _CajaInfoRow(
+                label: 'Ingresos externos',
+                value: _formatMoney(summary.externalIncomeTotal, session.currencyCode),
+              ),
               const Divider(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -12820,6 +13245,21 @@ class _CajaOpenView extends StatelessWidget {
                       label: const Text('Salida de efectivo'),
                     ),
                   ],
+                  // TASK 14.4 (Wave 2, Part F.3) — same permission the
+                  // real `POST .../partial-close` route requires
+                  // (`cash_movement.create`, confirmed in
+                  // `cash.routes.ts`) — deliberately NOT
+                  // `cash_session.close`, since a "Corte parcial" is a
+                  // pure snapshot that never closes the session, so it
+                  // must stay reachable to an operator who explicitly
+                  // cannot close it.
+                  if (canMovement)
+                    OutlinedButton.icon(
+                      key: const Key('pos-caja-partial-close-button'),
+                      onPressed: onPartialClose,
+                      icon: const Icon(Icons.receipt_long_outlined),
+                      label: const Text('Corte parcial'),
+                    ),
                   if (canClose)
                     FilledButton.icon(
                       key: const Key('pos-caja-close-button'),
@@ -12856,6 +13296,37 @@ class _CajaOpenView extends StatelessWidget {
                     movement: movement,
                     currencyCode: session.currencyCode,
                   ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        // TASK 14.4 (Wave 2, Part F.4) — "Cortes parciales" of THIS
+        // session; placed here (a section of the current-session view)
+        // rather than a separate top-level `_Caja` tab, since
+        // `GET .../partial-closes` is itself scoped to one
+        // `cash_session_id` — there is no cross-session/branch listing
+        // route to back a `_CutHistory`-shaped tab with.
+        _PosCard(
+          key: const Key('pos-caja-partial-closes'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Cortes parciales de esta sesión',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              if (partialCloses.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'Sin cortes parciales todavía.',
+                    style: TextStyle(color: palette.textSecondary),
+                  ),
+                )
+              else
+                for (final snapshot in partialCloses)
+                  _PartialCloseRow(snapshot: snapshot, currencyCode: session.currencyCode),
             ],
           ),
         ),
@@ -12902,6 +13373,15 @@ const _movementTypeLabels = <String, String>{
   'cash_out': 'Salida de efectivo',
 };
 
+/// TASK 14.4 (Wave 2, Part F.1) — display labels for
+/// `posCashMovementCategories`, in the same order.
+const _movementCategoryLabels = <String, String>{
+  'withdrawal': 'Retiro',
+  'expense': 'Gasto',
+  'external_income': 'Ingreso externo',
+  'other': 'Otro',
+};
+
 class _CajaMovementRow extends StatelessWidget {
   const _CajaMovementRow({required this.movement, required this.currencyCode});
   final PosCashMovement movement;
@@ -12926,8 +13406,10 @@ class _CajaMovementRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _movementTypeLabels[movement.movementType] ??
-                      movement.movementType,
+                  movement.category == null
+                      ? (_movementTypeLabels[movement.movementType] ?? movement.movementType)
+                      : '${_movementTypeLabels[movement.movementType] ?? movement.movementType} · '
+                            '${_movementCategoryLabels[movement.category] ?? movement.category}',
                   style: TextStyle(
                     color: palette.text,
                     fontWeight: FontWeight.w700,
@@ -12949,6 +13431,39 @@ class _CajaMovementRow extends StatelessWidget {
               fontWeight: FontWeight.w800,
               fontSize: 12,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 14.4 (Wave 2, Part F.4) — one persisted "Corte parcial" snapshot
+/// row, mirroring `_CajaMovementRow`'s own compact-row shape.
+class _PartialCloseRow extends StatelessWidget {
+  const _PartialCloseRow({required this.snapshot, required this.currencyCode});
+  final PosCashSessionPartialClose snapshot;
+  final String currencyCode;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      key: ValueKey('pos-caja-partial-close-row-${snapshot.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(Icons.receipt_long_outlined, size: 15, color: palette.textSecondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _formatCajaDate(snapshot.takenAt),
+              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+            ),
+          ),
+          Text(
+            'Esperado: ${_formatMoney(snapshot.expectedCash, currencyCode)}',
+            style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12),
           ),
         ],
       ),
@@ -13114,8 +13629,23 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
   final _amountController = TextEditingController();
   final _reasonController = TextEditingController();
   final _noteController = TextEditingController();
+  // TASK 14.4 (Wave 2, Part F.1) — optional; `null` means "uncategorized",
+  // a real, legitimate choice — never defaulted to `other` on the caller's
+  // behalf.
+  String? _category;
   bool _busy = false;
   String? _error;
+
+  /// Mirrors `cash.types.ts`'s own `cashMovementCategoryDirection` rule
+  /// EXACTLY: only a category valid for [_CashMovementDialog.movementType]
+  /// is ever offered — the UI never even shows an invalid combination, let
+  /// alone lets the caller submit one.
+  List<String> get _availableCategories => [
+    for (final category in posCashMovementCategories)
+      if (posCashMovementCategoryDirection[category] == null ||
+          posCashMovementCategoryDirection[category] == widget.movementType)
+        category,
+  ];
 
   @override
   void dispose() {
@@ -13155,6 +13685,7 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
         note: _noteController.text.trim().isEmpty
             ? null
             : _noteController.text.trim(),
+        category: _category,
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -13210,6 +13741,24 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
               controller: _noteController,
               enabled: !_busy,
               decoration: const InputDecoration(labelText: 'Nota (opcional)'),
+            ),
+            const SizedBox(height: 10),
+            // TASK 14.4 (Wave 2, Part F.1) — only the categories valid for
+            // this dialog's own `movementType` are ever offered, mirroring
+            // the backend's own direction rule exactly.
+            DropdownButtonFormField<String?>(
+              key: const Key('pos-caja-movement-category'),
+              initialValue: _category,
+              decoration: const InputDecoration(labelText: 'Categoría (opcional)'),
+              items: [
+                const DropdownMenuItem(value: null, child: Text('Sin categoría')),
+                for (final category in _availableCategories)
+                  DropdownMenuItem(
+                    value: category,
+                    child: Text(_movementCategoryLabels[category] ?? category),
+                  ),
+              ],
+              onChanged: _busy ? null : (value) => setState(() => _category = value),
             ),
             if (_error != null) ...[
               const SizedBox(height: 8),
@@ -13523,6 +14072,145 @@ class _CloseResultDialog extends StatelessWidget {
       ],
     );
   }
+}
+
+/// TASK 14.4 (Wave 2, Part F.3) — "Corte parcial" confirmation. Mirrors
+/// `_CloseCajaDialog`'s general shape but simpler — no counted-cash entry,
+/// since this is a pure, real-time snapshot of the backend's own
+/// [PosCashGateway.summary], never a declared/counted total, and it never
+/// closes the session.
+class _PartialCloseDialog extends StatefulWidget {
+  const _PartialCloseDialog({
+    required this.cashSessionId,
+    required this.currencyCode,
+    required this.cashGateway,
+  });
+  final String cashSessionId;
+  final String currencyCode;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_PartialCloseDialog> createState() => _PartialCloseDialogState();
+}
+
+class _PartialCloseDialogState extends State<_PartialCloseDialog> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _confirm() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final snapshot = await widget.cashGateway.partialCloseSession(widget.cashSessionId);
+      if (!mounted) return;
+      Navigator.of(context).pop(snapshot);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible registrar el corte parcial.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Corte parcial'),
+    content: SizedBox(
+      width: 360,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Se registrará una foto (snapshot) del estado actual de la caja, '
+            'sin cerrarla — la caja seguirá abierta.',
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: Colors.red)),
+          ],
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _busy ? null : () => Navigator.of(context).pop(),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        key: const Key('pos-caja-confirm-partial-close'),
+        onPressed: _busy ? null : _confirm,
+        child: _busy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Text('Registrar corte parcial'),
+      ),
+    ],
+  );
+}
+
+/// TASK 14.4 (Wave 2, Part F.3) — shows the real, backend-returned
+/// snapshot figures verbatim (never recomputed) — mirrors
+/// `_CloseResultDialog`'s general shape, minus the discrepancy banner
+/// (a partial close carries no declared/counted amount to compare
+/// against). CRITICALLY never implies the session closed.
+class _PartialCloseResultDialog extends StatelessWidget {
+  const _PartialCloseResultDialog({required this.snapshot, required this.currencyCode});
+  final PosCashSessionPartialClose snapshot;
+  final String currencyCode;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Corte parcial registrado'),
+    content: SizedBox(
+      width: 360,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _CajaInfoRow(label: 'Registrado', value: _formatCajaDate(snapshot.takenAt)),
+          _CajaInfoRow(
+            label: 'Fondo inicial',
+            value: _formatMoney(snapshot.openingAmount, currencyCode),
+          ),
+          _CajaInfoRow(
+            label: 'Ventas en efectivo',
+            value: _formatMoney(snapshot.cashSalesTotal, currencyCode),
+          ),
+          _CajaInfoRow(label: 'Entradas', value: _formatMoney(snapshot.cashInTotal, currencyCode)),
+          _CajaInfoRow(label: 'Salidas', value: _formatMoney(snapshot.cashOutTotal, currencyCode)),
+          const Divider(height: 20),
+          _CajaInfoRow(
+            label: 'Efectivo esperado',
+            value: _formatMoney(snapshot.expectedCash, currencyCode),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'La caja permanece abierta — este corte es solo una fotografía '
+            'para historial/auditoría.',
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      FilledButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Entendido'),
+      ),
+    ],
+  );
 }
 
 /// Part L — cut history: server-side paginated/filtered, never

@@ -33,6 +33,20 @@ is tracked separately (see [[LEGACY_FUNCTIONAL_PARITY]] for per-row
 status). This section is kept for its original historical reasoning;
 none of it should be read as still-open.
 
+## TASK 14.4 (Wave 2) — completed
+
+Five more items from the P1/P2 lists below are now **backend-and-UI
+complete and proven**: Suppliers CRUD, Employee roster/shift scheduling/
+time clock/payroll, Dashboard/per-area report screens, Occupancy (aforo)
+tracking, and Partial cash close + categorized cash movements. Access/
+Occupancy additionally REPLACES (not ports) the legacy's confirmed-fake
+ticket-scan validation with a real, honest validator — see
+[[LEGACY_FUNCTIONAL_PARITY]]'s §13 for why that is classified **H**, not
+**A**, and why it must never be read as evidence the legacy scanner was
+real. All five are struck through below and moved into their own
+"DONE" notes; formal Purchase Orders and CFDI fiscal stamping were
+explicitly re-confirmed out of scope this wave — neither was touched.
+
 ## P0 — worth reconsidering for September 15 *(status: backend done, Wave 1)*
 
 Only two items earned a P0 flag in the matrix — both are real,
@@ -75,22 +89,30 @@ beyond Inflapark specifically:
   `units_of_measure` schema (`dimension='mass'`, e.g. `kg`) — a more
   general, better-designed mechanism than the legacy's own bespoke
   `porPeso` boolean. Proven live with an exact fixed-point 2.35 kg sale.
-- **Suppliers (proveedores) CRUD** — a real, if shallow, contact list;
-  no current equivalent.
-- **Employee roster, shift scheduling, time clock** — three related
-  legacy features (distinct from login `users`) with no current
-  equivalent; genuinely useful for any multi-cashier operation, though
-  payroll calculation itself (see P2) is a bigger, separate lift.
+- ~~**Suppliers (proveedores) CRUD**~~ — **DONE (TASK 14.4 Wave 2).** A
+  real, company-scoped `suppliers` table + module + Flutter admin
+  screen, plus a real `supplier_id` link on `direct_purchases`
+  (frozen-name-snapshot pattern).
+- ~~**Employee roster, shift scheduling, time clock**~~ — **DONE (TASK
+  14.4 Wave 2).** `employees`/`employee_schedules`/`time_clock_punches`,
+  all real, company/branch-scoped, distinct from login `users`, feeding
+  a real payroll calculation (see P2, also now DONE).
 - **Register-style keyboard shortcuts** (F2/F3/F4/F5/F6/F8) — real
   cashier-efficiency muscle memory with no current equivalent.
-- **Occupancy/headcount (aforo) tracking**, auto-incremented from real
-  ticket sales — genuinely relevant for a capacity-limited park, distinct
-  from the (fake, in the legacy too) ticket-scan validation.
-- **Dashboard / per-area report screens** — the underlying data is
-  already real and queryable via tested endpoints; this is arguably the
-  highest-leverage rebuild in the whole audit, since it requires little
-  to no new backend work, just Flutter screens over data that already
-  exists.
+- ~~**Occupancy/headcount (aforo) tracking**~~ — **DONE (TASK 14.4 Wave
+  2).** Real, server-computed, and genuinely bidirectional (entry **and**
+  exit — stronger than the legacy's one-way-only counter). Built
+  alongside a real replacement for the (fake, in the legacy too)
+  ticket-scan validation — see [[LEGACY_FUNCTIONAL_PARITY]]'s §13 for why
+  that specific mechanism is classified **H** (safe replacement), never
+  to be read as evidence the legacy scanner ever validated anything real.
+- ~~**Dashboard / per-area report screens**~~ — **DONE (TASK 14.4 Wave
+  2), per-area.** 7 real report areas (Sales/Financial/Inventory/
+  Customers/Employees/Parties/Access), all server-side SQL aggregation,
+  CSV export on Sales/Financial, wired to a real Flutter screen. Still
+  missing: a single consolidated "today at a glance" landing screen
+  (sales trend + parties + alerts on one view) — see
+  [[V1_POST_LAUNCH_BACKLOG]].
 - **Per-tenant branding** (logo, receipt header/footer) — already
   tracked in [[V1_POST_LAUNCH_BACKLOG]], reinforced by this audit as
   something every future park onboarding will hit immediately.
@@ -100,23 +122,29 @@ beyond Inflapark specifically:
 - **Catalog export (CSV)** — a real, working legacy feature with zero
   current equivalent; low-effort if rebuilt (the data is already fully
   queryable).
-- **Partial cash close ("corte parcial")** and **categorized cash
-  movements** (distinct Retiro/Gasto/Ingreso-extra workflows with their
-  own KPI tiles, vs. today's generic `cash_in`/`cash_out` + free-text
-  reason) — the underlying money math is already correct; this is a
-  workflow/reporting-convenience gap, not a financial-integrity one.
+- ~~**Partial cash close ("corte parcial")** and **categorized cash
+  movements**~~ — **DONE (TASK 14.4 Wave 2).** A real, persisted, audited
+  mid-shift snapshot (`cash_session_partial_closes`, proven to never
+  transition the session's own status) and a real `category` column
+  (withdrawal/expense/external_income/other, direction-constrained by a
+  DB check) on `cash_movements`, extending — never duplicating — the
+  existing cash foundation. Not ported: the legacy's own dedicated
+  over-withdrawal guard/authorizer field and its (superficial even in
+  the legacy) expense photo-evidence flag.
 
 ## P2 — genuine post-launch enhancements
 
-- **Payroll (nómina) calculation** — the single most substantively real
-  HR feature found in the legacy product (real scheduled-vs-worked
-  hours, late-minute deductions, overtime bonus). Compliance-adjacent,
-  substantial scope if rebuilt properly — its own future task, comparable
-  in scope to Fiestas.
+- ~~**Payroll (nómina) calculation**~~ — **DONE (TASK 14.4 Wave 2).** The
+  single most substantively real HR feature found in the legacy product
+  (real scheduled-vs-worked hours, late-minute deductions, overtime
+  bonus) is now a **faithful port** of the legacy's own
+  `calcularNominaEmpleado()` formula, verified in tests against a
+  hand-computed example.
 - **CFDI / fiscal invoicing** — already out of scope per ADR-0012; this
   audit additionally confirms the legacy's own version never actually
   worked (simulated stamping, self-admitted in its own code/toasts), so
-  there is no working capability being "lost."
+  there is no working capability being "lost." **Unchanged and untouched
+  by TASK 14.4 (Wave 2)** — no billing/CFDI work was done this wave.
 - **NFC wristbands** — a real, if standalone (never actually integrated
   with entry validation even in the legacy), lifecycle CRUD.
 - **In-house customer credit accounts** — a real payment-provider path is
@@ -152,12 +180,19 @@ lost functionality:
   (static hardcoded examples)
 - Catalog Excel import (fabricated success message, no real parsing)
 - Formal purchase-order workflow (its own save function discarded the
-  entered data)
+  entered data) — **re-confirmed still out of scope in TASK 14.4 (Wave
+  2)**; Wave 2 built a real supplier CRUD and linked it to Compra
+  Directa, but deliberately did NOT rebuild the formal PO workflow
 - Purchase history and supplier price-comparison screens (static
   hardcoded example rows)
-- CFDI fiscal stamping (self-admitted simulation)
+- CFDI fiscal stamping (self-admitted simulation) — **untouched by TASK
+  14.4 (Wave 2)**; no billing/CFDI work was done this wave
 - Ticket-scan access-control validation (accepts anything, always
-  "succeeds")
+  "succeeds") — **TASK 14.4 (Wave 2) built a real replacement** (see
+  [[LEGACY_FUNCTIONAL_PARITY]]'s §13, classified **H**), but this does
+  NOT retroactively make the legacy mechanism itself real; the finding
+  above (it accepted anything and always fabricated success) stands
+  exactly as originally documented
 - The general "Documentos" hub page (every card just shows a toast)
 - General (non-party) entry waiver and satisfaction survey (single
   toast each, no real content)

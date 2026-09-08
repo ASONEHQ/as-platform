@@ -1,3 +1,4 @@
+export * from './access.js';
 export * from './catalog.js';
 export * from './auth-challenges.js';
 export * from './cash.js';
@@ -10,9 +11,11 @@ export * from './inventory.js';
 export * from './organizations.js';
 export * from './parties.js';
 export * from './payments.js';
+export * from './people.js';
 export * from './promotions.js';
 export * from './purchasing.js';
 export * from './refunds.js';
 export * from './sales.js';
 export * from './settings.js';
 export * from './sessions.js';
+export * from './suppliers.js';

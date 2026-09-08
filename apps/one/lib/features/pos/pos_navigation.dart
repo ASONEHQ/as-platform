@@ -76,6 +76,23 @@ enum PosModule {
     // purchase / quick restock) form plus its real history — see
     // `pos_purchasing_gateway.dart`.
     PosModule.purchases,
+    // TASK 14.4 (Wave 2, Part C.1): Proveedores — real supplier directory
+    // (list/create/edit/deactivate), company-scoped — see
+    // `pos_suppliers_gateway.dart`/`pos_suppliers_screen.dart`.
+    PosModule.suppliers,
+    // TASK 14.4 (Wave 2, Part D): Reportes — real Report Center across
+    // Ventas/Financiero/Inventario/Clientes/Empleados/Fiestas/Accesos,
+    // gated by report.read — see
+    // `pos_reports_gateway.dart`/`pos_reports_screen.dart`.
+    PosModule.reports,
+    // TASK 14.4 (Wave 2, Part E): Control de Acceso — real credential
+    // issue/scan/void, currently-inside list, event history, and
+    // server-side occupancy count; replaces the legacy's own fake ticket
+    // scanner — see `pos_access_gateway.dart`/`pos_access_screen.dart`.
+    PosModule.access,
+    // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina —
+    // see `pos_people_gateway.dart`/`pos_people_screen.dart`.
+    PosModule.employees,
   }.contains(this);
 }
 

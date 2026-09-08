@@ -1,5 +1,22 @@
 # Legacy Functional Parity Matrix
 
+**TASK 14.4 (Wave 2) update — 2026-09-08**: the rows below marked
+**[WAVE 2 — REBUILT]** have been genuinely re-implemented this session —
+real schema, real server-enforced permissions, real tests (25 access/
+occupancy + 17 reports + 20 people/HR + 18 suppliers/supply + 26 advanced-
+cash backend integration tests, all passing, including 2 real HTTP-level
+concurrency races on the access-scan entry/exit path; 14 access + 12
+reports + 16 people + 18 suppliers Flutter tests, all passing). A live,
+fresh-database, 35-step end-to-end operational simulation (provision →
+… → kill the real API process → restart → verify persistence,
+reconciliation, payroll immutability, and occupancy stability → verify
+tenant isolation with a genuinely separate second company) passed in
+full. See the "Overall parity" section below for the recalculated
+percentage and exactly which rows moved. Access/Occupancy's row is the
+one classification change in this wave that needs a careful read — see
+its own note; it is a **safe replacement of a confirmed-fake legacy
+mechanism**, not evidence the legacy scanner was ever real.
+
 **TASK 14.3 (Wave 1) update**: the rows below marked **[WAVE 1 — REBUILT]**
 have been genuinely re-implemented on the current platform — real schema,
 real server-enforced permissions, real tests (backend: 27 Fiestas + 69+14
@@ -7,8 +24,9 @@ held-sales/notes + 9 purchasing integration tests, all passing; a full
 40-step end-to-end park simulation proving conflict detection, financial
 traceability, restart persistence, and tenant/permission isolation with
 zero mocks). Flutter UI for these is tracked separately — see each row's
-own note. Nothing else in this matrix changed; every other classification
-here still reflects the original TASK 14.2R audit.
+own note. Nothing else in this matrix changed outside the rows explicitly
+marked for Wave 1 or Wave 2; every other classification here still
+reflects the original TASK 14.2R audit.
 
 Source of truth: `C:\Users\InMagic\Downloads\punto de venta INFLAPARK\AS POS V1.html`
 (14,712 lines, single-file HTML+CSS+JS, entirely in Spanish) — the
@@ -33,6 +51,61 @@ gets no priority — there is nothing real to port. Full detail behind
 every row lives in the six forensic sub-agent reports this document
 synthesizes; the **Fiestas** module has its own dedicated deep-dive,
 [[LEGACY_FIESTAS_RECOVERY]].
+
+## Overall parity — methodology and current percentage
+
+This document has never before stated a single overall percentage; each
+prior task (14.2R, 14.3) worked row-by-row. TASK 14.4 (Wave 2) is the
+first pass to compute one, so the methodology is stated here in full for
+every future update to follow exactly:
+
+- **Denominator**: every individual capability row across all 21 numbered
+  sections (including the Fiestas summary table in §7), **except** rows
+  whose primary classification is **G** — per this document's own legend,
+  a G row "wasn't real to begin with," so it is not a gap to close and
+  must not be counted against parity either way. Total rows in this
+  matrix: **100**. Of those, **13 are G** (before Wave 2 — see below),
+  leaving a denominator of **87**.
+- **Numerator**: rows whose primary classification is **A** (fully
+  ported) or **H** (safely replaced by a proven modern equivalent). A
+  compound classification (e.g. `A/H`, `A/B`) is read by its first-listed
+  letter, matching how the row itself leads with it.
+- **Percentage** = numerator ÷ denominator, rounded to the nearest whole
+  percent.
+
+**Before this wave** (i.e. the state as of TASK 14.3/Wave 1, using this
+same method applied retroactively): 51 rows were A/H out of a
+100-row-minus-14-G denominator of 86 → **59%**.
+
+**After TASK 14.4 (Wave 2)**: 13 rows moved into the A/H numerator this
+wave (12 rows changed their primary letter to A; the Access/Occupancy
+ticket-scan row moved from **G** to **H**, which also shrinks the
+G-exclusion count from 14 to 13 and grows the denominator from 86 to 87):
+
+| Row (section) | Was | Now | Why |
+|---|---|---|---|
+| Suppliers (proveedores) CRUD (§5) | F | A | Real `suppliers` table + module, company-scoped |
+| Partial cash close / corte parcial (§10) | F | A | Real `cash_session_partial_closes` snapshot, proven to never flip session status |
+| Withdrawals / retiro (§10) | B | A | Real `category='withdrawal'`, direction-constrained by a DB check |
+| Expenses / gasto (§10) | B | A | Real `category='expense'`, direction-constrained by a DB check |
+| External income / ingreso extra (§10) | B | A | Real `category='external_income'`, direction-constrained by a DB check |
+| Per-area reports (§12) | E | A | 7 real server-computed report areas, all wired to a Flutter screen |
+| Business Intelligence tab (§12) | F (partially G) | A | Real computed reports now exist; the 2 legacy-fake fields are honestly absent, not replaced with a new placeholder |
+| Ticket-scan entry validation (§13) | G | **H** | A real validating scanner now exists — see the row's own note; this is a *replacement*, not proof the legacy scanner worked |
+| Occupancy/headcount, aforo (§13) | F | A | Real, server-computed, bidirectional (entry **and** exit) — stronger than the legacy's one-way-only counter |
+| Employee roster (§15) | F | A | Real `employees` table, distinct from login `users` |
+| Weekly shift scheduling (§15) | F | A | Real `employee_schedules` table + routes |
+| Time clock / checador (§15) | F | A | Real `time_clock_punches` table + routes |
+| Payroll / nómina (§15) | F | A | A faithful port of the legacy's own `calcularNominaEmpleado()` formula, verified against a hand-computed example |
+
+New numerator: 51 + 13 = **64**. New denominator: 87. **New overall
+parity: 64 ÷ 87 ≈ 74%** (up from 59% before this wave).
+
+Formal Purchase Orders (§5) and CFDI fiscal stamping (§11) are
+**unchanged** — both remain classified as they were (the PO row stays
+**G/F mixed**, CFDI stamping stays **G**). Wave 2 did not rebuild either;
+see each row's own note for why neither owes anything to its own broken
+legacy implementation.
 
 ---
 
@@ -87,9 +160,9 @@ synthesizes; the **Fiestas** module has its own dedicated deep-dive,
 
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
-| Suppliers (proveedores) CRUD | REAL but shallow — no FK to products, `adeudo` never auto-updated | none | ❌ | ❌ | ❌ | **F** | No supplier module anywhere in current platform | P1 |
-| Purchase orders (formal PO workflow) | **G — placeholder at the critical step.** Item-builder UI is real/interactive, but `saveCompra()` discards it entirely and stores literal `productos:"Varios", total:"Por confirmar"` regardless of input | none | ❌ | ❌ | ❌ | **G/F mixed** | The legacy PO feature never actually worked end-to-end; a real rebuild owes nothing to its specific (broken) implementation | P1 |
-| Direct purchases (Compra Directa) | REAL — the one genuinely complete purchasing path: form → real stock increment → Kardex → history → audit log | **[WAVE 1 — REBUILT]** `direct_purchases` + a real `receipt`-type inventory movement, atomic (one transaction, no orphaned rows on failure), idempotent. Proven live: a 25-unit restock correctly increased real inventory, immediately consumable by a subsequent sale | ✅ | ✅ | 🟡 Flutter in progress | **A** | Flutter restock screen tracked separately | — |
+| Suppliers (proveedores) CRUD | REAL but shallow — no FK to products, `adeudo` never auto-updated | **[WAVE 2 — REBUILT]** `suppliers` table (company-scoped) + `apps/api/src/modules/suppliers/` (routes/service/repository) + `pos_suppliers_gateway.dart`/`pos_suppliers_screen.dart`; the existing Compra Directa Flutter form now has a real supplier picker, and `direct_purchases.supplier_id` links to it via a frozen-name-snapshot pattern (a later supplier rename never rewrites past purchase history) | ✅ | ✅ | ✅ | **A** | `adeudo` (running balance owed) not ported — not requested this wave | — |
+| Purchase orders (formal PO workflow) | **G — placeholder at the critical step.** Item-builder UI is real/interactive, but `saveCompra()` discards it entirely and stores literal `productos:"Varios", total:"Por confirmar"` regardless of input | none — **re-confirmed excluded in TASK 14.4 (Wave 2)**, a deliberate scope decision, not an oversight: the legacy's own `saveCompra()` discarded entered line items, so there is genuinely nothing real to rebuild toward | ❌ | ❌ | ❌ | **G/F mixed** | The legacy PO feature never actually worked end-to-end; a real rebuild owes nothing to its specific (broken) implementation. **Not touched by Wave 2** | P1 |
+| Direct purchases (Compra Directa) | REAL — the one genuinely complete purchasing path: form → real stock increment → Kardex → history → audit log | **[WAVE 1 — REBUILT, WAVE 2 — extended]** `direct_purchases` + a real `receipt`-type inventory movement, atomic (one transaction, no orphaned rows on failure), idempotent. Proven live: a 25-unit restock correctly increased real inventory, immediately consumable by a subsequent sale. Wave 2 added an optional real `supplier_id` FK (frozen-name-snapshot pattern) and a supplier picker in the existing Flutter restock form | ✅ | ✅ | ✅ | **A** | — | — |
 | Purchase history | **G — placeholder.** Static hardcoded example rows, ignores real `DB.compras`, "Filtrar" is a toast stub | none | ❌ | ❌ | ❌ | **G** | Never real | P2 |
 | Supplier price comparison | **G — placeholder.** Static hardcoded example table | none | ❌ | ❌ | ❌ | **G** | Never real | P2 |
 
@@ -152,10 +225,10 @@ accepted, edit, real contract+waiver documents generated with real data).
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
 | Open/close with denomination counting | REAL | `cash.routes.ts` — real, proven end-to-end this task (denomination_counts, exact expected-vs-actual match) | ✅ | ✅ | ✅ | **A** | — | — |
-| Partial cash close (corte parcial, mid-shift snapshot) | REAL — real running-total snapshot, doesn't close the shift | none | ❌ | ❌ | ❌ | **F** | Only full open/close exists, no mid-shift snapshot | P1 |
-| Withdrawals (retiro) — distinct category, blocks over-withdrawal | REAL | Generic `cash_out` movement (reason_code free text) | ✅ | ✅ | 🟡 | **B** | Current mechanism is generic, not a distinct "retiro" flow with its own over-withdrawal guard/authorizer field | P2 |
-| Expenses (gasto) — distinct category with evidence photo | REAL (photo evidence itself is superficial — only a flag, not the real file, even in the legacy) | Generic `cash_out` movement | ✅ | ✅ | 🟡 | **B** | No distinct expense category/photo evidence | P2 |
-| External income (ingreso extra) | REAL, correctly added to expected-cash math | Generic `cash_in` movement | ✅ | ✅ | 🟡 | **B** | No distinct external-income category | P2 |
+| Partial cash close (corte parcial, mid-shift snapshot) | REAL — real running-total snapshot, doesn't close the shift | **[WAVE 2 — REBUILT]** `cash_session_partial_closes` — a real, persisted, audited snapshot; verified in tests to never transition the session's own status | ✅ | ✅ | ✅ | **A** | — | — |
+| Withdrawals (retiro) — distinct category, blocks over-withdrawal | REAL | **[WAVE 2 — REBUILT]** `cash_movements.category='withdrawal'`, direction-constrained by a real DB check (only valid on `cash_out`) | ✅ | ✅ | ✅ | **A** | No dedicated over-withdrawal guard/authorizer field (the legacy's own version had this) | P2 |
+| Expenses (gasto) — distinct category with evidence photo | REAL (photo evidence itself is superficial — only a flag, not the real file, even in the legacy) | **[WAVE 2 — REBUILT]** `cash_movements.category='expense'`, direction-constrained by the same DB check | ✅ | ✅ | ✅ | **A** | No photo-evidence field (the legacy's own version was superficial here too — a flag, not a real file) | P2 |
+| External income (ingreso extra) | REAL, correctly added to expected-cash math | **[WAVE 2 — REBUILT]** `cash_movements.category='external_income'`, direction-constrained to `cash_in` only | ✅ | ✅ | ✅ | **A** | — | — |
 | Cash session history | REAL (`historialCortes`) | `GET /cash-sessions` | ✅ | ✅ | ✅ | **A** | — | — |
 | Bitácora (structured audit log: IP/station/before-after per action) | REAL, though IP/station were themselves randomly faked in the legacy | Real `audit_log` table, populated on every mutation | ✅ | ✅ | 🟡 | **H** — current is server-authoritative and genuinely real, replacing a legacy mechanism that faked its own IP/station fields | Dedicated searchable/filterable audit-log screen in Flutter not confirmed | P2 |
 
@@ -164,23 +237,23 @@ accepted, edit, real contract+waiver documents generated with real data).
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
 | Full invoicing UI (folio, RFC, Uso CFDI, IVA calc, state machine) | REAL UI | none | ❌ | ❌ | ❌ | **F** | No CFDI module anywhere in current platform (explicitly out of scope per ADR-0012, per [[V1_POST_LAUNCH_BACKLOG]]) | P2 (compliance-driven, separate project) |
-| Fiscal stamping (`timbrado`) | **SIMULATED/FAKE even in the legacy** — UUID literally suffixed `-SIMULADO`, toast self-admits "simulación — conecta un PAC para producción", zero real SAT/PAC network call anywhere | none | ❌ | ❌ | ❌ | **G** | Nothing real to port — the legacy version never actually worked | P2 |
+| Fiscal stamping (`timbrado`) | **SIMULATED/FAKE even in the legacy** — UUID literally suffixed `-SIMULADO`, toast self-admits "simulación — conecta un PAC para producción", zero real SAT/PAC network call anywhere | none — **untouched by Wave 2**, which did not touch billing/CFDI at all | ❌ | ❌ | ❌ | **G** | Nothing real to port — the legacy version never actually worked | P2 |
 
 ## 12. Reportes / BI / Dashboard
 
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
-| Dashboard (sales trend, today's parties, memberships, alerts) | REAL, computed from live in-memory arrays | None (by design — see [[V1_POST_LAUNCH_BACKLOG]]) | 🟡 (data exists via real paginated endpoints) | ✅ | ❌ | **E** | No dashboard screen exists; the underlying data is real and queryable today | P1 |
-| Per-area reports (Ventas/Financiero/Inventario/Clientes/Empleados/Accesos) | REAL, genuinely computed via array reduces | Underlying data fully queryable via real endpoints | 🟡 | ✅ | ❌ | **E** | No dedicated report screens | P1 |
-| Business Intelligence tab | REAL, mostly computed, **2 fields hardcoded even in the legacy** (`prom_estancia`=95, water-park occupancy=0 — the legacy code itself admits these aren't measurable) | none | ❌ | ❌ | ❌ | **F** (partially **G** for the 2 fake fields) | — | P2 |
+| Dashboard (sales trend, today's parties, memberships, alerts) | REAL, computed from live in-memory arrays | None as a single consolidated home screen — **[WAVE 2 note]** the 7 new per-area report screens (below) now cover most of the same underlying signal (sales, parties, employees, etc.), each queried and rendered for real, but there is still no single trend+alerts landing screen | 🟡 (data exists via real paginated + report endpoints) | ✅ | ❌ | **E** | A dedicated one-screen "today at a glance" view still doesn't exist; the underlying data is real and queryable today across both the original endpoints and the new report endpoints | P1 |
+| Per-area reports (Ventas/Financiero/Inventario/Clientes/Empleados/Accesos) | REAL, genuinely computed via array reduces | **[WAVE 2 — REBUILT]** `apps/api/src/modules/reports/` — 7 report areas (Sales/Financial/Inventory/Customers/Employees/Parties/Access), all real server-side SQL aggregation, real date-range+branch scoping, CSV export on Sales/Financial; `pos_reports_gateway.dart`/`pos_reports_screen.dart` (tabbed per-area screen) | ✅ | ✅ | ✅ | **A** | Reservations (Fiestas) and Access were not legacy-named areas but are now real report areas too, exceeding the original 6 | — |
+| Business Intelligence tab | REAL, mostly computed, **2 fields hardcoded even in the legacy** (`prom_estancia`=95, water-park occupancy=0 — the legacy code itself admits these aren't measurable) | **[WAVE 2 — REBUILT, for the real parts]** the 7 report areas above genuinely cover the real, computed portion of the legacy BI tab. The financial report reconciles bit-for-bit against the real `CashService.summary()` fold logic. The 2 admitted-fake legacy fields (`prom_estancia`=95, always-0 occupancy) are **explicitly and deliberately absent** — not reproduced, not replaced with a new placeholder | ✅ | ✅ | ✅ | **A** (the 2 fake fields stay unclassified — never real, nothing to port, matching this doc's own **G** framing) | — | — |
 
 ## 13. Control de Acceso / Aforo / NFC Pulseras
 
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
-| Ticket-scan entry validation | **G — placeholder even in the legacy.** `accScan()` ignores the typed folio and always "succeeds" with a random name from a hardcoded 5-name list — it never validates anything real | none | ❌ | ❌ | ❌ | **G** | Nothing real to port | P2 (would need to be built for real, not recovered) |
-| Occupancy/headcount (aforo), auto-incremented from real ticket sales | REAL — genuinely reflects real sales data, but one-way only (no exit/decrement) | none | ❌ | ❌ | ❌ | **F** | A real, valuable legacy feature with no current equivalent | P1 |
-| NFC wristbands (activate/block/unblock/extend CRUD) | REAL standalone lifecycle, **not integrated** with the (fake) access scan | none | ❌ | ❌ | ❌ | **F** | — | P2 |
+| Ticket-scan entry validation | **G — placeholder even in the legacy.** `accScan()` ignores the typed folio and always "succeeds" with a random name from a hardcoded 5-name list — it never validates anything real | **[WAVE 2 — SAFE REPLACEMENT, NOT A PORT]** `access_credentials`/`access_events` + `apps/api/src/modules/access/` — a genuine, real server-side validator: unknown/void/wrong-branch/already-inside/not-inside/reentry-not-allowed are all honestly rejected (never a fabricated success), CAS-guarded concurrency-safe entry/exit (proven via 2 real simultaneous-HTTP-request race tests), a documented re-entry policy (single-use by default, `allowsReentry` opt-in — the legacy never defined this, so it's a new, explicit, minimal rule, not a port of an existing one). `pos_access_gateway.dart`/`pos_access_screen.dart`. **This is an explicit, documented replacement of a confirmed-fake legacy mechanism — it is NOT retroactive evidence the legacy scanner was ever real.** The legacy's `accScan()` accepted any input and fabricated success 100% of the time; that finding stands unchanged | ✅ | ✅ | ✅ | **H** | — | — |
+| Occupancy/headcount (aforo), auto-incremented from real ticket sales | REAL — genuinely reflects real sales data, but one-way only (no exit/decrement) | **[WAVE 2 — REBUILT]** Real, server-computed occupancy (never client-recomputed), and — unlike the legacy — genuinely bidirectional: both entry and exit are tracked, not just a one-way increment | ✅ | ✅ | ✅ | **A** (stronger than the legacy ever was — real exit tracking, not just entry) | — | — |
+| NFC wristbands (activate/block/unblock/extend CRUD) | REAL standalone lifecycle, **not integrated** with the (fake) access scan | none — not attempted this wave | ❌ | ❌ | ❌ | **F** | — | P2 |
 
 ## 14. Administración (Usuarios / Roles / Permisos / Sesión)
 
@@ -195,10 +268,10 @@ accepted, edit, real contract+waiver documents generated with real data).
 
 | Legacy capability | Legacy impl. | Current equivalent | Backend | DB | UI | Parity | Missing behavior | Priority |
 |---|---|---|---|---|---|---|---|---|
-| Employee roster (distinct from login users) | REAL | none | ❌ | ❌ | ❌ | **F** | No employee-roster concept beyond login `users` | P1 |
-| Weekly shift scheduling | REAL — a genuine non-Fiestas calendar feature | none | ❌ | ❌ | ❌ | **F** | — | P1 |
-| Time clock / checador (manual clock-in/out) | REAL | none | ❌ | ❌ | ❌ | **F** | — | P1 |
-| Payroll (nómina) — hours worked vs. scheduled, late-minute deduction, overtime bonus | **REAL — a genuinely worked calculation engine**, the single most substantive HR feature found | none | ❌ | ❌ | ❌ | **F** | Full domain gap — no payroll concept anywhere in current platform | P2 (real payroll is a substantial, compliance-adjacent feature; not a Sept 15 blocker for POS operation itself) |
+| Employee roster (distinct from login users) | REAL | **[WAVE 2 — REBUILT]** `employees` table (company/branch-scoped, distinct from login `users`) + `apps/api/src/modules/people/employees.*` + `pos_people_gateway.dart`/`pos_people_screen.dart` | ✅ | ✅ | ✅ | **A** | — | — |
+| Weekly shift scheduling | REAL — a genuine non-Fiestas calendar feature | **[WAVE 2 — REBUILT]** `employee_schedules` table + `apps/api/src/modules/people/schedules.*`, feeding the payroll scheduled-vs-worked comparison | ✅ | ✅ | ✅ | **A** | — | — |
+| Time clock / checador (manual clock-in/out) | REAL | **[WAVE 2 — REBUILT]** `time_clock_punches` table + `apps/api/src/modules/people/time-clock.*` | ✅ | ✅ | ✅ | **A** | — | — |
+| Payroll (nómina) — hours worked vs. scheduled, late-minute deduction, overtime bonus | **REAL — a genuinely worked calculation engine**, the single most substantive HR feature found | **[WAVE 2 — REBUILT]** `payroll_periods`/`payroll_period_lines` + `apps/api/src/modules/people/payroll.*` — a **faithful port** of the legacy's real `calcularNominaEmpleado()` formula (scheduled/worked/late/overtime minutes, per-minute deduction/bonus, weekly salary base), verified in tests against a hand-computed example. A closed payroll period can never be recalculated (immutable once closed) | ✅ | ✅ | ✅ | **A** | — | — |
 
 ## 16. Documentos (Document Hub)
 

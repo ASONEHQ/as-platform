@@ -10,6 +10,7 @@ import { AppError } from '@asone/errors';
 
 import type { AuthContext } from '../auth/auth.types.js';
 import type { AuthService } from '../auth/auth.service.js';
+import { SuppliersRepository } from '../suppliers/suppliers.repository.js';
 import { registerPurchasingRoutes } from './purchasing.routes.js';
 import { PurchasingRepository } from './purchasing.repository.js';
 import { PurchasingService } from './purchasing.service.js';
@@ -118,6 +119,10 @@ integration('PostgreSQL direct-purchase operations (TASK 14.3, Wave 1 Part C)', 
     await applyIfMissing(database, 'reward_entitlements', ['0022_cheerful_scrambler.sql']);
     await applyIfMissing(database, 'loyalty_program_reward_categories', ['0023_tan_luke_cage.sql']);
     await applyIfMissing(database, 'direct_purchases', ['0024_vengeful_metal_master.sql']);
+    // TASK 14.4 (Wave 2, Part C.2) — the new nullable `direct_purchases.
+    // supplier_id` column/FK/index this wave adds, plus the `suppliers`
+    // table itself, both land in this one migration.
+    await applyIfMissing(database, 'suppliers', ['0025_worried_the_captain.sql']);
 
     await database.pool.query(
       `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
@@ -219,7 +224,17 @@ integration('PostgreSQL direct-purchase operations (TASK 14.3, Wave 1 Part C)', 
       return reply.code(500).send({ error: { code: 'internal_error', message: (error as Error).message } });
     });
 
-    registerPurchasingRoutes(app, authentication, new PurchasingService(new PurchasingRepository(database)));
+    // TASK 14.4 (Wave 2, Part C.2) — `PurchasingService` now takes a
+    // second, required `SuppliersRepository` collaborator (used only when
+    // a request actually links a real `supplier_id`; every test in THIS
+    // file never does, so this is a purely additive wiring change — see
+    // this task's own final report for why this one line was the single
+    // necessary tweak to an otherwise-unmodified existing test file).
+    registerPurchasingRoutes(
+      app,
+      authentication,
+      new PurchasingService(new PurchasingRepository(database), new SuppliersRepository(database)),
+    );
     await app.ready();
   });
 

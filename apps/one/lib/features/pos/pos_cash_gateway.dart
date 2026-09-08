@@ -118,6 +118,27 @@ class PosCashSession {
   bool get isClosed => status == 'closed';
 }
 
+/// TASK 14.4 (Wave 2, Part F.1) — the exact category set
+/// `cash.types.ts`'s own `cashMovementCategories` defines, only ever
+/// meaningful on a client-postable `cash_in`/`cash_out` movement.
+const List<String> posCashMovementCategories = [
+  'withdrawal',
+  'expense',
+  'external_income',
+  'other',
+];
+
+/// The exact direction each category is valid for — mirrors
+/// `cash.types.ts`'s own `cashMovementCategoryDirection` table verbatim
+/// (`null` means "either direction", i.e. `other`) so the UI never even
+/// offers an invalid movement-type/category combination.
+const Map<String, String?> posCashMovementCategoryDirection = {
+  'withdrawal': 'cash_out',
+  'expense': 'cash_out',
+  'external_income': 'cash_in',
+  'other': null,
+};
+
 /// One `cash_movements` row (E046).
 class PosCashMovement {
   const PosCashMovement({
@@ -130,6 +151,7 @@ class PosCashMovement {
     this.note,
     required this.occurredAt,
     required this.createdBy,
+    this.category,
   });
 
   factory PosCashMovement.fromJson(Map<String, Object?> json) =>
@@ -143,6 +165,9 @@ class PosCashMovement {
         note: json['note'] as String?,
         occurredAt: DateTime.parse(json['occurred_at']! as String),
         createdBy: json['created_by']! as String,
+        // TASK 14.4 (Wave 2, Part F.1) — orthogonal to movement_type; null
+        // for system-posted movements and any uncategorized cash_in/cash_out.
+        category: json['category'] as String?,
       );
 
   final String id;
@@ -154,6 +179,7 @@ class PosCashMovement {
   final String? note;
   final DateTime occurredAt;
   final String createdBy;
+  final String? category;
 }
 
 /// E048 — the cash-cut summary (Part K). Every total here comes straight
@@ -168,6 +194,9 @@ class PosCashSessionSummary {
     required this.cashInTotal,
     required this.cashOutTotal,
     required this.expectedCash,
+    required this.withdrawalTotal,
+    required this.expenseTotal,
+    required this.externalIncomeTotal,
   });
 
   factory PosCashSessionSummary.fromJson(Map<String, Object?> json) {
@@ -184,6 +213,12 @@ class PosCashSessionSummary {
       cashInTotal: json['cash_in_total']! as String,
       cashOutTotal: json['cash_out_total']! as String,
       expectedCash: json['expected_cash']! as String,
+      // TASK 14.4 (Wave 2, Part F.2) — new named breakdowns, each a strict
+      // subset already folded into cash_in_total/cash_out_total above;
+      // never a second, separately-authoritative total.
+      withdrawalTotal: json['withdrawal_total']! as String,
+      expenseTotal: json['expense_total']! as String,
+      externalIncomeTotal: json['external_income_total']! as String,
     );
   }
 
@@ -194,6 +229,54 @@ class PosCashSessionSummary {
   final String cashInTotal;
   final String cashOutTotal;
   final String expectedCash;
+  final String withdrawalTotal;
+  final String expenseTotal;
+  final String externalIncomeTotal;
+}
+
+/// TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a persisted, audited
+/// SNAPSHOT of exactly what [PosCashGateway.summary] said at [takenAt].
+/// Never a second drawer-balance source of truth — see
+/// `cash.types.ts`'s own `CashSessionPartialCloseRow` doc comment. Taking
+/// one never changes the session's `status`.
+class PosCashSessionPartialClose {
+  const PosCashSessionPartialClose({
+    required this.id,
+    required this.cashSessionId,
+    required this.takenAt,
+    required this.openingAmount,
+    required this.cashSalesTotal,
+    required this.cashInTotal,
+    required this.cashOutTotal,
+    required this.expectedCash,
+    required this.createdBy,
+    required this.createdAt,
+  });
+
+  factory PosCashSessionPartialClose.fromJson(Map<String, Object?> json) =>
+      PosCashSessionPartialClose(
+        id: json['id']! as String,
+        cashSessionId: json['cash_session_id']! as String,
+        takenAt: DateTime.parse(json['taken_at']! as String),
+        openingAmount: json['opening_amount']! as String,
+        cashSalesTotal: json['cash_sales_total']! as String,
+        cashInTotal: json['cash_in_total']! as String,
+        cashOutTotal: json['cash_out_total']! as String,
+        expectedCash: json['expected_cash']! as String,
+        createdBy: json['created_by']! as String,
+        createdAt: DateTime.parse(json['created_at']! as String),
+      );
+
+  final String id;
+  final String cashSessionId;
+  final DateTime takenAt;
+  final String openingAmount;
+  final String cashSalesTotal;
+  final String cashInTotal;
+  final String cashOutTotal;
+  final String expectedCash;
+  final String createdBy;
+  final DateTime createdAt;
 }
 
 class PosCashMovementPage {
@@ -284,13 +367,17 @@ abstract interface class PosCashGateway {
 
   /// `POST /api/v1/cash-sessions/{id}/movements` (E045) — cash in/out only;
   /// `opening_float`/`cash_sale` are system-posted and never reach this
-  /// call (Part G).
+  /// call (Part G). [category] is the optional TASK 14.4 (Wave 2, Part
+  /// F.1) reporting dimension — the caller must only ever pass one valid
+  /// for [movementType] (`posCashMovementCategoryDirection`); the backend
+  /// independently re-validates the same rule before any write.
   Future<PosCashMovement> createMovement({
     required String cashSessionId,
     required String movementType,
     required String amount,
     required String reasonCode,
     String? note,
+    String? category,
   });
 
   /// `GET /api/v1/cash-sessions/{id}/movements` (E046).
@@ -319,6 +406,18 @@ abstract interface class PosCashGateway {
     String? cursor,
     int limit = 50,
   });
+
+  /// `POST /api/v1/cash-sessions/{id}/partial-close` (TASK 14.4, Wave 2,
+  /// Part F.3) — "Corte parcial": a real mutation that persists a
+  /// snapshot of exactly what [summary] says right now, WITHOUT changing
+  /// the session's `status` — the session stays open. Idempotency-key
+  /// gated, exactly like every other write in this gateway.
+  Future<PosCashSessionPartialClose> partialCloseSession(String cashSessionId);
+
+  /// `GET /api/v1/cash-sessions/{id}/partial-closes` — the audit trail
+  /// Part F.3 requires; read-only, never mutates. The backend returns the
+  /// full list in one response (no pagination on this route).
+  Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId);
 }
 
 class ApiPosCashGateway implements PosCashGateway {
@@ -411,6 +510,7 @@ class ApiPosCashGateway implements PosCashGateway {
     required String amount,
     required String reasonCode,
     String? note,
+    String? category,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/cash-sessions/$cashSessionId/movements',
@@ -420,6 +520,7 @@ class ApiPosCashGateway implements PosCashGateway {
         'amount': amount,
         'reason_code': reasonCode,
         if (note != null && note.isNotEmpty) 'note': note,
+        if (category != null) 'category': category,
       },
     );
     final data = envelope['data'];
@@ -524,6 +625,32 @@ class ApiPosCashGateway implements PosCashGateway {
     );
   }
 
+  @override
+  Future<PosCashSessionPartialClose> partialCloseSession(String cashSessionId) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-sessions/$cashSessionId/partial-close',
+      idempotencyKey: createIdempotencyKey(),
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash session partial-close data.');
+    }
+    return PosCashSessionPartialClose.fromJson(data);
+  }
+
+  @override
+  Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async {
+    final envelope = await _client.getJson('/api/v1/cash-sessions/$cashSessionId/partial-closes');
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing cash session partial-close list data.');
+    }
+    return data
+        .whereType<Map<String, Object?>>()
+        .map(PosCashSessionPartialClose.fromJson)
+        .toList(growable: false);
+  }
+
   PosCashSession _decodeSession(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -567,6 +694,7 @@ class EmptyPosCashGateway implements PosCashGateway {
     required String amount,
     required String reasonCode,
     String? note,
+    String? category,
   }) => Future.error(StateError('No cash gateway is configured.'));
 
   @override
@@ -589,4 +717,11 @@ class EmptyPosCashGateway implements PosCashGateway {
     String? cursor,
     int limit = 50,
   }) async => const PosCashSessionHistoryPage(items: [], nextCursor: null);
+
+  @override
+  Future<PosCashSessionPartialClose> partialCloseSession(String cashSessionId) =>
+      Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
 }

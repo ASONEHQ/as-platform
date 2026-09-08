@@ -50,6 +50,7 @@ function directPurchaseHttp(
     id: value.id,
     branch_id: value.branchId,
     supplier_name: value.supplierName,
+    supplier_id: value.supplierId,
     product_variant_id: value.productVariantId,
     quantity: value.quantity,
     unit_cost: value.unitCost,
@@ -85,6 +86,7 @@ export function registerPurchasingRoutes(
       id?: string;
       branch_id: string;
       supplier_name?: string | null;
+      supplier_id?: string | null;
       product_variant_id: string;
       quantity: string;
       unit_cost: string;
@@ -106,6 +108,7 @@ export function registerPurchasingRoutes(
             id: { type: 'string', format: 'uuid' },
             branch_id: { type: 'string', format: 'uuid' },
             supplier_name: { anyOf: [{ type: 'string', maxLength: 500 }, { type: 'null' }] },
+            supplier_id: { anyOf: [{ type: 'string', format: 'uuid' }, { type: 'null' }] },
             product_variant_id: { type: 'string', format: 'uuid' },
             quantity: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,6})?$' },
             unit_cost: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
@@ -130,6 +133,7 @@ export function registerPurchasingRoutes(
             ...(request.body.id === undefined ? {} : { id: request.body.id }),
             branchId: request.body.branch_id,
             supplierName: request.body.supplier_name ?? null,
+            supplierId: request.body.supplier_id ?? null,
             productVariantId: request.body.product_variant_id,
             quantity: request.body.quantity,
             unitCost: request.body.unit_cost,
@@ -173,6 +177,7 @@ export function registerPurchasingRoutes(
       limit?: number;
       branch_id?: string;
       product_variant_id?: string;
+      supplier_id?: string;
       purchase_date_from?: string;
       purchase_date_to?: string;
     };
@@ -189,6 +194,7 @@ export function registerPurchasingRoutes(
             limit: { type: 'integer', minimum: 1, maximum: 100 },
             branch_id: { type: 'string', format: 'uuid' },
             product_variant_id: { type: 'string', format: 'uuid' },
+            supplier_id: { type: 'string', format: 'uuid' },
             purchase_date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
             purchase_date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
           },
@@ -207,6 +213,7 @@ export function registerPurchasingRoutes(
           ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
           ...(query.branch_id === undefined ? {} : { branchId: query.branch_id }),
           ...(query.product_variant_id === undefined ? {} : { productVariantId: query.product_variant_id }),
+          ...(query.supplier_id === undefined ? {} : { supplierId: query.supplier_id }),
           ...(query.purchase_date_from === undefined ? {} : { purchaseDateFrom: query.purchase_date_from }),
           ...(query.purchase_date_to === undefined ? {} : { purchaseDateTo: query.purchase_date_to }),
         });

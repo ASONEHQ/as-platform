@@ -1,0 +1,726 @@
+import type { DatabaseClient } from '@asone/database';
+
+import type {
+  CashMovementTotal,
+  ClosedSessionTotal,
+  CurrencyAmount,
+  InventoryMovementVolume,
+  SalesExportRow,
+  StatusCount,
+} from './reports.types.js';
+
+/** Raw shape read off `cash_movements` for the financial CSV export —
+ * deliberately WITHOUT a `direction` field: direction is never stored or
+ * re-derived here, only in `reports.service.ts`, from the single shared
+ * `cashMovementDirection` table (see that file). */
+export interface FinancialExportRawRow {
+  readonly id: string;
+  readonly branchId: string;
+  readonly cashSessionId: string;
+  readonly movementType: string;
+  readonly amount: string;
+  readonly currencyCode: string;
+  readonly category: string | null;
+  readonly reasonCode: string;
+  readonly occurredAt: Date;
+}
+
+/**
+ * Every method here does its aggregation with real SQL (`sum`/`count`/
+ * `group by`) at the database layer — never by fetching an unbounded row
+ * set and reducing it in Node (this task's own explicit instruction). The
+ * two CSV-export methods are the deliberate exception: they return real
+ * individual rows, because a CSV export's whole purpose is the underlying
+ * detail, not an aggregate.
+ */
+
+interface QueryResult<T> {
+  rows: T[];
+}
+function result<T>(value: unknown): QueryResult<T> {
+  return value as QueryResult<T>;
+}
+
+export interface ReportScopeInput {
+  readonly branchId?: string | undefined;
+  readonly dateFrom: string;
+  readonly dateTo: string;
+}
+
+/** Appends `company_id=$n` and `branch_id=any($n::uuid[])` (plus, when
+ * `branchId` is given, an exact `branch_id=$n` narrowing) to `where`/
+ * `values` — the one scoping shape every branch-scoped table in this
+ * module shares. Always called first, so `company_id`/`branch_id` land at
+ * a predictable position before each query's own date-range params. */
+function appendBranchScope(
+  where: string[],
+  values: unknown[],
+  companyId: string,
+  branchIds: readonly string[],
+  branchId: string | undefined,
+): void {
+  values.push(companyId);
+  where.push(`company_id = $${String(values.length)}`);
+  values.push(branchIds);
+  where.push(`branch_id = any($${String(values.length)}::uuid[])`);
+  if (branchId !== undefined) {
+    values.push(branchId);
+    where.push(`branch_id = $${String(values.length)}`);
+  }
+}
+
+/** `customers`/`customer_memberships`/`loyalty_accounts` carry no branch
+ * dimension in this schema — company scope only. */
+function appendCompanyScope(where: string[], values: unknown[], companyId: string): void {
+  values.push(companyId);
+  where.push(`company_id = $${String(values.length)}`);
+}
+
+function appendTimestampRange(where: string[], values: unknown[], column: string, dateFrom: string, dateTo: string): void {
+  values.push(dateFrom);
+  where.push(`${column} >= $${String(values.length)}::date`);
+  values.push(dateTo);
+  where.push(`${column} < ($${String(values.length)}::date + interval '1 day')`);
+}
+
+function appendDateColumnRange(where: string[], values: unknown[], column: string, dateFrom: string, dateTo: string): void {
+  values.push(dateFrom);
+  where.push(`${column} >= $${String(values.length)}::date`);
+  values.push(dateTo);
+  where.push(`${column} <= $${String(values.length)}::date`);
+}
+
+export class ReportsRepository {
+  public constructor(private readonly database: DatabaseClient) {}
+
+  // --- Sales --------------------------------------------------------------
+
+  public async salesTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ currencyCode: string; grossSales: string; transactionCount: number }[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'completed'`);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    const rows = result<{ currency_code: string; gross: string; tx_count: string }>(
+      await this.database.pool.query(
+        `select currency_code, coalesce(sum(total),0)::text gross, count(*)::text tx_count
+         from sales where ${where.join(' and ')} group by currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      currencyCode: row.currency_code,
+      grossSales: row.gross,
+      transactionCount: Number(row.tx_count),
+    }));
+  }
+
+  public async refundsTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ currencyCode: string; refundsTotal: string; refundCount: number }[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'completed'`);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    const rows = result<{ currency_code: string; total: string; refund_count: string }>(
+      await this.database.pool.query(
+        `select currency_code, coalesce(sum(total),0)::text total, count(*)::text refund_count
+         from refunds where ${where.join(' and ')} group by currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      currencyCode: row.currency_code,
+      refundsTotal: row.total,
+      refundCount: Number(row.refund_count),
+    }));
+  }
+
+  public async salesExportRows(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<SalesExportRow[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'completed'`);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    const rows = result<{
+      id: string;
+      sale_number: string;
+      branch_id: string;
+      status: string;
+      occurred_at: Date | string;
+      completed_at: Date | string | null;
+      subtotal: string;
+      discount_total: string;
+      tax_total: string;
+      total: string;
+      currency_code: string;
+      customer_display_name: string | null;
+    }>(
+      await this.database.pool.query(
+        `select id, sale_number, branch_id, status, occurred_at, completed_at,
+                subtotal::text, discount_total::text, tax_total::text, total::text,
+                currency_code, customer_display_name
+         from sales where ${where.join(' and ')}
+         order by completed_at asc, id asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      id: row.id,
+      saleNumber: row.sale_number,
+      branchId: row.branch_id,
+      status: row.status,
+      occurredAt: new Date(row.occurred_at),
+      completedAt: row.completed_at === null ? null : new Date(row.completed_at),
+      subtotal: row.subtotal,
+      discountTotal: row.discount_total,
+      taxTotal: row.tax_total,
+      total: row.total,
+      currencyCode: row.currency_code,
+      customerDisplayName: row.customer_display_name,
+    }));
+  }
+
+  // --- Financial ------------------------------------------------------------
+
+  public async cashMovementTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<CashMovementTotal[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    const rows = result<{ movement_type: string; currency_code: string; amount: string; cnt: string }>(
+      await this.database.pool.query(
+        `select movement_type, currency_code, coalesce(sum(amount),0)::text amount, count(*)::text cnt
+         from cash_movements where ${where.join(' and ')}
+         group by movement_type, currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      movementType: row.movement_type,
+      currencyCode: row.currency_code,
+      amount: row.amount,
+      count: Number(row.cnt),
+    }));
+  }
+
+  public async closedSessionTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<ClosedSessionTotal[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'closed'`);
+    appendTimestampRange(where, values, 'closed_at', input.dateFrom, input.dateTo);
+    const rows = result<{
+      currency_code: string;
+      session_count: string;
+      declared: string;
+      expected: string;
+      discrepancy: string;
+    }>(
+      await this.database.pool.query(
+        `select currency_code, count(*)::text session_count,
+                coalesce(sum(declared_closing_amount),0)::text declared,
+                coalesce(sum(expected_closing_amount),0)::text expected,
+                coalesce(sum(discrepancy_amount),0)::text discrepancy
+         from cash_sessions where ${where.join(' and ')}
+         group by currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      currencyCode: row.currency_code,
+      sessionCount: Number(row.session_count),
+      declaredClosingTotal: row.declared,
+      expectedClosingTotal: row.expected,
+      discrepancyTotal: row.discrepancy,
+    }));
+  }
+
+  public async sessionsOpenedCount(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'opened_at', input.dateFrom, input.dateTo);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from cash_sessions where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  /** For the integration test's own direct proof: the exact fold
+   * (`cashMovementDirection`) restricted to ONE session's movements, so it
+   * can be compared bit-for-bit against that session's own persisted
+   * `expected_closing_amount`. */
+  public async cashMovementsForSession(
+    companyId: string,
+    cashSessionId: string,
+  ): Promise<{ movementType: string; amount: string }[]> {
+    const rows = result<{ movement_type: string; amount: string }>(
+      await this.database.pool.query(
+        `select movement_type, amount::text from cash_movements where company_id=$1 and cash_session_id=$2`,
+        [companyId, cashSessionId],
+      ),
+    ).rows;
+    return rows.map((row) => ({ movementType: row.movement_type, amount: row.amount }));
+  }
+
+  public async financialExportRows(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<FinancialExportRawRow[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    const rows = result<{
+      id: string;
+      branch_id: string;
+      cash_session_id: string;
+      movement_type: string;
+      amount: string;
+      currency_code: string;
+      category: string | null;
+      reason_code: string;
+      occurred_at: Date | string;
+    }>(
+      await this.database.pool.query(
+        `select id, branch_id, cash_session_id, movement_type, amount::text, currency_code, category, reason_code, occurred_at
+         from cash_movements where ${where.join(' and ')}
+         order by occurred_at asc, id asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      id: row.id,
+      branchId: row.branch_id,
+      cashSessionId: row.cash_session_id,
+      movementType: row.movement_type,
+      amount: row.amount,
+      currencyCode: row.currency_code,
+      category: row.category,
+      reasonCode: row.reason_code,
+      occurredAt: new Date(row.occurred_at),
+    }));
+  }
+
+  // --- Inventory ------------------------------------------------------------
+
+  public async inventoryBalanceTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    branchId: string | undefined,
+  ): Promise<{
+    trackedVariantCount: number;
+    quantityOnHandTotal: string;
+    quantityReservedTotal: string;
+    quantityInTransitTotal: string;
+    outOfStockVariantCount: number;
+  }> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, branchId);
+    const row = result<{
+      cnt: string;
+      qoh: string;
+      qres: string;
+      qit: string;
+      oos: string;
+    }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt,
+                coalesce(sum(quantity_on_hand),0)::text qoh,
+                coalesce(sum(quantity_reserved),0)::text qres,
+                coalesce(sum(quantity_in_transit),0)::text qit,
+                count(*) filter (where quantity_on_hand - quantity_reserved <= 0)::text oos
+         from inventory_balances where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined
+      ? {
+          trackedVariantCount: 0,
+          quantityOnHandTotal: '0.000000',
+          quantityReservedTotal: '0.000000',
+          quantityInTransitTotal: '0.000000',
+          outOfStockVariantCount: 0,
+        }
+      : {
+          trackedVariantCount: Number(row.cnt),
+          quantityOnHandTotal: row.qoh,
+          quantityReservedTotal: row.qres,
+          quantityInTransitTotal: row.qit,
+          outOfStockVariantCount: Number(row.oos),
+        };
+  }
+
+  public async inventoryValueByCurrency(
+    companyId: string,
+    branchIds: readonly string[],
+    branchId: string | undefined,
+  ): Promise<CurrencyAmount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, branchId);
+    where.push('currency_code is not null');
+    const rows = result<{ currency_code: string; value: string }>(
+      await this.database.pool.query(
+        `select currency_code, coalesce(sum(quantity_on_hand * average_unit_cost),0)::text value
+         from inventory_balances where ${where.join(' and ')}
+         group by currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ currencyCode: row.currency_code, amount: row.value }));
+  }
+
+  public async inventoryMovementVolume(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<InventoryMovementVolume[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    values.push(companyId);
+    where.push(`m.company_id = $${String(values.length)}`);
+    values.push(branchIds);
+    where.push(`m.branch_id = any($${String(values.length)}::uuid[])`);
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`m.branch_id = $${String(values.length)}`);
+    }
+    where.push(`m.status = 'posted'`);
+    appendTimestampRange(where, values, 'm.posted_at', input.dateFrom, input.dateTo);
+    const rows = result<{ movement_type: string; movement_count: string; total_base_qty: string }>(
+      await this.database.pool.query(
+        `select m.movement_type, count(distinct m.id)::text movement_count,
+                coalesce(sum(l.base_quantity),0)::text total_base_qty
+         from inventory_movements m
+         join inventory_movement_lines l on l.company_id = m.company_id and l.inventory_movement_id = m.id
+         where ${where.join(' and ')}
+         group by m.movement_type`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      movementType: row.movement_type,
+      movementCount: Number(row.movement_count),
+      totalBaseQuantity: row.total_base_qty,
+    }));
+  }
+
+  // --- Customers ------------------------------------------------------------
+
+  public async customersByStatus(companyId: string): Promise<StatusCount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendCompanyScope(where, values, companyId);
+    const rows = result<{ status: string; cnt: string }>(
+      await this.database.pool.query(
+        `select status, count(*)::text cnt from customers where ${where.join(' and ')} group by status`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ status: row.status, count: Number(row.cnt) }));
+  }
+
+  public async newCustomersInRange(companyId: string, input: ReportDateRangeInput): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendCompanyScope(where, values, companyId);
+    appendTimestampRange(where, values, 'created_at', input.dateFrom, input.dateTo);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from customers where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  public async membershipsByStatus(companyId: string): Promise<StatusCount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendCompanyScope(where, values, companyId);
+    const rows = result<{ status: string; cnt: string }>(
+      await this.database.pool.query(
+        `select status, count(*)::text cnt from customer_memberships where ${where.join(' and ')} group by status`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ status: row.status, count: Number(row.cnt) }));
+  }
+
+  public async newMembershipsInRange(companyId: string, input: ReportDateRangeInput): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendCompanyScope(where, values, companyId);
+    appendTimestampRange(where, values, 'issued_at', input.dateFrom, input.dateTo);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from customer_memberships where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  public async activeLoyaltyAccountCount(companyId: string): Promise<number> {
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from loyalty_accounts where company_id=$1 and status='active'`,
+        [companyId],
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  // --- Employees ------------------------------------------------------------
+
+  public async employeesByStatus(
+    companyId: string,
+    branchIds: readonly string[],
+    branchId: string | undefined,
+  ): Promise<StatusCount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, branchId);
+    const rows = result<{ status: string; cnt: string }>(
+      await this.database.pool.query(
+        `select status, count(*)::text cnt from employees where ${where.join(' and ')} group by status`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ status: row.status, count: Number(row.cnt) }));
+  }
+
+  public async punchTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ punchType: string; count: number }[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    const rows = result<{ punch_type: string; cnt: string }>(
+      await this.database.pool.query(
+        `select punch_type, count(*)::text cnt from time_clock_punches where ${where.join(' and ')} group by punch_type`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ punchType: row.punch_type, count: Number(row.cnt) }));
+  }
+
+  public async distinctEmployeesPunched(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(distinct employee_id)::text cnt from time_clock_punches where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  public async closedPayrollTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ currencyCode: string; total: string; periodCount: number }[]> {
+    const where: string[] = ['ppl.company_id = $1', 'pp.branch_id = any($2::uuid[])'];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`pp.branch_id = $${String(values.length)}`);
+    }
+    where.push(`pp.status = 'closed'`);
+    values.push(input.dateFrom);
+    where.push(`pp.period_end >= $${String(values.length)}::date`);
+    values.push(input.dateTo);
+    where.push(`pp.period_start <= $${String(values.length)}::date`);
+    const rows = result<{ currency_code: string; total: string; period_count: string }>(
+      await this.database.pool.query(
+        `select ppl.currency_code, coalesce(sum(ppl.total_amount),0)::text total,
+                count(distinct pp.id)::text period_count
+         from payroll_period_lines ppl
+         join payroll_periods pp on pp.company_id = ppl.company_id and pp.id = ppl.payroll_period_id
+         where ${where.join(' and ')}
+         group by ppl.currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      currencyCode: row.currency_code,
+      total: row.total,
+      periodCount: Number(row.period_count),
+    }));
+  }
+
+  // --- Parties ------------------------------------------------------------
+
+  public async partyReservationsByStatus(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<StatusCount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendDateColumnRange(where, values, 'event_date', input.dateFrom, input.dateTo);
+    const rows = result<{ status: string; cnt: string }>(
+      await this.database.pool.query(
+        `select status, count(*)::text cnt from party_reservations where ${where.join(' and ')} group by status`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ status: row.status, count: Number(row.cnt) }));
+  }
+
+  public async partyBookedRevenue(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<CurrencyAmount[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendDateColumnRange(where, values, 'event_date', input.dateFrom, input.dateTo);
+    where.push(`status <> 'cancelled'`);
+    const rows = result<{ currency_code: string; total: string }>(
+      await this.database.pool.query(
+        `select currency_code, coalesce(sum(quoted_total),0)::text total
+         from party_reservations where ${where.join(' and ')}
+         group by currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ currencyCode: row.currency_code, amount: row.total }));
+  }
+
+  public async partyCollectedRevenue(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<CurrencyAmount[]> {
+    const where: string[] = ['p.company_id = $1', 'p.branch_id = any($2::uuid[])'];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`p.branch_id = $${String(values.length)}`);
+    }
+    appendTimestampRange(where, values, 'p.created_at', input.dateFrom, input.dateTo);
+    const rows = result<{ currency_code: string; total: string }>(
+      await this.database.pool.query(
+        `select r.currency_code, coalesce(sum(p.amount_snapshot),0)::text total
+         from party_reservation_payments p
+         join party_reservations r on r.company_id = p.company_id and r.id = p.reservation_id
+         where ${where.join(' and ')}
+         group by r.currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ currencyCode: row.currency_code, amount: row.total }));
+  }
+
+  public async activeRoomCount(companyId: string, branchIds: readonly string[], branchId: string | undefined): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, branchId);
+    where.push(`status = 'active'`);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from party_rooms where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  public async roomsBookedCount(companyId: string, branchIds: readonly string[], input: ReportScopeInput): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendDateColumnRange(where, values, 'event_date', input.dateFrom, input.dateTo);
+    where.push(`status <> 'cancelled'`);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(distinct room_id)::text cnt from party_reservations where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  // --- Access ------------------------------------------------------------
+
+  public async accessEventTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ eventType: string; count: number }[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    const rows = result<{ event_type: string; cnt: string }>(
+      await this.database.pool.query(
+        `select event_type, count(*)::text cnt from access_events where ${where.join(' and ')} group by event_type`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ eventType: row.event_type, count: Number(row.cnt) }));
+  }
+
+  public async currentOccupancy(companyId: string, branchIds: readonly string[], branchId: string | undefined): Promise<number> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, branchId);
+    where.push(`currently_inside = 'true'`);
+    const row = result<{ cnt: string }>(
+      await this.database.pool.query(
+        `select count(*)::text cnt from access_credentials where ${where.join(' and ')}`,
+        values,
+      ),
+    ).rows[0];
+    return row === undefined ? 0 : Number(row.cnt);
+  }
+}
+
+export interface ReportDateRangeInput {
+  readonly dateFrom: string;
+  readonly dateTo: string;
+}

@@ -73,12 +73,16 @@ legacy feature — **[TASK 14.3 Wave 1 — DONE]** "Compra Directa" (direct
 purchase → immediate real stock increment) is now built: a real, atomic,
 idempotent commercial record alongside a real `receipt`-type inventory
 movement, proven live to correctly increase real, immediately-sellable
-stock. Still nothing for the *formal* PO workflow or a real supplier
-CRUD — a deliberate scope decision, since the legacy's own formal PO
+stock. **[TASK 14.4 Wave 2 — DONE]** A real supplier CRUD now exists too:
+`suppliers` table (company-scoped) + `apps/api/src/modules/suppliers/` +
+a Flutter admin screen, and `direct_purchases` gained an optional real
+`supplier_id` link (a frozen-name-snapshot pattern — a later supplier
+rename never rewrites past purchase history). Still nothing for the
+*formal* PO workflow — re-confirmed by forensic re-check this wave as a
+deliberate, unchanged scope decision, since the legacy's own formal PO
 workflow never actually worked (its save function discarded the entered
 line items), so rebuilding it would owe nothing to its own
-implementation. A genuine supplier contact list remains a real,
-smaller, POST-LAUNCH gap.
+implementation.
 
 ## Clientes
 
@@ -130,17 +134,19 @@ equivalent — a minor gap.
 
 **Maps to**: `cash.routes.ts`, real and proven (denomination counting,
 expected-vs-actual reconciliation, zero-discrepancy close proven live
-this task). The legacy's cash-movement taxonomy was richer at the UI
-layer — distinct "Retiro" (withdrawal, with an over-withdrawal guard and
-authorizer field), "Gasto" (expense, with a category dropdown), and
-"Ingreso extraordinario" (external income) each had their own modal and
-KPI tile. The current platform correctly captures all of this
-*financially* through generic `cash_in`/`cash_out` movements with a free-
-text `reason_code` — the money math is equivalent, but the workflow
-convenience (dedicated forms, categorized reporting, the over-withdrawal
-block) doesn't exist yet. Also missing entirely: "Corte parcial," a
-real mid-shift snapshot that doesn't close the register — useful for a
-manager wanting a same-shift progress check.
+this task). **[TASK 14.4 Wave 2 — DONE]** The legacy's richer
+cash-movement taxonomy is now real, extending (never duplicating) the
+existing cash foundation: `cash_movements.category` (`withdrawal`/
+`expense`/`external_income`/`other`), direction-constrained by a real DB
+check so an expense can never be miscategorized onto a cash-in row, and
+"Corte parcial" is now a real, persisted, audited mid-shift snapshot
+(`cash_session_partial_closes`) proven in tests to never transition the
+session's own status. Expected-cash math was verified end-to-end this
+session in a real 35-step E2E simulation with a genuine API process
+kill+restart: reconciled to the exact cent identically before and after
+restart. Not yet ported: the legacy's own dedicated over-withdrawal
+guard/authorizer field and photo-evidence flag on expenses (the latter
+was itself only a superficial flag in the legacy, never a real file).
 
 ## Facturación CFDI
 
@@ -154,24 +160,39 @@ would be new work, not a recovery.
 
 ## Reportes / BI / Dashboard
 
-**Maps to**: real, tested, paginated data endpoints for every underlying
-figure (sales, refunds, inventory, customers) — but no dashboard or
-report *screen* exists, a documented, deliberate gap (see
-[[V1_POST_LAUNCH_BACKLOG]]). The legacy's dashboard and per-area reports
-were genuinely computed (not static), so this is a real UI gap sitting
-on top of already-real current-platform data — likely the single
-highest-leverage rebuild in this whole audit, since almost none of it
-requires new backend work.
+**Maps to**: `apps/api/src/modules/reports/` — **[TASK 14.4 Wave 2 —
+DONE]** the first real metrics UI in the current platform. 7 report
+areas (Sales/Financial/Inventory/Customers/Employees/Parties/Access), all
+genuine server-side SQL aggregation with real date-range and branch
+scoping, CSV export on Sales and Financial, and the financial report
+reconciles bit-for-bit against the real `CashService.summary()` fold
+logic — plus `pos_reports_gateway.dart`/`pos_reports_screen.dart` (a
+tabbed per-area screen). This deliberately does **not** reproduce the
+legacy's own two admitted-fake fields (`prom_estancia`=95, an
+always-0 water-park-occupancy metric) — those are simply absent, not
+replaced with a new placeholder. Still missing: a single consolidated
+"today at a glance" dashboard screen (sales trend + parties + alerts on
+one view) — the per-area report screens now cover almost all of the
+same underlying signal, just not on one combined screen.
 
 ## Control de Acceso / Aforo
 
-**Maps to**: nothing. Two very different findings bundled under one
-legacy nav item: the ticket-*scan validation* was fake even in the
-legacy (accepts anything, always "succeeds" with a random name) — that's
-nothing lost. But *occupancy tracking* itself (auto-incrementing from
-real ticket sales) was real and would be a genuinely valuable, launch-
-relevant feature for a trampoline park managing capacity — that one is
-worth real consideration.
+**Maps to**: `apps/api/src/modules/access/` — **[TASK 14.4 Wave 2 —
+DONE]**. Two very different legacy findings bundled under one nav item,
+now both addressed, but in different ways that must not be conflated:
+the ticket-*scan validation* was fake even in the legacy (`accScan()`
+accepted anything and always "succeeded" with a random fabricated name)
+— that finding is unchanged and still stands. What Wave 2 built is an
+explicit, **new, safe replacement** for that confirmed-fake mechanism,
+not a recovery of it: real server-side scan validation that honestly
+rejects unknown/void/wrong-branch/already-inside/not-inside/
+reentry-not-allowed cases, CAS-guarded concurrency-safe entry/exit
+(proven via 2 real simultaneous-HTTP-request race tests), and a
+documented re-entry policy the legacy never defined (single-use by
+default, opt-in multi-use). *Occupancy tracking* — real even in the
+legacy, but one-way only — is now genuinely rebuilt and improved: real,
+server-computed, and bidirectional (entry **and** exit), never
+client-recomputed.
 
 ## Administración (Users/Roles/Permissions)
 
@@ -188,12 +209,18 @@ gated `development/` directory.
 
 ## Empleados (HR / Payroll)
 
-**Maps to**: nothing — a genuine, full domain gap. The legacy's payroll
-engine (`calcularNominaEmpleado`) was the single most substantively real
-HR feature found anywhere in the file: real scheduled-vs-worked hours,
-late-minute deductions, overtime bonus, weekly close-out. This is
-compliance-adjacent, substantial work if rebuilt — not a Sept 15 POS-
-operation blocker, but a real, well-defined future capability.
+**Maps to**: `apps/api/src/modules/people/` — **[TASK 14.4 Wave 2 —
+DONE]**. `employees`/`employee_schedules`/`time_clock_punches`/
+`payroll_periods`/`payroll_period_lines` (all company/branch-scoped,
+`employees` distinct from login `users`, matching the legacy's own
+distinction). Payroll calculation is a **faithful port** of the legacy's
+real `calcularNominaEmpleado()` formula — scheduled/worked/late/overtime
+minutes, per-minute deduction/bonus, weekly salary base — verified in
+tests against a hand-computed example; a closed payroll period can never
+be recalculated. `pos_people_gateway.dart`/`pos_people_screen.dart`
+covers roster/schedule/time-clock/payroll from the Flutter app. This was
+the single most substantively real HR feature found anywhere in the
+legacy file, and it is now genuinely, not just partially, ported.
 
 ## Documentos (Document Hub)
 

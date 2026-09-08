@@ -86,6 +86,24 @@ import { PartyReservationsService } from '../modules/parties/party-reservations.
 import { PurchasingRepository } from '../modules/purchasing/purchasing.repository.js';
 import { registerPurchasingRoutes } from '../modules/purchasing/purchasing.routes.js';
 import { PurchasingService } from '../modules/purchasing/purchasing.service.js';
+import { SuppliersRepository } from '../modules/suppliers/suppliers.repository.js';
+import { registerSupplierRoutes } from '../modules/suppliers/suppliers.routes.js';
+import { SuppliersService } from '../modules/suppliers/suppliers.service.js';
+import { AccessRepository } from '../modules/access/access.repository.js';
+import { registerAccessRoutes } from '../modules/access/access.routes.js';
+import { AccessService } from '../modules/access/access.service.js';
+import { ReportsRepository } from '../modules/reports/reports.repository.js';
+import { registerReportsRoutes } from '../modules/reports/reports.routes.js';
+import { ReportsService } from '../modules/reports/reports.service.js';
+import { PeopleRepository } from '../modules/people/people.repository.js';
+import { registerEmployeeRoutes } from '../modules/people/employees.routes.js';
+import { EmployeesService } from '../modules/people/employees.service.js';
+import { registerScheduleRoutes } from '../modules/people/schedules.routes.js';
+import { SchedulesService } from '../modules/people/schedules.service.js';
+import { registerTimeClockRoutes } from '../modules/people/time-clock.routes.js';
+import { TimeClockService } from '../modules/people/time-clock.service.js';
+import { registerPayrollRoutes } from '../modules/people/payroll.routes.js';
+import { PayrollService } from '../modules/people/payroll.service.js';
 import { RefundsRepository } from '../modules/refunds/refunds.repository.js';
 import { registerRefundRoutes } from '../modules/refunds/refunds.routes.js';
 import { RefundsService } from '../modules/refunds/refunds.service.js';
@@ -318,14 +336,22 @@ export async function registerPlugins(
         new HeldSaleCartsService(new HeldSaleCartsRepository(options.infrastructure.database), salesRepository),
       );
       registerRefundRoutes(app, authentication, refundsService);
+      // TASK 14.4 (Wave 2, Part C.1) — real supplier records, company-
+      // scoped only. Constructed before purchasing so the same repository
+      // instance can be handed to `PurchasingService` for its optional
+      // real-supplier linkage below (never a second, duplicate instance).
+      const suppliersRepository = new SuppliersRepository(options.infrastructure.database);
+      registerSupplierRoutes(app, authentication, new SuppliersService(suppliersRepository));
       // TASK 14.3 (Wave 1, Part C) — "Compra Directa": a thin commercial
       // record alongside a real `receipt` inventory movement, posted via
-      // `postDirectPurchaseReceipt` (see `purchasing.service.ts`). No
-      // dependency on any other module's repository/service.
+      // `postDirectPurchaseReceipt` (see `purchasing.service.ts`).
+      // TASK 14.4 (Wave 2, Part C.2) — extended with an optional real
+      // `supplierId` link, resolved/frozen through `suppliersRepository`
+      // above.
       registerPurchasingRoutes(
         app,
         authentication,
-        new PurchasingService(new PurchasingRepository(options.infrastructure.database)),
+        new PurchasingService(new PurchasingRepository(options.infrastructure.database), suppliersRepository),
       );
       registerPromotionRoutes(app, authentication, promotionsService);
       // TASK 14.3 (Wave 1, Part A) — Fiestas/party reservations. Reuses
@@ -351,6 +377,27 @@ export async function registerPlugins(
         mercadoPagoProvider,
         webhookSecret: options.config.mercadoPagoWebhookSecret,
       });
+      // TASK 14.4 (Wave 2, Part B) — People (Employees/Schedules/
+      // Time-Clock/Payroll). One shared repository across all four
+      // sub-resource route/service pairs, mirroring the `parties`
+      // module's own established multi-sub-resource shape.
+      const peopleRepository = new PeopleRepository(options.infrastructure.database);
+      registerEmployeeRoutes(app, authentication, new EmployeesService(peopleRepository));
+      registerScheduleRoutes(app, authentication, new SchedulesService(peopleRepository));
+      registerTimeClockRoutes(app, authentication, new TimeClockService(peopleRepository));
+      registerPayrollRoutes(app, authentication, new PayrollService(peopleRepository));
+      // TASK 14.4 (Wave 2, Part E) — Access/Occupancy: a real replacement
+      // for the legacy's fake ticket scanner. Reuses the already-built
+      // `salesRepository` directly (never a second instance) — a
+      // credential can only ever be issued against a real, already-paid
+      // sale.
+      registerAccessRoutes(app, authentication, new AccessService(new AccessRepository(options.infrastructure.database), salesRepository));
+      // TASK 14.4 (Wave 2, Part D) — Business Intelligence/Reports. A
+      // read-only aggregation layer over the platform's own authoritative
+      // tables (including the real cash ledger, via the same
+      // `cashMovementDirection` fold `CashService.summary()` uses) — no
+      // dependency on any other module's constructed instance.
+      registerReportsRoutes(app, authentication, new ReportsService(new ReportsRepository(options.infrastructure.database)));
     }
   }
   if (options.config.nodeEnv === 'test') registerTestOnlyRoutes(app);

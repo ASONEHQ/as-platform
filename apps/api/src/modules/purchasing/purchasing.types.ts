@@ -14,6 +14,12 @@ export interface DirectPurchaseRow {
   companyId: string;
   branchId: string;
   supplierName: string | null;
+  /** TASK 14.4 (Wave 2, Part C.2) — an optional real link to a `suppliers`
+   * row. `supplierName` remains the frozen, historical snapshot at
+   * purchase time (mirrors `sales.customer_display_name`'s own
+   * established precedent) — see `PurchasingService.recordDirectPurchase`'s
+   * own doc comment for exactly when/how it is populated. */
+  supplierId: string | null;
   productVariantId: string;
   quantity: string;
   unitCost: string;
@@ -30,6 +36,12 @@ export interface CreateDirectPurchaseInput {
   id?: string;
   branchId: string;
   supplierName?: string | null;
+  /** When provided, must resolve to a real, active, SAME-company supplier
+   * — `supplierName` is then derived from that supplier's current real
+   * name at write time and any client-supplied `supplierName` above is
+   * ignored (see `PurchasingService.recordDirectPurchase`). Nullable/
+   * optional — a purchase may still have no real supplier linked. */
+  supplierId?: string | null;
   productVariantId: string;
   quantity: string;
   unitCost: string;
@@ -66,7 +78,17 @@ export type PurchaseErrorCode =
   | 'idempotency_conflict'
   | 'resource_not_found'
   | 'product_variant_not_found'
-  | 'inventory_location_not_found';
+  | 'inventory_location_not_found'
+  // TASK 14.4 (Wave 2, Part C.2) — genuinely new semantic concept a
+  // generic code cannot express: the caller linked a real supplierId that
+  // resolves fine (same company) but is `status='inactive'`. A business
+  // should not be able to record a NEW direct purchase against a supplier
+  // it has already marked inactive — see `recordDirectPurchase`'s own doc
+  // comment for the full reasoning. NOT YET a member of
+  // `packages/errors`'s `InfrastructureErrorCode` union as of this wave —
+  // see this module's own `purchasing.http-errors.ts` for the temporary
+  // cast this requires until the orchestrator applies that central patch.
+  | 'supplier_inactive';
 
 export class PurchaseError extends Error {
   constructor(

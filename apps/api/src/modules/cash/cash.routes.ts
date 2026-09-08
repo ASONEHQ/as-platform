@@ -6,7 +6,13 @@ import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withCashErrors } from './cash.http-errors.js';
 import type { CashService } from './cash.service.js';
-import type { CashMovementRow, CashMutationContext, CashRegisterRow, CashSessionRow } from './cash.types.js';
+import type {
+  CashMovementRow,
+  CashMutationContext,
+  CashRegisterRow,
+  CashSessionPartialCloseRow,
+  CashSessionRow,
+} from './cash.types.js';
 
 interface Params {
   id: string;
@@ -89,6 +95,23 @@ function movementHttp(value: CashMovementRow): Readonly<Record<string, unknown>>
     occurred_at: value.occurredAt.toISOString(),
     created_by: value.createdBy,
     reversal_of_id: value.reversalOfId,
+    // TASK 14.4 (Wave 2, Part F.1) — orthogonal to movement_type; null
+    // for system-posted movements and any uncategorized cash_in/cash_out.
+    category: value.category,
+  };
+}
+function partialCloseHttp(value: CashSessionPartialCloseRow): Readonly<Record<string, unknown>> {
+  return {
+    id: value.id,
+    cash_session_id: value.cashSessionId,
+    taken_at: value.takenAt.toISOString(),
+    opening_amount: value.openingAmount,
+    cash_sales_total: value.cashSalesTotal,
+    cash_in_total: value.cashInTotal,
+    cash_out_total: value.cashOutTotal,
+    expected_cash: value.expectedCash,
+    created_by: value.createdBy,
+    created_at: value.createdAt.toISOString(),
   };
 }
 
@@ -413,6 +436,12 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
               cash_sales_count: value.cashSalesCount,
               cash_in_total: value.cashInTotal,
               cash_out_total: value.cashOutTotal,
+              // TASK 14.4 (Wave 2, Part F.2) — new named breakdowns, each
+              // a strict subset already folded into cash_in_total/
+              // cash_out_total above; expected_cash is unaffected.
+              withdrawal_total: value.withdrawalTotal,
+              expense_total: value.expenseTotal,
+              external_income_total: value.externalIncomeTotal,
               expected_cash: value.expectedCash,
             },
             request.requestContext,
@@ -422,7 +451,17 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
   );
 
   // E045.
-  app.post<{ Params: Params; Body: { id?: string; movement_type: 'cash_in' | 'cash_out'; amount: string; reason_code: string; note?: string } }>(
+  app.post<{
+    Params: Params;
+    Body: {
+      id?: string;
+      movement_type: 'cash_in' | 'cash_out';
+      amount: string;
+      reason_code: string;
+      note?: string;
+      category?: 'withdrawal' | 'expense' | 'external_income' | 'other';
+    };
+  }>(
     '/api/v1/cash-sessions/:id/movements',
     {
       schema: {
@@ -439,6 +478,11 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             amount: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
             reason_code: { type: 'string', minLength: 1, maxLength: 64 },
             note: { type: 'string', maxLength: 500 },
+            // TASK 14.4 (Wave 2, Part F.1) — optional; the service layer
+            // validates this is compatible with movement_type using the
+            // exact same rule as the DB's own
+            // cash_movements_category_direction_ck, before any write.
+            category: { type: 'string', enum: ['withdrawal', 'expense', 'external_income', 'other'] },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -459,6 +503,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             amount: request.body.amount,
             reasonCode: request.body.reason_code,
             ...(request.body.note === undefined ? {} : { note: request.body.note }),
+            ...(request.body.category === undefined ? {} : { category: request.body.category }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -565,6 +610,62 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
           .code(201)
           .header('etag', `"${closed.value.version.toString()}"`)
           .send(successResponse(sessionHttp(closed.value), request.requestContext));
+      }),
+  );
+
+  // TASK 14.4 (Wave 2, Part F.3) — "Corte parcial." Permission choice
+  // documented in TASK 14.4's own report: `cash_movement.create` (not
+  // `cash_session.read`, and deliberately NOT `cash_session.close`) —
+  // this is a real mutation (it creates a persisted snapshot row and is
+  // idempotency-key-gated exactly like every other write in this module),
+  // performed by the same operator role that already posts cash_in/
+  // cash_out movements during a shift, and it must stay reachable to
+  // someone who explicitly cannot close the session.
+  app.post<{ Params: Params }>(
+    '/api/v1/cash-sessions/:id/partial-close',
+    {
+      schema: {
+        tags: ['cash'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        headers: idempotencyHeaders,
+        body: { type: 'object', additionalProperties: false, properties: {} },
+        response: { 201: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withCashErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'cash_movement.create');
+        const created = await service.partialClose(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.params.id,
+        );
+        if (created.replayed) reply.header('idempotency-replayed', 'true');
+        return reply.code(201).send(successResponse(partialCloseHttp(created.value), request.requestContext));
+      }),
+  );
+
+  // The audit trail Part F.3 requires — read-only, never mutates.
+  app.get<{ Params: Params }>(
+    '/api/v1/cash-sessions/:id/partial-closes',
+    {
+      schema: {
+        tags: ['cash'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withCashErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'cash_session.read');
+        const items = await service.partialCloses(auth.companyId, auth.permittedBranchIds, request.params.id);
+        return reply.send({
+          data: items.map(partialCloseHttp),
+          meta: responseMeta(request.requestContext),
+        });
       }),
   );
 }

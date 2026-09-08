@@ -22,6 +22,18 @@ a live 40-step end-to-end simulation, zero regressions in the full
 929-test suite). Flutter UI is in progress. See [[LEGACY_FUNCTIONAL_PARITY]]
 for per-capability status.
 
+**TASK 14.4 (Wave 2) update — 2026-09-08**: five items originally listed
+below as OUT OF SCOPE / POST-LAUNCH are now backend-and-Flutter-complete
+and proven, ahead of when they were required — People/HR (roster,
+scheduling, time clock, payroll), Suppliers CRUD (+ Compra Directa
+linkage), the per-area Reports screen, Partial cash close + categorized
+cash movements, and Access/Occupancy (a documented safe replacement of
+the confirmed-fake legacy ticket-scan, not a port of it). None of these
+were ever a Sept 15 *requirement* — being done early doesn't change the
+launch-critical scope in "IN SCOPE for September 15" above, it just means
+the business now has the option to enable them at or before launch if it
+wants to. See [[LEGACY_FUNCTIONAL_PARITY]] for per-capability status.
+
 ## IN SCOPE for September 15
 
 - Authentication, sessions, roles/permissions (real staff onboarding, not
@@ -104,12 +116,14 @@ active scope decision)**:
 
 ## OUT OF SCOPE for September 15 (see `docs/V1_POST_LAUNCH_BACKLOG.md`)
 - **Mercado Pago LIVE** — explicitly paused per every task this session.
-- **A dedicated aggregate Reports/BI dashboard** — the underlying data is
-  fully queryable today via existing screens; a new dashboard is a
-  POST-LAUNCH nicety, not a launch requirement. The legacy audit confirms
-  this was genuinely real and computed in the prototype, making it the
-  single highest-leverage POST-LAUNCH rebuild identified — little to no
-  new backend work required, see [[LEGACY_MISSING_PORTS]].
+- **A dedicated aggregate Reports/BI dashboard** — ~~the underlying data
+  is fully queryable today via existing screens~~ **the per-area report
+  screens are DONE (TASK 14.4 Wave 2)**: 7 real report areas (Sales/
+  Financial/Inventory/Customers/Employees/Parties/Access), server-side
+  aggregated, CSV export on Sales/Financial. Still a POST-LAUNCH nicety,
+  not a launch requirement — a single consolidated "today at a glance"
+  dashboard screen (sales trend + parties + alerts on one view) remains
+  the one piece not yet built, see [[LEGACY_MISSING_PORTS]].
 - **Per-tenant receipt branding (custom logo per company)** — today's logo
   is one shared, app-bundled mark.
 - **Forced password-change-on-first-login policy** — no such mechanism
@@ -120,16 +134,24 @@ active scope decision)**:
   audit additionally confirms the prototype's own CFDI feature never
   really worked either (simulated fiscal stamping, self-admitted in its
   own code and toasts) — there is no working capability being deferred.
-- **Employee payroll (nómina), time clock, shift scheduling** — a
-  genuinely real, substantively-built domain in the legacy prototype
-  (see [[LEGACY_MISSING_PORTS]]) with zero current equivalent;
-  compliance-adjacent and a real future scope, not a Sept 15 POS-
-  operation blocker.
+  **Unchanged and untouched by TASK 14.4 (Wave 2)** — no billing/CFDI
+  work was done this wave.
+- **Employee payroll (nómina), time clock, shift scheduling** —
+  ~~a genuinely real, substantively-built domain in the legacy prototype
+  with zero current equivalent~~ **DONE (TASK 14.4 Wave 2)**: real
+  `employees`/`employee_schedules`/`time_clock_punches`/
+  `payroll_periods`/`payroll_period_lines`, with payroll calculation a
+  faithful port of the legacy's own `calcularNominaEmpleado()` formula.
+  Still not a Sept 15 POS-operation *requirement* — see
+  [[LEGACY_MISSING_PORTS]].
 - **Purchasing / suppliers (formal PO workflow + supplier CRUD)** — the
   legacy's own formal purchase-order workflow never actually worked
   (discarded entered data), so rebuilding it owes nothing to its own
-  implementation; still out of scope. Its one genuinely real sibling
-  feature, direct purchase/quick restock, is DONE — see above.
+  implementation; **the formal PO workflow remains out of scope,
+  re-confirmed this wave**. Direct purchase/quick restock is DONE (Wave
+  1) and supplier CRUD is now also **DONE (TASK 14.4 Wave 2)** — a real
+  `suppliers` table + module + Flutter screen, linked into Compra Directa
+  via a frozen-name-snapshot `supplier_id`.
 - **A dedicated Flutter "manage staff"/"company settings" admin screen** —
   the authenticated API already supports everything needed; provisioning
   happens via CLI/API today, a Flutter screen for it is a POST-LAUNCH

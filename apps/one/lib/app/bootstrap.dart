@@ -9,6 +9,7 @@ import '../core/storage/token_vault.dart';
 import '../core/telemetry/telemetry.dart';
 import '../features/authentication/auth_gateway.dart';
 import '../features/authentication/auth_state.dart';
+import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
@@ -16,12 +17,15 @@ import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
+import '../features/pos/pos_people_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
+import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
+import '../features/pos/pos_suppliers_gateway.dart';
 import 'app.dart';
 
 void bootstrap() {
@@ -70,6 +74,13 @@ void bootstrap() {
       posPartiesGateway: ApiPosPartiesGateway(api),
       posHeldSalesGateway: ApiPosHeldSalesGateway(api),
       posPurchasingGateway: ApiPosPurchasingGateway(api),
+      posSuppliersGateway: ApiPosSuppliersGateway(api),
+      posReportsGateway: ApiPosReportsGateway(api),
+      posAccessGateway: ApiPosAccessGateway(api),
+      posEmployeesGateway: ApiPosEmployeesGateway(api),
+      posSchedulesGateway: ApiPosSchedulesGateway(api),
+      posTimeClockGateway: ApiPosTimeClockGateway(api),
+      posPayrollGateway: ApiPosPayrollGateway(api),
     ),
   );
   authController.bootstrapSession();

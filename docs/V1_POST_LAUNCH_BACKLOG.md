@@ -67,40 +67,63 @@ Built (TASK 12.4B — provider adapter, order/webhook state mapping,
 terminal dispatch) but intentionally paused throughout this entire task
 chain. Resuming it is its own explicitly-gated future task.
 
-## Dedicated Reports / analytics dashboard
+## Dedicated Reports / analytics dashboard — per-area reports DONE (TASK 14.4 Wave 2)
 
 The underlying data (sales, cash sessions, refunds, inventory balances) is
-already fully queryable via real, tested, paginated endpoints. A
-purpose-built aggregation/BI screen is a real but non-launch-blocking
-improvement. **TASK 14.2R update**: the legacy prototype's dashboard and
-per-area reports (Ventas/Financiero/Inventario/Clientes/Empleados/Accesos)
-were genuinely computed from live data, not static mockups — confirming
-this is likely the single highest-leverage rebuild in the whole legacy
-audit, since it needs little to no new backend work. See
+already fully queryable via real, tested, paginated endpoints. **TASK
+14.4 (Wave 2) update**: the per-area report screens themselves are now
+real and built — `apps/api/src/modules/reports/` (7 report areas: Sales/
+Financial/Inventory/Customers/Employees/Parties/Access, all real
+server-side SQL aggregation, real date-range+branch scoping, CSV export
+on Sales/Financial, the financial report reconciling bit-for-bit against
+the real `CashService.summary()` fold logic) + `pos_reports_gateway.dart`/
+`pos_reports_screen.dart`. Deliberately does NOT reproduce the legacy's
+own two admitted-fake fields (`prom_estancia`=95, always-0 water-park
+occupancy) — those are simply absent, not replaced with a new
+placeholder. What remains genuinely POST-LAUNCH: a single consolidated
+"today at a glance" dashboard screen (sales trend + today's parties +
+memberships + alerts on one view) — the per-area screens now cover
+almost all of the same underlying signal, just not on one combined
+screen. **TASK 14.2R update (historical)**: the legacy prototype's
+dashboard and per-area reports (Ventas/Financiero/Inventario/Clientes/
+Empleados/Accesos) were genuinely computed from live data, not static
+mockups — the finding that correctly predicted this was the
+highest-leverage rebuild in the whole legacy audit. See
 [[LEGACY_MISSING_PORTS]].
 
-## Purchasing / suppliers
+## Purchasing / suppliers — supplier CRUD DONE (TASK 14.4 Wave 2)
 
 **Direct purchase / quick restock is DONE (TASK 14.3 Wave 1)** — a real,
 atomic, idempotent commercial record alongside a real `receipt`-type
 inventory movement, proven live to correctly increase real, immediately-
-sellable stock. Still no current equivalent, and still out of scope: a
-real supplier CRUD (contact records) and a genuine PO-with-receiving
+sellable stock. **Supplier CRUD is now also DONE (TASK 14.4 Wave 2)** —
+a real, company-scoped `suppliers` table + `apps/api/src/modules/
+suppliers/` + a Flutter admin screen, linked into Compra Directa via an
+optional real `supplier_id` on `direct_purchases` (a frozen-name-snapshot
+pattern — a later supplier rename never rewrites past purchase history).
+Still out of scope, re-confirmed this wave: a genuine PO-with-receiving
 workflow — the legacy's own formal purchase-order workflow never
-actually worked either (its save function discarded the entered line
-items), so rebuilding it owes nothing to its own implementation. See
+actually worked (its save function discarded the entered line items), so
+rebuilding it owes nothing to its own implementation. See
 [[LEGACY_MISSING_PORTS]] for full detail.
 
-## Employee HR: payroll, time clock, shift scheduling
+## Employee HR: payroll, time clock, shift scheduling — MOVED: built in TASK 14.4 (Wave 2)
 
-No current equivalent at all. TASK 14.2R's legacy audit found the
+**This entry is superseded.** TASK 14.2R's legacy audit found the
 pre-migration prototype had a genuinely real, substantively-built payroll
 engine (`calcularNominaEmpleado`) computing scheduled-vs-worked hours,
 late-minute deductions, and overtime bonus from real time-clock punches —
 the single most functionally complete HR feature found anywhere in that
-codebase. Compliance-adjacent and a real, well-defined future scope,
-comparable in effort to a dedicated payroll module — not a Sept 15
-POS-operation blocker. See [[LEGACY_MISSING_PORTS]].
+codebase. **TASK 14.4 (Wave 2)** built the entire domain for real: real
+`employees` (distinct from login `users`)/`employee_schedules`/
+`time_clock_punches`/`payroll_periods`/`payroll_period_lines`, real
+server-enforced `employee.*`/`schedule.*`/`attendance.*`/`payroll.*`
+permissions, and a payroll calculation that is a **faithful port** of the
+legacy's own formula, verified in tests against a hand-computed example —
+a closed payroll period can never be recalculated. 20 new backend + 16
+new Flutter tests. Was compliance-adjacent and a real future scope, not a
+Sept 15 POS-operation blocker — it is now done ahead of that bar being
+required. See [[LEGACY_MISSING_PORTS]] and [[LEGACY_FUNCTIONAL_PARITY]].
 
 ## POS workflow conveniences from the legacy product
 
@@ -124,15 +147,24 @@ scope, not from legacy evidence):
   progress.
 - **Register-style keyboard shortcuts** (F2/F3/F4/F5/F6/F8) — real
   cashier-efficiency muscle memory with no current equivalent; P1.
-- **Occupancy/headcount (aforo) tracking**, auto-incremented from real
-  ticket sales — genuinely relevant for a capacity-limited park; P1.
-  (Distinct from the legacy's ticket-scan *validation*, which was fake
-  even in the original product — nothing lost there.)
-- **Partial cash close ("corte parcial")** and **categorized cash
-  movements** (distinct Retiro/Gasto/Ingreso-extra workflows with their
-  own KPI tiles) — the underlying money math is already correct via
-  today's generic `cash_in`/`cash_out` movements; this is a workflow/
-  reporting-convenience gap, not a financial-integrity one; P1.
+- ~~**Occupancy/headcount (aforo) tracking**~~ — **DONE (TASK 14.4 Wave
+  2).** Real, server-computed, and genuinely bidirectional (entry **and**
+  exit — stronger than the legacy's one-way-only counter). Built
+  alongside a real, honest replacement for the legacy's ticket-scan
+  *validation* (`accScan()`), which was confirmed fake — accepted any
+  input and always fabricated success. That replacement is an explicit,
+  documented safe-replacement of a confirmed-fake mechanism, not
+  retroactive evidence the legacy scanner ever worked — see
+  [[LEGACY_FUNCTIONAL_PARITY]]'s §13.
+- ~~**Partial cash close ("corte parcial")** and **categorized cash
+  movements**~~ — **DONE (TASK 14.4 Wave 2).** A real, persisted, audited
+  mid-shift snapshot (`cash_session_partial_closes`, proven in tests to
+  never transition the session's own status) and a real `category`
+  column (withdrawal/expense/external_income/other, direction-constrained
+  by a DB check) on `cash_movements` — extending, never duplicating, the
+  existing TASK 12.7 cash foundation. Not ported: the legacy's own
+  dedicated over-withdrawal guard/authorizer field and its (superficial
+  even in the legacy) expense photo-evidence flag.
 - **Modo Cliente** (self-checkout kiosk mode) and **café visual sub-mode**
   — real in the legacy, no current equivalent, but not needed for the
   already-proven cashier-operated V1 workflow; P2.

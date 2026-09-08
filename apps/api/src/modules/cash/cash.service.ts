@@ -7,10 +7,14 @@ import type { CashRepository } from './cash.repository.js';
 import {
   canonicalCashDenominationsMXN,
   CashError,
+  type CashMovementCategory,
+  cashMovementCategories,
+  cashMovementCategoryDirection,
   cashMovementDirection,
   type CashMovementRow,
   type CashMutationContext,
   type CashRegisterRow,
+  type CashSessionPartialCloseRow,
   type CashSessionRow,
   type DenominationCount,
 } from './cash.types.js';
@@ -81,6 +85,25 @@ function validateDenominationCounts(
   normalized.sort((a, b) => (moneyUnits(b.value) > moneyUnits(a.value) ? 1 : -1));
   return normalized;
 }
+/** TASK 14.4 (Wave 2, Part F.1) — the exact same rule as the database's
+ * own `cash_movements_category_direction_ck`, checked server-side
+ * BEFORE the insert is attempted, so a mismatched category is a clean
+ * `validation_error` rather than a raw constraint violation. Keep in
+ * lockstep with that check and with `cash.ts`'s `cashMovementCategoryDirection`
+ * table — never let the two drift apart. */
+function validateMovementCategory(
+  movementType: 'cash_in' | 'cash_out',
+  category: CashMovementCategory | undefined,
+): CashMovementCategory | null {
+  if (category === undefined) return null;
+  if (!cashMovementCategories.includes(category))
+    throw new CashError('validation_error', `category must be one of: ${cashMovementCategories.join(', ')}.`);
+  const requiredType = cashMovementCategoryDirection[category];
+  if (requiredType !== null && requiredType !== movementType)
+    throw new CashError('validation_error', `category "${category}" is only valid for a ${requiredType} movement.`);
+  return category;
+}
+
 function hash(value: object): string {
   return createHash('sha256')
     .update(JSON.stringify(Object.fromEntries(Object.entries(value).sort())))
@@ -114,6 +137,16 @@ export interface CashSessionSummary {
   cashSalesCount: number;
   cashInTotal: string;
   cashOutTotal: string;
+  // TASK 14.4 (Wave 2, Part F.2) — new NAMED breakdowns mirroring
+  // `cashSalesTotal`/`cashInTotal`/`cashOutTotal`'s own precedent
+  // exactly. Each is a strict subset already folded into `cashInTotal`/
+  // `cashOutTotal` above (never a second amount source — `category` is
+  // read-only reporting metadata over the same movements), so
+  // `expectedCash` needs no new term: `cash_in`/`cash_out`'s existing
+  // direction already carries a categorized movement's contribution.
+  withdrawalTotal: string;
+  expenseTotal: string;
+  externalIncomeTotal: string;
   expectedCash: string;
 }
 
@@ -353,15 +386,26 @@ export class CashService {
     branchIds: readonly string[],
     key: string,
     cashSessionId: string,
-    input: { id?: string; movementType: 'cash_in' | 'cash_out'; amount: string; reasonCode: string; note?: string },
+    input: {
+      id?: string;
+      movementType: 'cash_in' | 'cash_out';
+      amount: string;
+      reasonCode: string;
+      note?: string;
+      category?: CashMovementCategory;
+    },
   ): Promise<{ value: CashMovementRow; replayed: boolean }> {
     const movementAmount = amount(input.amount, 'amount');
     const reasonCode = nonBlank(input.reasonCode, 'reason_code');
+    // Part F.1 — validated BEFORE the transaction/DB write, using the
+    // exact same rule as `cash_movements_category_direction_ck`.
+    const category = validateMovementCategory(input.movementType, input.category);
     const requestHash = hash({
       cashSessionId,
       movementType: input.movementType,
       amount: movementAmount,
       reasonCode,
+      category,
       id: input.id ?? null,
     });
     return this.repository.transaction((client) =>
@@ -393,6 +437,7 @@ export class CashService {
             occurredAt: context.timestamp,
             createdBy: context.actorId,
             deviceId: context.deviceId ?? null,
+            category,
           });
           await this.repository.auditAndPublish(client, context, {
             action: 'cash_movement.created',
@@ -407,6 +452,7 @@ export class CashService {
               movement_type: created.movementType,
               amount: created.amount,
               reason_code: created.reasonCode,
+              category: created.category,
             },
           });
           return created;
@@ -435,6 +481,13 @@ export class CashService {
     let cashSalesCount = 0;
     let cashInUnits = 0n;
     let cashOutUnits = 0n;
+    // Part F.2 — strict subsets of `cashOutUnits`/`cashInUnits` above,
+    // never a second amount source: `category` doesn't change
+    // `movementType`/`amount`, so every dollar counted here was already
+    // counted in `expectedUnits` via the existing direction fold.
+    let withdrawalUnits = 0n;
+    let expenseUnits = 0n;
+    let externalIncomeUnits = 0n;
     for (const item of movements) {
       const units = moneyUnits(item.amount);
       expectedUnits += units * BigInt(cashMovementDirection[item.movementType]);
@@ -443,8 +496,11 @@ export class CashService {
         cashSalesCount += 1;
       } else if (item.movementType === 'cash_in') {
         cashInUnits += units;
+        if (item.category === 'external_income') externalIncomeUnits += units;
       } else if (item.movementType === 'cash_out') {
         cashOutUnits += units;
+        if (item.category === 'withdrawal') withdrawalUnits += units;
+        else if (item.category === 'expense') expenseUnits += units;
       }
     }
     return {
@@ -454,6 +510,9 @@ export class CashService {
       cashSalesCount,
       cashInTotal: formatMoney(cashInUnits),
       cashOutTotal: formatMoney(cashOutUnits),
+      withdrawalTotal: formatMoney(withdrawalUnits),
+      expenseTotal: formatMoney(expenseUnits),
+      externalIncomeTotal: formatMoney(externalIncomeUnits),
       expectedCash: formatMoney(expectedUnits),
     };
   }
@@ -545,6 +604,102 @@ export class CashService {
       ),
     );
   }
+
+  // --- Partial close ("corte parcial") (TASK 14.4 Wave 2 Part F.3) -------
+
+  /** A pure, persisted, audited SNAPSHOT of `summary()`'s own fold at
+   * this instant — never a second drawer-balance calculation path (the
+   * fold below is exactly `summary()`'s, deliberately re-run here rather
+   * than reusing `summary()` itself so it reads the same still-locked
+   * session row `closeSession` already establishes as the pattern for a
+   * mutation that needs the session's current state). Critically, this
+   * NEVER transitions `cashSessions.status` — no `transitionSessionStatus`
+   * call anywhere in this method, unlike `closeSession` above. */
+  public async partialClose(
+    context: CashMutationContext,
+    branchIds: readonly string[],
+    key: string,
+    cashSessionId: string,
+  ): Promise<{ value: CashSessionPartialCloseRow; replayed: boolean }> {
+    const requestHash = hash({ cashSessionId, takenAt: context.timestamp.toISOString() });
+    return this.repository.transaction((client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'cash_session.partial_close',
+        key,
+        requestHash,
+        'cash_session_partial_close',
+        decodePartialClose,
+        async () => {
+          const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
+          if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
+            throw new CashError('resource_not_found', 'The session was not found.');
+          // A partial close only ever makes sense against a live, still-
+          // open session — a `closing`/`closed` session already has its
+          // own authoritative, permanent closure figures.
+          if (sessionRow.status !== 'open')
+            throw new CashError('cash_session_not_open', 'The session is not open.');
+          const movements = await this.repository.movementsForSession(context.companyId, sessionRow.id);
+          let expectedUnits = 0n;
+          let cashSalesUnits = 0n;
+          let cashInUnits = 0n;
+          let cashOutUnits = 0n;
+          for (const item of movements) {
+            const units = moneyUnits(item.amount);
+            expectedUnits += units * BigInt(cashMovementDirection[item.movementType]);
+            if (item.movementType === 'cash_sale') cashSalesUnits += units;
+            else if (item.movementType === 'cash_in') cashInUnits += units;
+            else if (item.movementType === 'cash_out') cashOutUnits += units;
+          }
+          const created = await this.repository.insertPartialClose(client, {
+            id: randomUUID(),
+            companyId: context.companyId,
+            branchId: sessionRow.branchId,
+            cashSessionId: sessionRow.id,
+            takenAt: context.timestamp,
+            openingAmount: sessionRow.openingAmount,
+            cashSalesTotal: formatMoney(cashSalesUnits),
+            cashInTotal: formatMoney(cashInUnits),
+            cashOutTotal: formatMoney(cashOutUnits),
+            expectedCash: formatMoney(expectedUnits),
+            createdBy: context.actorId,
+          });
+          // Same audit/outbox pattern every other mutation in this module
+          // already uses (`auditAndPublish`) — never a second, separate
+          // audit database/table.
+          await this.repository.auditAndPublish(client, context, {
+            action: 'cash_session.partial_closed',
+            resourceType: 'cash_session_partial_close',
+            resourceId: created.id,
+            eventType: 'cash_session.partial_closed',
+            branchId: created.branchId,
+            version: 1n,
+            payload: {
+              partial_close_id: created.id,
+              cash_session_id: created.cashSessionId,
+              taken_at: created.takenAt.toISOString(),
+              opening_amount: created.openingAmount,
+              cash_sales_total: created.cashSalesTotal,
+              cash_in_total: created.cashInTotal,
+              cash_out_total: created.cashOutTotal,
+              expected_cash: created.expectedCash,
+            },
+          });
+          return created;
+        },
+      ),
+    );
+  }
+
+  public async partialCloses(
+    companyId: string,
+    branchIds: readonly string[],
+    cashSessionId: string,
+  ): Promise<readonly CashSessionPartialCloseRow[]> {
+    const sessionRow = await this.session(companyId, branchIds, cashSessionId);
+    return this.repository.partialClosesForSession(companyId, sessionRow.id);
+  }
 }
 
 function decodeRegister(raw: unknown): CashRegisterRow {
@@ -582,4 +737,11 @@ function decodeSession(raw: unknown): CashSessionRow {
 function decodeMovement(raw: unknown): CashMovementRow {
   const value = raw as Omit<CashMovementRow, 'createdAt' | 'occurredAt'> & { createdAt: string; occurredAt: string };
   return { ...value, createdAt: new Date(value.createdAt), occurredAt: new Date(value.occurredAt) };
+}
+function decodePartialClose(raw: unknown): CashSessionPartialCloseRow {
+  const value = raw as Omit<CashSessionPartialCloseRow, 'createdAt' | 'takenAt'> & {
+    createdAt: string;
+    takenAt: string;
+  };
+  return { ...value, createdAt: new Date(value.createdAt), takenAt: new Date(value.takenAt) };
 }

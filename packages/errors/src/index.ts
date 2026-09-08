@@ -160,6 +160,24 @@ export const infrastructureErrorCodes = [
   // reservation.
   'party_conflict',
   'invalid_reservation_state',
+  // TASK 14.4 (Wave 2): every other new-domain failure this wave reuses
+  // an existing generic code (`resource_not_found`, `resource_conflict`,
+  // `validation_error`, `version_conflict`, `idempotency_conflict`,
+  // `permission_denied`, `cash_session_not_open`), matching this
+  // codebase's own established convention. These five are genuinely new
+  // semantic concepts a generic code cannot express: `supplier_inactive`
+  // (Part C — a direct purchase rejected against a supplier marked
+  // inactive); `employee_inactive`/`duplicate_clock_in`/
+  // `invalid_clock_out` (Part B — Checador: a deactivated employee
+  // cannot clock in; a second clock-in without an intervening clock-out;
+  // a clock-out with no open clock-in to close); `payroll_period_closed`
+  // (Part B — Nómina: a closed period's frozen lines can never be
+  // silently recalculated).
+  'supplier_inactive',
+  'employee_inactive',
+  'duplicate_clock_in',
+  'invalid_clock_out',
+  'payroll_period_closed',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

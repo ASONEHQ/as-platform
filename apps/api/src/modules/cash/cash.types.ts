@@ -25,6 +25,32 @@ export const cashMovementDirection: Readonly<Record<CashMovementType, 1 | -1>> =
   cash_refund: -1,
 };
 
+// TASK 14.4 (Wave 2, Part F.1) — a real reporting/UX dimension ON TOP OF
+// the existing, unchanged `cash_in`/`cash_out` direction (never a second
+// amount/direction source of truth — `category` never changes
+// `movementType`, `amount`, or `cashMovementDirection`). Nullable, and
+// only ever meaningful on a client-postable `cash_in`/`cash_out`
+// movement — see `packages/database/src/schema/cash.ts`'s
+// `cash_movements_category_ck`/`cash_movements_category_direction_ck`,
+// which this exact set and direction pairing mirrors verbatim.
+export type CashMovementCategory = 'withdrawal' | 'expense' | 'external_income' | 'other';
+export const cashMovementCategories: readonly CashMovementCategory[] = [
+  'withdrawal',
+  'expense',
+  'external_income',
+  'other',
+];
+/** The exact direction each category is valid for — `null` means "either
+ * direction" (`other`). Mirrors `cash_movements_category_direction_ck`
+ * exactly; kept as one small table rather than scattered if/else so the
+ * DB check and the pre-DB validation can never quietly drift apart. */
+export const cashMovementCategoryDirection: Readonly<Record<CashMovementCategory, CashMovementType | null>> = {
+  withdrawal: 'cash_out',
+  expense: 'cash_out',
+  external_income: 'cash_in',
+  other: null,
+};
+
 export interface CashRegisterRow {
   id: string;
   companyId: string;
@@ -103,6 +129,31 @@ export interface CashMovementRow {
   createdBy: string;
   deviceId: string | null;
   reversalOfId: string | null;
+  createdAt: Date;
+  /** TASK 14.4 (Wave 2, Part F.1) — orthogonal to `movementType`; `null`
+   * for every system-posted movement and for a manual `cash_in`/
+   * `cash_out` the caller chose not to categorize. */
+  category: CashMovementCategory | null;
+}
+
+/** TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a persisted, audited
+ * SNAPSHOT of exactly what `CashService.summary()` said at `takenAt`.
+ * Never a second drawer-balance source of truth — the live `summary()`
+ * computation remains the one real-time calculation; this row only
+ * remembers what it said, for history/print/audit. Taking one never
+ * changes `cashSessions.status`. */
+export interface CashSessionPartialCloseRow {
+  id: string;
+  companyId: string;
+  branchId: string;
+  cashSessionId: string;
+  takenAt: Date;
+  openingAmount: string;
+  cashSalesTotal: string;
+  cashInTotal: string;
+  cashOutTotal: string;
+  expectedCash: string;
+  createdBy: string;
   createdAt: Date;
 }
 

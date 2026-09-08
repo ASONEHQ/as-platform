@@ -176,6 +176,13 @@
       "when": 1788835089029,
       "tag": "0024_vengeful_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788838760047,
+      "tag": "0025_worried_the_captain",
+      "breakpoints": true
     }
   ]
 }

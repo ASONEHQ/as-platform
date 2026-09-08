@@ -46,6 +46,7 @@ class PosDirectPurchase {
     required this.id,
     required this.branchId,
     required this.supplierName,
+    required this.supplierId,
     required this.productVariantId,
     required this.quantity,
     required this.unitCost,
@@ -65,6 +66,7 @@ class PosDirectPurchase {
       id: json['id']! as String,
       branchId: json['branch_id']! as String,
       supplierName: json['supplier_name'] as String?,
+      supplierId: json['supplier_id'] as String?,
       productVariantId: json['product_variant_id']! as String,
       quantity: json['quantity']! as String,
       unitCost: json['unit_cost']! as String,
@@ -82,6 +84,11 @@ class PosDirectPurchase {
   final String id;
   final String branchId;
   final String? supplierName;
+  // TASK 14.4 (Wave 2, Part C.2): an optional real link to a `suppliers`
+  // row — see `purchasing.types.ts`'s own `DirectPurchaseRow.supplierId`
+  // doc comment. `supplierName` stays the frozen, historical snapshot at
+  // purchase time even when this is set.
+  final String? supplierId;
   final String productVariantId;
   final String quantity;
   final String unitCost;
@@ -107,11 +114,13 @@ class PosDirectPurchaseListFilter {
   const PosDirectPurchaseListFilter({
     this.branchId,
     this.productVariantId,
+    this.supplierId,
     this.purchaseDateFrom,
     this.purchaseDateTo,
   });
   final String? branchId;
   final String? productVariantId;
+  final String? supplierId;
   final String? purchaseDateFrom;
   final String? purchaseDateTo;
 }
@@ -123,6 +132,14 @@ abstract interface class PosPurchasingGateway {
   Future<PosDirectPurchase> createDirectPurchase({
     required String branchId,
     String? supplierName,
+    // TASK 14.4 (Wave 2, Part C.2): when provided, must resolve to a
+    // real, active, same-company supplier — the backend then derives
+    // `supplierName` from that supplier's current real name at write
+    // time and ignores any [supplierName] passed above (see
+    // `CreateDirectPurchaseInput.supplierId`'s own doc comment).
+    // Nullable/optional — a purchase may still have no real supplier
+    // linked, unchanged from before this wave.
+    String? supplierId,
     required String productVariantId,
     required String quantity,
     required String unitCost,
@@ -156,6 +173,7 @@ class ApiPosPurchasingGateway implements PosPurchasingGateway {
   Future<PosDirectPurchase> createDirectPurchase({
     required String branchId,
     String? supplierName,
+    String? supplierId,
     required String productVariantId,
     required String quantity,
     required String unitCost,
@@ -169,6 +187,7 @@ class ApiPosPurchasingGateway implements PosPurchasingGateway {
       body: {
         'branch_id': branchId,
         if (supplierName != null && supplierName.isNotEmpty) 'supplier_name': supplierName,
+        if (supplierId != null && supplierId.isNotEmpty) 'supplier_id': supplierId,
         'product_variant_id': productVariantId,
         'quantity': quantity,
         'unit_cost': unitCost,
@@ -197,6 +216,7 @@ class ApiPosPurchasingGateway implements PosPurchasingGateway {
       if (cursor != null) 'cursor': cursor,
       if (filter.branchId != null) 'branch_id': filter.branchId!,
       if (filter.productVariantId != null) 'product_variant_id': filter.productVariantId!,
+      if (filter.supplierId != null) 'supplier_id': filter.supplierId!,
       if (filter.purchaseDateFrom != null) 'purchase_date_from': filter.purchaseDateFrom!,
       if (filter.purchaseDateTo != null) 'purchase_date_to': filter.purchaseDateTo!,
     };
@@ -231,6 +251,7 @@ class EmptyPosPurchasingGateway implements PosPurchasingGateway {
   Future<PosDirectPurchase> createDirectPurchase({
     required String branchId,
     String? supplierName,
+    String? supplierId,
     required String productVariantId,
     required String quantity,
     required String unitCost,

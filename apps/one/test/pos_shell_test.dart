@@ -4216,6 +4216,9 @@ void main() {
             cashInTotal: '0.0000',
             cashOutTotal: '0.0000',
             expectedCash: '1029.0000',
+            withdrawalTotal: '0.0000',
+            expenseTotal: '0.0000',
+            externalIncomeTotal: '0.0000',
           ),
         );
         await _pump(
@@ -7705,6 +7708,9 @@ class _FakeCashGateway implements PosCashGateway {
         cashInTotal: '0.0000',
         cashOutTotal: '0.0000',
         expectedCash: '1029.0000',
+        withdrawalTotal: '0.0000',
+        expenseTotal: '0.0000',
+        externalIncomeTotal: '0.0000',
       );
 
   @override
@@ -7714,6 +7720,7 @@ class _FakeCashGateway implements PosCashGateway {
     required String amount,
     required String reasonCode,
     String? note,
+    String? category,
   }) async {
     movementCalls.add((
       cashSessionId: cashSessionId,
@@ -7732,6 +7739,7 @@ class _FakeCashGateway implements PosCashGateway {
       note: note,
       occurredAt: DateTime.utc(2026, 9, 6, 10),
       createdBy: 'user-id',
+      category: category,
     );
   }
 
@@ -7785,6 +7793,24 @@ class _FakeCashGateway implements PosCashGateway {
   }) async =>
       historyResult ??
       const PosCashSessionHistoryPage(items: [], nextCursor: null);
+
+  @override
+  Future<PosCashSessionPartialClose> partialCloseSession(String cashSessionId) async =>
+      PosCashSessionPartialClose(
+        id: 'partial-close-id',
+        cashSessionId: cashSessionId,
+        takenAt: DateTime.utc(2026, 9, 6, 11),
+        openingAmount: '1000.0000',
+        cashSalesTotal: '29.0000',
+        cashInTotal: '0.0000',
+        cashOutTotal: '0.0000',
+        expectedCash: '1029.0000',
+        createdBy: 'user-id',
+        createdAt: DateTime.utc(2026, 9, 6, 11),
+      );
+
+  @override
+  Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
 }
 
 /// TASK 12.7 Part S: a network/backend failure while checking session
@@ -7819,6 +7845,7 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
     required String amount,
     required String reasonCode,
     String? note,
+    String? category,
   }) => Future.error(StateError('not used'));
   @override
   Future<PosCashMovementPage> listMovements(
@@ -7838,6 +7865,11 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
     String? cursor,
     int limit = 50,
   }) async => const PosCashSessionHistoryPage(items: [], nextCursor: null);
+  @override
+  Future<PosCashSessionPartialClose> partialCloseSession(String cashSessionId) =>
+      Future.error(StateError('not used'));
+  @override
+  Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
 }
 
 class _FakeReadGateway implements PosReadGateway {
