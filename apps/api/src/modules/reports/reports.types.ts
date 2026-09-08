@@ -172,6 +172,43 @@ export interface InventoryReport {
   readonly movementVolume: readonly InventoryMovementVolume[];
 }
 
+/** TASK 14.5 (Wave 3, Phase 7, Item 2). `docs/LEGACY_FUNCTIONAL_PARITY.md`
+ * §4 — the legacy's Kardex export was a real PDF of the real per-product
+ * movement ledger; this platform's own `inventory_movements`/
+ * `inventory_movement_lines` (already server-authoritative and audit-
+ * backed — see that section's own `A / H` classification of the Kardex
+ * DATA itself) is the honest, real source. A CSV export of the SAME real
+ * ledger is a genuine, real port of "get your real movement history out
+ * of the system" — this module deliberately does not claim PDF parity it
+ * did not build (see this task's own final report for that explicit
+ * scoping note). Only `status='posted'` lines are exported — a draft/
+ * pending/cancelled movement never actually moved real stock, matching
+ * `inventoryMovementVolume`'s own established filter. */
+export interface KardexExportRow {
+  readonly movementId: string;
+  readonly movementNumber: string;
+  readonly movementType: string;
+  readonly branchId: string;
+  readonly occurredAt: Date;
+  readonly postedAt: Date | null;
+  readonly referenceType: string | null;
+  readonly referenceId: string | null;
+  readonly movementReasonCode: string | null;
+  readonly lineNumber: number;
+  readonly productVariantId: string;
+  readonly sku: string;
+  readonly productName: string;
+  readonly quantity: string;
+  readonly unitOfMeasureCode: string;
+  readonly baseQuantity: string;
+  readonly unitCost: string | null;
+  readonly extendedCost: string | null;
+  readonly currencyCode: string | null;
+  readonly sourceLocationId: string | null;
+  readonly destinationLocationId: string | null;
+  readonly lineReasonCode: string | null;
+}
+
 // --- Customers ------------------------------------------------------------
 
 export interface CustomersReport {
@@ -226,6 +263,47 @@ export interface PartiesReport {
   readonly collectedRevenue: readonly CurrencyAmount[];
   readonly activeRoomCount: number;
   readonly roomsBookedCount: number;
+}
+
+// --- Promotions ------------------------------------------------------------
+
+/** TASK 14.5 (Wave 3, Phase 7, Item 4). `docs/LEGACY_FUNCTIONAL_PARITY.md`
+ * §9 — the legacy's "Promotion usage history / report screen" row was
+ * itself only a raw `usageLog` field with no dedicated screen ever built
+ * over it; the underlying redemption/discount DATA this report aggregates
+ * is real and already recorded today by `promotions.service.ts` at sale
+ * time — `coupon_redemptions` (one row per real coupon use) and
+ * `sale_discounts` (one row per real applied discount, `source_type` in
+ * `'promotion'|'coupon'|'manual'|'reward'` — see
+ * `packages/database/src/schema/promotions.ts`). This report reads ONLY
+ * `'promotion'`/`'coupon'` rows — manual/reward discounts already have
+ * their own real reporting surface (Financial/Customers reports) and
+ * mixing them in here would blur what this report is actually answering:
+ * "how much did our promotions/coupons mechanism itself move." */
+export interface TopCoupon {
+  readonly couponId: string;
+  readonly code: string;
+  readonly redemptionCount: number;
+}
+
+export interface PromotionsReport {
+  readonly dateFrom: string;
+  readonly dateTo: string;
+  readonly branchId: string | null;
+  /** Real rows from `coupon_redemptions`, in range. */
+  readonly couponRedemptionCount: number;
+  readonly couponRedemptionsTotal: readonly CurrencyAmount[];
+  /** `sale_discounts` totals, split by `source_type` — never merged into
+   * one number, since a promotion (automatic) and a coupon (customer-
+   * entered) are answering different business questions. */
+  readonly promotionDiscountCount: number;
+  readonly promotionDiscountTotal: readonly CurrencyAmount[];
+  readonly couponDiscountCount: number;
+  readonly couponDiscountTotal: readonly CurrencyAmount[];
+  /** The most-redeemed coupons in range, real `count(*)` per coupon —
+   * never more than 10 rows, matching this report's own "at a glance"
+   * purpose rather than a full export. */
+  readonly topCoupons: readonly TopCoupon[];
 }
 
 // --- Access ------------------------------------------------------------

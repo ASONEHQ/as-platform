@@ -183,6 +183,27 @@
       "when": 1788838760047,
       "tag": "0025_worried_the_captain",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788875317728,
+      "tag": "0026_hesitant_speed",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788880203441,
+      "tag": "0027_quiet_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788881073043,
+      "tag": "0028_crazy_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

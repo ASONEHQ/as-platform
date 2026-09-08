@@ -15,6 +15,21 @@
 /// Enter keypress submits it, and the field always clears and refocuses
 /// after every scan — success or failure — so the next scan needs no extra
 /// clicks.
+///
+/// TASK 14.5 (Wave 3, Phase 3) adds a "Pulseras NFC" section to this SAME
+/// screen (deliberately not a new nav destination — Access already has its
+/// own reserved `PosModule.access` entry, and a wristband is just another
+/// physical form-factor of the exact same credential concept this screen
+/// already manages) recovering the legacy's real activate/block/unblock
+/// lifecycle (`AS POS V1.html`'s `DB.pulseras` +
+/// `activarPulsera`/`bloquearPulsera`/`desbloquearPulsera`). The legacy's
+/// own "extend" (`extenderPulsera`) was found, on forensic re-read, to be a
+/// pure UI placeholder — a `prompt()` + toast that never persisted the
+/// entered duration anywhere — so it is correctly absent here; see this
+/// task's own final report for the full citation. A wristband scans
+/// exactly like a ticket via the SAME scanner card above; this new section
+/// only covers what is genuinely distinct: manual-UID activation, lookup-
+/// by-code with status + real event history, and block/unblock.
 library;
 
 import 'dart:async';
@@ -81,6 +96,20 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
   bool _issuing = false;
   String? _issueError;
   PosAccessCredential? _issuedCredential;
+  // TASK 14.5 (Wave 3, Phase 3) — 'ticket' (unchanged behavior, server-
+  // generated code) or 'wristband' (manual UID, activated via
+  // `PosAccessGateway.activateWristband`).
+  String _issueKind = 'ticket';
+  final _issueWristbandCodeController = TextEditingController();
+
+  // --- Pulseras NFC (TASK 14.5, Wave 3, Phase 3) --------------------------
+  final _lookupCodeController = TextEditingController();
+  bool _lookupBusy = false;
+  String? _lookupError;
+  PosAccessCredential? _lookupResult;
+  List<PosAccessEvent> _lookupHistory = const [];
+  bool _lookupHistoryLoading = false;
+  bool _blockUnblockBusy = false;
 
   String? get _branchId => widget.context.currentBranch?.id;
   bool get _canScan => widget.context.permissions.contains('access.scan');
@@ -103,6 +132,8 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
     _scanFocusNode.dispose();
     _issueSaleIdController.dispose();
     _issueCustomerIdController.dispose();
+    _issueWristbandCodeController.dispose();
+    _lookupCodeController.dispose();
     super.dispose();
   }
 
@@ -278,28 +309,43 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
   Future<void> _submitIssue() async {
     final branchId = _branchId;
     final saleId = _issueSaleIdController.text.trim();
+    final isWristband = _issueKind == 'wristband';
+    final wristbandCode = _issueWristbandCodeController.text.trim();
     if (branchId == null || saleId.isEmpty || _issuing || !_canScan) return;
+    if (isWristband && wristbandCode.isEmpty) return;
     setState(() {
       _issuing = true;
       _issueError = null;
     });
     try {
       final customerId = _issueCustomerIdController.text.trim();
-      final credential = await widget.accessGateway.issueCredential(
-        branchId: branchId,
-        saleId: saleId,
-        customerId: customerId.isEmpty ? null : customerId,
-        allowsReentry: _issueAllowsReentry,
-      );
+      final credential = isWristband
+          ? await widget.accessGateway.activateWristband(
+              branchId: branchId,
+              saleId: saleId,
+              code: wristbandCode,
+              customerId: customerId.isEmpty ? null : customerId,
+              allowsReentry: _issueAllowsReentry,
+            )
+          : await widget.accessGateway.issueCredential(
+              branchId: branchId,
+              saleId: saleId,
+              customerId: customerId.isEmpty ? null : customerId,
+              allowsReentry: _issueAllowsReentry,
+            );
       if (!mounted) return;
       setState(() {
         _issuedCredential = credential;
         _issuing = false;
         _issueSaleIdController.clear();
         _issueCustomerIdController.clear();
+        _issueWristbandCodeController.clear();
         _issueAllowsReentry = false;
       });
-      _showAccessNotice(context, 'Pase ${credential.code} emitido.');
+      _showAccessNotice(
+        context,
+        isWristband ? 'Pulsera ${credential.code} activada.' : 'Pase ${credential.code} emitido.',
+      );
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -310,8 +356,88 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
       if (!mounted) return;
       setState(() {
         _issuing = false;
-        _issueError = 'No fue posible emitir el pase.';
+        _issueError = isWristband ? 'No fue posible activar la pulsera.' : 'No fue posible emitir el pase.';
       });
+    }
+  }
+
+  /// Looks up a wristband/ticket by its own code/UID and, on success, loads
+  /// its real event history (TASK 14.5, Wave 3, Phase 3).
+  Future<void> _lookupByCode() async {
+    final code = _lookupCodeController.text.trim();
+    if (code.isEmpty || _lookupBusy || !_canRead) return;
+    setState(() {
+      _lookupBusy = true;
+      _lookupError = null;
+      _lookupResult = null;
+      _lookupHistory = const [];
+    });
+    try {
+      final credential = await widget.accessGateway.lookupByCode(code);
+      if (!mounted) return;
+      setState(() {
+        _lookupResult = credential;
+        _lookupBusy = false;
+      });
+      unawaited(_loadLookupHistory(credential.id));
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _lookupBusy = false;
+        _lookupError = posAccessErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _lookupBusy = false;
+        _lookupError = 'No fue posible buscar ese código.';
+      });
+    }
+  }
+
+  Future<void> _loadLookupHistory(String credentialId) async {
+    setState(() => _lookupHistoryLoading = true);
+    try {
+      final page = await widget.accessGateway.listEvents(credentialId: credentialId);
+      if (!mounted) return;
+      setState(() {
+        _lookupHistory = page.items;
+        _lookupHistoryLoading = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _lookupHistoryLoading = false);
+    }
+  }
+
+  /// Toggles block/unblock for the currently looked-up credential — reuses
+  /// [_voidCredential]-equivalent semantics via [PosAccessGateway.
+  /// voidCredential] (block) or the new [PosAccessGateway.unblockCredential]
+  /// (unblock), then refreshes the lookup so the shown status is always the
+  /// server's own real, current state (never an assumed toggle).
+  Future<void> _toggleBlockUnblock() async {
+    final credential = _lookupResult;
+    if (credential == null || _blockUnblockBusy || !_canManage) return;
+    setState(() => _blockUnblockBusy = true);
+    try {
+      final updated = credential.isVoid
+          ? await widget.accessGateway.unblockCredential(credential.id)
+          : await widget.accessGateway.voidCredential(credential.id);
+      if (!mounted) return;
+      setState(() {
+        _lookupResult = updated;
+        _blockUnblockBusy = false;
+      });
+      _showAccessNotice(context, credential.isVoid ? 'Pulsera desbloqueada.' : 'Pulsera bloqueada.');
+      unawaited(_loadLookupHistory(updated.id));
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _blockUnblockBusy = false);
+      _showAccessNotice(context, posAccessErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      setState(() => _blockUnblockBusy = false);
+      _showAccessNotice(context, 'No fue posible actualizar el estado de la pulsera.');
     }
   }
 
@@ -401,6 +527,87 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
         _buildInsideSection(),
         const SizedBox(height: 16),
         _buildEventsSection(),
+        const SizedBox(height: 16),
+        _buildWristbandsSection(),
+      ],
+    );
+  }
+
+  /// TASK 14.5 (Wave 3, Phase 3) — "Pulseras NFC": lookup by UID/code with
+  /// real current status + real event history, plus block/unblock. Kept
+  /// WITHIN this same screen (not a new nav destination) per this task's
+  /// own guidance — Access already has its own reserved nav entry and a
+  /// wristband is just another physical form-factor of the same
+  /// credential concept the rest of this screen already manages.
+  Widget _buildWristbandsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _AccessSectionHeader(
+          title: 'Pulseras NFC',
+          description: 'Busca una pulsera por su UID/código para ver su estado real y bloquearla o desbloquearla.',
+        ),
+        if (!_canRead)
+          const _AccessPermissionState(
+            message: 'Tu sesión no incluye el permiso access.read requerido.',
+          )
+        else
+          _AccessCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-access-wristband-lookup-field'),
+                        controller: _lookupCodeController,
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => unawaited(_lookupByCode()),
+                        decoration: const InputDecoration(
+                          hintText: 'UID/código de la pulsera',
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton(
+                      key: const Key('pos-access-wristband-lookup-submit'),
+                      onPressed: _lookupBusy ? null : () => unawaited(_lookupByCode()),
+                      child: _lookupBusy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Buscar'),
+                    ),
+                  ],
+                ),
+                if (_lookupError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(
+                      _lookupError!,
+                      key: const Key('pos-access-wristband-lookup-error'),
+                      style: TextStyle(color: PosPalette.of(context).error, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                if (_lookupResult != null) ...[
+                  const SizedBox(height: 12),
+                  _WristbandLookupResult(
+                    credential: _lookupResult!,
+                    history: _lookupHistory,
+                    historyLoading: _lookupHistoryLoading,
+                    canManage: _canManage,
+                    busy: _blockUnblockBusy,
+                    onToggleBlock: () => unawaited(_toggleBlockUnblock()),
+                  ),
+                ],
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -458,8 +665,24 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
           ),
           const SizedBox(height: 3),
           Text(
-            'Vincula el pase con una venta real ya pagada (sale_id).',
+            _issueKind == 'wristband'
+                ? 'Activa una pulsera NFC: vincula su UID (escaneado o escrito) con una venta real ya pagada (sale_id).'
+                : 'Vincula el pase con una venta real ya pagada (sale_id).',
             style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          // TASK 14.5 (Wave 3, Phase 3) — kind selector. 'Pulsera NFC'
+          // reveals the manual UID field below and switches the submit
+          // action to `activateWristband` (never `issueCredential`'s
+          // server-generated code path).
+          SegmentedButton<String>(
+            key: const Key('pos-access-issue-kind'),
+            segments: const [
+              ButtonSegment(value: 'ticket', label: Text('Ticket'), icon: Icon(Icons.confirmation_number_outlined)),
+              ButtonSegment(value: 'wristband', label: Text('Pulsera NFC'), icon: Icon(Icons.watch_outlined)),
+            ],
+            selected: {_issueKind},
+            onSelectionChanged: (selection) => setState(() => _issueKind = selection.first),
           ),
           const SizedBox(height: 10),
           Row(
@@ -482,6 +705,17 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
               ),
             ],
           ),
+          if (_issueKind == 'wristband') ...[
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-access-issue-wristband-code'),
+              controller: _issueWristbandCodeController,
+              decoration: const InputDecoration(
+                hintText: 'UID de la pulsera (escanea o escribe)',
+                prefixIcon: Icon(Icons.watch_outlined),
+              ),
+            ),
+          ],
           Row(
             children: [
               Checkbox(
@@ -499,7 +733,7 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                       )
-                    : const Text('Emitir pase'),
+                    : Text(_issueKind == 'wristband' ? 'Activar pulsera' : 'Emitir pase'),
               ),
             ],
           ),
@@ -516,7 +750,9 @@ class _PosAccessScreenState extends State<PosAccessScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                'Pase emitido: ${_issuedCredential!.code}',
+                _issuedCredential!.isWristband
+                    ? 'Pulsera activada: ${_issuedCredential!.code}'
+                    : 'Pase emitido: ${_issuedCredential!.code}',
                 key: const Key('pos-access-issue-result'),
                 style: TextStyle(color: palette.success, fontWeight: FontWeight.w700),
               ),
@@ -1052,6 +1288,133 @@ class _EventRow extends StatelessWidget {
             _formatAccessDateTime(event.occurredAt),
             style: TextStyle(color: palette.textMuted, fontSize: 12),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 14.5 (Wave 3, Phase 3) — the result panel for a wristband/ticket
+/// lookup-by-code: real current status, block/unblock (reusing the exact
+/// same server transitions [_InsideRow]'s own "Anular" button drives), and
+/// the real, immutable event history for THIS credential only (never the
+/// whole branch feed) — deliberately never an "extend" control, since the
+/// legacy's own "extend" was found to be a non-persisting UI placeholder
+/// (see this file's own top doc comment).
+class _WristbandLookupResult extends StatelessWidget {
+  const _WristbandLookupResult({
+    required this.credential,
+    required this.history,
+    required this.historyLoading,
+    required this.canManage,
+    required this.busy,
+    required this.onToggleBlock,
+  });
+
+  final PosAccessCredential credential;
+  final List<PosAccessEvent> history;
+  final bool historyLoading;
+  final bool canManage;
+  final bool busy;
+  final VoidCallback onToggleBlock;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final blocked = credential.isVoid;
+    return Container(
+      key: const Key('pos-access-wristband-lookup-result'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: (blocked ? palette.error : palette.success).withValues(alpha: .1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: blocked ? palette.error : palette.success),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                credential.isWristband ? Icons.watch_outlined : Icons.confirmation_number_outlined,
+                color: blocked ? palette.error : palette.success,
+                size: 28,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      credential.code,
+                      key: const Key('pos-access-wristband-lookup-code'),
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                    ),
+                    Text(
+                      '${credential.isWristband ? "Pulsera" : "Ticket"} — '
+                      '${blocked ? "Bloqueada" : "Activa"} — '
+                      '${credential.currentlyInside ? "Dentro" : "Fuera"}',
+                      key: const Key('pos-access-wristband-lookup-status'),
+                      style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w600),
+                    ),
+                    if (credential.customerId != null)
+                      Text('Cliente: ${credential.customerId}', style: TextStyle(color: palette.textSecondary)),
+                    if (credential.saleId != null)
+                      Text('Venta: ${credential.saleId}', style: TextStyle(color: palette.textSecondary)),
+                  ],
+                ),
+              ),
+              Tooltip(
+                message: !canManage
+                    ? 'Requiere el permiso access.manage.'
+                    : credential.currentlyInside
+                    ? 'El servidor rechazará el bloqueo mientras esta pulsera siga marcada como dentro.'
+                    : blocked
+                    ? 'Desbloquear — reactiva la pulsera.'
+                    : 'Bloquear — la pulsera no podrá volver a escanearse hasta desbloquearla.',
+                child: FilledButton(
+                  key: const Key('pos-access-wristband-toggle-block'),
+                  onPressed: canManage && !busy ? onToggleBlock : null,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: blocked ? palette.success : palette.error,
+                  ),
+                  child: busy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text(blocked ? 'Desbloquear' : 'Bloquear'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Divider(color: palette.border),
+          const SizedBox(height: 6),
+          Text(
+            'Historial de eventos',
+            style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          if (historyLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else if (history.isEmpty)
+            Text(
+              'Sin eventos de entrada/salida todavía.',
+              key: const Key('pos-access-wristband-lookup-history-empty'),
+              style: TextStyle(color: palette.textSecondary),
+            )
+          else
+            Column(
+              key: const Key('pos-access-wristband-lookup-history'),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [for (final event in history) _EventRow(key: ValueKey('pos-access-wristband-history-${event.id}'), event: event)],
+            ),
         ],
       ),
     );

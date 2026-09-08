@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { AccessRepository } from './access.repository.js';
 import {
   AccessError,
+  type AccessCredentialKind,
   type AccessCredentialRow,
   type AccessEventRow,
   type AccessEventType,
@@ -42,6 +43,16 @@ function nonBlank(value: string, field: string): string {
   return clean;
 }
 
+/** TASK 14.5 (Wave 3) — a wristband's own physical UID, entered manually
+ * (keyboard/scanner). Reuses `nonBlank`'s exact same shape/length rule as
+ * every other free-text field in this module rather than inventing a
+ * bespoke UID format — the legacy itself never enforced one either (its
+ * own `generarCodigoPulsera()` was just one convenience generator among
+ * many possible manually-typed values, never a validated format). */
+function wristbandCode(value: string): string {
+  return nonBlank(value, 'code');
+}
+
 /**
  * Code generation strategy (this task's own explicit call, documented
  * here): `AC-` + 5 random bytes, hex-encoded and upper-cased — 10 hex
@@ -68,6 +79,7 @@ function credentialPayload(value: AccessCredentialRow): Readonly<Record<string, 
   return {
     access_credential_id: value.id,
     branch_id: value.branchId,
+    credential_kind: value.credentialKind,
     status: value.status,
     currently_inside: value.currentlyInside,
   };
@@ -99,19 +111,45 @@ export class AccessService {
    * exactly) — a duplicate issuance request (e.g. a network retry after
    * the first request's response was lost) must not create two
    * credentials for the same sale.
+   *
+   * **TASK 14.5 (Wave 3) — wristband activation reuses this exact method,
+   * never a duplicate code path.** `credentialKind` defaults to
+   * `'ticket'` (unchanged behavior: server-generates the code, retries on
+   * an astronomically-unlikely collision). `credentialKind='wristband'`
+   * instead requires a caller-supplied `code` — the physical UID, entered
+   * manually via keyboard/scanner (see `access.types.ts`'s own doc
+   * comment on `AccessCredentialKind`) — and a collision against a real,
+   * already-used UID is a genuine, honest `code_already_in_use` rejection
+   * (never silently retried with a DIFFERENT code, which would issue a
+   * credential for a UID that isn't the one physically in the operator's
+   * hand). Every other real mechanic (real-sale validation, idempotency,
+   * audit/outbox) is shared identically between both kinds.
    */
   public async issueCredential(
     context: AccessMutationContext,
     branchIds: readonly string[],
     key: string,
-    input: { branchId: string; saleId: string; customerId?: string; allowsReentry?: boolean },
+    input: {
+      branchId: string;
+      saleId: string;
+      customerId?: string;
+      allowsReentry?: boolean;
+      credentialKind?: AccessCredentialKind;
+      code?: string;
+    },
   ): Promise<{ value: AccessCredentialRow; replayed: boolean }> {
     if (!branchIds.includes(input.branchId))
       throw new AccessError('validation_error', 'The branch is not authorized for this actor.');
     const saleId = nonBlank(input.saleId, 'sale_id');
     const customerId = input.customerId === undefined ? null : nonBlank(input.customerId, 'customer_id');
     const allowsReentry = input.allowsReentry ?? false;
-    const requestHash = hash({ branchId: input.branchId, saleId, customerId, allowsReentry });
+    const credentialKind = input.credentialKind ?? 'ticket';
+    if (credentialKind === 'wristband' && input.code === undefined)
+      throw new AccessError('validation_error', 'code is required to activate a wristband.');
+    if (credentialKind === 'ticket' && input.code !== undefined)
+      throw new AccessError('validation_error', 'code must not be supplied when issuing a ticket credential — it is server-generated.');
+    const suppliedCode = input.code === undefined ? null : wristbandCode(input.code);
+    const requestHash = hash({ branchId: input.branchId, saleId, customerId, allowsReentry, credentialKind, suppliedCode });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -131,6 +169,39 @@ export class AccessService {
           if (sale.status !== 'completed')
             throw new AccessError('validation_error', 'The sale is not completed — only a paid sale may issue a credential.');
 
+          const id = randomUUID();
+
+          // A caller-supplied wristband UID is a real, single, honest
+          // attempt — a collision against `access_credentials_company_code_uq`
+          // is `code_already_in_use` (mapped by `AccessRepository.
+          // mapDatabaseError`), never silently retried with a
+          // DIFFERENT code (that would activate a credential for a UID
+          // other than the one physically scanned/typed).
+          if (suppliedCode !== null) {
+            const created = await this.repository.insertCredential(client, {
+              id,
+              companyId: context.companyId,
+              branchId: input.branchId,
+              code: suppliedCode,
+              credentialKind,
+              saleId,
+              customerId,
+              allowsReentry,
+              issuedBy: context.actorId,
+              timestamp: context.timestamp,
+            });
+            await this.repository.auditAndPublish(client, context, {
+              action: 'access_credential.issued',
+              resourceType: 'access_credential',
+              resourceId: created.id,
+              eventType: 'access_credential.issued',
+              branchId: created.branchId,
+              generation: 1n,
+              payload: credentialPayload(created),
+            });
+            return created;
+          }
+
           // The code is server-generated, never client-supplied — a
           // collision against `access_credentials_company_code_uq` is
           // therefore this module's own problem to retry, not a client
@@ -147,7 +218,6 @@ export class AccessService {
           // the whole transaction) clears just that one failed `INSERT`,
           // keeping the `idempotency_keys` placeholder row this
           // transaction already wrote intact.
-          const id = randomUUID();
           let lastError: unknown;
           for (let attempt = 0; attempt < 5; attempt += 1) {
             await client.query('savepoint access_code_attempt');
@@ -157,6 +227,7 @@ export class AccessService {
                 companyId: context.companyId,
                 branchId: input.branchId,
                 code: generateAccessCode(),
+                credentialKind,
                 saleId,
                 customerId,
                 allowsReentry,
@@ -358,6 +429,76 @@ export class AccessService {
     );
   }
 
+  /**
+   * TASK 14.5 (Wave 3) — the one genuinely NEW lifecycle transition:
+   * `'void' -> 'issued'`, this domain's real "unblock" (see
+   * `packages/database/src/schema/access.ts`'s own doc comment on why
+   * block/unblock reuse `status` rather than a new value). Deliberately
+   * mirrors `voidCredential`'s own shape line-for-line — same
+   * idempotency-required reasoning (an irreversible-feeling admin action
+   * a cashier/operator should not risk double-submitting), same
+   * company/branch-scoped resource-existence check, same re-read-on-
+   * losing-CAS pattern to report the honest, specific reason
+   * (`credential_not_void` — the reverse of `credential_void`) rather
+   * than a generic conflict.
+   */
+  public async unvoidCredential(
+    context: AccessMutationContext,
+    branchIds: readonly string[],
+    id: string,
+    key: string,
+  ): Promise<{ value: AccessCredentialRow; replayed: boolean }> {
+    const requestHash = hash({ id, op: 'unvoid' });
+    return this.repository.transaction((client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'access_credential.unvoid',
+        key,
+        requestHash,
+        'access_credential',
+        decodeCredential,
+        async () => {
+          const current = await this.repository.credentialInTx(client, context.companyId, id);
+          if (current === null || !branchIds.includes(current.branchId))
+            throw new AccessError('resource_not_found', 'The access credential was not found.');
+          const updated = await this.repository.markUnvoid(client, context.companyId, id);
+          if (updated === null)
+            throw new AccessError('credential_not_void', 'This credential is not currently voided/blocked.');
+          await this.repository.auditAndPublish(client, context, {
+            action: 'access_credential.unvoided',
+            resourceType: 'access_credential',
+            resourceId: updated.id,
+            eventType: 'access_credential.unvoided',
+            branchId: updated.branchId,
+            generation: 5n,
+            payload: credentialPayload(updated),
+          });
+          return updated;
+        },
+      ),
+    );
+  }
+
+  /** `GET /access-credentials/by-code` (TASK 14.5, Wave 3 addition) — a
+   * real way to look up a wristband (or ticket) by its own code/UID and
+   * see its current status, ahead of showing its event history via
+   * `listEvents({ credentialId })`. Company AND branch-scoped exactly
+   * like `credential()` above (never `wrong_branch` here — that
+   * rejection is specific to the scan-with-side-effects endpoint; a plain
+   * read for a different-branch code is honestly `resource_not_found`,
+   * matching `credential()`'s own precedent). */
+  public async credentialByCode(
+    companyId: string,
+    branchIds: readonly string[],
+    code: string,
+  ): Promise<AccessCredentialRow> {
+    const value = await this.repository.credentialByCodeLookup(companyId, nonBlank(code, 'code'));
+    if (value === null || !branchIds.includes(value.branchId))
+      throw new AccessError('resource_not_found', 'The access credential was not found.');
+    return value;
+  }
+
   public currentlyInside(
     companyId: string,
     branchIds: readonly string[],
@@ -369,7 +510,14 @@ export class AccessService {
   public listEvents(
     companyId: string,
     branchIds: readonly string[],
-    input: { limit: number; cursor?: string; branchId?: string; occurredFrom?: Date; occurredTo?: Date },
+    input: {
+      limit: number;
+      cursor?: string;
+      branchId?: string;
+      credentialId?: string;
+      occurredFrom?: Date;
+      occurredTo?: Date;
+    },
   ): ReturnType<AccessRepository['listEvents']> {
     return this.repository.listEvents(companyId, branchIds, input);
   }

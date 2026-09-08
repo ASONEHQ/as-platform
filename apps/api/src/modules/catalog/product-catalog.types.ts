@@ -151,6 +151,33 @@ export interface ProductPage {
   items: ProductListItem[];
   nextCursor: string | null;
 }
+
+// TASK 14.5 (Wave 3, Phase 7, Item 1): the real, un-paginated row shape
+// `GET /api/v1/products/export.csv` streams — a faithful port of AS POS
+// V1's own genuine CSV Blob download (`docs/LEGACY_FUNCTIONAL_PARITY.md`
+// §3, "Export catalog (CSV/PDF)"), driven by the SAME company-scoped
+// filters `listProducts` already accepts (minus `cursor`/`limit` — an
+// export is never paginated), never a second, divergent filter shape.
+export type ProductExportFilters = Omit<ProductFilters, 'cursor' | 'limit'>;
+
+export interface ProductExportRow {
+  id: string;
+  code: string;
+  name: string;
+  productType: ProductType;
+  tracksInventory: boolean;
+  taxCode: ProductTaxCode;
+  status: ProductStatus;
+  categoryId: string | null;
+  categoryName: string | null;
+  brandId: string | null;
+  brandName: string | null;
+  defaultSku: string | null;
+  defaultCost: string | null;
+  defaultCurrencyCode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
 export interface ProductVariantPage {
   items: ProductVariantRow[];
   nextCursor: string | null;

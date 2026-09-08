@@ -27,8 +27,35 @@ import { sales } from './sales.js';
  * `count(*) where currently_inside = true`, never a separately
  * incremented/decremented counter that could drift from the real
  * per-credential state.
+ *
+ * TASK 14.5 (Wave 3, Phase 3) — NFC wristband lifecycle recovery. Forensic
+ * re-read of the legacy source (`AS POS V1.html`'s `DB.pulseras` +
+ * `activarPulsera`/`bloquearPulsera`/`desbloquearPulsera`/
+ * `extenderPulsera`) found: activate/block/unblock are a REAL, persisted
+ * local state CRUD (each mutates `DB.pulseras` and re-renders); "extend"
+ * is NOT — it only ever shows a `prompt()` dialog and a toast, never
+ * writing the entered minutes anywhere, and the very `pul-expira`/
+ * `pul-cliente`/`pul-sucursal` DOM ids its own `activarPulsera()` reads
+ * from don't exist in the legacy's own modal markup (dead fallback code,
+ * always the same computed defaults). So "extend" is correctly NOT ported
+ * — see this task's own final report for the full citation. A wristband
+ * is simply another physical form-factor for the exact same real
+ * credential concept already modeled here (a UID a person carries that
+ * maps to a real, already-paid entitlement) — never a parallel table.
+ * `credentialKind` distinguishes a server-generated printed-ticket code
+ * from a manually-entered (keyboard/scanner) wristband UID; every other
+ * mechanic (`status`/`currentlyInside`/`allowsReentry`/scan validation/
+ * occupancy) is reused verbatim — a wristband-kind credential scans
+ * exactly like a ticket-kind one. "Block"/"unblock" reuse the credential's
+ * existing `status` transition (`issued` <-> `void`) rather than a new
+ * status value: block IS a void (see `access.service.ts`'s own
+ * `voidCredential`), and unblock is the one genuinely new transition this
+ * wave adds (`markUnvoid` in `access.repository.ts`) — the legacy's own
+ * block/unblock cycle is reversible, unlike a ticket void, which had no
+ * legacy precedent for reversal at all until this wave.
  */
 export const accessCredentialStatuses = ['issued', 'void'] as const;
+export const accessCredentialKinds = ['ticket', 'wristband'] as const;
 
 export const accessCredentials = pgTable(
   'access_credentials',
@@ -37,6 +64,13 @@ export const accessCredentials = pgTable(
     companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
     branchId: uuid('branch_id').notNull(),
     code: text('code').notNull(),
+    // Printed-ticket codes are always server-generated (`AC-` +
+    // random hex); a wristband's `code` IS its physical UID, entered
+    // manually via keyboard/scanner at activation time (no NFC-reader
+    // vendor integration exists in the legacy or is required this wave —
+    // see this task's own instruction). Every other column/mechanic below
+    // is shared identically between both kinds.
+    credentialKind: text('credential_kind').notNull().default('ticket'),
     saleId: uuid('sale_id'),
     customerId: uuid('customer_id'),
     // Legacy had no explicit re-entry semantics documented anywhere in
@@ -88,6 +122,7 @@ export const accessCredentials = pgTable(
     // filters exactly on this.
     index('access_credentials_company_branch_inside_idx').on(table.companyId, table.branchId, table.currentlyInside),
     check('access_credentials_code_nonblank_ck', sql`length(btrim(${table.code})) > 0`),
+    check('access_credentials_kind_ck', sql`${table.credentialKind} in ('ticket', 'wristband')`),
     check('access_credentials_status_ck', sql`${table.status} in ('issued', 'void')`),
     check('access_credentials_allows_reentry_ck', sql`${table.allowsReentry} in ('true', 'false')`),
     check('access_credentials_currently_inside_ck', sql`${table.currentlyInside} in ('true', 'false')`),

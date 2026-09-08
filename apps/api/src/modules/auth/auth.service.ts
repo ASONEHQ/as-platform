@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { AppError } from '@asone/errors';
 
-import { verifyPassword } from './auth.passwords.js';
+import { hashPassword, verifyPassword } from './auth.passwords.js';
 import type { AuthTokens } from './auth.tokens.js';
 import type {
   AuthContext,
@@ -595,6 +595,227 @@ export class AuthService {
       correlationId: evidence.correlationId,
     });
     return this.#tokenResult(context, nextToken, current.expiresAt);
+  }
+
+  // TASK 14.5 (Wave 3, Phase 4b): "quick-switch" PIN login.
+  //
+  // SECURITY MODEL (read before touching this method):
+  //   1. The caller must already hold a valid, currently-active session
+  //      (`current: AuthContext`, resolved by `requireAuthenticatedUser`
+  //      in `auth.routes.ts` from a real bearer/browser session — exactly
+  //      like `switchCompany`/`switchBranch` above). This is deliberately
+  //      NOT a bare anonymous "PIN is the whole login" front door like the
+  //      legacy's own mechanism: a PIN alone can never authenticate a
+  //      request that doesn't already carry a real, backend-issued
+  //      session on an already-authenticated device.
+  //   2. The company scope is taken ONLY from `current.companyId` — never
+  //      from the request body — so a PIN can never be tried against a
+  //      company the calling device/session isn't already inside. This is
+  //      the load-bearing cross-tenant-isolation guarantee.
+  //   3. The PIN is hashed with the exact same argon2id scheme as
+  //      passwords (`auth.passwords.ts`) and is never compared in
+  //      plaintext or logged. Because a salted hash can't be looked up by
+  //      value, every active PIN-enrolled membership in that one company
+  //      is checked in turn (`listPinLoginCandidates`) — company staff
+  //      counts are small, so this stays cheap, and it is bounded by
+  //      `current.companyId` alone, never scanning another tenant's rows.
+  //   4. Failure is uniform and honest: an unknown/wrong PIN and "nobody
+  //      in this company has a PIN configured" both raise the exact same
+  //      `invalid_credentials` error password login uses — no hint about
+  //      which part was wrong.
+  //   5. On success this mints a REAL, independent session through the
+  //      exact same `#createLoginSession` path password login uses —
+  //      never a parallel/weaker session mechanism — scoped to the
+  //      resolved staff member's own membership, but inheriting the
+  //      calling session's branch/device/transport (so the new session
+  //      stays pinned to the same physical terminal). It does NOT revoke
+  //      the calling session — mirrors how an ordinary password login
+  //      never revokes a user's other active sessions elsewhere; a caller
+  //      that wants single-active-session-per-device semantics can call
+  //      `/api/v1/auth/logout` on the prior token itself.
+  public async pinLogin(
+    current: AuthContext,
+    pin: string,
+    evidence: RequestEvidence = {},
+  ): Promise<TokenResult> {
+    const list = this.#repository.listPinLoginCandidates?.bind(this.#repository);
+    if (list === undefined) throw new Error('PIN login is unavailable.');
+    const candidates = await list(current.companyId);
+    let matched: (typeof candidates)[number] | undefined;
+    for (const candidate of candidates) {
+      if (await verifyPassword(candidate.pinHash, pin)) {
+        matched = candidate;
+        break;
+      }
+    }
+    if (matched === undefined) throw authError('invalid_credentials');
+    return this.#createLoginSession(matched.userId, matched.membership, {
+      identifier: '',
+      password: '',
+      companyId: current.companyId,
+      branchId: current.branchId,
+      deviceId: current.deviceId,
+      clientType: (current.transportMode ?? 'bearer') === 'browser' ? 'browser' : 'pos',
+      transportMode: current.transportMode,
+    }, evidence);
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7 Item 8): "quick-switch" staff QR login.
+  // Same security model as `pinLogin` above (already-authenticated-device
+  // gate, company scope taken only from `current`, uniform honest
+  // failure, real session via the same `#createLoginSession` path) plus
+  // one more guarantee specific to a QR credential: an expired credential
+  // NEVER matches, even if the submitted code happens to verify against a
+  // stale hash — `qrExpiresAt` is checked before the hash comparison, not
+  // relied upon to have been pre-filtered by the repository.
+  public async qrLogin(
+    current: AuthContext,
+    code: string,
+    evidence: RequestEvidence = {},
+  ): Promise<TokenResult> {
+    const list = this.#repository.listQrLoginCandidates?.bind(this.#repository);
+    if (list === undefined) throw new Error('QR login is unavailable.');
+    const candidates = await list(current.companyId);
+    const now = this.#now();
+    let matched: (typeof candidates)[number] | undefined;
+    for (const candidate of candidates) {
+      if (candidate.qrExpiresAt <= now) continue;
+      if (await verifyPassword(candidate.qrSecretHash, code)) {
+        matched = candidate;
+        break;
+      }
+    }
+    if (matched === undefined) throw authError('invalid_credentials');
+    return this.#createLoginSession(matched.userId, matched.membership, {
+      identifier: '',
+      password: '',
+      companyId: current.companyId,
+      branchId: current.branchId,
+      deviceId: current.deviceId,
+      clientType: (current.transportMode ?? 'bearer') === 'browser' ? 'browser' : 'pos',
+      transportMode: current.transportMode,
+    }, evidence);
+  }
+
+  // TASK 14.5 (Wave 3, Phase 4b): admin enrollment — assigns/rotates
+  // (`pin` non-null) or clears (`pin` null) a staff member's own
+  // quick-switch PIN. The caller's own permission (`staff_credential.
+  // manage`) is checked by the route before this is ever called — see
+  // `auth.routes.ts` — mirroring every other admin action in this
+  // codebase (permission check lives at the route/guard layer, not
+  // duplicated in the service).
+  //
+  // Uniqueness trade-off: a PIN is intentionally kept unique within a
+  // company (two cashiers sharing one PIN would make `pinLogin` resolve
+  // to whichever one happens to be checked first) but, because the
+  // stored value is a salted hash, this can never be enforced with a
+  // plain unique index — it is enforced here by re-verifying the
+  // candidate PIN against every OTHER PIN-enrolled membership's hash
+  // before writing. This is a best-effort, not airtight, guarantee: two
+  // concurrent enrollment requests choosing the same PIN at the exact
+  // same instant could both pass this check before either write commits
+  // (a benign race, not a security hole — the practical blast radius is
+  // "two staff members can now use the same PIN interchangeably", not
+  // unauthorized access, and it is trivially fixed by re-issuing either
+  // PIN). A real unique constraint is deliberately not attempted here —
+  // it would require either a deterministic (weaker) hash or a
+  // client-visible plaintext index, both worse than this trade-off.
+  public async setStaffPin(actor: AuthContext, membershipId: string, pin: string | null): Promise<void> {
+    const setPin = this.#repository.setMembershipPin?.bind(this.#repository);
+    if (setPin === undefined) throw new Error('Staff PIN management is unavailable.');
+    let pinHash: string | null = null;
+    if (pin !== null) {
+      const list = this.#repository.listPinLoginCandidates?.bind(this.#repository);
+      const candidates = list === undefined ? [] : await list(actor.companyId);
+      for (const candidate of candidates) {
+        if (candidate.membership.id === membershipId) continue;
+        if (await verifyPassword(candidate.pinHash, pin)) {
+          throw new AppError({
+            code: 'validation_error',
+            message: 'This PIN is already assigned to another staff member.',
+            statusCode: 409,
+          });
+        }
+      }
+      pinHash = await hashPassword(pin);
+    }
+    const affected = await setPin({ companyId: actor.companyId, membershipId, pinHash });
+    if (!affected)
+      throw new AppError({
+        code: 'not_found',
+        message: 'Staff membership not found.',
+        statusCode: 404,
+      });
+    await this.#repository.audit({
+      companyId: actor.companyId,
+      actorId: actor.userId,
+      action: pin === null ? 'auth.staff_pin_cleared' : 'auth.staff_pin_set',
+      entityId: membershipId,
+    });
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7 Item 8): admin issuance — generates a
+  // fresh, cryptographically random, opaque QR credential (never a
+  // predictable/client-chosen string, unlike the legacy's own
+  // timestamp-based `POS-<ts>` generator) for one staff membership,
+  // hashes it the same way a password is hashed, and returns the
+  // plaintext code exactly once so the caller can render it into an
+  // actual QR image — it is never retrievable again afterward (only its
+  // hash is stored). `ttlDays` bounds the credential's own lifetime
+  // (default 90 days) so a lost/forgotten badge can't authenticate
+  // forever; reissuing always rotates both the secret and the expiry.
+  public async issueStaffQrCredential(
+    actor: AuthContext,
+    membershipId: string,
+    ttlDays = 90,
+  ): Promise<{ readonly code: string; readonly expiresAt: Date }> {
+    const setQr = this.#repository.setMembershipQrCredential?.bind(this.#repository);
+    if (setQr === undefined) throw new Error('Staff QR management is unavailable.');
+    const code = `POS-QR-${randomBytes(24).toString('base64url')}`;
+    const qrSecretHash = await hashPassword(code);
+    const qrExpiresAt = new Date(this.#now().getTime() + ttlDays * 86_400_000);
+    const affected = await setQr({
+      companyId: actor.companyId,
+      membershipId,
+      qrSecretHash,
+      qrExpiresAt,
+    });
+    if (!affected)
+      throw new AppError({
+        code: 'not_found',
+        message: 'Staff membership not found.',
+        statusCode: 404,
+      });
+    await this.#repository.audit({
+      companyId: actor.companyId,
+      actorId: actor.userId,
+      action: 'auth.staff_qr_issued',
+      entityId: membershipId,
+    });
+    return { code, expiresAt: qrExpiresAt };
+  }
+
+  public async revokeStaffQrCredential(actor: AuthContext, membershipId: string): Promise<void> {
+    const setQr = this.#repository.setMembershipQrCredential?.bind(this.#repository);
+    if (setQr === undefined) throw new Error('Staff QR management is unavailable.');
+    const affected = await setQr({
+      companyId: actor.companyId,
+      membershipId,
+      qrSecretHash: null,
+      qrExpiresAt: null,
+    });
+    if (!affected)
+      throw new AppError({
+        code: 'not_found',
+        message: 'Staff membership not found.',
+        statusCode: 404,
+      });
+    await this.#repository.audit({
+      companyId: actor.companyId,
+      actorId: actor.userId,
+      action: 'auth.staff_qr_revoked',
+      entityId: membershipId,
+    });
   }
 
   public async authenticate(accessToken: string): Promise<AuthContext> {

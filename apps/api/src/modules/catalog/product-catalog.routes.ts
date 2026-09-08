@@ -416,6 +416,51 @@ export function registerProductCatalogRoutes(
       }),
   );
 
+  // TASK 14.5 (Wave 3, Phase 7, Item 1): GET /api/v1/products/export.csv —
+  // a real CSV Blob-equivalent dump of the live company catalog, gated by
+  // the same `catalog.read` permission as the list route above (this is a
+  // read, not a mutation). Registered as a literal path — Fastify's radix
+  // router always prefers a literal segment ("export.csv") over the
+  // parametric `/api/v1/products/:id` route below regardless of
+  // registration order, so no route ever shadows the other.
+  app.get<{ Querystring: ListQuery }>(
+    '/api/v1/products/export.csv',
+    {
+      schema: {
+        tags: ['catalog'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            status: { type: 'string', enum: ['draft', 'active', 'inactive', 'retired'] },
+            product_type: { type: 'string', enum: ['simple', 'variable', 'kit', 'service'] },
+            category_id: uuid,
+            brand_id: uuid,
+            search: { type: 'string', minLength: 1, maxLength: 255 },
+          },
+        },
+        response: { ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withProductCatalogErrors(async () => {
+        const context = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, context, 'catalog.read');
+        const query = request.query;
+        const csv = await service.exportCsv(context.companyId, {
+          ...(query.status === undefined ? {} : { status: query.status }),
+          ...(query.product_type === undefined ? {} : { productType: query.product_type }),
+          ...(query.category_id === undefined ? {} : { categoryId: query.category_id }),
+          ...(query.brand_id === undefined ? {} : { brandId: query.brand_id }),
+          ...(query.search === undefined ? {} : { search: query.search }),
+        });
+        return reply
+          .header('content-type', 'text/csv; charset=utf-8')
+          .header('content-disposition', 'attachment; filename="product-catalog-export.csv"')
+          .send(csv);
+      }),
+  );
+
   app.post<{ Body: ProductBody }>(
     '/api/v1/products',
     {

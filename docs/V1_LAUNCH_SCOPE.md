@@ -34,6 +34,22 @@ launch-critical scope in "IN SCOPE for September 15" above, it just means
 the business now has the option to enable them at or before launch if it
 wants to. See [[LEGACY_FUNCTIONAL_PARITY]] for per-capability status.
 
+**TASK 14.5 (Wave 3) update — 2026-09-08**: several more items originally
+listed below as OUT OF SCOPE / POST-LAUNCH are now real and proven, ahead
+of when they were required — a consolidated Dashboard screen, NFC
+wristband activate/block/unblock, an AI assistant, register-style
+keyboard shortcuts, PIN/QR staff quick-switch login, catalog CSV export,
+inventory Kardex CSV export, a Flutter product-variants admin screen, and
+a promotions usage report. None of these were ever a Sept 15
+*requirement* — being done early doesn't change the launch-critical scope
+below. Genuinely still not built, independently re-confirmed rather than
+taken on faith: post-sale animation/sound, Kiosk/self-checkout mode,
+scheduled email reports, per-tenant logo upload. The new Dashboard
+deliberately omits the legacy's real sales-trend and active-membership
+metrics; the new receipt header/footer admin screen persists real data
+but isn't yet rendered on a printed receipt. See
+[[LEGACY_FUNCTIONAL_PARITY]] for per-capability status.
+
 ## IN SCOPE for September 15
 
 - Authentication, sessions, roles/permissions (real staff onboarding, not
@@ -118,14 +134,24 @@ active scope decision)**:
 - **Mercado Pago LIVE** — explicitly paused per every task this session.
 - **A dedicated aggregate Reports/BI dashboard** — ~~the underlying data
   is fully queryable today via existing screens~~ **the per-area report
-  screens are DONE (TASK 14.4 Wave 2)**: 7 real report areas (Sales/
-  Financial/Inventory/Customers/Employees/Parties/Access), server-side
-  aggregated, CSV export on Sales/Financial. Still a POST-LAUNCH nicety,
-  not a launch requirement — a single consolidated "today at a glance"
-  dashboard screen (sales trend + parties + alerts on one view) remains
-  the one piece not yet built, see [[LEGACY_MISSING_PORTS]].
+  screens are DONE (TASK 14.4 Wave 2, extended TASK 14.5 Wave 3)**: 8 real
+  report areas (Sales/Financial/Inventory/Customers/Employees/Parties/
+  Access/Promotions), server-side aggregated, CSV export on Sales/
+  Financial/Inventory Kardex. Still a POST-LAUNCH nicety, not a launch
+  requirement — **the single consolidated "today at a glance" dashboard
+  screen is also now DONE (TASK 14.5 Wave 3)**: real today's sales,
+  occupancy, parties, open register/session status, outstanding party
+  balances, employee attendance — deliberately NOT including the legacy's
+  real %-vs-yesterday sales trend or active-membership count (consciously
+  scoped out, not fabricated fields), see [[LEGACY_MISSING_PORTS]].
 - **Per-tenant receipt branding (custom logo per company)** — today's logo
-  is one shared, app-bundled mark.
+  is one shared, app-bundled mark, still true for the logo specifically.
+  **TASK 14.5 (Wave 3) partial update**: receipt header/footer text now
+  has a real admin screen that persists real data, but is independently
+  confirmed NOT yet threaded into any of the 4 real print call sites — so
+  configured text does not appear on a printed receipt yet. Per-tenant
+  logo upload itself remains fully undone (no file-upload infrastructure
+  exists anywhere).
 - **Forced password-change-on-first-login policy** — no such mechanism
   exists; mitigated procedurally (the owner hands out a real password
   directly) for launch.

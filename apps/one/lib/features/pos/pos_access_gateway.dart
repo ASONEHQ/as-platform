@@ -10,6 +10,21 @@
 /// server-side occupancy count. Styled after `pos_held_sales_gateway.dart`/
 /// `pos_parties_gateway.dart` — same HTTP/error-handling conventions, same
 /// `ApiPos*Gateway`/`EmptyPos*Gateway` split.
+///
+/// TASK 14.5 (Wave 3, Phase 3) extends this same gateway with the real NFC
+/// wristband lifecycle recovered from the legacy (`AS POS V1.html`'s
+/// `DB.pulseras` + `activarPulsera`/`bloquearPulsera`/`desbloquearPulsera`)
+/// — a wristband is just another physical form-factor for the exact same
+/// credential concept already modeled here, so these are ADDITIVE methods
+/// only (`activateWristband`, `unblockCredential`, `lookupByCode`), never a
+/// rewrite of `issueCredential`/`voidCredential`, which stay exactly as
+/// they were for tickets. "Block" intentionally has no dedicated method —
+/// it reuses the existing [voidCredential] verbatim, exactly like the
+/// backend does (see `AccessService.voidCredential`'s own doc comment).
+/// The legacy's own "extend" (`extenderPulsera`) was found to be a UI
+/// placeholder — a `prompt()` + toast that never persisted the entered
+/// duration anywhere — so it is correctly NOT ported here; see this
+/// task's own final report for the full citation.
 library;
 
 import '../../core/networking/api_client.dart';
@@ -30,6 +45,10 @@ class PosAccessCredential {
     required this.issuedBy,
     required this.voidedAt,
     required this.voidedBy,
+    // Defaults to 'ticket' — TASK 14.5 (Wave 3) addition, optional so
+    // every pre-existing call site (and `pos_access_test.dart`'s own
+    // `_credential()` fixture helper) keeps compiling unchanged.
+    this.credentialKind = 'ticket',
   });
 
   factory PosAccessCredential.fromJson(Map<String, Object?> json) => PosAccessCredential(
@@ -45,6 +64,7 @@ class PosAccessCredential {
     issuedBy: json['issued_by']! as String,
     voidedAt: json['voided_at'] == null ? null : DateTime.parse(json['voided_at']! as String),
     voidedBy: json['voided_by'] as String?,
+    credentialKind: json['credential_kind'] as String? ?? 'ticket',
   );
 
   final String id;
@@ -61,8 +81,11 @@ class PosAccessCredential {
   final String issuedBy;
   final DateTime? voidedAt;
   final String? voidedBy;
+  // `accessCredentialKinds` (TASK 14.5, Wave 3): 'ticket' | 'wristband'.
+  final String credentialKind;
 
   bool get isVoid => status == 'void';
+  bool get isWristband => credentialKind == 'wristband';
 }
 
 /// A plain 1:1 mapping of `AccessEventRow` — immutable, append-only, exactly
@@ -150,6 +173,11 @@ String posAccessErrorMessage(ApiException error) {
         return 'Este pase de acceso ya completó su único ciclo de entrada y salida — no permite reingreso.';
       case 'credential_currently_inside':
         return 'Este pase de acceso está actualmente dentro — registra su salida antes de anularlo.';
+      // TASK 14.5 (Wave 3) additions.
+      case 'credential_not_void':
+        return 'Este pase no está bloqueado — no se puede desbloquear.';
+      case 'code_already_in_use':
+        return 'Este código/UID ya está en uso por otro pase.';
     }
   }
   return error.failure.message;
@@ -181,8 +209,47 @@ abstract interface class PosAccessGateway {
   /// `POST /api/v1/access-credentials/{id}/void` (`access.manage`) —
   /// rejected with `credential_currently_inside` if the credential is
   /// currently inside (the backend's own real policy: process a real exit
-  /// first, never a silent implicit exit). Idempotency-keyed.
+  /// first, never a silent implicit exit). Idempotency-keyed. Also this
+  /// domain's real "block" for a wristband — reused VERBATIM (this task's
+  /// own instruction: block mirrors void), never a duplicate method.
   Future<PosAccessCredential> voidCredential(String id);
+
+  /// TASK 14.5 (Wave 3, Phase 3) — "activate" a wristband: the exact same
+  /// real backend action as [issueCredential] (`POST
+  /// /api/v1/access-credentials`, `access.scan`, real-already-paid-sale
+  /// validation, idempotency-keyed), except `code` is the wristband's own
+  /// physical UID — entered manually via keyboard/scanner, never server-
+  /// generated (no NFC-reader vendor integration exists in the legacy or
+  /// is required this wave). A UID collision throws [ApiException] with
+  /// `details.reason == 'code_already_in_use'` (see
+  /// [posAccessErrorMessage]) — never silently retried with a different
+  /// code.
+  Future<PosAccessCredential> activateWristband({
+    required String branchId,
+    required String saleId,
+    required String code,
+    String? customerId,
+    bool? allowsReentry,
+  });
+
+  /// `POST /api/v1/access-credentials/{id}/unvoid` (`access.manage`) —
+  /// TASK 14.5 (Wave 3, Phase 3) addition: this domain's real "unblock",
+  /// the one genuinely new backend transition this wave adds (reactivates
+  /// a blocked/voided credential back to `issued`). Rejected with
+  /// `credential_not_void` if the credential is not currently blocked
+  /// (see [posAccessErrorMessage]). Idempotency-keyed, mirroring
+  /// [voidCredential]'s own reasoning (an irreversible-feeling admin
+  /// action).
+  Future<PosAccessCredential> unblockCredential(String id);
+
+  /// `GET /api/v1/access-credentials/by-code` (`access.read`) — TASK 14.5
+  /// (Wave 3, Phase 3) addition: look up a wristband (or ticket) by its
+  /// own code/UID and see its current status, ahead of its event history
+  /// via [listEvents]'s `credentialId` filter. A plain read, never a scan
+  /// — no side effect on `currentlyInside`/occupancy. Throws
+  /// [ApiException] (404 `resource_not_found`) for an unknown or
+  /// cross-tenant code — never a fabricated match.
+  Future<PosAccessCredential> lookupByCode(String code);
 
   /// `GET /api/v1/access-credentials` (`access.read`) — always filtered to
   /// `currently_inside=true` server-side; there is no general "every
@@ -194,11 +261,14 @@ abstract interface class PosAccessGateway {
   });
 
   /// `GET /api/v1/access-events` (`access.read`) — immutable, paginated
-  /// entry/exit history.
+  /// entry/exit history. `credentialId` (TASK 14.5, Wave 3 addition)
+  /// narrows this to exactly one credential's own trail — used by the
+  /// wristband lookup UI, ahead of [lookupByCode].
   Future<PosAccessPage<PosAccessEvent>> listEvents({
     String? branchId,
     String? cursor,
     int limit = 50,
+    String? credentialId,
     DateTime? occurredFrom,
     DateTime? occurredTo,
   });
@@ -271,6 +341,45 @@ class ApiPosAccessGateway implements PosAccessGateway {
   }
 
   @override
+  Future<PosAccessCredential> activateWristband({
+    required String branchId,
+    required String saleId,
+    required String code,
+    String? customerId,
+    bool? allowsReentry,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/access-credentials',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'branch_id': branchId,
+        'sale_id': saleId,
+        'credential_kind': 'wristband',
+        'code': code,
+        if (customerId != null) 'customer_id': customerId,
+        if (allowsReentry != null) 'allows_reentry': allowsReentry,
+      },
+    );
+    return _decodeCredential(envelope);
+  }
+
+  @override
+  Future<PosAccessCredential> unblockCredential(String id) async {
+    final envelope = await _client.postJson(
+      '/api/v1/access-credentials/$id/unvoid',
+      idempotencyKey: createIdempotencyKey(),
+    );
+    return _decodeCredential(envelope);
+  }
+
+  @override
+  Future<PosAccessCredential> lookupByCode(String code) async {
+    final path = Uri(path: '/api/v1/access-credentials/by-code', queryParameters: {'code': code}).toString();
+    final envelope = await _client.getJson(path);
+    return _decodeCredential(envelope);
+  }
+
+  @override
   Future<PosAccessPage<PosAccessCredential>> currentlyInside({
     String? branchId,
     String? cursor,
@@ -291,6 +400,7 @@ class ApiPosAccessGateway implements PosAccessGateway {
     String? branchId,
     String? cursor,
     int limit = 50,
+    String? credentialId,
     DateTime? occurredFrom,
     DateTime? occurredTo,
   }) async {
@@ -298,6 +408,7 @@ class ApiPosAccessGateway implements PosAccessGateway {
       'limit': '$limit',
       if (cursor != null) 'cursor': cursor,
       if (branchId != null) 'branch_id': branchId,
+      if (credentialId != null) 'credential_id': credentialId,
       if (occurredFrom != null) 'occurred_from': occurredFrom.toUtc().toIso8601String(),
       if (occurredTo != null) 'occurred_to': occurredTo.toUtc().toIso8601String(),
     };
@@ -366,6 +477,23 @@ class EmptyPosAccessGateway implements PosAccessGateway {
       Future.error(StateError('No access gateway is configured.'));
 
   @override
+  Future<PosAccessCredential> activateWristband({
+    required String branchId,
+    required String saleId,
+    required String code,
+    String? customerId,
+    bool? allowsReentry,
+  }) => Future.error(StateError('No access gateway is configured.'));
+
+  @override
+  Future<PosAccessCredential> unblockCredential(String id) =>
+      Future.error(StateError('No access gateway is configured.'));
+
+  @override
+  Future<PosAccessCredential> lookupByCode(String code) =>
+      Future.error(StateError('No access gateway is configured.'));
+
+  @override
   Future<PosAccessPage<PosAccessCredential>> currentlyInside({
     String? branchId,
     String? cursor,
@@ -377,6 +505,7 @@ class EmptyPosAccessGateway implements PosAccessGateway {
     String? branchId,
     String? cursor,
     int limit = 50,
+    String? credentialId,
     DateTime? occurredFrom,
     DateTime? occurredTo,
   }) => Future.error(StateError('No access gateway is configured.'));

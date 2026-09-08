@@ -11,6 +11,10 @@ const categoryProperties = {
   description: nullableText,
   sort_order: { type: 'integer', minimum: 0 },
   status,
+  // TASK 14.5 (Wave 3, Phase 6): generic, tenant-configurable "visual/
+  // compact tile" display hint — see `catalog.types.ts`'s `Category.
+  // visualTile` doc comment.
+  visual_tile: { type: 'boolean' },
   version: { type: 'integer', minimum: 1 },
   created_at: { type: 'string' },
   updated_at: { type: 'string' },
@@ -123,6 +127,7 @@ export const categoryCreateSchema = {
     description: nullableText,
     sort_order: { type: 'integer', minimum: 0 },
     status,
+    visual_tile: { type: 'boolean' },
   },
 } as const;
 export const categoryPatchSchema = {
@@ -135,6 +140,7 @@ export const categoryPatchSchema = {
     description: nullableText,
     sort_order: { type: 'integer', minimum: 0 },
     status,
+    visual_tile: { type: 'boolean' },
   },
 } as const;
 export const brandCreateSchema = {

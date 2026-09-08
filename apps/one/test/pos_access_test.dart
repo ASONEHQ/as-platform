@@ -288,7 +288,12 @@ void main() {
       final gateway = _FakeAccessGateway();
       await _pump(tester, gateway, permissions: const ['access.scan', 'access.manage']);
 
-      expect(find.text('Tu sesión no incluye el permiso access.read requerido.'), findsNWidgets(3));
+      // 4, not 3: occupancy + "actualmente dentro" + "eventos" + the
+      // "Pulseras NFC" section added in TASK 14.5 (Wave 3, Phase 3) — see
+      // `pos_wristbands_test.dart` for that section's own dedicated
+      // coverage. This section honestly requires the same access.read
+      // permission as every other read surface on this screen.
+      expect(find.text('Tu sesión no incluye el permiso access.read requerido.'), findsNWidgets(4));
       expect(gateway.insideCalls, 0);
       expect(gateway.eventsCalls, 0);
       expect(gateway.occupancyCalls, 0);
@@ -381,6 +386,12 @@ class _FakeAccessGateway implements PosAccessGateway {
     this.issueError,
     this.voidResult,
     this.voidError,
+    this.activateWristbandResult,
+    this.activateWristbandError,
+    this.unblockResult,
+    this.unblockError,
+    this.lookupByCodeResult,
+    this.lookupByCodeError,
     this.insideResult = const PosAccessPage(items: [], nextCursor: null),
     this.eventsResult = const PosAccessPage(items: [], nextCursor: null),
     this.occupancyCount = 0,
@@ -392,13 +403,23 @@ class _FakeAccessGateway implements PosAccessGateway {
   final ApiException? issueError;
   final PosAccessCredential? voidResult;
   final ApiException? voidError;
+  // TASK 14.5 (Wave 3, Phase 3) additions.
+  final PosAccessCredential? activateWristbandResult;
+  final ApiException? activateWristbandError;
+  final PosAccessCredential? unblockResult;
+  final ApiException? unblockError;
+  final PosAccessCredential? lookupByCodeResult;
+  final ApiException? lookupByCodeError;
   final PosAccessPage<PosAccessCredential> insideResult;
   final PosAccessPage<PosAccessEvent> eventsResult;
   final int occupancyCount;
 
   final List<String> scanCalls = [];
   final List<String> voidCalls = [];
+  final List<String> unblockCalls = [];
+  final List<String> lookupByCodeCalls = [];
   final List<({String saleId, String? customerId, bool? allowsReentry})> issueCalls = [];
+  final List<({String saleId, String code, String? customerId, bool? allowsReentry})> activateWristbandCalls = [];
   int occupancyCalls = 0;
   int insideCalls = 0;
   int eventsCalls = 0;
@@ -430,6 +451,34 @@ class _FakeAccessGateway implements PosAccessGateway {
   }
 
   @override
+  Future<PosAccessCredential> activateWristband({
+    required String branchId,
+    required String saleId,
+    required String code,
+    String? customerId,
+    bool? allowsReentry,
+  }) async {
+    activateWristbandCalls.add((saleId: saleId, code: code, customerId: customerId, allowsReentry: allowsReentry));
+    if (activateWristbandError != null) throw activateWristbandError!;
+    return activateWristbandResult ??
+        _credential(id: 'wristband-1', code: code, saleId: saleId, customerId: customerId);
+  }
+
+  @override
+  Future<PosAccessCredential> unblockCredential(String id) async {
+    unblockCalls.add(id);
+    if (unblockError != null) throw unblockError!;
+    return unblockResult ?? _credential(id: id, code: 'WB-UNBLOCKED');
+  }
+
+  @override
+  Future<PosAccessCredential> lookupByCode(String code) async {
+    lookupByCodeCalls.add(code);
+    if (lookupByCodeError != null) throw lookupByCodeError!;
+    return lookupByCodeResult ?? _credential(id: 'lookup-1', code: code);
+  }
+
+  @override
   Future<PosAccessPage<PosAccessCredential>> currentlyInside({
     String? branchId,
     String? cursor,
@@ -444,6 +493,7 @@ class _FakeAccessGateway implements PosAccessGateway {
     String? branchId,
     String? cursor,
     int limit = 50,
+    String? credentialId,
     DateTime? occurredFrom,
     DateTime? occurredTo,
   }) async {

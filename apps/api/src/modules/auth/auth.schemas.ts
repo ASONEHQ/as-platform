@@ -100,3 +100,60 @@ export const logoutAllSchema = {
 export const permissionsSchema = {
   querystring: { type: 'object', additionalProperties: false, properties: { branch_id: uuid } },
 } as const;
+
+// TASK 14.5 (Wave 3, Phase 4b): a 4-8 digit numeric PIN — matches the
+// legacy's own 4-digit convention while allowing a business to require a
+// longer one; never accepts anything but digits.
+export const pinLoginSchema = {
+  body: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['pin'],
+    properties: { pin: { type: 'string', pattern: '^[0-9]{4,8}$' } },
+  },
+} as const;
+
+// TASK 14.5 (Wave 3, Phase 7 Item 8): the opaque `POS-QR-<random>` code
+// issued by `issueStaffQrCredential` — bounded length, no format beyond
+// that (it is never parsed, only hashed and compared).
+export const qrLoginSchema = {
+  body: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['code'],
+    properties: { code: { type: 'string', minLength: 8, maxLength: 128 } },
+  },
+} as const;
+
+export const setStaffPinSchema = {
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['membership_id'],
+    properties: { membership_id: uuid },
+  },
+  body: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['pin'],
+    properties: { pin: { type: 'string', pattern: '^[0-9]{4,8}$' } },
+  },
+} as const;
+
+export const clearStaffPinSchema = {
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['membership_id'],
+    properties: { membership_id: uuid },
+  },
+} as const;
+
+export const staffQrParamsSchema = {
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['membership_id'],
+    properties: { membership_id: uuid },
+  },
+} as const;

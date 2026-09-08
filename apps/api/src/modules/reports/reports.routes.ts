@@ -13,9 +13,11 @@ import type {
   FinancialReport,
   InventoryReport,
   PartiesReport,
+  PromotionsReport,
   ReportFilter,
   SalesReport,
   StatusCount,
+  TopCoupon,
 } from './reports.types.js';
 
 /**
@@ -188,6 +190,25 @@ function partiesReportHttp(report: PartiesReport): Readonly<Record<string, unkno
   };
 }
 
+function topCouponHttp(entry: TopCoupon): Readonly<Record<string, unknown>> {
+  return { coupon_id: entry.couponId, code: entry.code, redemption_count: entry.redemptionCount };
+}
+
+function promotionsReportHttp(report: PromotionsReport): Readonly<Record<string, unknown>> {
+  return {
+    date_from: report.dateFrom,
+    date_to: report.dateTo,
+    branch_id: report.branchId,
+    coupon_redemption_count: report.couponRedemptionCount,
+    coupon_redemptions_total: report.couponRedemptionsTotal.map(currencyAmountHttp),
+    promotion_discount_count: report.promotionDiscountCount,
+    promotion_discount_total: report.promotionDiscountTotal.map(currencyAmountHttp),
+    coupon_discount_count: report.couponDiscountCount,
+    coupon_discount_total: report.couponDiscountTotal.map(currencyAmountHttp),
+    top_coupons: report.topCoupons.map(topCouponHttp),
+  };
+}
+
 function accessReportHttp(report: AccessReport): Readonly<Record<string, unknown>> {
   return {
     date_from: report.dateFrom,
@@ -282,6 +303,68 @@ export function registerReportsRoutes(app: FastifyInstance, authentication: Auth
         if (request.query.branch_id !== undefined) requireBranchAccess(authentication, auth, request.query.branch_id);
         const report = await service.inventoryReport(auth.companyId, auth.permittedBranchIds, reportFilter(request.query));
         return reply.send(successResponse(inventoryReportHttp(report), request.requestContext));
+      }),
+  );
+
+  // GET /api/v1/reports/inventory/kardex.csv — TASK 14.5 (Wave 3, Phase 7,
+  // Item 2): real `inventory_movement_lines` rows, the honest CSV port of
+  // AS POS V1's real Kardex PDF export (see `reports.types.ts`'s own doc
+  // comment on `KardexExportRow` for the deliberate CSV-not-PDF scoping
+  // decision). Registered ahead of nothing parametric in this module — no
+  // route-shadowing risk (mirrors how `product-catalog.routes.ts` reasons
+  // about its own `export.csv` literal path).
+  app.get<{ Querystring: ReportQuerystring & { product_variant_id?: string } }>(
+    '/api/v1/reports/inventory/kardex.csv',
+    {
+      schema: {
+        tags: ['reports'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['date_from', 'date_to'],
+          properties: {
+            date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            branch_id: { type: 'string', format: 'uuid' },
+            product_variant_id: { type: 'string', format: 'uuid' },
+          },
+        },
+        response: { ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withReportsErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'report.read');
+        if (request.query.branch_id !== undefined) requireBranchAccess(authentication, auth, request.query.branch_id);
+        const csv = await service.kardexExportCsv(
+          auth.companyId,
+          auth.permittedBranchIds,
+          reportFilter(request.query),
+          request.query.product_variant_id,
+        );
+        return reply
+          .header('content-type', 'text/csv; charset=utf-8')
+          .header(
+            'content-disposition',
+            `attachment; filename="kardex-${request.query.date_from}-${request.query.date_to}.csv"`,
+          )
+          .send(csv);
+      }),
+  );
+
+  // GET /api/v1/reports/promotions — TASK 14.5 (Wave 3, Phase 7, Item 4):
+  // the 8th real report area.
+  app.get<{ Querystring: ReportQuerystring }>(
+    '/api/v1/reports/promotions',
+    { schema: { tags: ['reports'], querystring: reportQuerystringSchema, response: { 200: responseSchema, ...commonErrors } } },
+    async (request, reply) =>
+      withReportsErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'report.read');
+        if (request.query.branch_id !== undefined) requireBranchAccess(authentication, auth, request.query.branch_id);
+        const report = await service.promotionsReport(auth.companyId, auth.permittedBranchIds, reportFilter(request.query));
+        return reply.send(successResponse(promotionsReportHttp(report), request.requestContext));
       }),
   );
 

@@ -33,7 +33,9 @@ enum _ReportArea {
   customers('Clientes', Icons.people_outline),
   employees('Empleados', Icons.badge_outlined),
   parties('Fiestas', Icons.celebration_outlined),
-  access('Accesos', Icons.qr_code_scanner_outlined);
+  access('Accesos', Icons.qr_code_scanner_outlined),
+  // TASK 14.5 (Wave 3, Phase 7, Item 4): the 8th real report area.
+  promotions('Promociones', Icons.local_offer_outlined);
 
   const _ReportArea(this.label, this.icon);
   final String label;
@@ -164,6 +166,11 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
             ),
             _ReportArea.access => _AccessReportPanel(
               key: ValueKey('pos-reports-access-$_rangeKey'),
+              filter: _filter,
+              gateway: widget.reportsGateway,
+            ),
+            _ReportArea.promotions => _PromotionsReportPanel(
+              key: ValueKey('pos-reports-promotions-$_rangeKey'),
               filter: _filter,
               gateway: widget.reportsGateway,
             ),
@@ -484,13 +491,30 @@ class _InventoryReportPanel extends StatelessWidget {
   final PosReportFilter filter;
   final PosReportsGateway gateway;
 
+  // TASK 14.5 (Wave 3, Phase 7, Item 2) — real Kardex CSV export, reusing
+  // the exact same `_exportCsv`/`downloadCsvFile` mechanism every other
+  // report area's export button already uses (never a second, divergent
+  // download path).
+  Future<void> _exportKardex(BuildContext context) => _exportCsv(
+    context: context,
+    filenamePrefix: 'kardex',
+    filter: filter,
+    fetch: () => gateway.exportKardexCsv(filter: filter),
+  );
+
   @override
   Widget build(BuildContext context) => _ReportPanel<PosInventoryReport>(
     load: () => gateway.inventoryReport(filter: filter),
     builder: (context, report) => Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _ReportSectionHeader(title: 'Inventario'),
+        _ReportSectionHeader(
+          title: 'Inventario',
+          action: _CsvExportButton(
+            reportsKey: 'pos-reports-kardex-export-csv',
+            onPressed: () => unawaited(_exportKardex(context)),
+          ),
+        ),
         Text(
           'Existencias en tiempo real (no filtradas por fecha); el movimiento de abajo sí respeta el rango seleccionado.',
           style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12),
@@ -709,6 +733,69 @@ class _AccessReportPanel extends StatelessWidget {
         Text(
           'La ocupación actual es una foto en tiempo real (no filtrada por fecha).',
           style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12),
+        ),
+      ],
+    ),
+  );
+}
+
+// TASK 14.5 (Wave 3, Phase 7, Item 4) — the 8th real report area, over
+// `coupon_redemptions`/`sale_discounts`. No CSV export here (unlike Sales/
+// Financial/Kardex): this report's own purpose is the "at a glance"
+// aggregate + top-coupons list, not a row-level export — matching how
+// Inventory/Customers/Employees/Parties/Access also carry no export
+// button.
+class _PromotionsReportPanel extends StatelessWidget {
+  const _PromotionsReportPanel({required this.filter, required this.gateway, super.key});
+  final PosReportFilter filter;
+  final PosReportsGateway gateway;
+
+  @override
+  Widget build(BuildContext context) => _ReportPanel<PosPromotionsReport>(
+    load: () => gateway.promotionsReport(filter: filter),
+    builder: (context, report) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _ReportSectionHeader(title: 'Promociones y cupones'),
+        Text(
+          'Uso real de cupones y promociones aplicadas en ventas — descuentos manuales y recompensas '
+          'tienen su propio reporte y nunca se mezclan aquí.',
+          style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(child: _ReportsStatTile(label: 'Cupones canjeados', value: '${report.couponRedemptionCount}')),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _ReportsStatTile(label: 'Descuentos por promoción', value: '${report.promotionDiscountCount}'),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: _ReportsStatTile(label: 'Descuentos por cupón', value: '${report.couponDiscountCount}')),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: _ReportsMoneySection(title: 'Total canjeado en cupones', amounts: report.couponRedemptionsTotal)),
+            const SizedBox(width: 12),
+            Expanded(child: _ReportsMoneySection(title: 'Descuento por promociones', amounts: report.promotionDiscountTotal)),
+            const SizedBox(width: 12),
+            Expanded(child: _ReportsMoneySection(title: 'Descuento por cupones', amounts: report.couponDiscountTotal)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _ReportsCard(
+          title: 'Cupones más canjeados',
+          child: report.topCoupons.isEmpty
+              ? const _ReportsEmptyNote(message: 'Ningún cupón fue canjeado en este rango.')
+              : _ReportsTable(
+                  columns: const ['Código', 'Canjes'],
+                  rows: [
+                    for (final entry in report.topCoupons) [entry.code, '${entry.redemptionCount}'],
+                  ],
+                ),
         ),
       ],
     ),

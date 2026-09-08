@@ -385,4 +385,51 @@ void main() {
       expect(html, isNot(contains('Cliente:')));
     });
   });
+
+  group('TASK 14.5 (Wave 3, Phase 8) — tenant header/footer branding text', () {
+    test('renders no tenant-header/tenant-footer DIV at all when both are omitted — '
+        'byte-identical to before this task for a tenant that never configured this '
+        '(the static .tenant-header/.tenant-footer CSS rules stay in the stylesheet '
+        'either way — only the rendered content block is conditional)', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      expect(html, isNot(contains('class="sub tenant-header"')));
+      expect(html, isNot(contains('class="tenant-footer"')));
+    });
+
+    test('renders the header text under the business/branch line, before the first divider', () {
+      final html = buildReceiptHtml(receipt: receipt(), headerText: 'Sucursal Centro');
+      expect(html, contains('<div class="sub tenant-header">Sucursal Centro</div>'));
+      final businessIndex = html.indexOf('AS ONE Demo Co.');
+      final headerBlockIndex = html.indexOf('<div class="sub tenant-header">');
+      final firstDividerIndex = html.indexOf('<hr class="divider">');
+      expect(businessIndex, lessThan(headerBlockIndex));
+      expect(headerBlockIndex, lessThan(firstDividerIndex));
+    });
+
+    test('renders the footer text above the fixed "¡Gracias por tu compra!" line', () {
+      final html = buildReceiptHtml(receipt: receipt(), footerText: 'Cambios en 7 días con ticket.');
+      expect(html, contains('<div class="tenant-footer">Cambios en 7 días con ticket.</div>'));
+      final footerBlockIndex = html.indexOf('<div class="tenant-footer">');
+      final thanksIndex = html.indexOf('¡Gracias por tu compra!');
+      expect(footerBlockIndex, lessThan(thanksIndex));
+    });
+
+    test('an empty or whitespace-only header/footer renders nothing extra, never a blank block', () {
+      final html = buildReceiptHtml(receipt: receipt(), headerText: '   ', footerText: '');
+      expect(html, isNot(contains('class="sub tenant-header"')));
+      expect(html, isNot(contains('class="tenant-footer"')));
+    });
+
+    test('header and footer text are HTML-escaped like every other tenant-supplied value', () {
+      final html = buildReceiptHtml(
+        receipt: receipt(),
+        headerText: '<b>Hola</b> & bienvenido',
+        footerText: '<script>alert(1)</script>',
+      );
+      expect(html, contains('&lt;b&gt;Hola&lt;/b&gt; &amp; bienvenido'));
+      expect(html, contains('&lt;script&gt;alert(1)&lt;/script&gt;'));
+      expect(html, isNot(contains('<b>Hola</b>')));
+      expect(html, isNot(contains('<script>alert(1)</script>')));
+    });
+  });
 }

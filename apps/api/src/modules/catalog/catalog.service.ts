@@ -24,6 +24,7 @@ export interface CategoryCreate {
   readonly description?: string | null;
   readonly sortOrder?: number;
   readonly status?: CatalogStatus;
+  readonly visualTile?: boolean;
 }
 export interface CategoryPatch {
   readonly parentId?: string | null;
@@ -31,6 +32,7 @@ export interface CategoryPatch {
   readonly description?: string | null;
   readonly sortOrder?: number;
   readonly status?: CatalogStatus;
+  readonly visualTile?: boolean;
 }
 export interface BrandCreate {
   readonly id?: string;
@@ -125,6 +127,7 @@ export class CatalogService {
       description: optionalDescription(input.description),
       sortOrder: input.sortOrder ?? 0,
       status: input.status ?? 'active',
+      visualTile: input.visualTile ?? false,
     };
     const normalized = { ...normalizedRequest, id: input.id ?? randomUUID() };
     return this.repository.transaction(async (client) =>
@@ -181,6 +184,7 @@ export class CatalogService {
             : optionalDescription(patch.description),
         sortOrder: patch.sortOrder ?? current.sortOrder,
         status,
+        visualTile: patch.visualTile ?? current.visualTile,
       });
       const retired = status === 'retired';
       await this.repository.auditAndPublish(client, context, {

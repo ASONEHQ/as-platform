@@ -3,18 +3,23 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ApiConfig } from '@asone/config';
 import { AppError } from '@asone/errors';
 import { successResponse } from '../../http/response.js';
-import { requireAuthenticatedUser, requireBranchAccess } from './auth.guards.js';
+import { requireAuthenticatedUser, requireBranchAccess, requirePermission } from './auth.guards.js';
 import type { AuthService, LoginResult, TokenResult } from './auth.service.js';
 import type { ClientType, TransportMode } from './auth.types.js';
 import {
   browserBootstrapSchema,
   branchSwitchSchema,
+  clearStaffPinSchema,
   companySelectionSchema,
   companySwitchSchema,
   loginSchema,
   logoutAllSchema,
   permissionsSchema,
+  pinLoginSchema,
+  qrLoginSchema,
   refreshSchema,
+  setStaffPinSchema,
+  staffQrParamsSchema,
 } from './auth.schemas.js';
 
 const productionCookie = '__Host-asone_refresh';
@@ -449,6 +454,108 @@ export function registerAuthRoutes(
         },
         request.requestContext,
       );
+    },
+  );
+
+  // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): quick-switch PIN/QR login —
+  // both require an already-authenticated caller (`requireAuthenticatedUser`)
+  // exactly like `/company-switches`/`/branch-switches` above; the
+  // company scope always comes from that resolved session, never from the
+  // request body. Rate-limited with the SAME strict per-route limit as
+  // `/login` — a short numeric PIN is otherwise brute-forceable.
+  app.post<{ Body: { pin: string } }>(
+    '/api/v1/auth/pin-login',
+    {
+      schema: pinLoginSchema,
+      config: {
+        rateLimit: {
+          max: config.authLoginRateLimitMax,
+          timeWindow: config.authLoginRateLimitWindowMs,
+        },
+      },
+    },
+    async (request, reply) => {
+      const current = await requireAuthenticatedUser(request, service);
+      if ((current.transportMode ?? 'bearer') === 'browser') {
+        requireApprovedOrigin(request, config);
+        service.verifyCsrf(current, request.headers['x-csrf-token'] as string | undefined);
+      }
+      const result = await service.pinLogin(current, request.body.pin, request.requestContext);
+      return successResponse(sendTokens(service, result, reply, config), request.requestContext);
+    },
+  );
+
+  app.post<{ Body: { code: string } }>(
+    '/api/v1/auth/qr-login',
+    {
+      schema: qrLoginSchema,
+      config: {
+        rateLimit: {
+          max: config.authLoginRateLimitMax,
+          timeWindow: config.authLoginRateLimitWindowMs,
+        },
+      },
+    },
+    async (request, reply) => {
+      const current = await requireAuthenticatedUser(request, service);
+      if ((current.transportMode ?? 'bearer') === 'browser') {
+        requireApprovedOrigin(request, config);
+        service.verifyCsrf(current, request.headers['x-csrf-token'] as string | undefined);
+      }
+      const result = await service.qrLogin(current, request.body.code, request.requestContext);
+      return successResponse(sendTokens(service, result, reply, config), request.requestContext);
+    },
+  );
+
+  // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): admin enrollment endpoints —
+  // gated on the new `staff_credential.manage` permission (never on the
+  // login endpoints above, which only require an authenticated session).
+  app.put<{ Params: { membership_id: string }; Body: { pin: string } }>(
+    '/api/v1/auth/staff/:membership_id/pin',
+    { schema: setStaffPinSchema },
+    async (request) => {
+      const current = await requireAuthenticatedUser(request, service);
+      requirePermission(service, current, 'staff_credential.manage');
+      await service.setStaffPin(current, request.params.membership_id, request.body.pin);
+      return successResponse({ result: 'pin_set' }, request.requestContext);
+    },
+  );
+
+  app.delete<{ Params: { membership_id: string } }>(
+    '/api/v1/auth/staff/:membership_id/pin',
+    { schema: clearStaffPinSchema },
+    async (request) => {
+      const current = await requireAuthenticatedUser(request, service);
+      requirePermission(service, current, 'staff_credential.manage');
+      await service.setStaffPin(current, request.params.membership_id, null);
+      return successResponse({ result: 'pin_cleared' }, request.requestContext);
+    },
+  );
+
+  app.post<{ Params: { membership_id: string } }>(
+    '/api/v1/auth/staff/:membership_id/qr',
+    { schema: staffQrParamsSchema },
+    async (request) => {
+      const current = await requireAuthenticatedUser(request, service);
+      requirePermission(service, current, 'staff_credential.manage');
+      const issued = await service.issueStaffQrCredential(current, request.params.membership_id);
+      // The plaintext `code` is returned exactly once, here — it is never
+      // retrievable again afterward (only its hash is stored).
+      return successResponse(
+        { result: 'qr_issued', code: issued.code, expires_at: issued.expiresAt.toISOString() },
+        request.requestContext,
+      );
+    },
+  );
+
+  app.delete<{ Params: { membership_id: string } }>(
+    '/api/v1/auth/staff/:membership_id/qr',
+    { schema: staffQrParamsSchema },
+    async (request) => {
+      const current = await requireAuthenticatedUser(request, service);
+      requirePermission(service, current, 'staff_credential.manage');
+      await service.revokeStaffQrCredential(current, request.params.membership_id);
+      return successResponse({ result: 'qr_revoked' }, request.requestContext);
     },
   );
 }

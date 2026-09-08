@@ -21,6 +21,19 @@ export type AccessCredentialStatus = (typeof accessCredentialStatuses)[number];
 export const accessEventTypes = ['entry', 'exit'] as const;
 export type AccessEventType = (typeof accessEventTypes)[number];
 
+/**
+ * TASK 14.5 (Wave 3, Phase 3) — NFC wristband lifecycle recovery. A
+ * wristband is just another physical form-factor for the exact same real
+ * credential concept (see `packages/database/src/schema/access.ts`'s own
+ * doc comment for the full forensic citation against the legacy source):
+ * `'ticket'` — the pre-existing, server-generated printed/QR code path,
+ * unchanged. `'wristband'` — the code IS the physical NFC UID, entered
+ * manually via keyboard/scanner (no vendor NFC-reader integration exists
+ * in the legacy or is required this wave).
+ */
+export const accessCredentialKinds = ['ticket', 'wristband'] as const;
+export type AccessCredentialKind = (typeof accessCredentialKinds)[number];
+
 /** A plain, honest 1:1 mapping of `access_credentials`, with one
  * deliberate ergonomic translation: `allowsReentry`/`currentlyInside` are
  * real TypeScript `boolean`s here even though the column itself is a
@@ -35,6 +48,7 @@ export interface AccessCredentialRow {
   companyId: string;
   branchId: string;
   code: string;
+  credentialKind: AccessCredentialKind;
   saleId: string | null;
   customerId: string | null;
   allowsReentry: boolean;
@@ -101,6 +115,17 @@ export interface AccessMutationContext {
  *    here would be exactly the sentinel/hidden-state-mutation
  *    anti-pattern this codebase explicitly avoids elsewhere, e.g.
  *    `held_sale_carts`' own no-silent-expiry rule).
+ *  - `credential_not_void` — TASK 14.5 (Wave 3) addition: an "unblock"
+ *    (`AccessService.unvoidCredential`) attempted against a credential
+ *    that is not currently `void` (already `issued`) — the honest,
+ *    specific mirror of `credential_void` on the reverse transition.
+ *  - `code_already_in_use` — TASK 14.5 (Wave 3) addition: a
+ *    client-supplied wristband UID (`credentialKind='wristband'`)
+ *    collides with `access_credentials_company_code_uq`. Only ever
+ *    surfaced for a CLIENT-supplied code — a server-generated ticket
+ *    code's own collision is silently retried internally (see
+ *    `AccessService.issueCredential`'s own doc comment) and never reaches
+ *    a caller as this code.
  *  - `validation_error` / `idempotency_conflict` / `resource_not_found`
  *    reuse the same generic vocabulary every other domain in this
  *    codebase already established (see `held-sales.types.ts`/
@@ -117,7 +142,9 @@ export type AccessErrorCode =
   | 'already_inside'
   | 'not_inside'
   | 'reentry_not_allowed'
-  | 'credential_currently_inside';
+  | 'credential_currently_inside'
+  | 'credential_not_void'
+  | 'code_already_in_use';
 
 export class AccessError extends Error {
   constructor(

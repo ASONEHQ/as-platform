@@ -103,6 +103,24 @@ void main() {
       expect(find.text('30'), findsOneWidget); // entryCount
       expect(find.text('7'), findsOneWidget); // currentOccupancy
     });
+
+    // TASK 14.5 (Wave 3, Phase 7, Item 4).
+    testWidgets('Promociones: coupon/promotion totals and top-coupons table render, never blended with manual discounts', (
+      tester,
+    ) async {
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway);
+      await _tapArea(tester, 'promotions');
+
+      expect(gateway.promotionsCalls, hasLength(1));
+      // couponRedemptionCount stat tile AND the top-coupons table's own
+      // redemption-count column share this fixture value — real, not a
+      // fabricated duplicate.
+      expect(find.text('2'), findsNWidgets(2));
+      expect(find.text('1'), findsNWidgets(2)); // promotionDiscountCount + couponDiscountCount
+      expect(find.text('17.40 MXN'), findsOneWidget); // couponRedemptionsTotal
+      expect(find.text('RPT10'), findsOneWidget); // topCoupons code
+    });
   });
 
   group('Date-range change re-fetches', () {
@@ -187,6 +205,19 @@ void main() {
 
       expect(gateway.exportFinancialCalls, hasLength(1));
       expect(gateway.exportFinancialCalls.single.branchId, 'branch-id');
+    });
+
+    // TASK 14.5 (Wave 3, Phase 7, Item 2).
+    testWidgets('Exportar CSV on Inventario calls exportKardexCsv with the active filter', (tester) async {
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway);
+      await _tapArea(tester, 'inventory');
+
+      await tester.tap(find.byKey(const Key('pos-reports-kardex-export-csv')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.exportKardexCalls, hasLength(1));
+      expect(gateway.exportKardexCalls.single.branchId, 'branch-id');
     });
   });
 }
@@ -354,6 +385,20 @@ const _fixtureAccessReport = PosAccessReport(
   currentOccupancy: 7,
 );
 
+// TASK 14.5 (Wave 3, Phase 7, Item 4).
+const _fixturePromotionsReport = PosPromotionsReport(
+  dateFrom: '2026-01-01',
+  dateTo: '2026-01-07',
+  branchId: 'branch-id',
+  couponRedemptionCount: 2,
+  couponRedemptionsTotal: [PosReportCurrencyAmount(currencyCode: 'MXN', amount: '17.4000')],
+  promotionDiscountCount: 1,
+  promotionDiscountTotal: [PosReportCurrencyAmount(currencyCode: 'MXN', amount: '5.0000')],
+  couponDiscountCount: 1,
+  couponDiscountTotal: [PosReportCurrencyAmount(currencyCode: 'MXN', amount: '11.6000')],
+  topCoupons: [PosTopCoupon(couponId: 'coupon-id', code: 'RPT10', redemptionCount: 2)],
+);
+
 // --- Recording fake gateway ---------------------------------------------
 
 class _RecordingReportsGateway implements PosReportsGateway {
@@ -370,6 +415,8 @@ class _RecordingReportsGateway implements PosReportsGateway {
   final List<PosReportFilter> employeesCalls = [];
   final List<PosReportFilter> partiesCalls = [];
   final List<PosReportFilter> accessCalls = [];
+  final List<PosReportFilter> exportKardexCalls = [];
+  final List<PosReportFilter> promotionsCalls = [];
 
   @override
   Future<PosSalesReport> salesReport({required PosReportFilter filter}) async {
@@ -423,5 +470,17 @@ class _RecordingReportsGateway implements PosReportsGateway {
   Future<PosAccessReport> accessReport({required PosReportFilter filter}) async {
     accessCalls.add(filter);
     return _fixtureAccessReport;
+  }
+
+  @override
+  Future<String> exportKardexCsv({required PosReportFilter filter, String? productVariantId}) async {
+    exportKardexCalls.add(filter);
+    return 'movement_id,sku\nmv-1,RPT-TRACKED\n';
+  }
+
+  @override
+  Future<PosPromotionsReport> promotionsReport({required PosReportFilter filter}) async {
+    promotionsCalls.add(filter);
+    return _fixturePromotionsReport;
   }
 }

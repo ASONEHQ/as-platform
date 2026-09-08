@@ -5,14 +5,18 @@ import '../core/telemetry/telemetry.dart';
 import '../design_system/theme/as_theme.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_access_gateway.dart';
+import '../features/pos/pos_assistant_gateway.dart';
+import '../features/pos/pos_auth_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_dashboard_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
+import '../features/pos/pos_product_variants_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
@@ -20,6 +24,7 @@ import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
+import '../features/pos/pos_settings_gateway.dart';
 import '../features/pos/pos_suppliers_gateway.dart';
 import 'router.dart';
 
@@ -48,6 +53,11 @@ class AsOneApp extends StatefulWidget {
     this.posSchedulesGateway = const EmptyPosSchedulesGateway(),
     this.posTimeClockGateway = const EmptyPosTimeClockGateway(),
     this.posPayrollGateway = const EmptyPosPayrollGateway(),
+    this.posDashboardGateway = const EmptyPosDashboardGateway(),
+    this.posSettingsGateway = const EmptyPosSettingsGateway(),
+    this.posProductVariantsGateway = const EmptyPosProductVariantsGateway(),
+    this.posAssistantGateway = const EmptyPosAssistantGateway(),
+    this.posAuthGateway = const EmptyPosAuthGateway(),
     super.key,
   });
 
@@ -100,6 +110,19 @@ class AsOneApp extends StatefulWidget {
   final PosSchedulesGateway posSchedulesGateway;
   final PosTimeClockGateway posTimeClockGateway;
   final PosPayrollGateway posPayrollGateway;
+  // TASK 14.5 (Wave 3, Phase 2): Dashboard ("today at a glance") — see
+  // `pos_dashboard_gateway.dart`.
+  final PosDashboardGateway posDashboardGateway;
+  // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer
+  // branding — see `pos_settings_gateway.dart`.
+  final PosSettingsGateway posSettingsGateway;
+  // TASK 14.5 (Wave 3, Phase 7, Item 3): product variants admin — see
+  // `pos_product_variants_gateway.dart`.
+  final PosProductVariantsGateway posProductVariantsGateway;
+  // TASK 14.5 (Wave 3, Phase 7, Item 6): real deterministic FAQ
+  // assistant — see `pos_assistant_gateway.dart`.
+  final PosAssistantGateway posAssistantGateway;
+  final PosAuthGateway posAuthGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -139,6 +162,11 @@ class _AsOneAppState extends State<AsOneApp> {
       posSchedulesGateway: widget.posSchedulesGateway,
       posTimeClockGateway: widget.posTimeClockGateway,
       posPayrollGateway: widget.posPayrollGateway,
+      posDashboardGateway: widget.posDashboardGateway,
+      posSettingsGateway: widget.posSettingsGateway,
+      posProductVariantsGateway: widget.posProductVariantsGateway,
+      posAssistantGateway: widget.posAssistantGateway,
+      posAuthGateway: widget.posAuthGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -170,6 +198,11 @@ class PlatformScope extends InheritedWidget {
     this.posSchedulesGateway = const EmptyPosSchedulesGateway(),
     this.posTimeClockGateway = const EmptyPosTimeClockGateway(),
     this.posPayrollGateway = const EmptyPosPayrollGateway(),
+    this.posDashboardGateway = const EmptyPosDashboardGateway(),
+    this.posSettingsGateway = const EmptyPosSettingsGateway(),
+    this.posProductVariantsGateway = const EmptyPosProductVariantsGateway(),
+    this.posAssistantGateway = const EmptyPosAssistantGateway(),
+    this.posAuthGateway = const EmptyPosAuthGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -245,6 +278,23 @@ class PlatformScope extends InheritedWidget {
   final PosTimeClockGateway posTimeClockGateway;
   final PosPayrollGateway posPayrollGateway;
 
+  /// TASK 14.5 (Wave 3, Phase 2): Dashboard ("today at a glance") — see
+  /// `pos_dashboard_gateway.dart`.
+  final PosDashboardGateway posDashboardGateway;
+
+  /// TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer
+  /// branding — see `pos_settings_gateway.dart`.
+  final PosSettingsGateway posSettingsGateway;
+
+  /// TASK 14.5 (Wave 3, Phase 7, Item 3): product variants admin — see
+  /// `pos_product_variants_gateway.dart`.
+  final PosProductVariantsGateway posProductVariantsGateway;
+
+  /// TASK 14.5 (Wave 3, Phase 7, Item 6): real deterministic FAQ
+  /// assistant — see `pos_assistant_gateway.dart`.
+  final PosAssistantGateway posAssistantGateway;
+  final PosAuthGateway posAuthGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -278,6 +328,11 @@ class PlatformScope extends InheritedWidget {
       posSchedulesGateway != oldWidget.posSchedulesGateway ||
       posTimeClockGateway != oldWidget.posTimeClockGateway ||
       posPayrollGateway != oldWidget.posPayrollGateway ||
+      posDashboardGateway != oldWidget.posDashboardGateway ||
+      posSettingsGateway != oldWidget.posSettingsGateway ||
+      posProductVariantsGateway != oldWidget.posProductVariantsGateway ||
+      posAssistantGateway != oldWidget.posAssistantGateway ||
+      posAuthGateway != oldWidget.posAuthGateway ||
       environment != oldWidget.environment;
 }
 

@@ -67,28 +67,42 @@ Built (TASK 12.4B — provider adapter, order/webhook state mapping,
 terminal dispatch) but intentionally paused throughout this entire task
 chain. Resuming it is its own explicitly-gated future task.
 
-## Dedicated Reports / analytics dashboard — per-area reports DONE (TASK 14.4 Wave 2)
+## Dedicated Reports / analytics dashboard — DONE (TASK 14.4 Wave 2, TASK 14.5 Wave 3)
 
-The underlying data (sales, cash sessions, refunds, inventory balances) is
-already fully queryable via real, tested, paginated endpoints. **TASK
-14.4 (Wave 2) update**: the per-area report screens themselves are now
-real and built — `apps/api/src/modules/reports/` (7 report areas: Sales/
-Financial/Inventory/Customers/Employees/Parties/Access, all real
-server-side SQL aggregation, real date-range+branch scoping, CSV export
-on Sales/Financial, the financial report reconciling bit-for-bit against
-the real `CashService.summary()` fold logic) + `pos_reports_gateway.dart`/
-`pos_reports_screen.dart`. Deliberately does NOT reproduce the legacy's
-own two admitted-fake fields (`prom_estancia`=95, always-0 water-park
-occupancy) — those are simply absent, not replaced with a new
-placeholder. What remains genuinely POST-LAUNCH: a single consolidated
-"today at a glance" dashboard screen (sales trend + today's parties +
-memberships + alerts on one view) — the per-area screens now cover
-almost all of the same underlying signal, just not on one combined
-screen. **TASK 14.2R update (historical)**: the legacy prototype's
-dashboard and per-area reports (Ventas/Financiero/Inventario/Clientes/
-Empleados/Accesos) were genuinely computed from live data, not static
-mockups — the finding that correctly predicted this was the
-highest-leverage rebuild in the whole legacy audit. See
+**This entry is superseded — nothing here remains a backlog item beyond
+two named, deliberately-scoped metrics.** The underlying data (sales,
+cash sessions, refunds, inventory balances) was already fully queryable
+via real, tested, paginated endpoints. **TASK 14.4 (Wave 2) update**: the
+per-area report screens themselves became real and built —
+`apps/api/src/modules/reports/` (7 report areas: Sales/Financial/
+Inventory/Customers/Employees/Parties/Access, all real server-side SQL
+aggregation, real date-range+branch scoping, CSV export on Sales/
+Financial, the financial report reconciling bit-for-bit against the real
+`CashService.summary()` fold logic) + `pos_reports_gateway.dart`/
+`pos_reports_screen.dart`. **TASK 14.5 (Wave 3) update — independently
+verified real, not taken on faith**: an 8th report area (Promotions usage,
+`GET /api/v1/reports/promotions`) and a real inventory Kardex CSV export
+(`GET /api/v1/reports/inventory/kardex.csv`, a deliberate CSV-not-PDF
+format change from the legacy's own real `exportarKardexPDF()`) were
+added. And the single consolidated "today at a glance" dashboard screen
+that this entry used to flag as the one remaining piece is now real too:
+`apps/api/src/modules/dashboard/` + `pos_dashboard_gateway.dart`, wired
+into `pos_shell.dart`'s `PosModule.dashboard` — real today's sales, live
+occupancy, today's parties + rooms, open register/session status,
+outstanding party balances (company-wide), and today's clocked-in
+employee count, every figure computed via the same real Wave 1/2 services
+the report endpoints themselves use. Deliberately does NOT reproduce the
+legacy's own two admitted-fake fields (`prom_estancia`=95, always-0
+water-park occupancy) — those are simply absent, not replaced with a new
+placeholder. What remains genuinely POST-LAUNCH, real legacy metrics
+consciously scoped out rather than fabricated: the %-vs-yesterday sales
+trend (`vsAyer`) and active-membership count — neither is on the new
+Dashboard; birthday alerts are also absent (only the raw `birth_date`
+field on customers exists). **TASK 14.2R update (historical)**: the
+legacy prototype's dashboard and per-area reports (Ventas/Financiero/
+Inventario/Clientes/Empleados/Accesos) were genuinely computed from live
+data, not static mockups — the finding that correctly predicted this was
+the highest-leverage rebuild in the whole legacy audit. See
 [[LEGACY_MISSING_PORTS]].
 
 ## Purchasing / suppliers — supplier CRUD DONE (TASK 14.4 Wave 2)
@@ -104,7 +118,9 @@ pattern — a later supplier rename never rewrites past purchase history).
 Still out of scope, re-confirmed this wave: a genuine PO-with-receiving
 workflow — the legacy's own formal purchase-order workflow never
 actually worked (its save function discarded the entered line items), so
-rebuilding it owes nothing to its own implementation. See
+rebuilding it owes nothing to its own implementation. **Re-confirmed
+untouched again in TASK 14.5 (Wave 3)** — no purchase-order module exists
+anywhere in the repository, and none appears in this wave's own diff. See
 [[LEGACY_MISSING_PORTS]] for full detail.
 
 ## Employee HR: payroll, time clock, shift scheduling — MOVED: built in TASK 14.4 (Wave 2)
@@ -145,8 +161,13 @@ scope, not from legacy evidence):
   `dimension='mass'`) before this wave — the original audit's grep
   simply missed them. Only the Flutter wiring was new work, now in
   progress.
-- **Register-style keyboard shortcuts** (F2/F3/F4/F5/F6/F8) — real
-  cashier-efficiency muscle memory with no current equivalent; P1.
+- ~~**Register-style keyboard shortcuts** (F2/F3/F5/F6/F8/Escape)~~ —
+  **DONE (TASK 14.5 Wave 3)**, independently verified to call the exact
+  same handlers the on-screen controls call (including a real `GlobalKey`
+  into the Cobrar button's own handler for F8), with a text-field-focus
+  guard so shortcuts never fire mid-typing. F4 (reprint) intentionally
+  not wired — nothing to reprint mid-sale, real reprint already lives in
+  Sale Detail history.
 - ~~**Occupancy/headcount (aforo) tracking**~~ — **DONE (TASK 14.4 Wave
   2).** Real, server-computed, and genuinely bidirectional (entry **and**
   exit — stronger than the legacy's one-way-only counter). Built
@@ -165,9 +186,41 @@ scope, not from legacy evidence):
   existing TASK 12.7 cash foundation. Not ported: the legacy's own
   dedicated over-withdrawal guard/authorizer field and its (superficial
   even in the legacy) expense photo-evidence flag.
-- **Modo Cliente** (self-checkout kiosk mode) and **café visual sub-mode**
-  — real in the legacy, no current equivalent, but not needed for the
-  already-proven cashier-operated V1 workflow; P2.
+- **Modo Cliente** (self-checkout kiosk mode) — real in the legacy, no
+  current equivalent, but not needed for the already-proven
+  cashier-operated V1 workflow; P2. **Re-confirmed still deferred in TASK
+  14.5 (Wave 3)** — no kiosk/self-checkout code was added anywhere.
+- ~~**Café visual sub-mode**~~ — **DONE (TASK 14.5 Wave 3).** A real,
+  generic `product_categories.is_visual_tile` flag (never hardcoded to
+  "café"/"coffee"), a dedicated `PosModule.cafeteria` sharing the exact
+  same real sale engine as the main POS module, and an honest empty
+  state. Independently re-confirmed against the legacy source that
+  `aplicarEstiloCafe()` really was, and remains, purely a CSS toggle with
+  zero checkout/behavioral difference — the current build ports the real
+  visual capability, not the legacy's own cosmetic mechanism as-is.
+- ~~**NFC wristbands**~~ (activate/block/unblock) — **DONE (TASK 14.5
+  Wave 3).** A real `access_credentials.credential_kind` extension, real
+  permission-gated routes, and real Flutter UI. "Extend" stays unbuilt —
+  a corrected finding, not an oversight: the legacy's `extenderPulsera()`
+  captures a "minutes to extend" value but never writes it to the
+  wristband's own expiry field, so nothing about the actual expiration
+  ever changes even though it runs and shows a success toast.
+- ~~**PIN and QR staff quick-switch login**~~ — **DONE (TASK 14.5 Wave
+  3), safely.** Independently security-verified: session-gated, company
+  scope taken only from the caller's own session, real argon2id hashing,
+  real session issuance, a server-generated random QR secret with a real
+  90-day TTL. Never a bare-PIN-as-login or client-chosen QR value like
+  the legacy.
+- ~~**A real (deterministic, faithful-port) AI assistant**~~ — **DONE
+  (TASK 14.5 Wave 3).** `apps/api/src/modules/assistant/` — a genuinely
+  deterministic keyword/intent matcher over live SQL data, zero LLM/
+  external calls, matching the legacy's own approach rather than
+  exceeding it. A real LLM-backed assistant remains a distinct, future,
+  non-parity upgrade.
+- ~~**Catalog export (CSV)**~~ and ~~**Product variant management UI**~~
+  and ~~**Inventory Kardex export**~~ and ~~**Promotion usage history
+  report**~~ — all **DONE (TASK 14.5 Wave 3)**; see
+  [[LEGACY_MISSING_PORTS]] for each item's own detail.
 
 See [[LEGACY_MISSING_PORTS]] for the complete list and reasoning, and
 [[LEGACY_FUNCTIONAL_PARITY]] for the full evidence-backed matrix this is
@@ -178,7 +231,23 @@ drawn from.
 Today's receipt logo is one shared, app-bundled mark
 (`assets/branding/as_logo_mark.png`) — `companies` has no branding/logo
 column. Adding one is additive (a new company-scoped asset reference), not
-launch-critical.
+launch-critical. **Re-confirmed still fully undone in TASK 14.5 (Wave
+3)** by direct search: no MinIO/S3 client, no `@fastify/multipart`, and
+no Flutter `image_picker`-style dependency exists anywhere in the
+repository.
+
+Receipt *header/footer text* (a separate, narrower piece of branding) is
+now **partially done (TASK 14.5 Wave 3)**: the EAV backend
+(`company_settings`/`branch_settings` keys `receipts.header_text`/
+`receipts.footer_text`) already existed before this wave, and Wave 3
+built a real admin screen (`pos_receipt_branding_screen.dart`) that
+genuinely persists it, plus threaded the fields into
+`receipt_html.dart`/`refund_receipt_html.dart`'s own template functions.
+**Independently verified gap**: none of the 4 real print call sites in
+`pos_shell.dart` pass those values through yet, so configured header/
+footer text does not appear on an actual printed receipt — a deliberate
+scope cut this wave, not an oversight, and still a real, open,
+POST-LAUNCH remainder.
 
 ## Forced password-change-on-first-login
 
@@ -191,6 +260,9 @@ technical fix would add a `must_change_password` flag checked at login.
 Explicitly out of scope per ADR-0012 — the printed receipt is a purchase
 ticket, never represented as a Mexican CFDI tax invoice. A real CFDI
 integration is a substantial, separate compliance-driven project.
+**Re-confirmed untouched by TASK 14.5 (Wave 3)** — no billing/CFDI module
+exists anywhere in the repository, and none appears in this wave's own
+diff.
 
 ## Flutter admin screens for company/branch/user/role management
 

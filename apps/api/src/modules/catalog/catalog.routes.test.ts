@@ -23,6 +23,7 @@ const category = {
   description: null,
   sortOrder: 0,
   status: 'active' as const,
+  visualTile: false,
   version: 1n,
   createdAt: now,
   updatedAt: now,

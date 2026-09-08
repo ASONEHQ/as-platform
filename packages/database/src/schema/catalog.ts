@@ -33,6 +33,17 @@ export const productCategories = pgTable(
     description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
     status: text('status').notNull().default('active'),
+    // TASK 14.5 (Wave 3, Phase 6): a generic, tenant-configurable "visual/
+    // compact tile" display hint — recovered from the legacy's own
+    // `estiloCafe` category flag (`docs/LEGACY_FUNCTIONAL_PARITY.md` §1),
+    // which forensic inspection proved was PURELY a visual/reporting-
+    // bucket flag with zero checkout/validation behavior — so this is
+    // deliberately just a rendering hint, never wired into any pricing/
+    // checkout/inventory logic, and deliberately NOT named/scoped to
+    // coffee/café — any company can opt any one of its own categories
+    // (a bakery's "Panadería", a hardware store's "Ofertas", etc.) into
+    // the same compact/prominent tile treatment.
+    isVisualTile: boolean('is_visual_tile').notNull().default(false),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
       .default(sql`1`),

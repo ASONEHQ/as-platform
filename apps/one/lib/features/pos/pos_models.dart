@@ -275,17 +275,31 @@ PosAddabilityBlock? posAddabilityBlock(
 }
 
 class PosCategory {
-  const PosCategory({required this.id, required this.name, required this.status});
+  const PosCategory({
+    required this.id,
+    required this.name,
+    required this.status,
+    this.visualTile = false,
+  });
 
   factory PosCategory.fromJson(Map<String, Object?> json) => PosCategory(
     id: json.string('id'),
     name: json.string('name'),
     status: json.string('status'),
+    // TASK 14.5 (Wave 3, Phase 6): the backend's generic, tenant-
+    // configurable "visual/compact tile" hint (`visual_tile` —
+    // `catalog.routes.ts`'s `categoryHttp`) — recovered from the legacy's
+    // own `estiloCafe` flag, forensically confirmed to be purely visual/
+    // reporting, never a checkout/validation difference (see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1). Defaults `false` for any
+    // response that predates this field.
+    visualTile: json['visual_tile'] == true,
   );
 
   final String id;
   final String name;
   final String status;
+  final bool visualTile;
 }
 
 class PosInventoryBalance {

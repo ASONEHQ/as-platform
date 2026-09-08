@@ -733,4 +733,83 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       }),
     ).rejects.toMatchObject({ code: 'validation_error' });
   });
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 1) — real CSV export of the live
+  // catalog: proves the export contains genuine per-tenant rows (category/
+  // brand/default-variant columns correctly joined), respects the same
+  // `search` filter `listProducts` accepts, and never leaks another
+  // tenant's products.
+  it('exports the live catalog as a real, tenant-scoped, filterable CSV', async () => {
+    const categoryResult = await catalog.createCategory(context, 'export-category', {
+      code: 'export-cat',
+      name: 'Export Category',
+    });
+    const brandResult = await catalog.createBrand(context, 'export-brand', {
+      code: 'export-brand',
+      name: 'Export Brand',
+    });
+    const exported = await products.createProduct(context, 'export-product', {
+      code: 'export-widget',
+      name: 'Export Widget',
+      productType: 'simple',
+      tracksInventory: true,
+      status: 'active',
+      categoryId: categoryResult.value.id,
+      brandId: brandResult.value.id,
+      defaultVariant: {
+        sku: 'export-widget-sku',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '12.5000',
+        currencyCode: 'MXN',
+      },
+    });
+    const otherTenantProduct = await products.createProduct(otherContext, 'export-other', {
+      code: 'export-other-widget',
+      name: 'Other Tenant Widget',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'export-other-sku',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    const unrelated = await products.createProduct(context, 'export-unrelated', {
+      code: 'unrelated-item',
+      name: 'Unrelated Item',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'unrelated-sku',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+
+    const fullCsv = await products.exportCsv(companyId, {});
+    const fullLines = fullCsv.trim().split('\r\n');
+    expect(fullLines[0]).toBe(
+      'id,code,name,product_type,tracks_inventory,tax_code,status,category_id,category_name,brand_id,brand_name,default_sku,default_cost,default_currency_code,created_at,updated_at',
+    );
+    expect(fullCsv).toContain(exported.value.id);
+    expect(fullCsv).toContain('Export Widget');
+    expect(fullCsv).toContain('Export Category');
+    expect(fullCsv).toContain('Export Brand');
+    expect(fullCsv).toContain('export-widget-sku');
+    expect(fullCsv).toContain('12.5000');
+    expect(fullCsv).toContain(unrelated.value.id);
+    // Never another tenant's rows, even in an unfiltered export.
+    expect(fullCsv).not.toContain(otherTenantProduct.value.id);
+
+    const filteredCsv = await products.exportCsv(companyId, { search: 'Export Widget' });
+    expect(filteredCsv).toContain(exported.value.id);
+    expect(filteredCsv).not.toContain(unrelated.value.id);
+  });
 });

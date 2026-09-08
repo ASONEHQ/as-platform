@@ -9,6 +9,11 @@ export interface Category {
   readonly description: string | null;
   readonly sortOrder: number;
   readonly status: CatalogStatus;
+  // TASK 14.5 (Wave 3, Phase 6): generic, tenant-configurable "visual/
+  // compact tile" display hint — see the schema column's own doc comment
+  // in `packages/database/src/schema/catalog.ts`. Purely a rendering
+  // hint; carries no pricing/checkout/inventory meaning.
+  readonly visualTile: boolean;
   readonly version: bigint;
   readonly createdAt: Date;
   readonly updatedAt: Date;

@@ -8,7 +8,9 @@ import {
   type EmployeesReport,
   type FinancialReport,
   type InventoryReport,
+  type KardexExportRow,
   type PartiesReport,
+  type PromotionsReport,
   type ReportFilter,
   type SalesExportRow,
   type SalesReport,
@@ -260,6 +262,55 @@ export class ReportsService {
     };
   }
 
+  // --- Promotions ------------------------------------------------------------
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 4) — the 8th real report area, over
+  // the SAME real `coupon_redemptions`/`sale_discounts` tables
+  // `PromotionsService` itself already writes to at sale time (see
+  // `reports.types.ts`'s own doc comment on `PromotionsReport`).
+  public async promotionsReport(
+    companyId: string,
+    branchIds: readonly string[],
+    filter: ReportFilter,
+  ): Promise<PromotionsReport> {
+    validateRange(filter);
+    const [redemptionTotals, discountTotals, topCoupons] = await Promise.all([
+      this.repository.couponRedemptionTotals(companyId, branchIds, filter),
+      this.repository.discountTotalsBySourceType(companyId, branchIds, filter),
+      this.repository.topCoupons(companyId, branchIds, filter),
+    ]);
+    const promotionTotals = discountTotals.filter((row) => row.sourceType === 'promotion');
+    const couponTotals = discountTotals.filter((row) => row.sourceType === 'coupon');
+    return {
+      dateFrom: filter.dateFrom,
+      dateTo: filter.dateTo,
+      branchId: filter.branchId ?? null,
+      couponRedemptionCount: redemptionTotals.reduce((sum, row) => sum + row.count, 0),
+      couponRedemptionsTotal: redemptionTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.total })),
+      promotionDiscountCount: promotionTotals.reduce((sum, row) => sum + row.count, 0),
+      promotionDiscountTotal: promotionTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.total })),
+      couponDiscountCount: couponTotals.reduce((sum, row) => sum + row.count, 0),
+      couponDiscountTotal: couponTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.total })),
+      topCoupons,
+    };
+  }
+
+  // --- Inventory Kardex export ------------------------------------------------
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 2) — see `reports.types.ts`'s own doc
+  // comment on `KardexExportRow` for the deliberate CSV-not-PDF scoping
+  // decision.
+  public async kardexExportCsv(
+    companyId: string,
+    branchIds: readonly string[],
+    filter: ReportFilter,
+    productVariantId?: string,
+  ): Promise<string> {
+    validateRange(filter);
+    const rows = await this.repository.kardexExportRows(companyId, branchIds, { ...filter, productVariantId });
+    return buildKardexCsv(rows);
+  }
+
   // --- Access ------------------------------------------------------------
 
   public async accessReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<AccessReport> {
@@ -308,6 +359,60 @@ function buildSalesCsv(rows: readonly SalesExportRow[]): string {
       row.total,
       row.currencyCode,
       row.customerDisplayName ?? '',
+    ]);
+  }
+  return csv;
+}
+
+function buildKardexCsv(rows: readonly KardexExportRow[]): string {
+  let csv = csvRow([
+    'movement_id',
+    'movement_number',
+    'movement_type',
+    'branch_id',
+    'occurred_at',
+    'posted_at',
+    'reference_type',
+    'reference_id',
+    'movement_reason_code',
+    'line_number',
+    'product_variant_id',
+    'sku',
+    'product_name',
+    'quantity',
+    'unit_of_measure_code',
+    'base_quantity',
+    'unit_cost',
+    'extended_cost',
+    'currency_code',
+    'source_location_id',
+    'destination_location_id',
+    'line_reason_code',
+  ]);
+  for (const row of rows) {
+    csv += csvRow([
+      row.movementId,
+      row.movementNumber,
+      row.movementType,
+      row.branchId,
+      row.occurredAt.toISOString(),
+      row.postedAt === null ? '' : row.postedAt.toISOString(),
+      row.referenceType ?? '',
+      row.referenceId ?? '',
+      row.movementReasonCode ?? '',
+      String(row.lineNumber),
+      row.productVariantId,
+      row.sku,
+      row.productName,
+      row.quantity,
+      row.unitOfMeasureCode,
+      row.baseQuantity,
+      row.unitCost ?? '',
+      row.extendedCost ?? '',
+      row.currencyCode ?? '',
+      row.sourceLocationId ?? '',
+      row.destinationLocationId ?? '',
+      row.lineReasonCode ?? '',
     ]);
   }
   return csv;

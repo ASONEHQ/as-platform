@@ -83,12 +83,26 @@ String _paymentMethodLabel(String method) => switch (method) {
 /// `PosSaleCreated.note`), mirroring [customerDisplayName]'s own
 /// identical precedent above. `null`/empty renders the receipt
 /// byte-identical to before this task.
+/// [headerText]/[footerText], when given, render the tenant's own
+/// configurable receipt branding text (TASK 14.5, Wave 3, Phase 8) — the
+/// real, persisted `receipts.header_text`/`receipts.footer_text` company/
+/// branch settings (`settings.catalog.ts`), resolved via
+/// `GET /companies/{id}/settings/effective` (or the branch equivalent) and
+/// threaded through by the caller exactly like [customerDisplayName]/
+/// [note] above: this function never fetches settings itself. [headerText]
+/// renders as one extra centered line directly under the business name/
+/// branch line; [footerText] renders as one extra centered block above the
+/// fixed "¡Gracias por tu compra!" line. `null`/empty renders neither —
+/// never a placeholder string — so a tenant that has not configured this
+/// setting gets a receipt byte-identical to before this task.
 String buildReceiptHtml({
   required PosReceipt receipt,
   String? logoDataUri,
   double paperWidthMm = 80,
   String? customerDisplayName,
   String? note,
+  String? headerText,
+  String? footerText,
 }) {
   final sale = receipt.sale;
   final business = receipt.business;
@@ -106,6 +120,19 @@ String buildReceiptHtml({
     if (business?.branchAddress?['line1'] is String) business!.branchAddress!['line1']! as String,
   ];
   final branchLineHtml = branchLineParts.isEmpty ? '' : _escape(branchLineParts.join(' · '));
+
+  // TASK 14.5 (Wave 3, Phase 8): the tenant's own configurable header/
+  // footer branding text — see this function's own doc comment. Trimmed
+  // and re-checked for emptiness here (not just by the caller) so a
+  // whitespace-only setting value renders exactly like an unset one.
+  final trimmedHeaderText = headerText?.trim() ?? '';
+  final trimmedFooterText = footerText?.trim() ?? '';
+  final headerTextHtml = trimmedHeaderText.isEmpty
+      ? ''
+      : '<div class="sub tenant-header">${_escape(trimmedHeaderText)}</div>';
+  final footerTextHtml = trimmedFooterText.isEmpty
+      ? ''
+      : '<div class="tenant-footer">${_escape(trimmedFooterText)}</div>';
 
   // TASK 12.9: a per-line "PROMO/CUPÓN/DESC." discount row directly under
   // the item it reduced — only ever rendered when that line's own
@@ -184,6 +211,7 @@ String buildReceiptHtml({
       '.logo{display:block;margin:0 auto 4px;max-height:44px;max-width:${contentWidthMm}mm}'
       'h1{text-align:center;font-size:15px;margin-bottom:2px;font-weight:700}'
       '.sub{text-align:center;font-size:10px;color:#333;margin-bottom:8px}'
+      '.tenant-header{white-space:pre-line;overflow-wrap:anywhere}'
       '.divider{border:none;border-top:1px dashed #000;margin:6px 0}'
       'table{width:100%;border-collapse:collapse}'
       'td{padding:2px 0;vertical-align:top}'
@@ -206,6 +234,8 @@ String buildReceiptHtml({
       '.change-row td{font-size:13px;font-weight:700;padding-top:3px;border-top:1px dashed #000}'
       '.muted{color:#555}'
       '.footer{text-align:center;font-size:10px;color:#333;margin-top:10px;line-height:1.6}'
+      '.tenant-footer{text-align:center;font-size:10px;color:#333;margin-top:6px;'
+      'line-height:1.4;white-space:pre-line;overflow-wrap:anywhere}'
       '.print-action{text-align:center;margin-top:14px}'
       '.print-action button{padding:8px 20px;font-size:13px;cursor:pointer}'
       '@media print{.print-action{display:none!important}body{margin:0}}'
@@ -214,6 +244,7 @@ String buildReceiptHtml({
       '$logoHtml'
       '<h1>$businessNameHtml</h1>'
       '${branchLineHtml.isEmpty ? '' : '<div class="sub">$branchLineHtml</div>'}'
+      '$headerTextHtml'
       '<hr class="divider">'
       '<div class="meta">'
       // TASK 12.5B.1: the printed, customer-facing folio is the short,
@@ -246,6 +277,7 @@ String buildReceiptHtml({
       // an empty placeholder line.
       '${note == null || note.isEmpty ? '' : '<hr class="divider"><div class="meta">Nota: ${_escape(note)}</div>'}'
       '<hr class="divider">'
+      '$footerTextHtml'
       '<div class="footer">'
       '¡Gracias por tu compra!<br>'
       '${_escape(_cfdiDisclaimer)}'

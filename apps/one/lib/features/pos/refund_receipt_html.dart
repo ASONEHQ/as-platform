@@ -64,6 +64,10 @@ String _refundStatusLabel(String status) => switch (status) {
 /// price (from [PosRefundableBalance.lineFor], keyed by `sale_item_id`) —
 /// a missing entry (e.g. the balance could not be refetched) falls back to
 /// a plain "Artículo" label rather than fabricating one.
+/// [headerText]/[footerText] mirror `buildReceiptHtml`'s own identical
+/// parameters (TASK 14.5, Wave 3, Phase 8) -- the tenant's configurable
+/// `receipts.header_text`/`receipts.footer_text` settings, threaded
+/// through by the caller. `null`/empty renders neither.
 String buildRefundReceiptHtml({
   required PosRefund refund,
   required PosReceiptSale sale,
@@ -72,6 +76,8 @@ String buildRefundReceiptHtml({
   Map<String, PosRefundableLine> lineInfoBySaleItemId = const {},
   String? logoDataUri,
   double paperWidthMm = 80,
+  String? headerText,
+  String? footerText,
 }) {
   final currency = refund.currencyCode;
   final contentWidthMm = paperWidthMm - 6;
@@ -87,6 +93,15 @@ String buildRefundReceiptHtml({
     if (business?.branchAddress?['line1'] is String) business!.branchAddress!['line1']! as String,
   ];
   final branchLineHtml = branchLineParts.isEmpty ? '' : _escape(branchLineParts.join(' · '));
+
+  final trimmedHeaderText = headerText?.trim() ?? '';
+  final trimmedFooterText = footerText?.trim() ?? '';
+  final headerTextHtml = trimmedHeaderText.isEmpty
+      ? ''
+      : '<div class="sub tenant-header">${_escape(trimmedHeaderText)}</div>';
+  final footerTextHtml = trimmedFooterText.isEmpty
+      ? ''
+      : '<div class="tenant-footer">${_escape(trimmedFooterText)}</div>';
 
   final itemsRowsHtml = items.isEmpty
       ? '<tr><td colspan="2" class="muted">Sin artículos</td></tr>'
@@ -146,6 +161,9 @@ String buildRefundReceiptHtml({
       '.kv td{padding:1px 0}'
       '.muted{color:#555}'
       '.footer{text-align:center;font-size:10px;color:#333;margin-top:10px;line-height:1.6}'
+      '.tenant-header{white-space:pre-line;overflow-wrap:anywhere}'
+      '.tenant-footer{text-align:center;font-size:10px;color:#333;margin-top:6px;'
+      'line-height:1.4;white-space:pre-line;overflow-wrap:anywhere}'
       '.print-action{text-align:center;margin-top:14px}'
       '.print-action button{padding:8px 20px;font-size:13px;cursor:pointer}'
       '@media print{.print-action{display:none!important}body{margin:0}}'
@@ -155,6 +173,7 @@ String buildRefundReceiptHtml({
       '<div class="doc-type">REEMBOLSO</div>'
       '<h1>$businessNameHtml</h1>'
       '${branchLineHtml.isEmpty ? '' : '<div class="sub">$branchLineHtml</div>'}'
+      '$headerTextHtml'
       '<hr class="divider">'
       '<div class="meta">'
       '<b>Folio ${_escape(refund.refundNumber)}</b> · ${_formatDateTime(refund.occurredAt)}'
@@ -172,6 +191,7 @@ String buildRefundReceiptHtml({
       '<hr class="divider">'
       '<table class="kv">${reasonRows.toString()}</table>'
       '<hr class="divider">'
+      '$footerTextHtml'
       '<div class="footer">'
       '${_escape('Comprobante de devolución — no es un comprobante fiscal (CFDI).')}'
       '</div>'

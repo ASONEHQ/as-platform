@@ -95,6 +95,7 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
   }
 
   let financialSessionId: string;
+  let promoCouponId: string;
 
   function cashContext(forCompanyId: string, timestamp: Date): CashMutationContext {
     return {
@@ -385,6 +386,113 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
       [randomUUID(), companyId, movementId, trackedVariantId, locationId],
     );
 
+    // --- Promotions (TASK 14.5, Wave 3, Phase 7, Item 4) -----------------------
+    // Reuses the already-inserted sales fixtures above — a coupon
+    // redemption/discount is always attached to a real sale, never a
+    // standalone row.
+    promoCouponId = randomUUID();
+    await database.pool.query(
+      `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_percentage_basis_points,created_by,updated_by)
+       values($1,$2,'RPT10','RPT10','percentage',1000,$3,$3)`,
+      [promoCouponId, companyId, userId],
+    );
+    async function insertRedemption(saleId: string, forBranchId: string, amount: string, redeemedAt: Date): Promise<void> {
+      await database.pool.query(
+        `insert into coupon_redemptions(id,company_id,branch_id,coupon_id,sale_id,amount,redeemed_at)
+         values($1,$2,$3,$4,$5,$6,$7)`,
+        [randomUUID(), companyId, forBranchId, promoCouponId, saleId, amount, redeemedAt],
+      );
+    }
+    async function insertDiscount(input: {
+      saleId: string;
+      forBranchId: string;
+      sourceType: 'coupon' | 'promotion' | 'manual';
+      sourceId: string | null;
+      reasonCode: string | null;
+      label: string;
+      amount: string;
+      createdAt: Date;
+    }): Promise<void> {
+      await database.pool.query(
+        `insert into sale_discounts(id,company_id,branch_id,sale_id,source_type,source_id,label_snapshot,reason_code,amount,created_by,created_at)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          randomUUID(),
+          companyId,
+          input.forBranchId,
+          input.saleId,
+          input.sourceType,
+          input.sourceId,
+          input.label,
+          input.reasonCode,
+          input.amount,
+          userId,
+          input.createdAt,
+        ],
+      );
+    }
+    // In-range, permitted branch — the "known fixture" the promotions
+    // report totals are asserted exactly against.
+    await insertRedemption(saleInRangeId, branchId, '11.6000', inRange('09:15:00'));
+    await insertRedemption(saleInRangeId2, branchId, '5.8000', inRange('11:15:00'));
+    await insertDiscount({
+      saleId: saleInRangeId,
+      forBranchId: branchId,
+      sourceType: 'coupon',
+      sourceId: promoCouponId,
+      reasonCode: null,
+      label: 'RPT10',
+      amount: '11.6000',
+      createdAt: inRange('09:15:00'),
+    });
+    await insertDiscount({
+      saleId: saleInRangeId2,
+      forBranchId: branchId,
+      sourceType: 'promotion',
+      sourceId: randomUUID(),
+      reasonCode: null,
+      label: 'Promo Reports',
+      amount: '5.0000',
+      createdAt: inRange('11:15:00'),
+    });
+    // A manual discount — must never be counted by the promotions report
+    // (it has its own real reporting surface elsewhere; see
+    // `reports.types.ts`'s own doc comment on `PromotionsReport`).
+    await insertDiscount({
+      saleId: saleInRangeId,
+      forBranchId: branchId,
+      sourceType: 'manual',
+      sourceId: null,
+      reasonCode: 'manager_override',
+      label: 'Manual',
+      amount: '2.0000',
+      createdAt: inRange('09:16:00'),
+    });
+    // Out-of-range — must be excluded by date filtering.
+    await insertRedemption(saleOutOfRangeId, branchId, '99.0000', OUT_OF_RANGE_TS);
+    await insertDiscount({
+      saleId: saleOutOfRangeId,
+      forBranchId: branchId,
+      sourceType: 'coupon',
+      sourceId: promoCouponId,
+      reasonCode: null,
+      label: 'RPT10',
+      amount: '9.0000',
+      createdAt: OUT_OF_RANGE_TS,
+    });
+    // Same company, excluded branch — must be excluded by branch scoping.
+    await insertRedemption(saleExcludedBranchId, excludedBranchId, '50.0000', inRange('09:20:00'));
+    await insertDiscount({
+      saleId: saleExcludedBranchId,
+      forBranchId: excludedBranchId,
+      sourceType: 'promotion',
+      sourceId: randomUUID(),
+      reasonCode: null,
+      label: 'Promo excluded',
+      amount: '3.0000',
+      createdAt: inRange('09:20:00'),
+    });
+
     // --- Customers ------------------------------------------------------------
     const customerInRangeId = randomUUID();
     const customerOutOfRangeId = randomUUID();
@@ -544,6 +652,9 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     await database.pool.query('delete from cash_registers where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from refunds where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from payments where company_id=any($1::uuid[])', [ids]);
+    await database.pool.query('delete from sale_discounts where company_id=any($1::uuid[])', [ids]);
+    await database.pool.query('delete from coupon_redemptions where company_id=any($1::uuid[])', [ids]);
+    await database.pool.query('delete from coupons where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from sales where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from idempotency_keys where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from outbox_events where company_id=any($1::uuid[])', [ids]);
@@ -730,6 +841,38 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     expect(data.movement_volume).toEqual([{ movement_type: 'receipt', movement_count: 1, total_base_quantity: '10.000000' }]);
   });
 
+  // TASK 14.5 (Wave 3, Phase 7, Item 2).
+  it('inventory Kardex export.csv contains the real posted movement-line rows for the range, and can narrow to one variant', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(
+      `/api/v1/reports/inventory/kardex.csv?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}&branch_id=${branchId}`,
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['content-disposition']).toContain('kardex-');
+    const lines = response.body.trim().split('\r\n');
+    expect(lines[0]).toBe(
+      'movement_id,movement_number,movement_type,branch_id,occurred_at,posted_at,reference_type,reference_id,movement_reason_code,line_number,product_variant_id,sku,product_name,quantity,unit_of_measure_code,base_quantity,unit_cost,extended_cost,currency_code,source_location_id,destination_location_id,line_reason_code',
+    );
+    expect(response.body).toContain('receipt');
+    expect(response.body).toContain('RPT-TRACKED');
+    expect(response.body).toContain('10.000000');
+
+    // Narrowed to a variant that has no posted movements — real, honest
+    // empty result (header only), never an error.
+    const empty = await get(
+      `/api/v1/reports/inventory/kardex.csv?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}&branch_id=${branchId}&product_variant_id=${randomUUID()}`,
+    );
+    expect(empty.statusCode).toBe(200);
+    expect(empty.body.trim().split('\r\n')).toHaveLength(1);
+
+    // Out-of-range window: no posted lines fall inside it.
+    const outOfRange = await get(
+      `/api/v1/reports/inventory/kardex.csv?date_from=${EMPTY_RANGE.date_from}&date_to=${EMPTY_RANGE.date_to}&branch_id=${branchId}`,
+    );
+    expect(outOfRange.body.trim().split('\r\n')).toHaveLength(1);
+  });
+
   it('customers report: total/active/new counts and membership/loyalty summary — company-scoped, no branch_id accepted', async () => {
     authContext = baseContext(companyId, branchId, [branchId]);
     const response = await get(`/api/v1/reports/customers?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}`);
@@ -815,5 +958,48 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     expect(data.entry_count).toBe(1);
     expect(data.exit_count).toBe(0);
     expect(data.current_occupancy).toBe(1);
+  });
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 4).
+  it('promotions report: real coupon-redemption and promotion/coupon discount totals for the known fixture — manual discounts, out-of-range, and excluded-branch rows never counted', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/reports/promotions?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<{
+      data: {
+        coupon_redemption_count: number;
+        coupon_redemptions_total: { currency_code: string; amount: string }[];
+        promotion_discount_count: number;
+        promotion_discount_total: { currency_code: string; amount: string }[];
+        coupon_discount_count: number;
+        coupon_discount_total: { currency_code: string; amount: string }[];
+        top_coupons: { coupon_id: string; code: string; redemption_count: number }[];
+      };
+    }>().data;
+    expect(data.coupon_redemption_count).toBe(2);
+    expect(data.coupon_redemptions_total).toEqual([{ currency_code: 'MXN', amount: '17.4000' }]);
+    expect(data.promotion_discount_count).toBe(1);
+    expect(data.promotion_discount_total).toEqual([{ currency_code: 'MXN', amount: '5.0000' }]);
+    expect(data.coupon_discount_count).toBe(1);
+    expect(data.coupon_discount_total).toEqual([{ currency_code: 'MXN', amount: '11.6000' }]);
+    expect(data.top_coupons).toEqual([{ coupon_id: promoCouponId, code: 'RPT10', redemption_count: 2 }]);
+  });
+
+  it('promotions report: branch scoping and date-range filtering both really exclude rows, and an empty range returns real zeros', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const empty = await get(`/api/v1/reports/promotions?date_from=${EMPTY_RANGE.date_from}&date_to=${EMPTY_RANGE.date_to}`);
+    expect(empty.statusCode).toBe(200);
+    const emptyData = empty.json<{ data: { coupon_redemption_count: number; top_coupons: unknown[] } }>().data;
+    expect(emptyData.coupon_redemption_count).toBe(0);
+    expect(emptyData.top_coupons).toEqual([]);
+
+    // permittedBranchIds includes the excluded branch — proves the
+    // exclusion above was real branch scoping, not a broken query.
+    authContext = baseContext(companyId, branchId, [branchId, excludedBranchId]);
+    const withExcludedBranch = await get(
+      `/api/v1/reports/promotions?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}`,
+    );
+    const withExcludedData = withExcludedBranch.json<{ data: { coupon_redemption_count: number } }>().data;
+    expect(withExcludedData.coupon_redemption_count).toBe(3); // 2 permitted-branch + 1 excluded-branch.
   });
 });

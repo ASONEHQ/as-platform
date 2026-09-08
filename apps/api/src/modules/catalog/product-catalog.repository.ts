@@ -6,6 +6,8 @@ import type {
   CreateBarcodeInput,
   ProductCatalogTransaction,
   ProductDetail,
+  ProductExportFilters,
+  ProductExportRow,
   ProductFilters,
   ProductListItem,
   ProductMutationContext,
@@ -1259,6 +1261,79 @@ export class ProductCatalogRepository {
         context.timestamp,
       ],
     );
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 1): the real, un-paginated CSV-export
+  // query — a genuine dump of the live company catalog, never a fetched
+  // page reduced in Node. Mirrors `reports.repository.ts`'s own two
+  // CSV-export methods' shape (real individual rows, not an aggregate) and
+  // `listProducts`' own filter semantics exactly, minus `cursor`/`limit`.
+  public async exportRows(companyId: string, input: ProductExportFilters): Promise<ProductExportRow[]> {
+    const values: unknown[] = [companyId];
+    const where = ['p.company_id=$1'];
+    const add = (value: unknown): string => {
+      values.push(value);
+      return `$${String(values.length)}`;
+    };
+    if (input.status !== undefined) where.push(`p.status=${add(input.status)}`);
+    if (input.productType !== undefined) where.push(`p.product_type=${add(input.productType)}`);
+    if (input.categoryId !== undefined) where.push(`p.category_id=${add(input.categoryId)}`);
+    if (input.brandId !== undefined) where.push(`p.brand_id=${add(input.brandId)}`);
+    if (input.search !== undefined) {
+      const parameter = add(`%${input.search}%`);
+      where.push(`(p.name ilike ${parameter} or p.code ilike ${parameter})`);
+    }
+    const rows = result<{
+      id: string;
+      code: string;
+      name: string;
+      product_type: ProductRow['productType'];
+      tracks_inventory: boolean;
+      tax_code: ProductRow['taxCode'];
+      status: ProductRow['status'];
+      category_id: string | null;
+      category_name: string | null;
+      brand_id: string | null;
+      brand_name: string | null;
+      default_sku: string | null;
+      default_cost: string | null;
+      default_currency_code: string | null;
+      created_at: Date | string;
+      updated_at: Date | string;
+    }>(
+      await this.database.pool.query(
+        `select p.id, p.code, p.name, p.product_type, p.tracks_inventory, p.tax_code, p.status,
+                p.category_id, cat.name as category_name, p.brand_id, br.name as brand_name,
+                v.sku as default_sku, v.standard_cost::text as default_cost, v.currency_code as default_currency_code,
+                p.created_at, p.updated_at
+         from products p
+         left join product_categories cat on cat.company_id = p.company_id and cat.id = p.category_id
+         left join brands br on br.company_id = p.company_id and br.id = p.brand_id
+         left join product_variants v
+           on v.company_id = p.company_id and v.product_id = p.id and v.is_default = true and v.status <> 'retired'
+         where ${where.join(' and ')}
+         order by p.code asc, p.id asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      productType: row.product_type,
+      tracksInventory: row.tracks_inventory,
+      taxCode: row.tax_code,
+      status: row.status,
+      categoryId: row.category_id,
+      categoryName: row.category_name,
+      brandId: row.brand_id,
+      brandName: row.brand_name,
+      defaultSku: row.default_sku,
+      defaultCost: row.default_cost,
+      defaultCurrencyCode: row.default_currency_code,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    }));
   }
 
   private async productExists(companyId: string, id: string): Promise<boolean> {

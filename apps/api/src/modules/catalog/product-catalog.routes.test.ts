@@ -54,6 +54,7 @@ interface Fixture {
   createProduct: Mock;
   listProducts: Mock;
   listVariants: Mock;
+  exportCsv: Mock;
 }
 
 async function fixture(
@@ -102,6 +103,7 @@ async function fixture(
   const listProducts = vi.fn(() => Promise.resolve({ items: [product], nextCursor: null }));
   const createProduct = vi.fn(() => Promise.resolve({ value: product, replayed: false }));
   const listVariants = vi.fn(() => Promise.resolve({ items: [variant], nextCursor: null }));
+  const exportCsv = vi.fn(() => Promise.resolve('id,code\r\n'));
   const service = {
     listProducts,
     product: vi.fn(() => Promise.resolve(product)),
@@ -111,10 +113,11 @@ async function fixture(
     variant: vi.fn(() => Promise.resolve(variant)),
     createVariant: vi.fn(() => Promise.resolve({ value: variant, replayed: false })),
     patchVariant: vi.fn(() => Promise.resolve({ ...variant, version: 2n })),
+    exportCsv,
   } as unknown as ProductCatalogService;
   registerProductCatalogRoutes(app, authentication, service);
   await app.ready();
-  return { app, createProduct, listProducts, listVariants };
+  return { app, createProduct, listProducts, listVariants, exportCsv };
 }
 
 afterEach(async () => {
@@ -275,5 +278,28 @@ describe('product catalog HTTP routes', () => {
     });
     expect(read.statusCode).toBe(403);
     expect(mutation.statusCode).toBe(403);
+  });
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 1).
+  it('exports the catalog as CSV, gated by catalog.read, with the real filters forwarded', async () => {
+    const { app, exportCsv } = await fixture();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/products/export.csv?status=active&search=widget',
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['content-disposition']).toContain('attachment');
+    expect(response.body).toBe('id,code\r\n');
+    expect(exportCsv).toHaveBeenCalledWith(companyId, { status: 'active', search: 'widget' });
+
+    const denied = await fixture([]);
+    const deniedResponse = await denied.app.inject({
+      method: 'GET',
+      url: '/api/v1/products/export.csv',
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(deniedResponse.statusCode).toBe(403);
   });
 });

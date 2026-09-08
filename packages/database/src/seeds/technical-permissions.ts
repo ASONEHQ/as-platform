@@ -185,9 +185,25 @@ export const technicalPermissionCodes = [
   // TASK 14.4 (Wave 2, Part E) — access/occupancy. `access.scan` is the
   // day-to-day gate-staff action (issuing/scanning); `access.manage` is
   // reserved for administrative actions (voiding a credential).
+  // TASK 14.5 (Wave 3, Phase 3) reuses these same three codes for the NFC
+  // wristband lifecycle (a wristband is just another `credential_kind`)
+  // rather than introducing new ones: `access.scan` also gates wristband
+  // "activate" (mirrors ticket issuance), `access.manage` also gates
+  // "block"/"unblock" (mirrors void/its new reverse), `access.read` also
+  // gates wristband lookup-by-code/history. No genuine gap was found.
   'access.scan',
   'access.read',
   'access.manage',
+  // TASK 14.5 (Wave 3, Phase 4b/7 Item 8) — real quick-switch PIN/QR staff
+  // login, recovered from `docs/LEGACY_FUNCTIONAL_PARITY.md` §20's plaintext,
+  // hardcoded-master-bypass PIN/QR mechanisms (deliberately NOT recreated
+  // as-is). One coarse code covers assigning/rotating/revoking a staff
+  // member's own PIN and QR credential — a genuinely new, security-relevant
+  // surface, so it is deliberately its own code rather than folded into
+  // `employee.manage` (which governs payroll/schedule data, not login
+  // credentials) or `user.update` (which governs the global user profile,
+  // not this company-scoped quick-switch mechanism).
+  'staff_credential.manage',
 ] as const;
 
 export async function seedTechnicalPermissions(db: Database): Promise<number> {

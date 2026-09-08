@@ -11,6 +11,8 @@ import type {
   SessionCreation,
   LoginChallenge,
   LoginChallengeCreation,
+  PinLoginCandidate,
+  QrLoginCandidate,
 } from './auth.types.js';
 
 function first<T>(rows: readonly T[]): T | undefined {
@@ -620,5 +622,109 @@ export class PostgresAuthRepository implements AuthRepository {
     } finally {
       client.release();
     }
+  }
+
+  // TASK 14.5 (Wave 3, Phase 4b): every active, PIN-enrolled membership in
+  // one company — never joined across companies. `AuthService#pinLogin`
+  // verifies the submitted PIN against each candidate's hash in turn
+  // (a salted hash cannot be looked up by value).
+  public async listPinLoginCandidates(companyId: string): Promise<readonly PinLoginCandidate[]> {
+    const result = await this.database.pool.query<{
+      membership_id: string;
+      company_name: string;
+      status: string;
+      user_id: string;
+      pin_hash: string;
+    }>(
+      `select m.id as membership_id, c.display_name as company_name, m.status, m.user_id, m.pin_hash
+       from company_memberships m
+       join companies c on c.id = m.company_id
+       join users u on u.id = m.user_id
+       where m.company_id = $1 and m.status = 'active' and c.status = 'active'
+         and u.status = 'active' and m.pin_hash is not null`,
+      [companyId],
+    );
+    return result.rows.map((row) => ({
+      userId: row.user_id,
+      pinHash: row.pin_hash,
+      membership: {
+        id: row.membership_id,
+        companyId,
+        companyName: row.company_name,
+        status: row.status,
+      },
+    }));
+  }
+
+  // TASK 14.5 (Wave 3, Phase 4b): `null` clears the PIN (revoke). Scoped
+  // by `companyId` + `membershipId` together — an actor can never set a
+  // PIN on a membership belonging to a different company, even by guessing
+  // a valid membership id. Returns whether a row was actually affected, so
+  // the caller can turn a no-op into an honest 404.
+  public async setMembershipPin(input: {
+    companyId: string;
+    membershipId: string;
+    pinHash: string | null;
+  }): Promise<boolean> {
+    const result = await this.database.pool.query(
+      `update company_memberships set pin_hash = $3, updated_at = now()
+       where company_id = $1 and id = $2 and status = 'active'`,
+      [input.companyId, input.membershipId, input.pinHash],
+    );
+    return result.rowCount === 1;
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7 Item 8): mirrors `listPinLoginCandidates`
+  // above, plus the credential's own expiry (an expired hash is never a
+  // valid match — enforced in `AuthService#qrLogin`, not filtered out here,
+  // so a near-expiry credential can still be listed/observed by callers
+  // that need it, e.g. an admin "credential status" read in the future).
+  public async listQrLoginCandidates(companyId: string): Promise<readonly QrLoginCandidate[]> {
+    const result = await this.database.pool.query<{
+      membership_id: string;
+      company_name: string;
+      status: string;
+      user_id: string;
+      qr_secret_hash: string;
+      qr_expires_at: Date;
+    }>(
+      `select m.id as membership_id, c.display_name as company_name, m.status, m.user_id,
+              m.qr_secret_hash, m.qr_expires_at
+       from company_memberships m
+       join companies c on c.id = m.company_id
+       join users u on u.id = m.user_id
+       where m.company_id = $1 and m.status = 'active' and c.status = 'active'
+         and u.status = 'active' and m.qr_secret_hash is not null`,
+      [companyId],
+    );
+    return result.rows.map((row) => ({
+      userId: row.user_id,
+      qrSecretHash: row.qr_secret_hash,
+      qrExpiresAt: row.qr_expires_at,
+      membership: {
+        id: row.membership_id,
+        companyId,
+        companyName: row.company_name,
+        status: row.status,
+      },
+    }));
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7 Item 8): `null`/`null` clears the QR
+  // credential (revoke). The two columns are always written together —
+  // the DB's own `company_memberships_qr_pair_ck` check constraint
+  // rejects one being set without the other.
+  public async setMembershipQrCredential(input: {
+    companyId: string;
+    membershipId: string;
+    qrSecretHash: string | null;
+    qrExpiresAt: Date | null;
+  }): Promise<boolean> {
+    const result = await this.database.pool.query(
+      `update company_memberships set qr_secret_hash = $3, qr_expires_at = $4, updated_at = now()
+       where company_id = $1 and id = $2 and status = 'active'`,
+      [input.companyId, input.membershipId, input.qrSecretHash, input.qrExpiresAt],
+    );
+    return result.rowCount === 1;
   }
 }

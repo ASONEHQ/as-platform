@@ -50,6 +50,7 @@ interface CategoryBody {
   readonly description?: string | null;
   readonly sort_order?: number;
   readonly status?: CatalogStatus;
+  readonly visual_tile?: boolean;
 }
 interface CategoryPatchBody {
   readonly parent_id?: string | null;
@@ -57,6 +58,7 @@ interface CategoryPatchBody {
   readonly description?: string | null;
   readonly sort_order?: number;
   readonly status?: CatalogStatus;
+  readonly visual_tile?: boolean;
 }
 interface BrandBody {
   readonly id?: string;
@@ -109,6 +111,7 @@ function categoryHttp(value: Category): Readonly<Record<string, unknown>> {
     description: value.description,
     sort_order: value.sortOrder,
     status: value.status,
+    visual_tile: value.visualTile,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -186,6 +189,7 @@ export function registerCatalogRoutes(
             'description',
             'sort_order',
             'status',
+            'visual_tile',
           ]);
           done();
         } catch (error) {
@@ -207,6 +211,9 @@ export function registerCatalogRoutes(
             : { description: request.body.description }),
           ...(request.body.sort_order === undefined ? {} : { sortOrder: request.body.sort_order }),
           ...(request.body.status === undefined ? {} : { status: request.body.status }),
+          ...(request.body.visual_tile === undefined
+            ? {}
+            : { visualTile: request.body.visual_tile }),
         };
         const result = await service.createCategory(
           mutationContext(request, context.companyId, context.userId),
@@ -261,6 +268,7 @@ export function registerCatalogRoutes(
             'description',
             'sort_order',
             'status',
+            'visual_tile',
           ]);
           done();
         } catch (error) {
@@ -279,6 +287,7 @@ export function registerCatalogRoutes(
           ...(body.description === undefined ? {} : { description: body.description }),
           ...(body.sort_order === undefined ? {} : { sortOrder: body.sort_order }),
           ...(body.status === undefined ? {} : { status: body.status }),
+          ...(body.visual_tile === undefined ? {} : { visualTile: body.visual_tile }),
         };
         const value = await service.patchCategory(
           mutationContext(request, context.companyId, context.userId),

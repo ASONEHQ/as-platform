@@ -4,6 +4,7 @@ import type { DatabaseClient } from '@asone/database';
 
 import {
   AccessError,
+  type AccessCredentialKind,
   type AccessCredentialRow,
   type AccessCredentialStatus,
   type AccessEventRow,
@@ -41,7 +42,7 @@ function jsonValue(_key: string, value: unknown): unknown {
 // `common.ts`). Never renamed at the SQL layer; only the row-mapping
 // function below re-labels it.
 const ACCESS_CREDENTIAL_COLUMNS =
-  'id,company_id,branch_id,code,sale_id,customer_id,allows_reentry,status,currently_inside,created_at,issued_by,voided_at,voided_by';
+  'id,company_id,branch_id,code,credential_kind,sale_id,customer_id,allows_reentry,status,currently_inside,created_at,issued_by,voided_at,voided_by';
 const ACCESS_EVENT_COLUMNS = 'id,company_id,branch_id,credential_id,event_type,occurred_at,created_by,created_at';
 
 interface AccessCredentialDb {
@@ -49,6 +50,7 @@ interface AccessCredentialDb {
   company_id: string;
   branch_id: string;
   code: string;
+  credential_kind: string;
   sale_id: string | null;
   customer_id: string | null;
   allows_reentry: string;
@@ -84,6 +86,7 @@ function accessCredential(row: AccessCredentialDb): AccessCredentialRow {
     companyId: row.company_id,
     branchId: row.branch_id,
     code: row.code,
+    credentialKind: row.credential_kind as AccessCredentialKind,
     saleId: row.sale_id,
     customerId: row.customer_id,
     allowsReentry: row.allows_reentry === 'true',
@@ -188,7 +191,10 @@ export class AccessRepository {
    * below), so `aggregateVersion` is a fixed per-action-type generation
    * number (1=issued, 2=entry, 3=exit, 4=voided), mirroring
    * `held_sale_carts`' own established "no real version column, so pass a
-   * fixed constant" precedent. */
+   * fixed constant" precedent. TASK 14.5 (Wave 3) extends the generation
+   * enum with `5n` (unvoided) — the one genuinely new transition this
+   * wave adds; every prior generation number (1=issued, 2=entry, 3=exit,
+   * 4=voided) is unchanged. */
   public async auditAndPublish(
     client: AccessTransaction,
     context: AccessMutationContext,
@@ -198,7 +204,7 @@ export class AccessRepository {
       resourceId: string;
       eventType: string;
       branchId: string;
-      generation: 1n | 2n | 3n | 4n;
+      generation: 1n | 2n | 3n | 4n | 5n;
       payload: Readonly<Record<string, unknown>>;
     },
   ): Promise<void> {
@@ -248,6 +254,7 @@ export class AccessRepository {
       companyId: string;
       branchId: string;
       code: string;
+      credentialKind: AccessCredentialKind;
       saleId: string;
       customerId: string | null;
       allowsReentry: boolean;
@@ -258,14 +265,15 @@ export class AccessRepository {
     const row = result<AccessCredentialDb>(
       await client.query(
         `insert into access_credentials
-         (id,company_id,branch_id,code,sale_id,customer_id,allows_reentry,status,currently_inside,created_at,issued_by)
-         values ($1,$2,$3,$4,$5,$6,$7,'issued','false',$8,$9)
+         (id,company_id,branch_id,code,credential_kind,sale_id,customer_id,allows_reentry,status,currently_inside,created_at,issued_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,'issued','false',$9,$10)
          returning ${ACCESS_CREDENTIAL_COLUMNS}`,
         [
           input.id,
           input.companyId,
           input.branchId,
           input.code,
+          input.credentialKind,
           input.saleId,
           input.customerId,
           input.allowsReentry ? 'true' : 'false',
@@ -331,6 +339,24 @@ export class AccessRepository {
         companyId,
         code,
       ]),
+    ).rows[0];
+    return row === undefined ? null : accessCredential(row);
+  }
+
+  /** Plain, non-transactional lookup-by-code — TASK 14.5 (Wave 3) addition,
+   * for the `GET /access-credentials/by-code` endpoint (find a wristband
+   * by its physical UID and see its current status). Same company-scoped-
+   * only shape as `credentialByCode` above (see that method's own doc
+   * comment on why cross-branch is a real, distinct `wrong_branch`
+   * rejection rather than a silent "not found") — here left to the
+   * service layer to translate into `resource_not_found` for a
+   * different-branch match, mirroring `credential()`'s own precedent. */
+  public async credentialByCodeLookup(companyId: string, code: string): Promise<AccessCredentialRow | null> {
+    const row = result<AccessCredentialDb>(
+      await this.database.pool.query(
+        `select ${ACCESS_CREDENTIAL_COLUMNS} from access_credentials where company_id=$1 and code=$2`,
+        [companyId, code],
+      ),
     ).rows[0];
     return row === undefined ? null : accessCredential(row);
   }
@@ -425,6 +451,41 @@ export class AccessRepository {
     return row === undefined ? null : accessCredential(row);
   }
 
+  /** `status='void' -> 'issued'`. TASK 14.5 (Wave 3) addition — the one
+   * genuinely NEW lifecycle transition this wave adds (see
+   * `packages/database/src/schema/access.ts`'s own doc comment): the
+   * legacy's real `desbloquearPulsera()` reactivates a blocked wristband,
+   * and "block" reuses this table's existing `void` transition (see
+   * `AccessService.voidCredential`), so "unblock" must be the reverse —
+   * `voided_at`/`voided_by` are cleared (never left stale) so the
+   * `access_credentials_voided_fields_ck` constraint (`status='void'`
+   * iff both are set) stays satisfied for real, not just superficially.
+   * Same CAS shape as `markVoid`/`markEntry`/`markExit`: the
+   * `status='void'` predicate in the `WHERE` clause is the entire
+   * race-free guarantee — a losing concurrent unvoid attempt (or one
+   * against an already-`issued` credential) matches zero rows and the
+   * service layer re-reads to report the honest `credential_not_void`
+   * reason. No `currently_inside` guard is needed here (unlike `markVoid`
+   * guarding against voiding while inside) because
+   * `access_credentials_void_not_inside_ck` already guarantees a `void`
+   * row can never be `currently_inside='true'` in the first place. */
+  public async markUnvoid(
+    client: AccessTransaction,
+    companyId: string,
+    id: string,
+  ): Promise<AccessCredentialRow | null> {
+    const row = result<AccessCredentialDb>(
+      await client.query(
+        `update access_credentials
+         set status='issued', voided_at=null, voided_by=null
+         where company_id=$1 and id=$2 and status='void'
+         returning ${ACCESS_CREDENTIAL_COLUMNS}`,
+        [companyId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : accessCredential(row);
+  }
+
   // --- Events (immutable, append-only) --------------------------------------
 
   public async insertEvent(
@@ -459,13 +520,28 @@ export class AccessRepository {
   public async listEvents(
     companyId: string,
     branchIds: readonly string[],
-    input: { limit: number; cursor?: string; branchId?: string; occurredFrom?: Date; occurredTo?: Date },
+    input: {
+      limit: number;
+      cursor?: string;
+      branchId?: string;
+      credentialId?: string;
+      occurredFrom?: Date;
+      occurredTo?: Date;
+    },
   ): Promise<{ items: AccessEventRow[]; nextCursor: string | null }> {
     const values: unknown[] = [companyId, branchIds];
     const where = ['company_id=$1', 'branch_id=any($2::uuid[])'];
     if (input.branchId !== undefined) {
       values.push(input.branchId);
       where.push(`branch_id=$${String(values.length)}`);
+    }
+    // TASK 14.5 (Wave 3) addition — a single wristband/ticket's own event
+    // history (`GET /access-events?credential_id=`), used by the lookup-
+    // by-code UI to show a wristband's real activate/entry/exit/block/
+    // unblock trail rather than the whole branch's feed.
+    if (input.credentialId !== undefined) {
+      values.push(input.credentialId);
+      where.push(`credential_id=$${String(values.length)}`);
     }
     if (input.occurredFrom !== undefined) {
       values.push(input.occurredFrom);
@@ -561,6 +637,12 @@ export class AccessRepository {
         return new AccessError('validation_error', 'The sale was not found for this branch.');
       case 'access_credentials_customer_scope_fk':
         return new AccessError('validation_error', 'The customer was not found.');
+      // TASK 14.5 (Wave 3): only ever reached for a CLIENT-supplied
+      // (wristband) code — a server-generated ticket code's own collision
+      // is caught and retried inside `AccessService.issueCredential`'s
+      // own savepoint loop before it can ever reach here.
+      case 'access_credentials_company_code_uq':
+        return new AccessError('code_already_in_use', 'This code is already in use by another credential.');
       default:
         return error;
     }

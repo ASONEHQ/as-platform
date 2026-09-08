@@ -416,6 +416,71 @@ class PosAccessReport {
   final int currentOccupancy;
 }
 
+// --- Promotions --------------------------------------------------------------
+
+/// TASK 14.5 (Wave 3, Phase 7, Item 4). Mirrors `TopCoupon`
+/// (`reports.types.ts`) exactly.
+class PosTopCoupon {
+  const PosTopCoupon({required this.couponId, required this.code, required this.redemptionCount});
+
+  factory PosTopCoupon.fromJson(Map<String, Object?> json) => PosTopCoupon(
+    couponId: _string(json, 'coupon_id'),
+    code: _string(json, 'code'),
+    redemptionCount: _int(json, 'redemption_count'),
+  );
+
+  final String couponId;
+  final String code;
+  final int redemptionCount;
+}
+
+/// Mirrors `PromotionsReport` (`reports.types.ts`) exactly — the 8th real
+/// report area, over the SAME real `coupon_redemptions`/`sale_discounts`
+/// rows `PromotionsService` already writes at sale time. Never a
+/// `promotion`/`coupon` figure blended with a `manual`/`reward` discount —
+/// see that file's own doc comment.
+class PosPromotionsReport {
+  const PosPromotionsReport({
+    required this.dateFrom,
+    required this.dateTo,
+    required this.branchId,
+    required this.couponRedemptionCount,
+    required this.couponRedemptionsTotal,
+    required this.promotionDiscountCount,
+    required this.promotionDiscountTotal,
+    required this.couponDiscountCount,
+    required this.couponDiscountTotal,
+    required this.topCoupons,
+  });
+
+  factory PosPromotionsReport.fromJson(Map<String, Object?> json) => PosPromotionsReport(
+    dateFrom: _string(json, 'date_from'),
+    dateTo: _string(json, 'date_to'),
+    branchId: _stringOrNull(json, 'branch_id'),
+    couponRedemptionCount: _int(json, 'coupon_redemption_count'),
+    couponRedemptionsTotal: _amountList(json, 'coupon_redemptions_total'),
+    promotionDiscountCount: _int(json, 'promotion_discount_count'),
+    promotionDiscountTotal: _amountList(json, 'promotion_discount_total'),
+    couponDiscountCount: _int(json, 'coupon_discount_count'),
+    couponDiscountTotal: _amountList(json, 'coupon_discount_total'),
+    topCoupons: (json['top_coupons'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map(PosTopCoupon.fromJson)
+        .toList(growable: false),
+  );
+
+  final String dateFrom;
+  final String dateTo;
+  final String? branchId;
+  final int couponRedemptionCount;
+  final List<PosReportCurrencyAmount> couponRedemptionsTotal;
+  final int promotionDiscountCount;
+  final List<PosReportCurrencyAmount> promotionDiscountTotal;
+  final int couponDiscountCount;
+  final List<PosReportCurrencyAmount> couponDiscountTotal;
+  final List<PosTopCoupon> topCoupons;
+}
+
 // --- Gateway ---------------------------------------------------------------
 
 abstract interface class PosReportsGateway {
@@ -437,6 +502,19 @@ abstract interface class PosReportsGateway {
 
   /// `GET /api/v1/reports/inventory`.
   Future<PosInventoryReport> inventoryReport({required PosReportFilter filter});
+
+  /// `GET /api/v1/reports/inventory/kardex.csv` — TASK 14.5 (Wave 3, Phase
+  /// 7, Item 2): real posted `inventory_movement_lines` rows, the honest
+  /// CSV port of AS POS V1's real Kardex PDF export (see
+  /// `reports.types.ts`'s own doc comment on `KardexExportRow` for why
+  /// this is CSV, not PDF). `productVariantId`, when supplied, narrows to
+  /// one product's own movement history — the classic single-product
+  /// Kardex view.
+  Future<String> exportKardexCsv({required PosReportFilter filter, String? productVariantId});
+
+  /// `GET /api/v1/reports/promotions` — TASK 14.5 (Wave 3, Phase 7, Item
+  /// 4): the 8th real report area.
+  Future<PosPromotionsReport> promotionsReport({required PosReportFilter filter});
 
   /// `GET /api/v1/reports/customers` — company-scoped only, no `branch_id`
   /// (see `PosCustomersReport`'s own doc comment).
@@ -498,6 +576,17 @@ class ApiPosReportsGateway implements PosReportsGateway {
       PosInventoryReport.fromJson(await _getReport('/api/v1/reports/inventory', _filterQuery(filter)));
 
   @override
+  Future<String> exportKardexCsv({required PosReportFilter filter, String? productVariantId}) async {
+    final query = {..._filterQuery(filter), if (productVariantId != null) 'product_variant_id': productVariantId};
+    final uri = Uri(path: '/api/v1/reports/inventory/kardex.csv', queryParameters: query);
+    return _client.getText(uri.toString());
+  }
+
+  @override
+  Future<PosPromotionsReport> promotionsReport({required PosReportFilter filter}) async =>
+      PosPromotionsReport.fromJson(await _getReport('/api/v1/reports/promotions', _filterQuery(filter)));
+
+  @override
   Future<PosCustomersReport> customersReport({required PosReportDateRange range}) async => PosCustomersReport.fromJson(
     await _getReport('/api/v1/reports/customers', {'date_from': range.dateFrom, 'date_to': range.dateTo}),
   );
@@ -536,6 +625,14 @@ class EmptyPosReportsGateway implements PosReportsGateway {
 
   @override
   Future<PosInventoryReport> inventoryReport({required PosReportFilter filter}) =>
+      Future.error(StateError('No reports gateway is configured.'));
+
+  @override
+  Future<String> exportKardexCsv({required PosReportFilter filter, String? productVariantId}) =>
+      Future.error(StateError('No reports gateway is configured.'));
+
+  @override
+  Future<PosPromotionsReport> promotionsReport({required PosReportFilter filter}) =>
       Future.error(StateError('No reports gateway is configured.'));
 
   @override

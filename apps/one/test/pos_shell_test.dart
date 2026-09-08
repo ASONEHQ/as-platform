@@ -26,14 +26,21 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('keeps all 25 canonical modules in their inspected order', () {
-    expect(PosModule.values, hasLength(25));
+  test('keeps all 28 canonical modules in their inspected order', () {
+    // TASK 14.5 (Wave 3): 3 new, real capabilities with no legacy sidebar
+    // counterpart (Variantes/Marca del Ticket/Asistente) were appended
+    // within their natural groups — 25 (Wave 2 baseline) + 3 = 28.
+    expect(PosModule.values, hasLength(28));
     // Matches the canonical `.sb-item[data-nav]` order: Ventas first
-    // (Punto de Venta), Sistema last (Configuración) — not an
-    // app-specific "Inicio first" ordering.
+    // (Punto de Venta) — not an app-specific "Inicio first" ordering.
+    // Sistema no longer ends on Configuración specifically now that two
+    // genuinely new, non-legacy capabilities (Marca del Ticket,
+    // Asistente) are appended after it within the same group — the
+    // group itself is still last, only its own trailing member changed.
     expect(PosModule.values.first.label, 'Punto de Venta');
-    expect(PosModule.values.last.label, 'Configuración');
-    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(25));
+    expect(PosModule.values.last.label, 'Asistente');
+    expect(PosModule.values.last.group, 'Sistema');
+    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(28));
   });
 
   testWidgets('renders the canonical desktop shell without fake KPIs', (
@@ -43,7 +50,12 @@ void main() {
     expect(find.byKey(const Key('pos-sidebar')), findsOneWidget);
     expect(find.byKey(const Key('pos-topbar')), findsOneWidget);
     expect(find.text('Empresa AS'), findsWidgets);
-    expect(find.text('Sucursales autorizadas'), findsOneWidget);
+    // TASK 14.5 (Wave 3, Phase 2): the Dashboard landing screen is now a
+    // real, server-aggregated metrics view — `_context` above carries no
+    // `report.read`, so it honestly shows the shared permission state
+    // instead of any (fake or real) metric, never a fabricated KPI.
+    expect(find.byKey(const Key('pos-dashboard-permission')), findsOneWidget);
+    expect(find.byKey(const Key('pos-dashboard-metrics-grid')), findsNothing);
     expect(find.textContaining('Ingresos'), findsNothing);
     expect(find.textContaining(r'$'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -51,14 +63,19 @@ void main() {
 
   testWidgets('shows unsupported modules as Coming soon', (tester) async {
     await _pump(tester, const Size(1440, 900));
-    // Cafetería is already in Ventas, opened by the Punto de Venta
-    // navigation this helper performs — reused here purely to land on an
-    // open group before switching modules within it.
-    await _navigateToPos(tester);
-    await tester.tap(find.byKey(const Key('nav-cafeteria')));
+    // TASK 14.5 (Wave 3, Phase 6): Cafetería ("Acceso rápido") is now a
+    // real screen — the exact same `_PosSale` surface as Punto de Venta,
+    // scoped to visual-tile categories (see `pos_shell_wave3_cashier_
+    // experience_test.dart`). Categorías (no admin screen exists yet —
+    // confirmed by inspection) is still a genuinely unimplemented module,
+    // reused here purely to land on an open group before switching
+    // modules within it.
+    await tester.tap(find.byKey(const Key('nav-group-Catálogo')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nav-categories')));
     await tester.pumpAndSettle();
     expect(find.text('Coming soon'), findsOneWidget);
-    expect(find.text('Cafetería'), findsWidgets);
+    expect(find.text('Categorías'), findsWidgets);
   });
 
   testWidgets('loads products through the read gateway and filters locally', (
@@ -3097,7 +3114,13 @@ void main() {
         );
         await tester.tap(find.byKey(const Key('pos-branch-switch')));
         await tester.pumpAndSettle();
-        expect(find.text('Todas las sucursales'), findsOneWidget);
+        // TASK 14.5 (Wave 3, Phase 2): the Dashboard landing screen (also
+        // visible underneath) now carries its own real "Todas las
+        // sucursales" branch selector for company-wide sessions — so this
+        // exact label can legitimately render more than once at once;
+        // this assertion only cares that the topbar switcher itself still
+        // offers it, not that it is the only place the label appears.
+        expect(find.text('Todas las sucursales'), findsWidgets);
       },
     );
   });

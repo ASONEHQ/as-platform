@@ -5,6 +5,7 @@ import type {
   ClosedSessionTotal,
   CurrencyAmount,
   InventoryMovementVolume,
+  KardexExportRow,
   SalesExportRow,
   StatusCount,
 } from './reports.types.js';
@@ -683,6 +684,201 @@ export class ReportsRepository {
       ),
     ).rows[0];
     return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  // --- Promotions ------------------------------------------------------------
+
+  /** `coupon_redemptions` carries its own `branch_id` — no join needed for
+   * scoping — but NOT `currency_code`, so the amount total is grouped by
+   * the redeeming sale's own currency (joined only for that column). */
+  public async couponRedemptionTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ currencyCode: string; total: string; count: number }[]> {
+    const where: string[] = ['cr.company_id = $1', 'cr.branch_id = any($2::uuid[])'];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`cr.branch_id = $${String(values.length)}`);
+    }
+    values.push(input.dateFrom);
+    where.push(`cr.redeemed_at >= $${String(values.length)}::date`);
+    values.push(input.dateTo);
+    where.push(`cr.redeemed_at < ($${String(values.length)}::date + interval '1 day')`);
+    const rows = result<{ currency_code: string; total: string; cnt: string }>(
+      await this.database.pool.query(
+        `select s.currency_code, coalesce(sum(cr.amount),0)::text total, count(*)::text cnt
+         from coupon_redemptions cr
+         join sales s on s.company_id = cr.company_id and s.id = cr.sale_id
+         where ${where.join(' and ')}
+         group by s.currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ currencyCode: row.currency_code, total: row.total, count: Number(row.cnt) }));
+  }
+
+  public async discountTotalsBySourceType(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ sourceType: string; currencyCode: string; total: string; count: number }[]> {
+    const where: string[] = [
+      'sd.company_id = $1',
+      'sd.branch_id = any($2::uuid[])',
+      `sd.source_type in ('promotion','coupon')`,
+    ];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`sd.branch_id = $${String(values.length)}`);
+    }
+    values.push(input.dateFrom);
+    where.push(`sd.created_at >= $${String(values.length)}::date`);
+    values.push(input.dateTo);
+    where.push(`sd.created_at < ($${String(values.length)}::date + interval '1 day')`);
+    const rows = result<{ source_type: string; currency_code: string; total: string; cnt: string }>(
+      await this.database.pool.query(
+        `select sd.source_type, s.currency_code, coalesce(sum(sd.amount),0)::text total, count(*)::text cnt
+         from sale_discounts sd
+         join sales s on s.company_id = sd.company_id and s.id = sd.sale_id
+         where ${where.join(' and ')}
+         group by sd.source_type, s.currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      sourceType: row.source_type,
+      currencyCode: row.currency_code,
+      total: row.total,
+      count: Number(row.cnt),
+    }));
+  }
+
+  public async topCoupons(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<{ couponId: string; code: string; redemptionCount: number }[]> {
+    const where: string[] = ['cr.company_id = $1', 'cr.branch_id = any($2::uuid[])'];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`cr.branch_id = $${String(values.length)}`);
+    }
+    values.push(input.dateFrom);
+    where.push(`cr.redeemed_at >= $${String(values.length)}::date`);
+    values.push(input.dateTo);
+    where.push(`cr.redeemed_at < ($${String(values.length)}::date + interval '1 day')`);
+    const rows = result<{ coupon_id: string; code: string; cnt: string }>(
+      await this.database.pool.query(
+        `select cr.coupon_id, c.code, count(*)::text cnt
+         from coupon_redemptions cr
+         join coupons c on c.company_id = cr.company_id and c.id = cr.coupon_id
+         where ${where.join(' and ')}
+         group by cr.coupon_id, c.code
+         order by cnt desc, c.code asc
+         limit 10`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({ couponId: row.coupon_id, code: row.code, redemptionCount: Number(row.cnt) }));
+  }
+
+  // --- Inventory Kardex export ------------------------------------------------
+
+  /** TASK 14.5 (Wave 3, Phase 7, Item 2) — real individual
+   * `inventory_movement_lines` rows (the CSV-export exception to this
+   * class's own "always aggregate in SQL" rule, exactly like
+   * `salesExportRows`/`financialExportRows` above: an export's whole
+   * purpose is the underlying detail). `product_variant_id` optionally
+   * narrows to one variant's own Kardex — the classic "movement history
+   * for this one product" legacy view. */
+  public async kardexExportRows(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput & { productVariantId?: string | undefined },
+  ): Promise<KardexExportRow[]> {
+    const where: string[] = ['m.company_id = $1', 'm.branch_id = any($2::uuid[])', `m.status = 'posted'`];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`m.branch_id = $${String(values.length)}`);
+    }
+    values.push(input.dateFrom);
+    where.push(`m.posted_at >= $${String(values.length)}::date`);
+    values.push(input.dateTo);
+    where.push(`m.posted_at < ($${String(values.length)}::date + interval '1 day')`);
+    if (input.productVariantId !== undefined) {
+      values.push(input.productVariantId);
+      where.push(`l.product_variant_id = $${String(values.length)}`);
+    }
+    const rows = result<{
+      movement_id: string;
+      movement_number: string;
+      movement_type: string;
+      branch_id: string;
+      occurred_at: Date | string;
+      posted_at: Date | string | null;
+      reference_type: string | null;
+      reference_id: string | null;
+      movement_reason_code: string | null;
+      line_number: number;
+      product_variant_id: string;
+      sku: string;
+      product_name: string;
+      quantity: string;
+      unit_of_measure_code: string;
+      base_quantity: string;
+      unit_cost: string | null;
+      extended_cost: string | null;
+      currency_code: string | null;
+      source_location_id: string | null;
+      destination_location_id: string | null;
+      line_reason_code: string | null;
+    }>(
+      await this.database.pool.query(
+        `select m.id movement_id, m.movement_number, m.movement_type, m.branch_id,
+                m.occurred_at, m.posted_at, m.reference_type, m.reference_id,
+                m.reason_code movement_reason_code,
+                l.line_number, l.product_variant_id, v.sku, p.name product_name,
+                l.quantity::text quantity, l.unit_of_measure_code, l.base_quantity::text base_quantity,
+                l.unit_cost::text unit_cost, l.extended_cost::text extended_cost, l.currency_code,
+                l.source_location_id, l.destination_location_id, l.reason_code line_reason_code
+         from inventory_movement_lines l
+         join inventory_movements m on m.company_id = l.company_id and m.id = l.inventory_movement_id
+         join product_variants v on v.company_id = l.company_id and v.id = l.product_variant_id
+         join products p on p.company_id = v.company_id and p.id = v.product_id
+         where ${where.join(' and ')}
+         order by m.posted_at asc, m.id asc, l.line_number asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      movementId: row.movement_id,
+      movementNumber: row.movement_number,
+      movementType: row.movement_type,
+      branchId: row.branch_id,
+      occurredAt: new Date(row.occurred_at),
+      postedAt: row.posted_at === null ? null : new Date(row.posted_at),
+      referenceType: row.reference_type,
+      referenceId: row.reference_id,
+      movementReasonCode: row.movement_reason_code,
+      lineNumber: row.line_number,
+      productVariantId: row.product_variant_id,
+      sku: row.sku,
+      productName: row.product_name,
+      quantity: row.quantity,
+      unitOfMeasureCode: row.unit_of_measure_code,
+      baseQuantity: row.base_quantity,
+      unitCost: row.unit_cost,
+      extendedCost: row.extended_cost,
+      currencyCode: row.currency_code,
+      sourceLocationId: row.source_location_id,
+      destinationLocationId: row.destination_location_id,
+      lineReasonCode: row.line_reason_code,
+    }));
   }
 
   // --- Access ------------------------------------------------------------

@@ -41,6 +41,25 @@ export interface LoginInput {
 export type ClientType = 'browser' | 'mobile' | 'pos';
 export type TransportMode = 'browser' | 'bearer';
 
+// TASK 14.5 (Wave 3, Phase 4b/7 Item 8): quick-switch credential
+// candidates for a company. A salted argon2id hash can never be looked
+// up by value, so PIN/QR login resolves "which staff member" by scanning
+// the small set of memberships in the CALLING SESSION's own company that
+// opted into the credential (never across companies — see
+// `AuthService#pinLogin`/`#qrLogin`) and verifying each hash in turn.
+export interface PinLoginCandidate {
+  readonly userId: string;
+  readonly membership: AuthMembership;
+  readonly pinHash: string;
+}
+
+export interface QrLoginCandidate {
+  readonly userId: string;
+  readonly membership: AuthMembership;
+  readonly qrSecretHash: string;
+  readonly qrExpiresAt: Date;
+}
+
 export interface LoginChallenge {
   readonly id: string;
   readonly userId: string;
@@ -134,4 +153,22 @@ export interface AuthRepository {
     nextGeneration: number;
     expiresAt: Date;
   }): Promise<'rotated' | 'invalid'>;
+  // TASK 14.5 (Wave 3, Phase 4b): quick-switch PIN. Optional — like the
+  // login-challenge/company-switch methods above — so any other
+  // `AuthRepository` implementation (e.g. a hand-rolled test double) keeps
+  // compiling unchanged until it opts in.
+  listPinLoginCandidates?(companyId: string): Promise<readonly PinLoginCandidate[]>;
+  setMembershipPin?(input: {
+    companyId: string;
+    membershipId: string;
+    pinHash: string | null;
+  }): Promise<boolean>;
+  // TASK 14.5 (Wave 3, Phase 7 Item 8): quick-switch staff QR login.
+  listQrLoginCandidates?(companyId: string): Promise<readonly QrLoginCandidate[]>;
+  setMembershipQrCredential?(input: {
+    companyId: string;
+    membershipId: string;
+    qrSecretHash: string | null;
+    qrExpiresAt: Date | null;
+  }): Promise<boolean>;
 }

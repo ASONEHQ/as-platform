@@ -95,6 +95,12 @@ import { AccessService } from '../modules/access/access.service.js';
 import { ReportsRepository } from '../modules/reports/reports.repository.js';
 import { registerReportsRoutes } from '../modules/reports/reports.routes.js';
 import { ReportsService } from '../modules/reports/reports.service.js';
+import { DashboardRepository } from '../modules/dashboard/dashboard.repository.js';
+import { registerDashboardRoutes } from '../modules/dashboard/dashboard.routes.js';
+import { DashboardService } from '../modules/dashboard/dashboard.service.js';
+import { AssistantRepository } from '../modules/assistant/assistant.repository.js';
+import { registerAssistantRoutes } from '../modules/assistant/assistant.routes.js';
+import { AssistantService } from '../modules/assistant/assistant.service.js';
 import { PeopleRepository } from '../modules/people/people.repository.js';
 import { registerEmployeeRoutes } from '../modules/people/employees.routes.js';
 import { EmployeesService } from '../modules/people/employees.service.js';
@@ -361,13 +367,14 @@ export async function registerPlugins(
       // like `RefundsService` already does for a refund's drawer
       // movement (see that service's own doc comment).
       const partiesRepository = new PartiesRepository(options.infrastructure.database);
-      registerPartyRoomRoutes(app, authentication, new PartyRoomsService(partiesRepository));
+      // TASK 14.5 (Wave 3, Phase 2): both stored in named consts — the
+      // Dashboard module below reuses these SAME instances directly
+      // (never a second/duplicate one).
+      const partyRoomsService = new PartyRoomsService(partiesRepository);
+      const partyReservationsService = new PartyReservationsService(partiesRepository, cashRepository);
+      registerPartyRoomRoutes(app, authentication, partyRoomsService);
       registerPartyPackageRoutes(app, authentication, new PartyPackagesService(partiesRepository));
-      registerPartyReservationRoutes(
-        app,
-        authentication,
-        new PartyReservationsService(partiesRepository, cashRepository),
-      );
+      registerPartyReservationRoutes(app, authentication, partyReservationsService);
       registerCustomerRoutes(app, authentication, customersService);
       registerMembershipRoutes(app, authentication, membershipsService);
       registerLoyaltyRoutes(app, authentication, loyaltyService);
@@ -397,7 +404,37 @@ export async function registerPlugins(
       // tables (including the real cash ledger, via the same
       // `cashMovementDirection` fold `CashService.summary()` uses) — no
       // dependency on any other module's constructed instance.
-      registerReportsRoutes(app, authentication, new ReportsService(new ReportsRepository(options.infrastructure.database)));
+      const reportsService = new ReportsService(new ReportsRepository(options.infrastructure.database));
+      registerReportsRoutes(app, authentication, reportsService);
+      // TASK 14.5 (Wave 3, Phase 2) — Dashboard ("today at a glance").
+      // A thin aggregation over already-constructed Wave 1/2 service
+      // instances (`reportsService`/`cashService`/`partyReservationsService`/
+      // `partyRoomsService` — every one reused directly, never a second
+      // instance) plus `DashboardRepository`'s own two genuinely new
+      // aggregate queries (outstanding party balances, currently-clocked-
+      // in employee count) that no existing endpoint already exposes.
+      registerDashboardRoutes(
+        app,
+        authentication,
+        new DashboardService(
+          new DashboardRepository(options.infrastructure.database),
+          reportsService,
+          cashService,
+          partyReservationsService,
+          partyRoomsService,
+        ),
+      );
+      // TASK 14.5 (Wave 3, Phase 7, Item 6) — a faithful, real port of the
+      // legacy's own local keyword/regex FAQ bot (never an LLM/external
+      // call) — answers are always derived from real, live queries over
+      // the platform's own authoritative tables, never a canned string.
+      // Gated by authentication only (read-only, non-sensitive, already
+      // scoped to the actor's own company/branch access).
+      registerAssistantRoutes(
+        app,
+        authentication,
+        new AssistantService(new AssistantRepository(options.infrastructure.database)),
+      );
     }
   }
   if (options.config.nodeEnv === 'test') registerTestOnlyRoutes(app);

@@ -10,6 +10,10 @@ enum PosModule {
   suspended('Ventas Suspendidas', Icons.pause_circle_outline, 'Ventas'),
   returns('Devoluciones', Icons.assignment_return_outlined, 'Ventas'),
   products('Productos', Icons.inventory_2_outlined, 'Catálogo'),
+  // TASK 14.5 (Wave 3, Phase 7, Item 3): manage MULTIPLE real variants
+  // per product (the single `default_variant` alone isn't the full
+  // picture) — see `pos_product_variants_screen.dart`.
+  productVariants('Variantes', Icons.style_outlined, 'Catálogo'),
   categories('Categorías', Icons.category_outlined, 'Catálogo'),
   suppliers('Proveedores', Icons.local_shipping_outlined, 'Catálogo'),
   inventory('Inventario', Icons.warehouse_outlined, 'Inventario'),
@@ -29,7 +33,13 @@ enum PosModule {
   documents('Documentos', Icons.folder_outlined, 'Sistema'),
   sync('Sincronización', Icons.sync_outlined, 'Sistema'),
   notifications('Notificaciones', Icons.notifications_outlined, 'Sistema'),
-  settings('Configuración', Icons.settings_outlined, 'Sistema');
+  settings('Configuración', Icons.settings_outlined, 'Sistema'),
+  // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer text —
+  // see `pos_receipt_branding_screen.dart`.
+  receiptBranding('Marca del Ticket', Icons.receipt_long_outlined, 'Sistema'),
+  // TASK 14.5 (Wave 3, Phase 7, Item 6): a faithful, real port of the
+  // legacy's local keyword/regex FAQ bot — see `pos_assistant_screen.dart`.
+  assistant('Asistente', Icons.smart_toy_outlined, 'Sistema');
 
   const PosModule(this.label, this.icon, this.group);
   final String label;
@@ -93,6 +103,23 @@ enum PosModule {
     // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina —
     // see `pos_people_gateway.dart`/`pos_people_screen.dart`.
     PosModule.employees,
+    // TASK 14.5 (Wave 3, Phase 8): Marca del Ticket — per-tenant receipt
+    // header/footer text — see `pos_receipt_branding_screen.dart`.
+    PosModule.receiptBranding,
+    // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real deterministic
+    // FAQ bot over live data — see `pos_assistant_screen.dart`.
+    PosModule.assistant,
+    // TASK 14.5 (Wave 3, Phase 7, Item 3): Variantes — see
+    // `pos_product_variants_screen.dart`.
+    PosModule.productVariants,
+    // TASK 14.5 (Wave 3, Phase 6): Cafetería ("Acceso rápido") — the same
+    // real `_PosSale` sale surface as `PosModule.pos`, scoped to whatever
+    // categories a company opted into the generic `visualTile` display
+    // hint (forensically confirmed to be the legacy's own `estiloCafe`
+    // flag's real, purely-visual scope — see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1) — never a second,
+    // disconnected sale screen.
+    PosModule.cafeteria,
   }.contains(this);
 }
 

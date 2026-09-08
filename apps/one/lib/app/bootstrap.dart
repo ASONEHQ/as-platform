@@ -10,14 +10,18 @@ import '../core/telemetry/telemetry.dart';
 import '../features/authentication/auth_gateway.dart';
 import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_access_gateway.dart';
+import '../features/pos/pos_assistant_gateway.dart';
+import '../features/pos/pos_auth_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
+import '../features/pos/pos_dashboard_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
+import '../features/pos/pos_product_variants_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
@@ -25,6 +29,7 @@ import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
 import '../features/pos/pos_sales_gateway.dart';
+import '../features/pos/pos_settings_gateway.dart';
 import '../features/pos/pos_suppliers_gateway.dart';
 import 'app.dart';
 
@@ -81,6 +86,11 @@ void bootstrap() {
       posSchedulesGateway: ApiPosSchedulesGateway(api),
       posTimeClockGateway: ApiPosTimeClockGateway(api),
       posPayrollGateway: ApiPosPayrollGateway(api),
+      posDashboardGateway: ApiPosDashboardGateway(api),
+      posSettingsGateway: ApiPosSettingsGateway(api),
+      posProductVariantsGateway: ApiPosProductVariantsGateway(api),
+      posAssistantGateway: ApiPosAssistantGateway(api),
+      posAuthGateway: ApiPosAuthGateway(api),
     ),
   );
   authController.bootstrapSession();

@@ -20,6 +20,8 @@ import type {
   CreateProductPriceInput,
   CreateVariantInput,
   ProductDetail,
+  ProductExportFilters,
+  ProductExportRow,
   ProductFilters,
   ProductMutationContext,
   ProductPage,
@@ -184,6 +186,60 @@ function decodeProduct(raw: unknown): ProductDetail {
   };
 }
 
+// TASK 14.5 (Wave 3, Phase 7, Item 1) — mirrors `reports.service.ts`'s own
+// private `csvEscape`/`csvRow` helper pair verbatim (that file's own doc
+// comment explains the RFC 4180 quoting rule); duplicated here rather than
+// imported so the catalog module never depends on the reports module for
+// something this small.
+function csvEscape(value: string): string {
+  if (!/[",\n\r]/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+function csvRow(values: readonly string[]): string {
+  return values.map(csvEscape).join(',') + '\r\n';
+}
+function buildProductExportCsv(rows: readonly ProductExportRow[]): string {
+  let csv = csvRow([
+    'id',
+    'code',
+    'name',
+    'product_type',
+    'tracks_inventory',
+    'tax_code',
+    'status',
+    'category_id',
+    'category_name',
+    'brand_id',
+    'brand_name',
+    'default_sku',
+    'default_cost',
+    'default_currency_code',
+    'created_at',
+    'updated_at',
+  ]);
+  for (const row of rows) {
+    csv += csvRow([
+      row.id,
+      row.code,
+      row.name,
+      row.productType,
+      String(row.tracksInventory),
+      row.taxCode,
+      row.status,
+      row.categoryId ?? '',
+      row.categoryName ?? '',
+      row.brandId ?? '',
+      row.brandName ?? '',
+      row.defaultSku ?? '',
+      row.defaultCost ?? '',
+      row.defaultCurrencyCode ?? '',
+      row.createdAt.toISOString(),
+      row.updatedAt.toISOString(),
+    ]);
+  }
+  return csv;
+}
+
 export class ProductCatalogService {
   public constructor(private readonly repository: ProductCatalogRepository) {}
 
@@ -193,6 +249,17 @@ export class ProductCatalogService {
       ...(input.sku === undefined ? {} : { sku: normalizedSku(input.sku) }),
       ...(input.barcode === undefined ? {} : { barcode: input.barcode.normalize('NFKC').trim() }),
     });
+  }
+
+  // TASK 14.5 (Wave 3, Phase 7, Item 1): a real CSV export of the live
+  // company catalog — the honest port of AS POS V1's own genuine
+  // `simularImport()`-adjacent-but-real CSV Blob download (that legacy
+  // export itself was real, unlike the import beside it — see
+  // `docs/LEGACY_FUNCTIONAL_PARITY.md` §3). Never paginated, never
+  // aggregated — every matching product is one CSV row.
+  public async exportCsv(companyId: string, input: ProductExportFilters): Promise<string> {
+    const rows = await this.repository.exportRows(companyId, input);
+    return buildProductExportCsv(rows);
   }
 
   public async product(

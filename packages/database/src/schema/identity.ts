@@ -58,6 +58,25 @@ export const companyMemberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     status: text('status').notNull().default('active'),
+    // TASK 14.5 (Wave 3, Phase 4b): a real, hashed, company-scoped quick-
+    // switch PIN — additive to (never a replacement for) the member's own
+    // real password login. Hashed with the exact same argon2id scheme as
+    // `users.password_hash` (see `auth.passwords.ts`) — never plaintext,
+    // never a weaker scheme. Nullable: most memberships never opt in.
+    // Uniqueness within a company is enforced at write time in
+    // `AuthService#setStaffPin` (an unindexable property once hashed —
+    // see that method's own doc comment for the exact trade-off).
+    pinHash: text('pin_hash'),
+    // TASK 14.5 (Wave 3, Phase 7 Item 8): a real, revocable, short-lived
+    // staff QR login credential — an opaque server-generated secret,
+    // never a predictable/client-chosen string (unlike the legacy's own
+    // `POS-<timestamp>` generator). Hashed the same way as `pinHash`
+    // above. `qrExpiresAt` is required whenever a hash is present — see
+    // `company_memberships_qr_pair_ck` below — so a forgotten badge can
+    // never authenticate forever; reissuing (`AuthService
+    // #issueStaffQrCredential`) rotates both columns together.
+    qrSecretHash: text('qr_secret_hash'),
+    qrExpiresAt: timestamp('qr_expires_at', { withTimezone: true, mode: 'date' }),
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
@@ -67,9 +86,32 @@ export const companyMemberships = pgTable(
     unique('company_memberships_company_id_user_uq').on(table.companyId, table.id, table.userId),
     index('company_memberships_user_idx').on(table.userId),
     index('company_memberships_company_status_idx').on(table.companyId, table.status),
+    // TASK 14.5 (Wave 3, Phase 4b): partial index — only the (small)
+    // subset of memberships that actually opted into a quick-switch PIN
+    // needs scanning at login time (`AuthRepository#listPinLoginCandidates`
+    // scans every active-PIN row in a company, since a salted hash can
+    // never be looked up directly by value).
+    index('company_memberships_company_pin_idx')
+      .on(table.companyId)
+      .where(sql`${table.pinHash} is not null`),
+    index('company_memberships_company_qr_idx')
+      .on(table.companyId)
+      .where(sql`${table.qrSecretHash} is not null`),
     check(
       'company_memberships_status_ck',
       sql`${table.status} in ('invited', 'active', 'suspended', 'disabled')`,
+    ),
+    check(
+      'company_memberships_pin_hash_nonblank_ck',
+      sql`${table.pinHash} is null or length(btrim(${table.pinHash})) >= 20`,
+    ),
+    check(
+      'company_memberships_qr_secret_hash_nonblank_ck',
+      sql`${table.qrSecretHash} is null or length(btrim(${table.qrSecretHash})) >= 20`,
+    ),
+    check(
+      'company_memberships_qr_pair_ck',
+      sql`(${table.qrSecretHash} is null) = (${table.qrExpiresAt} is null)`,
     ),
   ],
 );

@@ -1,0 +1,2 @@
+ALTER TABLE "access_credentials" ADD COLUMN "credential_kind" text DEFAULT 'ticket' NOT NULL;--> statement-breakpoint
+ALTER TABLE "access_credentials" ADD CONSTRAINT "access_credentials_kind_ck" CHECK ("access_credentials"."credential_kind" in ('ticket', 'wristband'));

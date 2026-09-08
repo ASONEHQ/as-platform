@@ -11,8 +11,12 @@ import '../authentication/startup_visuals.dart';
 import 'money.dart';
 import 'pos_access_gateway.dart';
 import 'pos_access_screen.dart';
+import 'pos_assistant_gateway.dart';
+import 'pos_assistant_screen.dart';
+import 'pos_auth_gateway.dart';
 import 'pos_cash_gateway.dart';
 import 'pos_customers_gateway.dart';
+import 'pos_dashboard_gateway.dart';
 import 'pos_held_sales_gateway.dart';
 import 'pos_loyalty_gateway.dart';
 import 'pos_memberships_gateway.dart';
@@ -23,15 +27,19 @@ import 'pos_parties_models.dart';
 import 'pos_payments_gateway.dart';
 import 'pos_people_gateway.dart';
 import 'pos_people_screen.dart';
+import 'pos_product_variants_gateway.dart';
+import 'pos_product_variants_screen.dart';
 import 'pos_promotions_gateway.dart';
 import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
+import 'pos_receipt_branding_screen.dart';
 import 'pos_refunds_gateway.dart';
 import 'pos_reports_gateway.dart';
 import 'pos_reports_screen.dart';
 import 'pos_rewards_gateway.dart';
 import 'pos_sales_gateway.dart';
+import 'pos_settings_gateway.dart';
 import 'pos_suppliers_gateway.dart';
 import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
@@ -64,6 +72,13 @@ class PosShell extends StatefulWidget {
     this.schedulesGateway = const EmptyPosSchedulesGateway(),
     this.timeClockGateway = const EmptyPosTimeClockGateway(),
     this.payrollGateway = const EmptyPosPayrollGateway(),
+    this.dashboardGateway = const EmptyPosDashboardGateway(),
+    this.settingsGateway = const EmptyPosSettingsGateway(),
+    this.productVariantsGateway = const EmptyPosProductVariantsGateway(),
+    this.assistantGateway = const EmptyPosAssistantGateway(),
+    // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): real quick-switch PIN/QR
+    // staff login — see `pos_auth_gateway.dart`.
+    this.authGateway = const EmptyPosAuthGateway(),
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -117,6 +132,19 @@ class PosShell extends StatefulWidget {
   final PosSchedulesGateway schedulesGateway;
   final PosTimeClockGateway timeClockGateway;
   final PosPayrollGateway payrollGateway;
+  // TASK 14.5 (Wave 3, Phase 2): Dashboard ("today at a glance") — see
+  // `pos_dashboard_gateway.dart`.
+  final PosDashboardGateway dashboardGateway;
+  // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer
+  // branding — see `pos_settings_gateway.dart`.
+  final PosSettingsGateway settingsGateway;
+  // TASK 14.5 (Wave 3, Phase 7, Item 3): product variants admin — see
+  // `pos_product_variants_gateway.dart`.
+  final PosProductVariantsGateway productVariantsGateway;
+  // TASK 14.5 (Wave 3, Phase 7, Item 6): real deterministic FAQ
+  // assistant — see `pos_assistant_gateway.dart`.
+  final PosAssistantGateway assistantGateway;
+  final PosAuthGateway authGateway;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -326,6 +354,11 @@ class _PosShellState extends State<PosShell> {
                             schedulesGateway: widget.schedulesGateway,
                             timeClockGateway: widget.timeClockGateway,
                             payrollGateway: widget.payrollGateway,
+                            dashboardGateway: widget.dashboardGateway,
+                            settingsGateway: widget.settingsGateway,
+                            productVariantsGateway: widget.productVariantsGateway,
+                            assistantGateway: widget.assistantGateway,
+                            authGateway: widget.authGateway,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -1273,6 +1306,28 @@ String _paymentStatusLabel(String attemptStatus) => switch (attemptStatus) {
 /// shown only after the backend itself reports the attempt `approved`.
 /// With no terminal configured, stops honestly at "preparada para pago —
 /// terminal no configurada", exactly as TASK 12.4A.1 left it.
+/// TASK 13.0 (lifted to top-level in TASK 14.5 Wave 3 Phase 4a): "Buscar
+/// cliente" — a small inline action in the cart/ticket area, mirroring
+/// the coupon UX pattern exactly (ADR-0017 Part H). Attaching a customer
+/// is never required and never blocks checkout speed — "Venta sin
+/// cliente" stays the default/fast path. Lifted out of
+/// `_TicketFooterState` so the F3 keyboard shortcut and the toolbar's
+/// "Vincular cliente (F3)" button (`_PosSaleState`) can call the EXACT
+/// same code path as the on-screen "Buscar cliente" row, rather than a
+/// second, shortcut-only copy of this logic.
+Future<void> openCustomerSelector(
+  BuildContext context, {
+  required SaleSession saleSession,
+  required PosCustomersGateway customersGateway,
+}) async {
+  final selected = await showDialog<_CustomerSelectorResult>(
+    context: context,
+    builder: (dialogContext) => _CustomerSelectorDialog(customersGateway: customersGateway),
+  );
+  if (selected == null || !context.mounted) return;
+  saleSession.setCustomer(customerId: selected.id, displayName: selected.displayName);
+}
+
 Future<void> _submitSaleForPayment(
   BuildContext context, {
   required SaleSession saleSession,
@@ -2565,6 +2620,11 @@ class _Content extends StatelessWidget {
     required this.schedulesGateway,
     required this.timeClockGateway,
     required this.payrollGateway,
+    required this.dashboardGateway,
+    required this.settingsGateway,
+    required this.productVariantsGateway,
+    required this.assistantGateway,
+    required this.authGateway,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2613,6 +2673,13 @@ class _Content extends StatelessWidget {
   final PosSchedulesGateway schedulesGateway;
   final PosTimeClockGateway timeClockGateway;
   final PosPayrollGateway payrollGateway;
+  // TASK 14.5 (Wave 3, Phase 2): Dashboard ("today at a glance") — see
+  // `pos_dashboard_gateway.dart`.
+  final PosDashboardGateway dashboardGateway;
+  final PosSettingsGateway settingsGateway;
+  final PosProductVariantsGateway productVariantsGateway;
+  final PosAssistantGateway assistantGateway;
+  final PosAuthGateway authGateway;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2635,7 +2702,7 @@ class _Content extends StatelessWidget {
         // workspace in the canonical reference (`.pos-layout{overflow:
         // hidden}`) — only its product grid scrolls internally. Every other
         // module keeps the shared scrollable admin-page pattern.
-        child: module == PosModule.pos
+        child: module == PosModule.pos || module == PosModule.cafeteria
             ? Padding(
                 padding: padding,
                 // POS branch-context fix: "Todas las sucursales" stays a
@@ -2645,7 +2712,11 @@ class _Content extends StatelessWidget {
                 // before the cashier can build a ticket at all, not just
                 // at Cobrar (the backend/checkout guard in
                 // `_submitCashSaleForPayment`/`_submitSaleForPayment`
-                // stays in place unchanged as defense in depth).
+                // stays in place unchanged as defense in depth). Applies
+                // identically to `PosModule.cafeteria` — TASK 14.5 (Wave
+                // 3, Phase 6): "Acceso rápido" is the exact same real
+                // sale surface, scoped to visual-tile categories, never a
+                // second disconnected screen.
                 child: this.context.currentBranch == null
                     ? _PosBranchRequired(
                         context: this.context,
@@ -2663,16 +2734,30 @@ class _Content extends StatelessWidget {
                         rewardsGateway: rewardsGateway,
                         heldSalesGateway: heldSalesGateway,
                         onEnterCliente: onEnterCliente,
+                        visualTileOnly: module == PosModule.cafeteria,
+                        authGateway: authGateway,
                       ),
               )
             : SingleChildScrollView(
                 padding: padding,
                 child: switch (module) {
-                  PosModule.dashboard => _Dashboard(context: this.context),
+                  // TASK 14.5 (Wave 3, Phase 2): the Dashboard ("today at
+                  // a glance") — real, server-aggregated metrics; see
+                  // `pos_dashboard_gateway.dart`.
+                  PosModule.dashboard => _Dashboard(
+                    context: this.context,
+                    dashboardGateway: dashboardGateway,
+                  ),
                   PosModule.products => _Products(
                     state: controller.products,
                     allowed: this.context.permissions.contains('catalog.read'),
                     onRefresh: () => controller.loadProducts(refresh: true),
+                  ),
+                  // TASK 14.5 (Wave 3, Phase 7, Item 3): Variantes — manage
+                  // multiple real variants per product.
+                  PosModule.productVariants => PosProductVariantsScreen(
+                    context: this.context,
+                    gateway: productVariantsGateway,
                   ),
                   PosModule.inventory => _Inventory(
                     state: controller.balances,
@@ -2813,6 +2898,18 @@ class _Content extends StatelessWidget {
                     timeClockGateway: timeClockGateway,
                     payrollGateway: payrollGateway,
                   ),
+                  // TASK 14.5 (Wave 3, Phase 8): Marca del Ticket —
+                  // per-tenant receipt header/footer text.
+                  PosModule.receiptBranding => PosReceiptBrandingScreen(
+                    context: this.context,
+                    settingsGateway: settingsGateway,
+                  ),
+                  // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real
+                  // deterministic FAQ bot over live data.
+                  PosModule.assistant => PosAssistantScreen(
+                    context: this.context,
+                    gateway: assistantGateway,
+                  ),
                   _ => _ComingSoon(module: module),
                 },
               ),
@@ -2897,88 +2994,423 @@ class _PosCard extends StatelessWidget {
   }
 }
 
-class _Dashboard extends StatelessWidget {
-  const _Dashboard({required this.context});
+// ---------------------------------------------------------------------
+// TASK 14.5 (Wave 3, Phase 2) — Dashboard ("today at a glance"). The FIRST
+// real metrics UI a user lands on by default (the pre-existing
+// `_Dashboard` was explicitly context-only — "Sin métricas simuladas").
+// Every number below comes straight off `pos_dashboard_gateway.dart`'s
+// own typed `PosDashboardSummary`, which mirrors
+// `dashboard.routes.ts`/`dashboard.types.ts` field-for-field — nothing
+// here invents a metric, a trend/growth percentage, or a fabricated
+// alert the backend did not actually compute (see this task's own
+// instruction #4). A genuinely all-zero day renders real, honest zeros —
+// the metric grid is never hidden behind a generic "empty" placeholder
+// (mirrors `_ReportPanel`'s own documented choice in
+// `pos_reports_screen.dart`: "a ready report is never 'empty' as a
+// distinct phase"). The two sub-lists below the grid (today's parties,
+// open cash sessions) DO have a legitimate empty state of their own
+// (`_DashboardEmptyNote`) — a real "sin fiestas hoy"/"sin cajas
+// abiertas" message, never a fabricated row.
+// ---------------------------------------------------------------------
+
+enum _DashboardPhase { loading, ready, failure }
+
+/// Holds the header/branch-filter UI only. The real fetch lives in
+/// `_DashboardBody` below, keyed by `date`+`branch` — mirrors
+/// `PosReportsScreen`/`_ReportPanel`'s own established split in
+/// `pos_reports_screen.dart` exactly: `_DashboardBody` is only ever
+/// CONSTRUCTED (so its `initState`/load only ever RUNS) when the actor
+/// actually has `report.read` — never fetched-then-hidden behind a
+/// permission gate, and never re-fetched manually on a branch change (the
+/// new key just tears down and rebuilds the body from scratch, the same
+/// structural guarantee `_Caja` uses when keyed by branch).
+class _Dashboard extends StatefulWidget {
+  const _Dashboard({required this.context, required this.dashboardGateway});
   final AuthenticatedContext context;
+  final PosDashboardGateway dashboardGateway;
+
+  @override
+  State<_Dashboard> createState() => _DashboardState();
+}
+
+class _DashboardState extends State<_Dashboard> {
+  String? _branchFilter;
+  late final String _today;
+
+  @override
+  void initState() {
+    super.initState();
+    // "Today" resolved once from the device's own local clock, exactly
+    // like `PosReportsScreen`'s own established convention
+    // (`_dateTo = DateTime(now.year, now.month, now.day)` in
+    // `pos_reports_screen.dart`) — this codebase has no IANA per-branch
+    // timezone conversion library anywhere (not in `pubspec.yaml`, not
+    // used by any other Wave 1/2 screen, including Reports, the closest
+    // precedent this task's own instructions point to), so inventing one
+    // here for a single screen would be new, unproven infrastructure,
+    // not a faithful port of an established pattern. Device-local time is
+    // still a real wall-clock "today," never a naive UTC assumption.
+    _today = _isoDate(DateTime.now());
+  }
+
+  /// Mirrors `_HeldSales`/`PosReportsScreen`'s own `_branchId` getter
+  /// exactly: a branch-scoped session always reports its own single
+  /// branch; a company-wide session defaults to a consolidated view
+  /// (`null` = every branch the session permits) until the actor picks
+  /// one from `_branchFilter`.
+  String? get _branchId =>
+      widget.context.companyWideAccess ? _branchFilter : widget.context.session.branchId;
 
   @override
   Widget build(BuildContext context) {
-    final company = this.context.currentCompany;
-    final branch = this.context.currentBranch;
+    final allowed = widget.context.permissions.contains('report.read');
     return Column(
+      key: const Key('pos-dashboard'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SectionHeader(
           title: 'Dashboard',
           description:
-              'Contexto operativo real de la sesión. Sin métricas simuladas.',
+              'Resumen operativo real de hoy ($_today), calculado por el servidor. Sin métricas simuladas.',
           action: const _VisualDialogButton(),
         ),
+        // Real company/branch context, mirroring `_ReportsHeader`'s own
+        // icon+label row in `pos_reports_screen.dart` (extended with the
+        // company name — a report is always reached from an already-known
+        // company context in its own screen, but Dashboard is the very
+        // first screen a session lands on, so it names both).
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          // `Wrap` (never `Row`) — a long company/branch name pair must
+          // wrap onto a second line on a narrow viewport rather than
+          // overflow it (this section header sits above content that
+          // scrolls, so wrapping costs nothing).
+          child: Wrap(
+            spacing: 5,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Icon(Icons.apartment_outlined, size: 15, color: PosPalette.of(context).textMuted),
+              Text(
+                widget.context.currentCompany?.name ?? 'Sin empresa seleccionada',
+                style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12.5),
+              ),
+              const SizedBox(width: 9),
+              Icon(Icons.store_outlined, size: 15, color: PosPalette.of(context).textMuted),
+              Text(
+                widget.context.companyWideAccess
+                    ? 'Todas las sucursales'
+                    : (widget.context.currentBranch?.name ?? 'Sucursal actual'),
+                style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12.5),
+              ),
+            ],
+          ),
+        ),
+        if (widget.context.companyWideAccess)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: SizedBox(
+              width: 260,
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-dashboard-branch-selector'),
+                initialValue: _branchFilter,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Sucursal'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todas las sucursales')),
+                  for (final item in widget.context.branches)
+                    DropdownMenuItem(value: item.id, child: Text(item.name)),
+                ],
+                onChanged: (value) => setState(() => _branchFilter = value),
+              ),
+            ),
+          ),
+        if (!allowed)
+          const KeyedSubtree(key: Key('pos-dashboard-permission'), child: _PermissionState())
+        else
+          _DashboardBody(
+            key: ValueKey('pos-dashboard-body-$_today-${_branchId ?? 'all'}'),
+            date: _today,
+            branchId: _branchId,
+            dashboardGateway: widget.dashboardGateway,
+          ),
+      ],
+    );
+  }
+}
+
+class _DashboardBody extends StatefulWidget {
+  const _DashboardBody({
+    required this.date,
+    required this.branchId,
+    required this.dashboardGateway,
+    super.key,
+  });
+  final String date;
+  final String? branchId;
+  final PosDashboardGateway dashboardGateway;
+
+  @override
+  State<_DashboardBody> createState() => _DashboardBodyState();
+}
+
+class _DashboardBodyState extends State<_DashboardBody> {
+  _DashboardPhase _phase = _DashboardPhase.loading;
+  PosDashboardSummary? _summary;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _DashboardPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final summary = await widget.dashboardGateway.summary(date: widget.date, branchId: widget.branchId);
+      if (!mounted) return;
+      setState(() {
+        _summary = summary;
+        _phase = _DashboardPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DashboardPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DashboardPhase.failure;
+        _errorMessage = 'No fue posible cargar el dashboard.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Align(
+        alignment: Alignment.centerRight,
+        child: KeyedSubtree(
+          key: const Key('pos-dashboard-refresh'),
+          child: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        ),
+      ),
+      const SizedBox(height: 8),
+      switch (_phase) {
+        _DashboardPhase.loading => const KeyedSubtree(
+          key: Key('pos-dashboard-loading'),
+          child: _LoadingState(),
+        ),
+        _DashboardPhase.failure => KeyedSubtree(
+          key: const Key('pos-dashboard-failure'),
+          child: _FailureState(
+            message: _errorMessage ?? 'No fue posible cargar el dashboard.',
+            onRetry: () => unawaited(_load()),
+          ),
+        ),
+        _DashboardPhase.ready => _DashboardReady(summary: _summary!),
+      },
+    ],
+  );
+}
+
+/// Right-aligned money, one line per currency actually present — never
+/// summed across currencies, mirroring
+/// `pos_reports_screen.dart`'s own `_formatAmountString` exactly
+/// (this file's own single-currency `_formatMoney` deliberately omits
+/// the currency code, which is wrong for a figure that could carry more
+/// than one — see that helper's own doc comment).
+String _formatDashboardMoney(String amount, String currencyCode) {
+  final trimmed = amount.trim();
+  final negative = trimmed.startsWith('-');
+  final magnitude = negative ? trimmed.substring(1) : trimmed;
+  try {
+    final money = Money.parse(magnitude, currencyCode);
+    return '${negative ? '-' : ''}${money.toDisplayString()} $currencyCode';
+  } on MoneyFormatException {
+    return '$amount $currencyCode';
+  }
+}
+
+class _DashboardReady extends StatelessWidget {
+  const _DashboardReady({required this.summary});
+  final PosDashboardSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    // An empty amounts list means genuinely zero activity — shown as a
+    // plain "0" (never a fabricated "$0.00" in a currency the backend
+    // never actually returned; mirrors `pos_reports_screen.dart`'s own
+    // `_ReportsMoneyList` choice to never guess a currency for an empty
+    // range, adapted here to a single always-visible metric card instead
+    // of a hidden section).
+    final salesTotal = summary.salesGrossTotal.isEmpty
+        ? '0'
+        : summary.salesGrossTotal
+              .map((entry) => _formatDashboardMoney(entry.amount, entry.currencyCode))
+              .join('\n');
+    final outstandingTotal = summary.outstandingPartyBalances.isEmpty
+        ? '0'
+        : summary.outstandingPartyBalances
+              .map((entry) => _formatDashboardMoney(entry.amount, entry.currencyCode))
+              .join('\n');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         LayoutBuilder(
           builder: (context, constraints) {
-            final columns = constraints.maxWidth >= 1100
+            final columns = constraints.maxWidth >= 1200
+                ? 4
+                : constraints.maxWidth >= 860
                 ? 3
-                : constraints.maxWidth >= 620
+                : constraints.maxWidth >= 500
                 ? 2
                 : 1;
             return GridView.count(
+              key: const Key('pos-dashboard-metrics-grid'),
               crossAxisCount: columns,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
-              childAspectRatio: columns == 1 ? 2.6 : 1.8,
+              childAspectRatio: columns == 1 ? 2.6 : 1.5,
               children: [
-                _ContextCard(
-                  icon: Icons.apartment_outlined,
-                  label: 'Empresa actual',
-                  value: company?.name ?? 'Sin empresa seleccionada',
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-sales'),
+                  icon: Icons.point_of_sale_outlined,
+                  label: 'Ventas de hoy',
+                  value: salesTotal,
+                  caption: '${summary.salesTransactionCount} transacción(es)',
                 ),
-                _ContextCard(
-                  icon: Icons.store_outlined,
-                  label: 'Sucursal actual',
-                  value: branch?.name ?? 'Acceso corporativo',
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-occupancy'),
+                  icon: Icons.groups_outlined,
+                  label: 'Ocupación actual',
+                  value: '${summary.currentOccupancy}',
+                  caption: 'personas dentro (en vivo)',
                 ),
-                _ContextCard(
-                  icon: Icons.person_outline,
-                  label: 'Usuario',
-                  value: this.context.user.displayName,
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-parties'),
+                  icon: Icons.celebration_outlined,
+                  label: 'Fiestas de hoy',
+                  value: '${summary.partyReservationCount}',
+                  caption: 'reservación(es)',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-cash-sessions'),
+                  icon: Icons.point_of_sale,
+                  label: 'Cajas abiertas',
+                  value: '${summary.openCashSessionCount}',
+                  caption: 'sesión(es) de caja',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-outstanding-balance'),
+                  icon: Icons.receipt_long_outlined,
+                  label: 'Saldo pendiente de fiestas',
+                  value: outstandingTotal,
+                  caption: 'reservaciones activas, no canceladas',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-attendance'),
+                  icon: Icons.badge_outlined,
+                  label: 'Empleados en turno',
+                  value: '${summary.clockedInEmployeeCount}',
+                  caption: 'con entrada registrada hoy',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-inventory-alerts'),
+                  icon: Icons.inventory_2_outlined,
+                  label: 'Variantes agotadas',
+                  value: '${summary.outOfStockVariantCount}',
+                  caption: 'inventario en vivo',
                 ),
               ],
             );
           },
         ),
         const SizedBox(height: 18),
-        _Directory(
-          title: 'Compañías autorizadas',
-          children: this.context.companies
-              .map((item) => '${item.name}${item.current ? ' · Actual' : ''}')
-              .toList(),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 860;
+            final partiesCard = _DashboardListCard(
+              key: const Key('pos-dashboard-parties-list'),
+              title: 'Fiestas de hoy',
+              child: summary.partyReservations.isEmpty
+                  ? const _DashboardEmptyNote(
+                      key: Key('pos-dashboard-parties-empty'),
+                      message: 'Sin fiestas registradas hoy.',
+                    )
+                  : Column(
+                      children: [
+                        for (final reservation in summary.partyReservations)
+                          _DashboardPartyRow(reservation: reservation),
+                      ],
+                    ),
+            );
+            final sessionsCard = _DashboardListCard(
+              key: const Key('pos-dashboard-cash-sessions-list'),
+              title: 'Cajas abiertas',
+              child: summary.openCashSessions.isEmpty
+                  ? const _DashboardEmptyNote(
+                      key: Key('pos-dashboard-cash-sessions-empty'),
+                      message: 'No hay cajas abiertas en este momento.',
+                    )
+                  : Column(
+                      children: [
+                        for (final session in summary.openCashSessions)
+                          _DashboardCashSessionRow(session: session),
+                      ],
+                    ),
+            );
+            if (!wide) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [partiesCard, const SizedBox(height: 12), sessionsCard],
+              );
+            }
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: partiesCard),
+                const SizedBox(width: 12),
+                Expanded(child: sessionsCard),
+              ],
+            );
+          },
         ),
-        const SizedBox(height: 12),
-        _Directory(
-          title: 'Sucursales autorizadas',
-          children: this.context.branches
-              .map(
-                (item) =>
-                    '${item.code} · ${item.name}${item.current ? ' · Actual' : ''}',
-              )
-              .toList(),
+        const SizedBox(height: 4),
+        Text(
+          'La ocupación, el inventario agotado y las cajas abiertas son fotos en tiempo real '
+          '(no filtradas por fecha); el saldo pendiente de fiestas es una cifra vigente para toda '
+          'la empresa, no solo para hoy.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11.5),
         ),
       ],
     );
   }
 }
 
-class _ContextCard extends StatelessWidget {
-  const _ContextCard({
+class _DashboardMetricCard extends StatelessWidget {
+  const _DashboardMetricCard({
     required this.icon,
     required this.label,
     required this.value,
+    required this.caption,
+    super.key,
   });
   final IconData icon;
   final String label;
   final String value;
+  final String caption;
 
   @override
   Widget build(BuildContext context) {
@@ -2986,74 +3418,125 @@ class _ContextCard extends StatelessWidget {
     return _PosCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: palette.blueDeep),
-          const SizedBox(height: 10),
-          Text(
-            label,
-            style: TextStyle(color: palette.textSecondary, fontSize: 11),
+          Row(
+            children: [
+              Icon(icon, size: 18, color: palette.blueDeep),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
           Text(
             value,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: palette.text,
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-            ),
+            style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800),
           ),
+          const SizedBox(height: 2),
+          Text(caption, style: TextStyle(color: palette.textMuted, fontSize: 11)),
         ],
       ),
     );
   }
 }
 
-class _Directory extends StatelessWidget {
-  const _Directory({required this.title, required this.children});
+class _DashboardListCard extends StatelessWidget {
+  const _DashboardListCard({required this.title, required this.child, super.key});
   final String title;
-  final List<String> children;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     return _PosCard(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            title,
-            style: TextStyle(color: palette.text, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 9),
-          if (children.isEmpty)
-            Text(
-              'Sin registros autorizados.',
-              style: TextStyle(color: palette.textMuted),
-            )
-          else
-            for (final value in children)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.check_circle_outline,
-                      size: 17,
-                      color: palette.success,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        value,
-                        style: TextStyle(color: palette.textSecondary),
-                      ),
-                    ),
-                  ],
+          Text(title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15)),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _DashboardEmptyNote extends StatelessWidget {
+  const _DashboardEmptyNote({required this.message, super.key});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) =>
+      Text(message, style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12.5));
+}
+
+class _DashboardPartyRow extends StatelessWidget {
+  const _DashboardPartyRow({required this.reservation});
+  final PosDashboardPartyReservation reservation;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final who = reservation.celebrantName ?? reservation.customerDisplayName ?? 'Sin nombre registrado';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(Icons.cake_outlined, size: 16, color: palette.textMuted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(who, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                Text(
+                  '${_hhmm(reservation.startTime)}–${_hhmm(reservation.endTime)} · ${reservation.roomName ?? 'Salón sin nombre'}',
+                  style: TextStyle(color: palette.textMuted, fontSize: 11.5),
                 ),
-              ),
+              ],
+            ),
+          ),
+          Text(reservation.status, style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+        ],
+      ),
+    );
+  }
+}
+
+class _DashboardCashSessionRow extends StatelessWidget {
+  const _DashboardCashSessionRow({required this.session});
+  final PosDashboardOpenCashSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(Icons.point_of_sale, size: 16, color: palette.textMuted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  session.cashRegisterName ?? session.cashRegisterCode ?? 'Caja sin nombre',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+                Text(
+                  'Apertura ${_formatDashboardMoney(session.openingAmount, session.currencyCode)} · ${_formatClockTime(session.openedAt)}',
+                  style: TextStyle(color: palette.textMuted, fontSize: 11.5),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -3077,6 +3560,13 @@ class _PosSale extends StatefulWidget {
     required this.rewardsGateway,
     required this.heldSalesGateway,
     required this.onEnterCliente,
+    // TASK 14.5 (Wave 3, Phase 6): `true` only when rendered for
+    // `PosModule.cafeteria` ("Acceso rápido") — see
+    // `_CategoryStrip.visualTileOnly`. Shares the exact same
+    // `saleSession`/gateways as regular Punto de Venta (never a
+    // disconnected second cart), only the category/product scope differs.
+    this.visualTileOnly = false,
+    this.authGateway = const EmptyPosAuthGateway(),
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -3098,6 +3588,8 @@ class _PosSale extends StatefulWidget {
   // `pos_held_sales_gateway.dart`.
   final PosHeldSalesGateway heldSalesGateway;
   final VoidCallback onEnterCliente;
+  final bool visualTileOnly;
+  final PosAuthGateway authGateway;
 
   @override
   State<_PosSale> createState() => _PosSaleState();
@@ -3110,12 +3602,54 @@ class _PosSaleState extends State<_PosSale> {
   final _searchController = TextEditingController();
   bool _searchBusy = false;
   bool _suspendBusy = false;
+  // TASK 14.5 (Wave 3, Phase 4a): lets the F8 shortcut invoke the EXACT
+  // same `_handleTap()` the on-screen "Cobrar" button's `onPressed`
+  // calls — see `_PosCobrarButton`'s own doc comment.
+  final _cobrarButtonKey = GlobalKey<_PosCobrarButtonState>();
 
   @override
   void dispose() {
     searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  // TASK 14.5 (Wave 3, Phase 4a): "is the cashier currently typing into a
+  // text field?" — checked before F3/F5/F6/F8 act, per the task's own
+  // explicit requirement that these register-style shortcuts must never
+  // fire while focus is inside a `TextField`/`TextFormField`. Flutter's
+  // `TextField`/`TextFormField` are both built on the same leaf
+  // `EditableText`, which is exactly what ends up holding primary focus
+  // while typing — checking for it (rather than e.g. `TextField` itself,
+  // which never receives focus directly) is the standard way to detect
+  // this from outside the field.
+  bool _focusedOnTextField() {
+    final focusedContext = FocusManager.instance.primaryFocus?.context;
+    if (focusedContext == null) return false;
+    if (focusedContext.widget is EditableText) return true;
+    // `TextField`/`TextFormField` attach their `FocusNode` to an internal
+    // `Focus` wrapper a few layers ABOVE the leaf `EditableText` (i.e.
+    // `EditableText` is itself an ancestor of whatever context actually
+    // owns primary focus while typing) — walking ancestors is the
+    // correct, precisely-bounded direction (bounded by real nesting
+    // depth, never by this screen's much larger subtree size). This is
+    // also why a plain descendant search from the focused context would
+    // be wrong: when NOTHING more specific has focus, primary focus falls
+    // back to this screen's own outer, autofocused `Focus` (wrapping the
+    // entire POS screen) — searching ITS descendants would find the
+    // search field's `EditableText` too, even though it isn't the one
+    // actually focused. Searching ancestors never has that false-positive
+    // problem, because the search field's `EditableText` sits BELOW
+    // (never above) that outer fallback `Focus` in the tree.
+    var foundEditableText = false;
+    focusedContext.visitAncestorElements((element) {
+      if (element.widget is EditableText) {
+        foundEditableText = true;
+        return false;
+      }
+      return true;
+    });
+    return foundEditableText;
   }
 
   /// TASK 14.3 (Wave 1, Part B.2): a real cash-register keyboard-wedge-
@@ -3228,20 +3762,96 @@ class _PosSaleState extends State<_PosSale> {
     }
   }
 
+  // TASK 14.5 (Wave 3, Phase 4a): "Cancelar venta" (F6) — the legacy's
+  // `cancelarVentas()` cleared the in-progress cart (after a confirmation
+  // + permission gate). The current platform has no server-side concept
+  // of an in-progress, not-yet-submitted sale to "cancel" on the backend
+  // — a `SaleSession` only ever becomes a real `sales` row at the moment
+  // Cobrar succeeds (see `_submitSaleForPayment`/`_submitCashSaleForPayment`),
+  // so there is nothing server-side to void yet. The real, honest
+  // equivalent today is discarding the local, unsent cart — gated on
+  // `sale.cancel` (mirrors `_HeldSales._canDiscard`'s own use of that same
+  // permission) and behind a confirmation dialog so a stray keypress can
+  // never silently lose a ticket in progress.
+  bool get _canCancelSale => widget.context.permissions.contains('sale.cancel');
+
+  Future<void> _handleCancelSale() async {
+    if (!_canCancelSale) return;
+    final saleSession = widget.saleSession;
+    if (saleSession.isEmpty) {
+      _showNotice(context, 'El ticket ya está vacío.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const Key('pos-cancel-sale-dialog'),
+        title: const Text('Cancelar venta'),
+        content: const Text(
+          'Se eliminarán todos los productos del ticket actual. Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('pos-cancel-sale-keep'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Seguir vendiendo'),
+          ),
+          TextButton(
+            key: const Key('pos-cancel-sale-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Cancelar venta'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    saleSession.clearAll();
+    _showNotice(context, 'Venta cancelada.');
+  }
+
   @override
   Widget build(BuildContext context) {
     final allowed = widget.context.permissions.contains('catalog.read');
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.f2) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        // TASK 14.5 (Wave 3, Phase 4a): none of these register-style
+        // shortcuts may fire while the cashier is typing into a text
+        // field (search, cash received, coupon, note…) — mirrors the
+        // task's own explicit requirement, and deliberately does NOT
+        // reproduce the legacy's own bug of F5/F6/F8 firing mid-typing.
+        // F2 is the sole exception: its whole job is moving focus INTO
+        // the search field, so it must still work from any other field.
+        if (event.logicalKey == LogicalKeyboardKey.f2) {
           searchFocusNode.requestFocus();
           return KeyEventResult.handled;
         }
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.f5) {
+        if (_focusedOnTextField()) return KeyEventResult.ignored;
+        if (event.logicalKey == LogicalKeyboardKey.f3) {
+          unawaited(
+            openCustomerSelector(
+              context,
+              saleSession: widget.saleSession,
+              customersGateway: widget.customersGateway,
+            ),
+          );
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.f5) {
           unawaited(_handleSuspend());
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.f6) {
+          unawaited(_handleCancelSale());
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.f8) {
+          unawaited(_cobrarButtonKey.currentState?._handleTap() ?? Future<void>.value());
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.escape) {
+          searchFocusNode.requestFocus();
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -3280,6 +3890,24 @@ class _PosSaleState extends State<_PosSale> {
                     onSuspend: _handleSuspend,
                     suspendBusy: _suspendBusy,
                     onEnterCliente: widget.onEnterCliente,
+                    onOpenCustomerSelector: () => unawaited(
+                      openCustomerSelector(
+                        context,
+                        saleSession: widget.saleSession,
+                        customersGateway: widget.customersGateway,
+                      ),
+                    ),
+                    canCancelSale: _canCancelSale,
+                    onCancelSale: () => unawaited(_handleCancelSale()),
+                    cobrarButtonKey: _cobrarButtonKey,
+                    visualTileOnly: widget.visualTileOnly,
+                    onQuickSwitch: () => unawaited(
+                      showDialog<void>(
+                        context: context,
+                        builder: (dialogContext) =>
+                            _StaffQuickSwitchDialog(authGateway: widget.authGateway),
+                      ),
+                    ),
                   ),
           ),
         ],
@@ -3341,6 +3969,19 @@ class _PosSaleBody extends StatelessWidget {
     required this.onSuspend,
     required this.suspendBusy,
     required this.onEnterCliente,
+    // TASK 14.5 (Wave 3, Phase 4a): F3/F6/F8 cashier keyboard shortcuts —
+    // see `_PosSaleState.build`'s `Focus.onKeyEvent`. All three trigger
+    // the EXACT same code path as their on-screen button counterparts.
+    required this.onOpenCustomerSelector,
+    required this.canCancelSale,
+    required this.onCancelSale,
+    this.cobrarButtonKey,
+    // TASK 14.5 (Wave 3, Phase 6): `PosModule.cafeteria` ("Acceso
+    // rápido") passes `true` — see `_CategoryStrip.visualTileOnly`.
+    this.visualTileOnly = false,
+    // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): "Cambiar cajero" — opens
+    // `_StaffQuickSwitchDialog` (real PIN/QR verification).
+    required this.onQuickSwitch,
   });
 
   final PosReadController controller;
@@ -3368,6 +4009,12 @@ class _PosSaleBody extends StatelessWidget {
   final VoidCallback onSuspend;
   final bool suspendBusy;
   final VoidCallback onEnterCliente;
+  final VoidCallback onOpenCustomerSelector;
+  final bool canCancelSale;
+  final VoidCallback onCancelSale;
+  final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
+  final bool visualTileOnly;
+  final VoidCallback onQuickSwitch;
 
   @override
   Widget build(BuildContext context) {
@@ -3380,7 +4027,28 @@ class _PosSaleBody extends StatelessWidget {
     final toolbar = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _PosModeSwitch(onEnterCliente: onEnterCliente),
+        Row(
+          children: [
+            Expanded(child: _PosModeSwitch(onEnterCliente: onEnterCliente)),
+            const SizedBox(width: 8),
+            // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): "Cambiar cajero" —
+            // real PIN/QR quick-switch verification, gated only by the
+            // terminal already holding an authenticated session (see
+            // `pos_auth_gateway.dart`'s own security-model doc comment).
+            Tooltip(
+              message: 'Cambiar cajero (PIN/QR)',
+              child: IconButton(
+                key: const Key('pos-quick-switch-button'),
+                onPressed: onQuickSwitch,
+                icon: const Icon(Icons.badge_outlined),
+                style: IconButton.styleFrom(
+                  minimumSize: const Size.square(40),
+                  side: BorderSide(color: PosPalette.of(context).border),
+                ),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 8),
         _PosSearchRow(
           focusNode: searchFocusNode,
@@ -3390,12 +4058,16 @@ class _PosSaleBody extends StatelessWidget {
           busy: searchBusy,
           onSuspend: onSuspend,
           suspendBusy: suspendBusy,
+          onOpenCustomerSelector: onOpenCustomerSelector,
+          canCancelSale: canCancelSale,
+          onCancelSale: onCancelSale,
         ),
         const SizedBox(height: 8),
         _CategoryStrip(
           state: controller.categories,
           selected: selectedCategoryId,
           onSelected: onSelectCategory,
+          visualTileOnly: visualTileOnly,
         ),
       ],
     );
@@ -3412,7 +4084,24 @@ class _PosSaleBody extends StatelessWidget {
             emptyMessage: 'No hay productos disponibles.',
             onRetry: () => controller.loadProducts(refresh: true),
             ready: (items) => _PosProductGrid(
-              items: _filter(items, selectedCategoryId, query),
+              items: _filter(
+                items,
+                selectedCategoryId,
+                query,
+                // TASK 14.5 (Wave 3, Phase 6): "Acceso rápido" restricts
+                // "Todas" itself to only visual-tile categories' own
+                // products, exactly like the legacy's own `posSeccion===
+                // 'cafeteria'` scoping (never leaking the rest of the
+                // catalog into this section, and never touching Punto de
+                // Venta's own "Todas" — that keeps meaning literally
+                // every product, unrestricted).
+                visualTileOnly
+                    ? controller.categories.items
+                          .where((category) => category.visualTile)
+                          .map((category) => category.id)
+                          .toSet()
+                    : null,
+              ),
               balances: controller.balances.items,
               saleSession: saleSession,
             ),
@@ -3431,6 +4120,7 @@ class _PosSaleBody extends StatelessWidget {
       heldSalesGateway: heldSalesGateway,
       branchId: branchId,
       permissions: permissions,
+      cobrarButtonKey: cobrarButtonKey,
     );
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -3460,17 +4150,26 @@ class _PosSaleBody extends StatelessWidget {
   static List<PosProduct> _filter(
     List<PosProduct> items,
     String? categoryId,
-    String query,
-  ) {
+    String query, [
+    // TASK 14.5 (Wave 3, Phase 6): non-null only for "Acceso rápido"
+    // (`PosModule.cafeteria`) — restricts the unfiltered ("Todas") view
+    // to just these categories' own products; `null` (regular Punto de
+    // Venta) keeps "Todas" meaning literally every product, unchanged.
+    Set<String>? restrictToCategoryIds,
+  ]) {
     final normalized = query.trim().toLowerCase();
     return items
         .where((item) {
           final matchesCategory =
               categoryId == null || item.categoryId == categoryId;
+          final matchesScope =
+              categoryId != null ||
+              restrictToCategoryIds == null ||
+              restrictToCategoryIds.contains(item.categoryId);
           final matchesQuery =
               normalized.isEmpty ||
               '${item.code} ${item.name}'.toLowerCase().contains(normalized);
-          return matchesCategory && matchesQuery;
+          return matchesCategory && matchesScope && matchesQuery;
         })
         .toList(growable: false);
   }
@@ -3775,11 +4474,228 @@ class _PosModeLabel extends StatelessWidget {
   );
 }
 
+/// TASK 14.5 (Wave 3, Phase 4b/7 Item 8): "Cambiar cajero" — a real PIN or
+/// QR quick-switch verification, calling `PosAuthGateway.pinLogin`/
+/// `qrLogin` (see that file's own security-model doc comment: both
+/// require this terminal's OWN already-authenticated session, resolve
+/// company scope only from it, and mint a real backend session on
+/// success — this dialog never adopts that new session as the app's own
+/// active one, a deliberately-scoped-out follow-up documented in
+/// `pos_auth_gateway.dart`). Mirrors `_CajeroReturnAuthDialog`'s own
+/// canonical PIN-entry chrome (logo, `StartupPinKeypad`, Escape-to-
+/// cancel) and adds a second tab for the QR code, matching the legacy
+/// login modal's own PIN/QR tab pair (`docs/LEGACY_FUNCTIONAL_PARITY.md`
+/// §20) — never the legacy's own plaintext/master-bypass mechanism.
+class _StaffQuickSwitchDialog extends StatefulWidget {
+  const _StaffQuickSwitchDialog({required this.authGateway});
+  final PosAuthGateway authGateway;
+
+  @override
+  State<_StaffQuickSwitchDialog> createState() => _StaffQuickSwitchDialogState();
+}
+
+class _StaffQuickSwitchDialogState extends State<_StaffQuickSwitchDialog> {
+  bool _pinTab = true;
+  final _pinController = TextEditingController();
+  final _qrController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  bool _verified = false;
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    _qrController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitPin() async {
+    if (_pinController.text.isEmpty || _busy) return;
+    await _submit(() => widget.authGateway.pinLogin(_pinController.text));
+  }
+
+  Future<void> _submitQr(String code) async {
+    if (code.trim().isEmpty || _busy) return;
+    await _submit(() => widget.authGateway.qrLogin(code.trim()));
+  }
+
+  Future<void> _submit(Future<void> Function() call) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await call();
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _verified = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        // Honest, generic failure — no hint about which part was wrong,
+        // mirroring `AuthService.pinLogin`/`qrLogin`'s own uniform
+        // `invalid_credentials` error.
+        _error = error.failure.message;
+        _pinController.clear();
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible verificar el PIN o código QR.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.of(context).pop(),
+      },
+      child: AlertDialog(
+        key: const Key('pos-quick-switch-dialog'),
+        title: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            StartupLogoMark(size: 40, shadow: false),
+            SizedBox(height: 10),
+            Text('Cambiar cajero', textAlign: TextAlign.center),
+          ],
+        ),
+        content: SizedBox(
+          width: 300,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_verified) ...[
+                Icon(Icons.verified_outlined, color: palette.success, size: 40),
+                const SizedBox(height: 10),
+                const Text(
+                  'PIN/QR verificado por el servidor.',
+                  key: Key('pos-quick-switch-verified'),
+                  textAlign: TextAlign.center,
+                ),
+              ] else ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: _QuickSwitchTabButton(
+                        label: 'PIN',
+                        active: _pinTab,
+                        onTap: () => setState(() {
+                          _pinTab = true;
+                          _error = null;
+                        }),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _QuickSwitchTabButton(
+                        label: 'Código QR',
+                        active: !_pinTab,
+                        onTap: () => setState(() {
+                          _pinTab = false;
+                          _error = null;
+                        }),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                if (_pinTab) ...[
+                  Text(
+                    _pinController.text.replaceAll(RegExp('.'), '•').padRight(4, '_'),
+                    style: const TextStyle(fontSize: 22, letterSpacing: 6),
+                  ),
+                  const SizedBox(height: 10),
+                  StartupPinKeypad(
+                    onDigit: (digit) => setState(() => _pinController.text += digit),
+                    onBackspace: () => setState(
+                      () => _pinController.text = _pinController.text.isEmpty
+                          ? ''
+                          : _pinController.text.substring(0, _pinController.text.length - 1),
+                    ),
+                    onOk: () => unawaited(_submitPin()),
+                  ),
+                ] else
+                  TextField(
+                    key: const Key('pos-quick-switch-qr-input'),
+                    controller: _qrController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Escanea o escribe el código QR...',
+                    ),
+                    onSubmitted: (value) => unawaited(_submitQr(value)),
+                  ),
+                if (_busy) ...[
+                  const SizedBox(height: 12),
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    key: const Key('pos-quick-switch-error'),
+                    style: TextStyle(color: palette.error, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const Key('pos-quick-switch-close'),
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(_verified ? 'Cerrar' : 'Cancelar'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickSwitchTabButton extends StatelessWidget {
+  const _QuickSwitchTabButton({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return OutlinedButton(
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        backgroundColor: active ? palette.action : null,
+        foregroundColor: active ? Colors.white : palette.textSecondary,
+      ),
+      child: Text(label),
+    );
+  }
+}
+
 /// Matches `#pos-toolbar-row`: the search input (with a barcode-scan
 /// affordance) plus four circular actions (link customer, reprint,
-/// suspend, cancel). The search field stays fully functional; the actions
-/// are visually faithful, disabled placeholders — none of suspend, cancel,
-/// reprint, or customer linking exist as capabilities in this shell.
+/// suspend, cancel). TASK 14.5 (Wave 3, Phase 4a): "Vincular cliente
+/// (F3)"/"Suspender venta (F5)"/"Cancelar venta (F6)" are now real,
+/// mirroring the same keyboard shortcuts wired in `_PosSaleState`.
+/// "Reimprimir ticket (F4)" stays a placeholder on THIS screen
+/// deliberately — see its own `onPressed` doc comment below for why.
 class _PosSearchRow extends StatelessWidget {
   const _PosSearchRow({
     required this.focusNode,
@@ -3789,6 +4705,9 @@ class _PosSearchRow extends StatelessWidget {
     required this.busy,
     required this.onSuspend,
     required this.suspendBusy,
+    required this.onOpenCustomerSelector,
+    required this.canCancelSale,
+    required this.onCancelSale,
   });
   final FocusNode focusNode;
   final TextEditingController controller;
@@ -3801,6 +4720,17 @@ class _PosSearchRow extends StatelessWidget {
   // server-persisted suspend instead of the legacy read-only stub.
   final VoidCallback onSuspend;
   final bool suspendBusy;
+  // TASK 14.5 (Wave 3, Phase 4a): "Vincular cliente" (F3) — calls the
+  // exact same `openCustomerSelector` the ticket footer's own "Buscar
+  // cliente" row calls.
+  final VoidCallback onOpenCustomerSelector;
+  // TASK 14.5 (Wave 3, Phase 4a): "Cancelar venta" (F6) — gated on
+  // `sale.cancel`, mirroring the legacy's own `cancelarVentas` gate and
+  // this codebase's existing `sale.cancel` precedent (`_HeldSales`'s
+  // `_canDiscard`). Hidden-as-disabled rather than shown-then-403,
+  // matching that same established pattern.
+  final bool canCancelSale;
+  final VoidCallback onCancelSale;
 
   @override
   Widget build(BuildContext context) {
@@ -3837,15 +4767,29 @@ class _PosSearchRow extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         _RoundAction(
+          key: const Key('pos-ticket-link-customer'),
           tooltip: 'Vincular cliente (F3)',
           icon: Icons.person_outline,
-          onPressed: () => _showReadOnlyNotice(context),
+          onPressed: onOpenCustomerSelector,
         ),
         const SizedBox(width: 6),
         _RoundAction(
           tooltip: 'Reimprimir ticket (F4)',
           icon: Icons.print_outlined,
-          onPressed: () => _showReadOnlyNotice(context),
+          // TASK 14.5 (Wave 3, Phase 4a): deliberately NOT wired to a real
+          // reprint here, and F4 is deliberately NOT bound as a keyboard
+          // shortcut on this screen. In the legacy, F4 opened a picker of
+          // PAST tickets to reprint — this in-progress POS screen has no
+          // completed sale of its own yet to reprint (there is nothing to
+          // print until Cobrar succeeds). The real, working reprint action
+          // already exists post-completion, in Sale Detail (Historial de
+          // ventas → seleccionar venta → Reimprimir) — see
+          // `_SaleDetailDialogState._print()`. This button stays a honest
+          // pointer to that real location instead of a fake no-op.
+          onPressed: () => _showNotice(
+            context,
+            'Para reimprimir un ticket ya cobrado, ve a Historial de ventas y abre su detalle.',
+          ),
         ),
         const SizedBox(width: 6),
         _RoundAction(
@@ -3858,10 +4802,11 @@ class _PosSearchRow extends StatelessWidget {
         ),
         const SizedBox(width: 6),
         _RoundAction(
+          key: const Key('pos-ticket-cancel'),
           tooltip: 'Cancelar venta (F6)',
           icon: Icons.close,
           color: palette.error,
-          onPressed: () => _showReadOnlyNotice(context),
+          onPressed: canCancelSale ? onCancelSale : null,
         ),
       ],
     );
@@ -3873,16 +4818,39 @@ class _CategoryStrip extends StatelessWidget {
     required this.state,
     required this.selected,
     required this.onSelected,
+    // TASK 14.5 (Wave 3, Phase 6): `PosModule.cafeteria` ("Acceso
+    // rápido") passes `true` — the strip (and the "Todas" chip's own
+    // scope) is restricted to only the categories a company opted into
+    // `visualTile`. Regular Punto de Venta passes `false` (the default):
+    // every active category shows, exactly as before this phase.
+    this.visualTileOnly = false,
   });
   final PosReadState<PosCategory> state;
   final String? selected;
   final ValueChanged<String?> onSelected;
+  final bool visualTileOnly;
 
   @override
   Widget build(BuildContext context) {
     final active = state.items
-        .where((category) => category.status == 'active')
+        .where(
+          (category) =>
+              category.status == 'active' && (!visualTileOnly || category.visualTile),
+        )
         .toList(growable: false);
+    if (visualTileOnly && active.isEmpty) {
+      // Honest empty state — never a fabricated demo category. Mirrors
+      // this codebase's own established convention (e.g. CLIENTE's
+      // per-category empty state) rather than silently rendering nothing.
+      return const Padding(
+        key: Key('pos-cafeteria-empty'),
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          'Ninguna categoría está configurada como acceso rápido todavía.',
+          style: TextStyle(fontSize: 12),
+        ),
+      );
+    }
     return SizedBox(
       key: const Key('pos-category-strip'),
       height: 40,
@@ -3912,6 +4880,7 @@ class _CategoryStrip extends StatelessWidget {
                 label: category.name,
                 selected: selected == category.id,
                 onSelected: () => onSelected(category.id),
+                visualTile: category.visualTile,
               ),
             ),
         ],
@@ -3926,27 +4895,42 @@ class _CategoryChip extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onSelected,
+    // TASK 14.5 (Wave 3, Phase 6): a real, generic "visual/compact tile"
+    // treatment — recovered from the legacy's own `estiloCafe` category
+    // flag (forensically confirmed purely visual — see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1). Never hardcoded to coffee:
+    // any company's own category (`PosCategory.visualTile`) renders this
+    // way, wherever its chip appears — inside the dedicated "Acceso
+    // rápido" section (`PosModule.cafeteria`) or in the regular Punto de
+    // Venta strip.
+    this.visualTile = false,
     super.key,
   });
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onSelected;
+  final bool visualTile;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     // The canonical `.cat` chip is always blue-tinted — border, fill, and
     // label — not neutral until selected; only the fill solidifies on
-    // selection (`.cat.active{background:var(--blue)}`).
+    // selection (`.cat.active{background:var(--blue)}`). A `visualTile`
+    // category stays visually distinct even unselected — filled, bolder
+    // border, a larger icon — mirroring the legacy's own always-on
+    // (not selection-dependent) café-section styling.
+    final filled = selected || visualTile;
     return ChoiceChip(
+      key: visualTile ? Key('pos-category-chip-visual-${label.hashCode}') : null,
       label: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
             icon,
-            size: 14,
-            color: selected ? Colors.white : palette.blueDeep,
+            size: visualTile ? 18 : 14,
+            color: filled ? Colors.white : palette.blueDeep,
           ),
           const SizedBox(width: 5),
           Text(label),
@@ -3956,14 +4940,14 @@ class _CategoryChip extends StatelessWidget {
       onSelected: (_) => onSelected(),
       showCheckmark: false,
       labelStyle: TextStyle(
-        color: selected ? Colors.white : palette.blueDeep,
+        color: filled ? Colors.white : palette.blueDeep,
         fontWeight: FontWeight.w700,
-        fontSize: 12,
+        fontSize: visualTile ? 13 : 12,
       ),
-      backgroundColor: palette.blueTint,
+      backgroundColor: visualTile ? palette.blue : palette.blueTint,
       selectedColor: palette.blue,
-      side: BorderSide(color: palette.blue),
-      padding: const EdgeInsets.symmetric(horizontal: 6),
+      side: BorderSide(color: palette.blue, width: visualTile ? 2 : 1),
+      padding: EdgeInsets.symmetric(horizontal: visualTile ? 10 : 6),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
   }
@@ -4287,6 +5271,7 @@ class _TicketPanel extends StatelessWidget {
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     required this.branchId,
     required this.permissions,
+    this.cobrarButtonKey,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
@@ -4305,6 +5290,7 @@ class _TicketPanel extends StatelessWidget {
   final PosHeldSalesGateway heldSalesGateway;
   final String? branchId;
   final List<String> permissions;
+  final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
 
   @override
   Widget build(BuildContext context) {
@@ -4415,6 +5401,7 @@ class _TicketPanel extends StatelessWidget {
               heldSalesGateway: heldSalesGateway,
               branchId: branchId,
               permissions: permissions,
+              cobrarButtonKey: cobrarButtonKey,
             ),
           ],
         ),
@@ -6029,6 +7016,9 @@ class _TicketFooter extends StatefulWidget {
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     required this.branchId,
     required this.permissions,
+    // TASK 14.5 (Wave 3, Phase 4a): see `_PosCobrarButton`'s own doc
+    // comment — forwarded straight through to it.
+    this.cobrarButtonKey,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
@@ -6046,6 +7036,7 @@ class _TicketFooter extends StatefulWidget {
   final PosHeldSalesGateway heldSalesGateway;
   final String? branchId;
   final List<String> permissions;
+  final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
 
   @override
   State<_TicketFooter> createState() => _TicketFooterState();
@@ -6344,19 +7335,6 @@ class _TicketFooterState extends State<_TicketFooter> {
     widget.saleSession.setQuote(result.quote);
   }
 
-  // TASK 13.0: "Buscar cliente" — a small inline action in the cart/
-  // ticket area, mirroring the coupon UX pattern exactly (ADR-0017 Part
-  // H). Attaching a customer is never required and never blocks checkout
-  // speed — "Venta sin cliente" stays the default/fast path.
-  Future<void> _openCustomerSelector() async {
-    final selected = await showDialog<_CustomerSelectorResult>(
-      context: context,
-      builder: (dialogContext) => _CustomerSelectorDialog(customersGateway: widget.customersGateway),
-    );
-    if (selected == null || !mounted) return;
-    widget.saleSession.setCustomer(customerId: selected.id, displayName: selected.displayName);
-  }
-
   void _removeCustomer() => widget.saleSession.clearCustomer();
 
   @override
@@ -6381,7 +7359,13 @@ class _TicketFooterState extends State<_TicketFooter> {
             padding: const EdgeInsets.only(bottom: 8),
             child: _TicketCustomerRow(
               customerDisplayName: saleSession.customerDisplayName,
-              onSelect: () => unawaited(_openCustomerSelector()),
+              onSelect: () => unawaited(
+                openCustomerSelector(
+                  context,
+                  saleSession: widget.saleSession,
+                  customersGateway: widget.customersGateway,
+                ),
+              ),
               onRemove: _removeCustomer,
             ),
           ),
@@ -6561,6 +7545,7 @@ class _TicketFooterState extends State<_TicketFooter> {
           ),
           const SizedBox(height: 8),
           _PosCobrarButton(
+            key: widget.cobrarButtonKey,
             saleSession: saleSession,
             salesGateway: widget.salesGateway,
             paymentsGateway: widget.paymentsGateway,
@@ -7176,6 +8161,11 @@ class _PayOption extends StatelessWidget {
 /// Pago setup remains paused, see ADR-0010/ADR-0011).
 class _PosCobrarButton extends StatefulWidget {
   const _PosCobrarButton({
+    // TASK 14.5 (Wave 3, Phase 4a): threaded so `_PosSaleState` can hold a
+    // `GlobalKey<_PosCobrarButtonState>` and invoke the EXACT same
+    // `_handleTap()` the on-screen button's `onPressed` calls from the F8
+    // keyboard shortcut — never a second, shortcut-only checkout path.
+    super.key,
     required this.saleSession,
     required this.salesGateway,
     required this.paymentsGateway,
@@ -7299,7 +8289,11 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
       ),
       child: Material(
         type: MaterialType.transparency,
-        child: InkWell(
+        // TASK 14.5 (Wave 3, Phase 4a): a real, discoverable hint for the
+        // F8 keyboard shortcut — never a hidden/invisible binding.
+        child: Tooltip(
+          message: 'Cobrar (F8)',
+          child: InkWell(
           key: const Key('pos-ticket-cobrar'),
           borderRadius: BorderRadius.circular(12),
           onTap: _busy ? null : _handleTap,
@@ -7347,6 +8341,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
                 ),
               ],
             ),
+          ),
           ),
         ),
       ),

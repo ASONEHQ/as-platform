@@ -18,6 +18,7 @@ interface InsideQuery {
 }
 interface EventsQuery {
   branch_id?: string;
+  credential_id?: string;
   limit?: number;
   cursor?: string;
   occurred_from?: string;
@@ -31,9 +32,19 @@ interface IssueBody {
   sale_id: string;
   customer_id?: string;
   allows_reentry?: boolean;
+  // TASK 14.5 (Wave 3) — NFC wristband lifecycle recovery. Omitted (or
+  // 'ticket') keeps the pre-existing server-generated-code behavior
+  // unchanged; 'wristband' requires `code` (the physical UID, entered
+  // manually via keyboard/scanner — see `AccessService.issueCredential`'s
+  // own doc comment).
+  credential_kind?: 'ticket' | 'wristband';
+  code?: string;
 }
 interface ScanBody {
   branch_id: string;
+  code: string;
+}
+interface ByCodeQuery {
   code: string;
 }
 
@@ -67,6 +78,7 @@ function credentialHttp(value: AccessCredentialRow): Readonly<Record<string, unk
     id: value.id,
     branch_id: value.branchId,
     code: value.code,
+    credential_kind: value.credentialKind,
     sale_id: value.saleId,
     customer_id: value.customerId,
     allows_reentry: value.allowsReentry,
@@ -110,6 +122,8 @@ export function registerAccessRoutes(app: FastifyInstance, authentication: AuthS
             sale_id: { type: 'string', format: 'uuid' },
             customer_id: { type: 'string', format: 'uuid' },
             allows_reentry: { type: 'boolean' },
+            credential_kind: { type: 'string', enum: ['ticket', 'wristband'] },
+            code: { type: 'string', minLength: 1, maxLength: 200 },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -129,6 +143,8 @@ export function registerAccessRoutes(app: FastifyInstance, authentication: AuthS
             saleId: request.body.sale_id,
             ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
             ...(request.body.allows_reentry === undefined ? {} : { allowsReentry: request.body.allows_reentry }),
+            ...(request.body.credential_kind === undefined ? {} : { credentialKind: request.body.credential_kind }),
+            ...(request.body.code === undefined ? {} : { code: request.body.code }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -294,6 +310,64 @@ export function registerAccessRoutes(app: FastifyInstance, authentication: AuthS
       }),
   );
 
+  // TASK 14.5 (Wave 3) — "unblock" a wristband (or un-void any credential):
+  // the one genuinely new lifecycle transition this wave adds
+  // (`AccessService.unvoidCredential`'s own doc comment has the full
+  // reasoning). Permission: `access.manage`, same as `void` above — an
+  // administrative action, not day-to-day gate-staff scanning.
+  app.post<{ Params: Params }>(
+    '/api/v1/access-credentials/:id/unvoid',
+    {
+      schema: {
+        tags: ['access'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        headers: idempotencyHeaders,
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withAccessErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'access.manage');
+        const unvoided = await service.unvoidCredential(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          idempotencyKey(request.headers['idempotency-key']),
+        );
+        if (unvoided.replayed) reply.header('idempotency-replayed', 'true');
+        return reply.send(successResponse(credentialHttp(unvoided.value), request.requestContext));
+      }),
+  );
+
+  // TASK 14.5 (Wave 3) — look up a wristband (or ticket) by its own
+  // code/UID, ahead of the events endpoint below for its history.
+  // Permission: `access.read` (a plain lookup, never a scan — no side
+  // effect on `currentlyInside`/occupancy). Registered BEFORE `/:id`
+  // (same static-before-parametric reasoning as `/occupancy` above).
+  app.get<{ Querystring: ByCodeQuery }>(
+    '/api/v1/access-credentials/by-code',
+    {
+      schema: {
+        tags: ['access'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['code'],
+          properties: { code: { type: 'string', minLength: 1, maxLength: 200 } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withAccessErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'access.read');
+        const value = await service.credentialByCode(auth.companyId, auth.permittedBranchIds, request.query.code);
+        return reply.send(successResponse(credentialHttp(value), request.requestContext));
+      }),
+  );
+
   // Immutable, paginated event history.
   app.get<{ Querystring: EventsQuery }>(
     '/api/v1/access-events',
@@ -305,6 +379,7 @@ export function registerAccessRoutes(app: FastifyInstance, authentication: AuthS
           additionalProperties: false,
           properties: {
             branch_id: { type: 'string', format: 'uuid' },
+            credential_id: { type: 'string', format: 'uuid' },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
             cursor: { type: 'string' },
             occurred_from: { type: 'string', format: 'date-time' },
@@ -324,6 +399,7 @@ export function registerAccessRoutes(app: FastifyInstance, authentication: AuthS
           limit: query.limit ?? 50,
           ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
           ...(query.branch_id === undefined ? {} : { branchId: query.branch_id }),
+          ...(query.credential_id === undefined ? {} : { credentialId: query.credential_id }),
           ...(query.occurred_from === undefined ? {} : { occurredFrom: new Date(query.occurred_from) }),
           ...(query.occurred_to === undefined ? {} : { occurredTo: new Date(query.occurred_to) }),
         });

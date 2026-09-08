@@ -33,6 +33,30 @@ is tracked separately (see [[LEGACY_FUNCTIONAL_PARITY]] for per-row
 status). This section is kept for its original historical reasoning;
 none of it should be read as still-open.
 
+## TASK 14.5 (Wave 3) — completed
+
+Independently re-verified against the real codebase (routes, schema,
+migrations, Flutter screens) — see [[LEGACY_FUNCTIONAL_PARITY]]'s Wave 3
+recount for the full row-by-row evidence. Now real and done: Cafetería
+visual sub-mode, catalog CSV export, inventory Kardex CSV export, a
+promotions usage report, a Flutter product-variants admin screen, NFC
+wristband activate/block/unblock, PIN and QR staff quick-switch login, a
+consolidated Dashboard screen, register-style keyboard shortcuts, an
+on-screen PIN keypad wired to real PIN verification, and a real
+deterministic AI assistant. One pre-existing (pre-Wave-3) labeling
+artifact was also found and fixed this wave: the Memberships row's own
+`B/A` compound classification was silently reading as B under this
+document's first-listed-letter rule despite describing a strictly
+superior real capability — corrected to A. Genuinely still NOT built,
+re-confirmed by direct verification rather than taken on faith: post-sale
+animation/sound, Kiosk/self-checkout mode, scheduled email reports,
+per-tenant logo upload, and NFC wristband "extend" (a corrected finding —
+see below). The Dashboard deliberately omits the legacy's real
+%-vs-yesterday sales trend and active-membership count; the receipt
+header/footer admin screen persists real data but is not yet threaded
+into any of the 4 real print call sites. Formal Purchase Orders and CFDI
+fiscal stamping were explicitly re-confirmed untouched this wave too.
+
 ## TASK 14.4 (Wave 2) — completed
 
 Five more items from the P1/P2 lists below are now **backend-and-UI
@@ -97,8 +121,13 @@ beyond Inflapark specifically:
   14.4 Wave 2).** `employees`/`employee_schedules`/`time_clock_punches`,
   all real, company/branch-scoped, distinct from login `users`, feeding
   a real payroll calculation (see P2, also now DONE).
-- **Register-style keyboard shortcuts** (F2/F3/F4/F5/F6/F8) — real
-  cashier-efficiency muscle memory with no current equivalent.
+- ~~**Register-style keyboard shortcuts** (F2/F3/F5/F6/F8/Escape)~~ —
+  **DONE (TASK 14.5 Wave 3).** A real `Focus`/`onKeyEvent` handler in
+  `pos_shell.dart`, verified to call the exact same code the on-screen
+  controls call (including a real `GlobalKey` into the Cobrar button's
+  own handler for F8), with a text-field-focus guard so shortcuts don't
+  fire while typing. F4 (reprint) intentionally not wired — nothing to
+  reprint mid-sale, real reprint already lives in Sale Detail history.
 - ~~**Occupancy/headcount (aforo) tracking**~~ — **DONE (TASK 14.4 Wave
   2).** Real, server-computed, and genuinely bidirectional (entry **and**
   exit — stronger than the legacy's one-way-only counter). Built
@@ -113,15 +142,20 @@ beyond Inflapark specifically:
   missing: a single consolidated "today at a glance" landing screen
   (sales trend + parties + alerts on one view) — see
   [[V1_POST_LAUNCH_BACKLOG]].
-- **Per-tenant branding** (logo, receipt header/footer) — already
-  tracked in [[V1_POST_LAUNCH_BACKLOG]], reinforced by this audit as
-  something every future park onboarding will hit immediately.
-- **Product variant management UI** — the current backend
-  (`product_variants`) is already more capable than the legacy ever was;
-  only a Flutter admin screen is missing.
-- **Catalog export (CSV)** — a real, working legacy feature with zero
-  current equivalent; low-effort if rebuilt (the data is already fully
-  queryable).
+- **Per-tenant branding** (logo, receipt header/footer) — **PARTIALLY
+  DONE (TASK 14.5 Wave 3).** Receipt header/footer text now has a real
+  admin screen (`pos_receipt_branding_screen.dart`) that persists real
+  data (the EAV backend already existed before this wave), but the value
+  is not yet threaded into any of the 4 real print call sites — configured
+  text never appears on an actual printed receipt yet. Per-tenant logo
+  upload remains fully undone — no file-upload infrastructure
+  (MinIO/S3/multipart/image-picker) exists anywhere, re-confirmed this
+  wave. See [[V1_POST_LAUNCH_BACKLOG]].
+- ~~**Product variant management UI**~~ — **DONE (TASK 14.5 Wave 3).**
+  `pos_product_variants_screen.dart` (795 lines) now manages the
+  pre-existing, already-more-capable `product_variants` backend.
+- ~~**Catalog export (CSV)**~~ — **DONE (TASK 14.5 Wave 3).** Real
+  `GET /api/v1/products/export.csv`.
 - ~~**Partial cash close ("corte parcial")** and **categorized cash
   movements**~~ — **DONE (TASK 14.4 Wave 2).** A real, persisted, audited
   mid-shift snapshot (`cash_session_partial_closes`, proven to never
@@ -144,24 +178,45 @@ beyond Inflapark specifically:
   audit additionally confirms the legacy's own version never actually
   worked (simulated stamping, self-admitted in its own code/toasts), so
   there is no working capability being "lost." **Unchanged and untouched
-  by TASK 14.4 (Wave 2)** — no billing/CFDI work was done this wave.
-- **NFC wristbands** — a real, if standalone (never actually integrated
-  with entry validation even in the legacy), lifecycle CRUD.
+  by TASK 14.4 (Wave 2) or TASK 14.5 (Wave 3)** — re-confirmed this wave
+  by direct search: no billing/CFDI module exists anywhere in the
+  repository, and no billing/CFDI file appears in this wave's own diff.
+- ~~**NFC wristbands**~~ (activate/block/unblock) — **DONE (TASK 14.5
+  Wave 3).** `access_credentials.credential_kind` extends the real
+  access-credential table; real, permission-gated routes and Flutter UI.
+  "Extend" alone stays unbuilt — **corrected finding**: the legacy's
+  `extenderPulsera()` is not dead code with nonexistent DOM ids (that
+  pattern applies to a different function, `activarPulsera()`); it
+  genuinely runs and mutates a sync flag, but the entered "minutes to
+  extend" is captured via a prompt and never written to the wristband's
+  own expiry field, so nothing about the expiration ever actually
+  changes — the same class of bug as the legacy's own "notas" field. See
+  [[LEGACY_FUNCTIONAL_PARITY]]'s §13 for the full, corrected finding.
 - **In-house customer credit accounts** — a real payment-provider path is
   the correct modern replacement, not worth reproducing as a bespoke
   ledger.
 - **Scheduled email reports** — real scheduling UI existed, but the send
   itself was fake even in the legacy; low priority, low effort if ever
-  wanted.
+  wanted. **Re-confirmed still deferred in TASK 14.5 (Wave 3)** by direct
+  inspection of `apps/worker` — no SMTP client dependency and no
+  job-scheduling infrastructure of any kind exist.
 - **Modo Cliente (self-checkout kiosk mode)** — real in the legacy, no
   current equivalent; a genuine feature, not currently needed for the
-  proven V1 cashier-operated workflow.
-- **Café visual sub-mode** — pure UX polish (a themed tile layout for a
-  flagged product category); no functional gap, since categories/products
-  already work correctly without it.
-- **A real AI assistant** — the legacy's was a local keyword-matcher, not
-  an LLM; if ever built, should be a genuine improvement (real LLM), not
-  a parity target.
+  proven V1 cashier-operated workflow. **Re-confirmed still deferred in
+  TASK 14.5 (Wave 3)** — no kiosk/self-checkout code was added anywhere.
+- ~~**Café visual sub-mode**~~ — **DONE (TASK 14.5 Wave 3).** A real,
+  generic `product_categories.is_visual_tile` flag (never hardcoded to
+  "café"), a dedicated `PosModule.cafeteria` sharing the real sale
+  engine, and an honest empty state. The legacy's own `estiloCafe` was
+  independently re-confirmed to be exactly what TASK 14.2R found: a
+  purely visual CSS toggle, zero checkout/behavioral difference.
+- ~~**A real AI assistant**~~ — **DONE (TASK 14.5 Wave 3), as a faithful
+  port, not an upgrade.** `apps/api/src/modules/assistant/` is a genuinely
+  deterministic keyword/intent matcher over real, live SQL data (sales
+  today, register status, low stock, open parties today) — zero LLM,
+  zero external calls, matching the legacy's own approach exactly, not
+  exceeding it. A real LLM-backed assistant remains a genuine future
+  upgrade, not a parity target.
 - **Multi-step onboarding wizard** — the current CLI-based provisioning
   (TASK 14.1/14.2) is deliberately more secure than the legacy's
   single-screen wizard (which had a hardcoded-password bypass on its own
