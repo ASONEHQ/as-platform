@@ -15,9 +15,20 @@ enum PosModule {
   // picture) — see `pos_product_variants_screen.dart`.
   productVariants('Variantes', Icons.style_outlined, 'Catálogo'),
   categories('Categorías', Icons.category_outlined, 'Catálogo'),
+  // TASK 15.1 Phase 4: real brand admin (list/create/edit) — see
+  // `pos_brand_admin_screen.dart`.
+  brands('Marcas', Icons.sell_outlined, 'Catálogo'),
   suppliers('Proveedores', Icons.local_shipping_outlined, 'Catálogo'),
+  // TASK 15.1 Phase 4: branch price overrides, custom options/variant
+  // barcodes, and catalog CSV export — the "catalog admin depth" gap —
+  // see `pos_catalog_admin_screen.dart`.
+  catalogAdmin('Catálogo Avanzado', Icons.tune_outlined, 'Catálogo'),
   inventory('Inventario', Icons.warehouse_outlined, 'Inventario'),
   purchases('Compras', Icons.shopping_bag_outlined, 'Inventario'),
+  // TASK 15.1 Phase 3: movement drafts/adjustments, branch transfers,
+  // physical counts, reservations, reconciliation, and locations — the
+  // six-inventory-sub-domain gap — see `pos_inventory_admin_screen.dart`.
+  inventoryAdmin('Admin. Inventario', Icons.rule_folder_outlined, 'Inventario'),
   customers('Clientes', Icons.people_outline, 'Clientes'),
   events('Fiestas', Icons.celebration_outlined, 'Clientes'),
   memberships('Membresías', Icons.card_membership_outlined, 'Clientes'),
@@ -28,6 +39,11 @@ enum PosModule {
   reports('Reportes', Icons.analytics_outlined, 'Administración'),
   access('Control Acceso', Icons.qr_code_scanner_outlined, 'Administración'),
   users('Usuarios', Icons.manage_accounts_outlined, 'Administración'),
+  // TASK 15.1 Phase 2: role/permission administration lives inside the
+  // same screen as Usuarios (tabs: Usuarios/Roles/Permisos) — see
+  // `pos_user_administration_screen.dart`. No separate nav entry needed.
+  // TASK 15.1: branch create/edit — see `pos_branch_admin_screen.dart`.
+  branches('Sucursales', Icons.store_outlined, 'Administración'),
   employees('Empleados', Icons.badge_outlined, 'Administración'),
   history('Historial de Ventas', Icons.history_outlined, 'Administración'),
   documents('Documentos', Icons.folder_outlined, 'Sistema'),
@@ -120,6 +136,13 @@ enum PosModule {
     // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1) — never a second,
     // disconnected sale screen.
     PosModule.cafeteria,
+    // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI closing
+    // the "functional completeness" YELLOW — see each screen's own file
+    // for the specific gap it closes.
+    PosModule.brands,
+    PosModule.catalogAdmin,
+    PosModule.inventoryAdmin,
+    PosModule.branches,
   }.contains(this);
 }
 

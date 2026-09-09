@@ -117,6 +117,65 @@ void main() {
     expect(refreshes, 0);
   });
 
+  // TASK 15.1 Phase 3: regression test for the `omitBody` fix — see
+  // `api_client.dart`'s own doc comment on `postJson` for why
+  // `inventory-posting.routes.ts`'s `submit`/`post` endpoints need a
+  // genuinely bodyless `POST`, unlike every other call site.
+  test(
+    'postJson with omitBody sends a genuinely empty body, never a JSON-encoded "{}"',
+    () async {
+      late http.BaseRequest captured;
+      final client = ApiClient(
+        baseUrl: Uri.parse('https://api.test.asone.mx/'),
+        transport: _FakeClient((request) {
+          captured = request;
+          return http.Response(
+            jsonEncode({
+              'data': {'ok': true},
+            }),
+            200,
+          );
+        }),
+        readAccessToken: () => 'memory-token',
+        createCorrelationId: () => 'correlation-test',
+      );
+      await client.postJson(
+        'inventory/movements/movement-1/submit',
+        idempotencyKey: 'submit-1',
+        ifMatch: '"1"',
+        omitBody: true,
+      );
+      final body = captured as http.Request;
+      expect(body.body, '');
+      expect(captured.headers['Idempotency-Key'], 'submit-1');
+      expect(captured.headers['If-Match'], '"1"');
+    },
+  );
+
+  test(
+    'postJson without omitBody keeps sending the default empty JSON object',
+    () async {
+      late http.BaseRequest captured;
+      final client = ApiClient(
+        baseUrl: Uri.parse('https://api.test.asone.mx/'),
+        transport: _FakeClient((request) {
+          captured = request;
+          return http.Response(
+            jsonEncode({
+              'data': {'ok': true},
+            }),
+            200,
+          );
+        }),
+        readAccessToken: () => 'memory-token',
+        createCorrelationId: () => 'correlation-test',
+      );
+      await client.postJson('payroll-periods/period-1/close', idempotencyKey: 'close-1');
+      final body = captured as http.Request;
+      expect(body.body, '{}');
+    },
+  );
+
   test(
     'maps malformed success responses without exposing their body',
     () async {

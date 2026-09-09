@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app.dart';
+import '../../core/errors/app_error.dart';
+import '../../core/networking/api_client.dart';
 import '../../design_system/components/as_components.dart';
+import '../authentication/auth_models.dart';
+import '../authentication/auth_state.dart';
 import '../pos/pos_dashboard_gateway.dart';
 import '../pos/pos_read_controller.dart';
 import '../pos/pos_shell.dart';
@@ -118,7 +122,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
             settingsGateway: PlatformScope.of(context).posSettingsGateway,
             productVariantsGateway: PlatformScope.of(context).posProductVariantsGateway,
             assistantGateway: PlatformScope.of(context).posAssistantGateway,
+            identityAdminGateway: PlatformScope.of(context).posIdentityAdminGateway,
+            inventoryAdminGateway: PlatformScope.of(context).posInventoryAdminGateway,
+            categoryAdminGateway: PlatformScope.of(context).posCategoryAdminGateway,
+            brandAdminGateway: PlatformScope.of(context).posBrandAdminGateway,
+            catalogAdminGateway: PlatformScope.of(context).posCatalogAdminGateway,
+            branchAdminGateway: PlatformScope.of(context).posBranchAdminGateway,
             authGateway: PlatformScope.of(context).posAuthGateway,
+            // TASK 15.1 Phase 5: real PIN/QR quick-switch session
+            // hand-off — `AuthController.quickSwitchByPin`/
+            // `quickSwitchByQr` already handle failure honestly (current
+            // session/context left untouched, real error captured in
+            // `auth.state.failure`, never a thrown exception) — see
+            // `_adoptQuickSwitch` below for how this turns that into the
+            // throw-on-failure/return-context-on-success contract
+            // `_StaffQuickSwitchDialog` expects, exactly like
+            // `onBranchSelected: auth.selectBranch` below reuses
+            // `AuthController` directly without a new abstraction.
+            onQuickSwitchByPin: (pin) =>
+                _adoptQuickSwitch(auth, () => auth.quickSwitchByPin(pin)),
+            onQuickSwitchByQr: (code) =>
+                _adoptQuickSwitch(auth, () => auth.quickSwitchByQr(code)),
             onLogout: auth.logout,
             // TASK: POS branch-context fix — the exact same canonical
             // session-branch switch the login-time `BranchSelectionScreen`
@@ -134,6 +158,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ],
     );
   }
+}
+
+/// TASK 15.1 Phase 5: adapts `AuthController.quickSwitchByPin`/
+/// `quickSwitchByQr` — which never throw; a real, honest failure is
+/// surfaced by leaving `AuthController.context` unchanged (retained,
+/// same object reference) and setting `AuthController.state.failure` —
+/// into the throw-on-failure/return-the-new-context-on-success contract
+/// `PosShell.onQuickSwitchByPin`/`onQuickSwitchByQr` expect (matching
+/// `_StaffQuickSwitchDialog`'s existing `try`/`on ApiException` shape, so
+/// that dialog's success/failure UI needs no new branching). Success is
+/// detected by `context` genuinely changing identity: `_acceptCredentials`
+/// always builds a brand-new `AuthenticatedContext` from a fresh
+/// `hydrate()` call, so a real adoption is never `identical` to the
+/// pre-call context — while every honest-failure path (including the
+/// CURRENT session itself having expired/been revoked mid-dialog)
+/// re-emits the exact SAME retained context object, which this detects
+/// without needing any new `AuthController` state.
+Future<AuthenticatedContext> _adoptQuickSwitch(
+  AuthController auth,
+  Future<void> Function() call,
+) async {
+  final before = auth.context;
+  await call();
+  final after = auth.context;
+  if (identical(after, before)) {
+    final failure = auth.state.failure;
+    throw failure == null
+        ? const ApiException(
+            AppFailure(
+              AppErrorKind.unknown,
+              'No fue posible completar el cambio de sesión.',
+            ),
+          )
+        : ApiException(failure);
+  }
+  return after!;
 }
 
 /// Device-local "today" ('YYYY-MM-DD') — mirrors `pos_shell.dart`'s own

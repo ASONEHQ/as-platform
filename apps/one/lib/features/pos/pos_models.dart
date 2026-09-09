@@ -342,11 +342,27 @@ class PosUser {
     required this.membershipStatus,
   });
 
+  // TASK 15.1 Phase 6 gap fix: `POST /api/v1/users` (`AdministrationService
+  // .createUser`) deliberately returns a smaller shape than `GET
+  // /api/v1/users`/`GET /api/v1/users/{id}` — it omits `identity_status`
+  // because, at creation time, the brand-new `users` row's `status` column
+  // is always exactly what `createUser`'s own SQL just inserted:
+  // `'pending'` (see `admin.service.ts`'s `createUser`). Requiring the key
+  // unconditionally made a REAL, server-successful user creation (a real
+  // 201, a real row) surface as "No fue posible crear el usuario" in the
+  // Flutter UI, because `json.string('identity_status')` threw a
+  // `FormatException` the create call site's catch block then reported as
+  // a failure — discovered live during the TASK 15.1 Phase 6 commercial
+  // onboarding walkthrough. Defaulting to `'pending'` here is not a
+  // guess; it is the one value this field can honestly have on this
+  // specific response.
   factory PosUser.fromJson(Map<String, Object?> json) => PosUser(
     id: json.string('id'),
     email: json.string('email'),
     displayName: json.string('display_name'),
-    identityStatus: json.string('identity_status'),
+    identityStatus: json['identity_status'] is String
+        ? json['identity_status']! as String
+        : 'pending',
     membershipStatus: json.string('membership_status'),
   );
 

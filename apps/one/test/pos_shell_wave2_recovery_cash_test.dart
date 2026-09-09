@@ -451,6 +451,13 @@ class _RecordingCashGateway implements PosCashGateway {
   Future<List<PosCashRegister>> registersForBranch(String branchId) async => [_fixtureCashRegister];
 
   @override
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  }) => Future.error(UnimplementedError('createRegister not faked'));
+
+  @override
   Future<PosCashSession> openSession({required String cashRegisterId, required String openingAmount}) =>
       Future.error(StateError('not used'));
 

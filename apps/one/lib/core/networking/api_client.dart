@@ -84,10 +84,26 @@ class ApiClient {
     // Optional, exactly like [idempotencyKey] above, so every existing
     // `postJson` call site is unaffected.
     String? ifMatch,
+    // TASK 15.1 Phase 3: `POST /api/v1/inventory/movements/{id}/submit`
+    // and `.../post` (`inventory-posting.routes.ts`) actively REJECT any
+    // defined request body (`if (request.body !== undefined) throw ...`,
+    // a stricter contract than every other bodyless `POST` in this
+    // backend, which instead accepts an explicit `{}` — see
+    // `reservation.routes.ts`'s `maxProperties: 0` bodies). [body]'s own
+    // `const {}` default always serializes to a non-empty `'{}'` string,
+    // which Fastify parses into a DEFINED `{}` object — so those two
+    // routes could never be called successfully through this client
+    // without this flag. `true` sends a genuinely empty string body
+    // instead (`Content-Length: 0`), which Fastify's own default JSON
+    // parser maps back to `undefined`, matching exactly what
+    // `inventory-posting.routes.test.ts` exercises via `app.inject` with
+    // no `payload` at all. Defaults to `false` so every pre-existing
+    // `postJson` call site is completely unaffected.
+    bool omitBody = false,
   }) => _send(
     'POST',
     path,
-    body: body,
+    body: omitBody ? null : body,
     csrfToken: csrfToken,
     authenticated: authenticated,
     retryAfterRefresh: false,

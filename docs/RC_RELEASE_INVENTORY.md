@@ -37,6 +37,26 @@ For every domain in the master TASK 15.0 spec, this document:
 No route path, permission code, table name, or Flutter file below was
 guessed — every one is grep-verified against the file cited next to it.
 
+> **TASK 15.1 update (commercial admin UX closure)**: every Flutter-UI
+> gap this document originally found (AUTH's PIN/QR item, TENANT's
+> role/user/permission admin item, POS's catalog-admin-depth item, and
+> INVENTORY's six-sub-domain item) has since been **closed** by six new,
+> real, tested Flutter screens (`PosUserAdministrationScreen`,
+> `PosInventoryAdminScreen`, `PosCategoryAdminScreen`,
+> `PosBrandAdminScreen`, `PosCatalogAdminScreen`,
+> `PosBranchAdminScreen`) plus a real PIN/QR session hand-off — built,
+> wired into `pos_navigation.dart`/`pos_shell.dart`, live-tested end to
+> end through a real 24-step commercial onboarding walkthrough, and
+> live security-probed. See `docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md`
+> (Phase 6), `docs/RC_ADMIN_UX_SECURITY.md` (Phase 7), and
+> `docs/RC_ADMIN_UX_VERIFICATION.md` (Phase 8) for the complete evidence.
+> The verdict paragraphs below are left as originally written (the
+> historical record of what TASK 15.0 found), each followed by a
+> **TASK 15.1 update** note showing what closed the gap. The one AUTH
+> finding that was never a real gap at all (PIN/QR's *verification* UI
+> already existed; only the session hand-off was missing) is corrected
+> in place, not merely appended to, per that phase's own finding.
+
 ---
 
 ## AUTH
@@ -59,6 +79,30 @@ today; only the full password login screen is reachable. This is a
 backend-only surface, not a broken one (confirmed by grep: no
 `pin-login`/`qr-login`/`staff/.../pin`/`staff/.../qr` string anywhere under
 `apps/one/lib`).
+
+> **Correction (TASK 15.1)**: the "zero Flutter caller" claim above was
+> **stale/incorrect** for the PIN/QR *verification* mechanism — direct
+> re-verification found `apps/one/lib/features/pos/pos_auth_gateway.dart`
+> (`PosAuthGateway.pinLogin`/`.qrLogin`, real calls to
+> `/api/v1/auth/pin-login`/`/qr-login`) and `pos_shell.dart`'s
+> `_StaffQuickSwitchDialog` ("Cambiar cajero") already existed and were
+> already real and tested — this document's original grep apparently
+> searched for the literal route-path strings rather than the gateway
+> method/dialog names and missed them. The genuinely real, remaining gap
+> was narrower than originally stated: the dialog only *verified* a
+> PIN/QR belonged to a real staff member without adopting that session
+> as the app's own active one (no real identity hand-off). **This is now
+> closed**: `AuthController.quickSwitchByPin`/`quickSwitchByQr`
+> (`auth_state.dart`) genuinely replace the active session via the same
+> real `_acceptCredentials` path normal login/company-switch/
+> branch-switch already use, live-verified with a wrong PIN (real 403),
+> a wrong QR (real 401), a deactivated-user probe, and the
+> branch-scope/insufficient-permission fallthrough — see
+> `docs/RC_ADMIN_UX_VERIFICATION.md` §2. Staff PIN/QR *issuance*
+> (`staff_credential.manage`, the admin side of setting a staff member's
+> own PIN/QR) remains genuinely without a Flutter screen — a real,
+> narrow, non-blocking gap (password login is fully sufficient without
+> it), unchanged from the original finding.
 
 ---
 
@@ -84,6 +128,22 @@ branch access through the app itself today — `_Users` is view-only and there
 is no role/permission screen. Every real environment must be provisioned via
 direct API calls (or the `production-owner` CLI bootstrap) rather than the
 product UI. This is a genuine administrative-UI gap; see findings summary.
+
+> **Update (TASK 15.1): closed → GREEN.** The read-only `_Users` widget
+> was replaced with `PosUserAdministrationScreen` — real Usuarios/Roles/
+> Permisos tabs (create/edit/activate-deactivate users, branch/role
+> assignment, create/edit roles, a server-authoritative grouped
+> permission picker with a client-side self-escalation guard on top of
+> the server's own real 403). Branch create/edit was also closed
+> (`PosBranchAdminScreen`, new "Sucursales" nav entry) — the
+> `Devices`/`generic settings editor` rows below remain real,
+> non-blocking, out-of-scope gaps (device management is an infrequent
+> security operation, not routine admin; the specific settings that
+> matter — branding, receipt text — already have dedicated screens).
+> Live-proven end-to-end (real user/role/branch creation, real
+> permission assignment, real self-escalation guard) in
+> `docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md` and
+> `docs/RC_ADMIN_UX_SECURITY.md`.
 
 ---
 
@@ -111,6 +171,25 @@ custom-option/barcode system are real, permissioned, DB-backed backend
 capabilities with **no Flutter caller at all** — a park can be run day-to-day
 (sell, discount, promote, suspend/resume) but a subset of catalog setup work
 must happen outside the app.
+
+> **Update (TASK 15.1): closed → GREEN.** `PosCategoryAdminScreen`
+> (categories — previously had **no screen at all**, not even
+> read-only), `PosBrandAdminScreen` (brands), and
+> `PosCatalogAdminScreen` (branch price overrides, custom
+> options/variant barcodes, CSV export) close every item in this
+> finding. A far more significant, previously-undetected gap was found
+> and fixed live during the same pass: **base-product creation itself
+> had zero Flutter caller** (`POST /api/v1/products` was never reached
+> by any gateway — `pos_product_variants_gateway.dart`'s `createVariant`
+> only adds a variant to an already-existing product) — a real
+> commercial launch blocker, since a park owner could not create a
+> single new product through the app. Fixed, plus three cascading bugs
+> the fix's own live testing surfaced (wrong default unit code; new
+> products silently not stock-tracked; new products permanently
+> unsellable, `status` defaulting to `draft` with no activation path
+> anywhere in the app) — all four fixed and proven end-to-end with a
+> real create→price→restock→sell pipeline completing a real sale. See
+> `docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md` steps 12-16.
 
 ---
 
@@ -206,6 +285,23 @@ from the real app** — those six capabilities are only reachable by calling
 the API directly. A park cannot run a physical inventory count, adjust stock
 for breakage/loss, or move stock between branches through the product today.
 
+> **Update (TASK 15.1): closed → GREEN.** `PosInventoryAdminScreen` adds
+> six real tabs (Movimientos, Traspasos, Conteos, Reservas,
+> Ajustes/Reconciliación — movement reversal folded in as an in-tab
+> action rather than a 7th tab — and Ubicaciones), covering every
+> sub-domain above plus locations (also previously screen-less). Every
+> mutation requires a real reason/approval step matching the backend's
+> own real state machine; no control anywhere lets an operator set a
+> stock number directly — server-authoritative, ledger-backed
+> throughout. A real Flutter-infra bug was found and fixed along the
+> way: `inventory-posting.routes.ts`'s `submit`/`post` endpoints reject
+> ANY defined request body (even `{}`), but `ApiClient.postJson` always
+> sent one — added an `omitBody` parameter (opt-in, zero behavior change
+> for ~15 pre-existing call sites) so these two real, already-shipped
+> endpoints became callable at all. Live-proven end-to-end in
+> `docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md` step 9 (location
+> creation) and step 16 (restock).
+
 ---
 
 ## CUSTOMERS (loyalty / rewards / customer records / memberships)
@@ -298,17 +394,33 @@ navigation-only placeholders with **no backend module at all** — these were
 never built, on either side, and the running app is honest about that
 ("Coming soon"), which is a legitimate placeholder pattern, not a hidden gap.
 
+> **Update (TASK 15.1): GREEN.** Finding (1) closed — see the TENANT
+> section's own update note above (not duplicated here). Finding (2)
+> remains, unchanged, a real but non-blocking gap (a generic settings
+> editor was never in this task's scope — the specific launch-critical
+> settings already have dedicated screens). Finding (3) is explicitly
+> out of scope per this task's own "Do NOT expand into new product
+> domains" instruction and remains honestly labeled "Coming soon" — not
+> a regression, never built on either side.
+
 ---
 
 ## Findings summary — what's NOT production-ready
 
+**TASK 15.1 update**: findings 1-4 below (the only four with a real
+Flutter-UI gap) are **CLOSED** — see each finding's own strikethrough
+note and the update notes in the domain sections above. Findings 5-7
+were never UI gaps (placeholders, an external-provider activation step,
+and a cosmetic catalog-hygiene note respectively) and remain unchanged,
+correctly out of scope.
+
 | # | Finding | Domain | Backend? | DB? | Flutter? | Permission? | Tenant-scoped? | Severity |
 |---|---|---|---|---|---|---|---|---|
-| 1 | Role/permission/user administration (create user, create/edit role, assign role permissions, grant branch access) has no Flutter UI — `_Users` is read-only | TENANT / MANAGEMENT | Yes, real & tested | Yes | **No** | Yes, real (`role.*`, `user.*`, `branch_access.manage`) | Yes | **Launch-relevant, not blocking**: a real environment can still be provisioned once via direct API calls / the `production-owner` CLI (already the documented real-provisioning path per `RC_SECURITY_CERTIFICATION.md:53`), but ongoing staff/role changes after go-live need the same workaround until a UI exists |
-| 2 | Six inventory sub-domains — manual adjustment drafts, reservations, physical counts, reconciliation, movement reversal, branch transfers — are real, schema-backed, permission-gated backend capabilities with **zero Flutter UI** | INVENTORY | Yes, real & partly restart/atomicity-tested (transfers, per `RC_INVENTORY_INVARIANTS.md`) | Yes | **No** | Yes, real (all codes present in the seed catalog) | Presumed same pattern as the rest of `inventory.repository.ts`, not independently re-verified this phase for the 6 sub-modules specifically | **Acceptable gap for a launch scoped to sell-through + direct-purchase restock** (both of which ARE fully proven GREEN); a park that also needs physical counts, loss adjustments, or branch transfers on day one cannot do so through the app |
-| 3 | Catalog admin depth: brand CRUD, product CSV export, branch price overrides, and the full custom-option/barcode system have no Flutter UI | POS / Catalog | Yes | Yes | **No** | Yes | Presumed same pattern | **Acceptable gap** — core product/variant CRUD (the day-to-day need) is fully wired; these are lower-frequency setup actions |
-| 4 | PIN/QR quick-switch staff login and staff-credential issuance are real backend capabilities with no Flutter caller | AUTH | Yes | Yes | **No** | Yes (`staff_credential.manage`) | Yes | **Acceptable gap** — full password login is fully wired and sufficient for launch; fast-switch is a convenience feature |
-| 5 | CFDI/Facturación, Documentos, Sincronización, Notificaciones are navigation placeholders with no backend module at all | MANAGEMENT | **No** | **No** | Placeholder only, honestly labeled | N/A | N/A | **Not a regression** — never built on either side; explicitly out of this certification's scope per `docs/RC_FREEZE_POLICY.md` ("Speculative new modules... not allowed during the freeze") |
+| 1 | ~~Role/permission/user administration (create user, create/edit role, assign role permissions, grant branch access) has no Flutter UI~~ **CLOSED (TASK 15.1)**: `PosUserAdministrationScreen`, live-proven | TENANT / MANAGEMENT | Yes, real & tested | Yes | **Yes** | Yes, real (`role.*`, `user.*`, `branch_access.manage`) | Yes | **Closed** |
+| 2 | ~~Six inventory sub-domains — manual adjustment drafts, reservations, physical counts, reconciliation, movement reversal, branch transfers — zero Flutter UI~~ **CLOSED (TASK 15.1)**: `PosInventoryAdminScreen`, 6 tabs + locations, live-proven | INVENTORY | Yes, real & restart/atomicity-tested | Yes | **Yes** | Yes, real (all codes present in the seed catalog) | Same pattern, confirmed | **Closed** |
+| 3 | ~~Catalog admin depth: brand CRUD, product CSV export, branch price overrides, and the full custom-option/barcode system have no Flutter UI~~ **CLOSED (TASK 15.1)**: `PosCategoryAdminScreen`/`PosBrandAdminScreen`/`PosCatalogAdminScreen`, live-proven — **plus a far more severe gap found and fixed in the same pass: base-product creation itself had zero Flutter caller at all** (see POS section update) | POS / Catalog | Yes | Yes | **Yes** | Yes | Same pattern | **Closed** |
+| 4 | ~~PIN/QR quick-switch staff login... no Flutter caller~~ **Corrected + closed (TASK 15.1)**: the verification UI already existed (a stale finding, corrected in place in the AUTH section above); the real gap — session hand-off — is now closed (`AuthController.quickSwitchByPin`/`quickSwitchByQr`), live-proven. Staff PIN/QR *issuance* admin screen remains a real, narrow, non-blocking gap (password login is sufficient) | AUTH | Yes | Yes | **Yes** (hand-off); No (issuance, unchanged) | Yes (`staff_credential.manage`) | Yes | **Closed** (hand-off); issuance remains **acceptable gap** |
+| 5 | CFDI/Facturación, Documentos, Sincronización, Notificaciones are navigation placeholders with no backend module at all | MANAGEMENT | **No** | **No** | Placeholder only, honestly labeled | N/A | N/A | **Not a regression** — never built on either side; explicitly out of this certification's scope per `docs/RC_FREEZE_POLICY.md` ("Speculative new modules... not allowed during the freeze") and TASK 15.1's own "Do NOT expand into new product domains" |
 | 6 | Mercado Pago (card/terminal payment provider) | CASH/PAYMENTS | Yes, real webhook/signature code | Yes | Gateway support exists in `pos_payments_gateway.dart` for the generic payment surface | Yes | Yes | **EXTERNAL PROVIDER ACTIVATION PENDING** — per the RC freeze policy, this is explicitly not counted as RED; no credentials configured, no live call made, by design, for the entire certification |
 | 7 | `refund.cancel` permission code exists in the seed catalog but no route/service path currently requires it (**correction**: `refund.approve`, originally also flagged here, is confirmed genuinely wired — enforced inline in `refunds.service.ts:235-238`, live-verified in `RC_FINANCIAL_INVARIANTS.md` §4 and covered by `refunds.integration.test.ts:408-420`) | CASH/PAYMENTS | N/A (catalog hygiene) | N/A | N/A | Catalog contains one unused code | N/A | **Cosmetic** — not a security gap (nothing is under-permissioned), one seeded code (`refund.cancel`) with no current consumer (`bootstrap-owner.service.ts:137` documents this as deliberate — no cancellation endpoint exists); worth a follow-up decision (wire it into a future cancel workflow, or remove it) outside this freeze |
 
@@ -316,41 +428,62 @@ never built, on either side, and the running app is honest about that
 
 ## Overall verdict
 
-**GREEN for the domains that carry the actual business of running a park on
-launch day**: AUTH (core login), POS (sale/cart/pricing/discount/promotion/
-held-sale), CASH, PAYMENTS & REFUNDS (local, non-card), INVENTORY's
-sell-through path (balances + direct-purchase restock + suppliers),
-CUSTOMERS (customer/loyalty/reward/membership), FIESTAS (the entire party
-reservation lifecycle), PEOPLE (employees/schedules/time-clock/payroll), and
-ACCESS (credential/scan/occupancy). Every one of these was independently
-grep-verified end-to-end (route → permission → schema → repository scoping →
-Flutter caller) in this phase, and the restart/concurrency/financial/security
-properties for most of them were already live-proven elsewhere in this
-certification (cited throughout, never re-asserted without a citation).
+**As of TASK 15.0 (superseded below by TASK 15.1)**: GREEN for the domains
+that carry the actual business of running a park on launch day, YELLOW
+for three genuine but non-blocking UI-coverage gaps, zero RED.
 
-**YELLOW, not RED, for three genuine but non-blocking gaps**: (1) tenant/user/
-role administration has no Flutter UI — a one-time provisioning workaround
-already exists and is documented; (2) six inventory sub-domains (adjustments,
-reservations, counts, reconciliation, reversal, transfers) are real and
-correct on the backend but unreachable from the app; (3) a handful of
-lower-frequency catalog/auth conveniences (brand CRUD, CSV export, branch
-price overrides, PIN/QR fast-switch) are backend-only. None of these are
-data-integrity, security, or tenant-isolation defects — every route found in
-this audit was properly permissioned and properly company/branch-scoped
-everywhere it was checked. They are UI-coverage gaps, not correctness bugs,
-and per `docs/RC_FREEZE_POLICY.md` do not by themselves constitute a launch
-blocker for a park whose day-one operation is sell/cash/restock/party/
-people/access (all fully covered) rather than physical inventory counts,
-branch transfers, or in-app role administration on day one.
+## TASK 15.1 update — overall verdict now GREEN
 
-**No RED items were found in this phase.** No route was found unpermissioned,
-no repository query was found missing `company_id` scoping among those
-sampled, and no state was found to be dangerously in-memory — every mutable
-domain surface inventoried here is backed by a real Postgres table, and the
-restart-persistence claims made throughout this document are grounded in
-real, cited, already-executed OS-level process-restart tests
-(`docs/RC_FAILURE_RECOVERY_MATRIX.md` scenarios A/B,
-`docs/RC_INVENTORY_INVARIANTS.md` §6), not assumed from architecture alone.
+Every one of TASK 15.0's three YELLOW UI-coverage gaps (tenant/user/role
+administration, six inventory sub-domains, catalog admin depth +
+PIN/QR hand-off) is now **closed** by six new, real, tested Flutter
+screens plus a real session hand-off — built, wired, live-walked-through
+end to end as a real park owner would use them (a real disposable
+"AS Commercial Demo Park" tenant, 24-step onboarding, zero SQL/Postman/
+curl/source-edits beyond the one allowed CLI bootstrap step), and live
+security-probed (cashier/manager/tenant/branch/dead-session boundaries,
+all real HTTP evidence, zero gaps found). See
+`docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md`,
+`docs/RC_ADMIN_UX_SECURITY.md`, and `docs/RC_ADMIN_UX_VERIFICATION.md`
+for the complete evidence trail.
+
+This pass additionally found and fixed **9 real, launch-blocking bugs**
+that TASK 15.0's own static/live audit had not surfaced (because they
+only manifest when an operator actually tries to USE the previously
+missing screens) — most severely, **base-product creation had zero
+Flutter caller at all**, and the three related bugs its own fix
+surfaced (wrong default unit, silently-untracked inventory, permanently
+unsellable `draft`-status products with no activation path anywhere in
+the app) would have made even a fixed create-product flow non-functional
+for a real launch. Every one of the 9 was fixed narrowly and re-verified
+live, end to end, including a real completed POS sale proving the full
+create→price→restock→sell pipeline. See the domain sections above and
+`docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md` §3 for the full list.
+
+**Remaining YELLOW-level findings, all genuinely non-blocking**: (1) a
+generic company/branch settings key/value editor doesn't exist as a
+screen (the specific settings that matter for launch — branding,
+receipt text — each have their own dedicated screen); (2) staff PIN/QR
+*issuance* (setting another employee's own PIN/QR, as opposed to using
+one to quick-switch) has no Flutter screen — password login remains
+fully sufficient; (3) device registration/revocation management has no
+Flutter screen (an infrequent security operation, not routine admin).
+None of these were in this task's own explicit scope
+(`role/user/permission`, `six inventory sub-domains`,
+`catalog admin depth`, `PIN/QR fast-switch`) and none block a
+commercial launch.
+
+**No RED items were found in this phase, or introduced by TASK 15.1's
+own changes.** No route was found unpermissioned, no repository query
+was found missing `company_id` scoping among those sampled (including
+the six new admin screens' own endpoints, live cross-tenant-probed in
+`docs/RC_ADMIN_UX_SECURITY.md`), and no state was found to be
+dangerously in-memory — every mutable domain surface inventoried here is
+backed by a real Postgres table, and the restart-persistence claims made
+throughout this document are grounded in real, cited, already-executed
+OS-level process-restart tests (`docs/RC_FAILURE_RECOVERY_MATRIX.md`
+scenarios A/B, `docs/RC_INVENTORY_INVARIANTS.md` §6), not assumed from
+architecture alone.
 
 Mercado Pago remains, as required, reported as **EXTERNAL PROVIDER
 ACTIVATION PENDING** rather than any shade of red — its own code is real and

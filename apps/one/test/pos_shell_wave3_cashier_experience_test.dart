@@ -343,6 +343,123 @@ void main() {
       expect(find.byKey(const Key('pos-quick-switch-dialog')), findsNothing);
     });
   });
+
+  // TASK 15.1 Phase 5: real session hand-off — `onQuickSwitchByPin`/
+  // `onQuickSwitchByQr` supplied means a submit calls straight through to
+  // (a fake standing in for) `AuthController.quickSwitchByPin`/
+  // `quickSwitchByQr` instead of `PosAuthGateway.pinLogin`/`qrLogin`.
+  group('"Cambiar cajero" real session hand-off (TASK 15.1 Phase 5)', () {
+    testWidgets(
+      'a valid PIN adopts the new session and shows who the terminal is '
+      'now operating as — never calling the mere-verification gateway',
+      (tester) async {
+        final authGateway = _FakeAuthGateway();
+        var pinCalls = 0;
+        await _pump(
+          tester,
+          authGateway: authGateway,
+          onQuickSwitchByPin: (pin) async {
+            pinCalls++;
+            expect(pin, '1234');
+            return _adoptedContext;
+          },
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-quick-switch-button')));
+        await tester.pumpAndSettle();
+
+        final dialog = find.byKey(const Key('pos-quick-switch-dialog'));
+        for (final digit in ['1', '2', '3', '4']) {
+          await tester.tap(find.descendant(of: dialog, matching: find.text(digit)));
+          await tester.pump();
+        }
+        await tester.tap(find.descendant(of: dialog, matching: find.byIcon(Icons.check)));
+        await tester.pumpAndSettle();
+
+        expect(pinCalls, 1);
+        expect(
+          authGateway.pinLoginCalls,
+          0,
+          reason: 'the real hand-off replaces the mere-verification call, '
+              'it never also fires it — that would be a redundant second '
+              'real backend credential attempt.',
+        );
+        expect(find.byKey(const Key('pos-quick-switch-verified')), findsOneWidget);
+        expect(find.text('Sesión cambiada a Cajero Adoptado.'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a real, honest quick-switch failure (the callback throwing, exactly '
+      'like AuthController.quickSwitchByPin surfacing an invalid_credentials '
+      'ApiException does) shows the honest error and never a fabricated '
+      'success',
+      (tester) async {
+        await _pump(
+          tester,
+          onQuickSwitchByPin: (pin) async {
+            throw const ApiException(
+              AppFailure(
+                AppErrorKind.authentication,
+                'Los datos de acceso no son válidos.',
+                code: 'invalid_credentials',
+              ),
+              statusCode: 401,
+            );
+          },
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-quick-switch-button')));
+        await tester.pumpAndSettle();
+
+        final dialog = find.byKey(const Key('pos-quick-switch-dialog'));
+        for (final digit in ['9', '9', '9', '9']) {
+          await tester.tap(find.descendant(of: dialog, matching: find.text(digit)));
+          await tester.pump();
+        }
+        await tester.tap(find.descendant(of: dialog, matching: find.byIcon(Icons.check)));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-quick-switch-error')), findsOneWidget);
+        expect(find.byKey(const Key('pos-quick-switch-verified')), findsNothing);
+        expect(find.text('Los datos de acceso no son válidos.'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a valid QR adopts the new session through onQuickSwitchByQr, never '
+      'the mere-verification gateway',
+      (tester) async {
+        final authGateway = _FakeAuthGateway();
+        var qrCalls = 0;
+        await _pump(
+          tester,
+          authGateway: authGateway,
+          onQuickSwitchByQr: (code) async {
+            qrCalls++;
+            expect(code, 'POS-QR-real-code');
+            return _adoptedContext;
+          },
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-quick-switch-button')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Código QR'));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-quick-switch-qr-input')),
+          'POS-QR-real-code',
+        );
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pumpAndSettle();
+
+        expect(qrCalls, 1);
+        expect(authGateway.qrLoginCalls, 0);
+        expect(find.text('Sesión cambiada a Cajero Adoptado.'), findsOneWidget);
+      },
+    );
+  });
 }
 
 Future<void> _pump(
@@ -351,6 +468,12 @@ Future<void> _pump(
   PosReadGateway? readGateway,
   PosHeldSalesGateway? heldSalesGateway,
   PosAuthGateway? authGateway,
+  // TASK 15.1 Phase 5: real session hand-off callbacks — see the
+  // "real session hand-off" test group below. Left null (as every
+  // pre-existing call site in this file does) to exercise the dialog's
+  // original mere-verification fallback via `authGateway` above.
+  Future<AuthenticatedContext> Function(String pin)? onQuickSwitchByPin,
+  Future<AuthenticatedContext> Function(String code)? onQuickSwitchByQr,
 }) async {
   tester.view.physicalSize = const Size(1440, 900);
   tester.view.devicePixelRatio = 1;
@@ -372,6 +495,8 @@ Future<void> _pump(
         partiesGateway: const EmptyPosPartiesGateway(),
         heldSalesGateway: heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
         authGateway: authGateway ?? const EmptyPosAuthGateway(),
+        onQuickSwitchByPin: onQuickSwitchByPin,
+        onQuickSwitchByQr: onQuickSwitchByQr,
         onLogout: () {},
         onBranchSelected: (_) async {},
       ),
@@ -500,9 +625,15 @@ class _FakeAuthGateway implements PosAuthGateway {
   _FakeAuthGateway({this.pinSucceeds = true, this.qrSucceeds = true});
   final bool pinSucceeds;
   final bool qrSucceeds;
+  // TASK 15.1 Phase 5: lets a test prove the real-hand-off path never
+  // ALSO fires the mere-verification call (see the "real session
+  // hand-off" test group).
+  int pinLoginCalls = 0;
+  int qrLoginCalls = 0;
 
   @override
   Future<void> pinLogin(String pin) async {
+    pinLoginCalls++;
     if (!pinSucceeds) {
       throw ApiException(AppFailure.fromCode('invalid_credentials'), statusCode: 401);
     }
@@ -510,8 +641,43 @@ class _FakeAuthGateway implements PosAuthGateway {
 
   @override
   Future<void> qrLogin(String code) async {
+    qrLoginCalls++;
     if (!qrSucceeds) {
       throw ApiException(AppFailure.fromCode('invalid_credentials'), statusCode: 401);
     }
   }
 }
+
+/// TASK 15.1 Phase 5: the hydrated identity a real quick-switch adoption
+/// would produce — stands in for what `AuthController._acceptCredentials`
+/// actually builds (`auth_state_test.dart` covers that real hydration
+/// path itself; this fixture just gives the widget test a concrete
+/// `AuthenticatedContext` to assert the dialog renders honestly).
+final _adoptedContext = AuthenticatedContext(
+  session: SessionContext(
+    id: 'session-adopted',
+    userId: 'user-adopted',
+    companyId: 'company-id',
+    branchId: 'branch-id',
+    permittedBranchIds: const ['branch-id'],
+    companyWideAccess: false,
+    expiresAt: DateTime.utc(2099),
+  ),
+  user: const UserSummary(
+    id: 'user-adopted',
+    displayName: 'Cajero Adoptado',
+    email: 'adoptado@example.test',
+  ),
+  companies: const [CompanySummary(id: 'company-id', name: 'Empresa AS', current: true)],
+  branches: const [
+    BranchSummary(
+      id: 'branch-id',
+      code: 'CENTRO',
+      name: 'Sucursal Centro',
+      timezone: 'America/Mexico_City',
+      current: true,
+    ),
+  ],
+  companyWideAccess: false,
+  permissions: const ['sale.create'],
+);

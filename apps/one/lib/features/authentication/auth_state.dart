@@ -157,6 +157,74 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  /// TASK 15.1 Phase 5: PIN/QR quick-switch real session hand-off — adopts
+  /// the verified staff member's own real, independently-minted session
+  /// (`AuthService.pinLogin`, `auth.service.ts:636`) as this terminal's
+  /// actual active session, mirroring `switchCompany`'s exact pattern:
+  /// call the gateway, hydrate via `_acceptCredentials`, and on any
+  /// honest failure leave the CURRENT session/context completely
+  /// untouched via `_handleFailure(error, retainedContext: current)`.
+  ///
+  /// One deliberate difference from `switchCompany`/`selectBranch`:
+  /// `preserveCurrentPhaseOnGenericFailure: true` — see that parameter's
+  /// own doc comment on `_handleFailure` below for why. In short: this is
+  /// the only `_handleFailure` caller invoked from *inside* an
+  /// already-authenticated, actively-in-use POS session (every other
+  /// caller runs from a dedicated pre-dashboard/transitional auth
+  /// screen), so an ordinary wrong-PIN/QR denial must never force
+  /// `router.dart`'s unconditional `AuthPhase.failure -> '/login'`
+  /// redirect out from under a cashier mid-sale — it must surface as an
+  /// honest, inline error instead. A truly dead CURRENT session
+  /// (`session_expired`/`session_revoked`) is untouched by that
+  /// parameter and still correctly transitions to `/session-ended`,
+  /// exactly like every other caller.
+  ///
+  /// No transient "busy" phase is emitted before the gateway call (unlike
+  /// `switchCompany`'s `AuthPhase.selectingCompany`/`selectBranch`'s
+  /// `AuthPhase.selectingBranch`) — the router maps BOTH of those phases
+  /// to a full-screen redirect (`/select-company`/`/select-branch`),
+  /// which would incorrectly navigate away from the POS dashboard for
+  /// the whole (short) duration of a quick-switch call. The dialog's own
+  /// `_busy` flag already carries the loading UI.
+  Future<void> quickSwitchByPin(String pin) async {
+    final current = _state.context;
+    if (current == null || _state.phase != AuthPhase.authenticated) return;
+    try {
+      await _acceptCredentials(await _gateway.switchByPin(pin));
+      _telemetry.recordEvent('quick_switch_pin_success');
+    } on Object catch (error) {
+      _telemetry.recordEvent(
+        'quick_switch_pin_failure',
+        attributes: {'class': _safeCode(error)},
+      );
+      _handleFailure(
+        error,
+        retainedContext: current,
+        preserveCurrentPhaseOnGenericFailure: true,
+      );
+    }
+  }
+
+  /// Same real hand-off as [quickSwitchByPin], via `/api/v1/auth/qr-login`.
+  Future<void> quickSwitchByQr(String code) async {
+    final current = _state.context;
+    if (current == null || _state.phase != AuthPhase.authenticated) return;
+    try {
+      await _acceptCredentials(await _gateway.switchByQr(code));
+      _telemetry.recordEvent('quick_switch_qr_success');
+    } on Object catch (error) {
+      _telemetry.recordEvent(
+        'quick_switch_qr_failure',
+        attributes: {'class': _safeCode(error)},
+      );
+      _handleFailure(
+        error,
+        retainedContext: current,
+        preserveCurrentPhaseOnGenericFailure: true,
+      );
+    }
+  }
+
   Future<void> refresh() =>
       _refreshFuture ??= _refreshAndHydrate().whenComplete(() {
         _refreshFuture = null;
@@ -226,6 +294,23 @@ class AuthController extends ChangeNotifier {
     Object error, {
     bool bootstrap = false,
     AuthenticatedContext? retainedContext,
+    // TASK 15.1 Phase 5: set only by `quickSwitchByPin`/`quickSwitchByQr`
+    // — see their own doc comments. When true AND a context is being
+    // retained, an otherwise-generic failure (the default `_` bucket
+    // below — this is where `invalid_credentials` lands, the exact same
+    // uniform honest-denial code `AuthService.pinLogin`/`qrLogin` returns
+    // for every rejection reason, including a deactivated/unpermitted
+    // staff member — see that service method's own doc comment) keeps
+    // the CURRENT phase instead of moving to the plain `AuthPhase.failure`
+    // bucket. That distinction matters because `router.dart`'s redirect
+    // treats `AuthPhase.failure` as an unconditional "go to `/login`"
+    // (correct for a real login/company-selection/branch-selection
+    // attempt, all of which run from a dedicated pre-dashboard screen
+    // that failing out of is fine) — but a mistyped quick-switch PIN must
+    // never bounce a cashier mid-sale back to the login screen. The
+    // failure itself is still fully surfaced via `AuthViewState.failure`
+    // either way; only the navigation-driving `phase` differs.
+    bool preserveCurrentPhaseOnGenericFailure = false,
   }) {
     final failure = switch (error) {
       ApiException(:final failure) => failure,
@@ -251,6 +336,8 @@ class AuthController extends ChangeNotifier {
       'api_unavailable' ||
       'service_unavailable' ||
       'timeout' => AuthPhase.unavailable,
+      _ when preserveCurrentPhaseOnGenericFailure && retainedContext != null =>
+        _state.phase,
       _ => AuthPhase.failure,
     };
     if (phase == AuthPhase.expired || phase == AuthPhase.revoked) _clearAll();

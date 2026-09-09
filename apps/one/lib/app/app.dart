@@ -7,10 +7,16 @@ import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_assistant_gateway.dart';
 import '../features/pos/pos_auth_gateway.dart';
+import '../features/pos/pos_branch_admin_gateway.dart';
+import '../features/pos/pos_brand_admin_gateway.dart';
+import '../features/pos/pos_catalog_admin_gateway.dart';
+import '../features/pos/pos_category_admin_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
 import '../features/pos/pos_dashboard_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
+import '../features/pos/pos_identity_admin_gateway.dart';
+import '../features/pos/pos_inventory_admin_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
@@ -58,6 +64,13 @@ class AsOneApp extends StatefulWidget {
     this.posProductVariantsGateway = const EmptyPosProductVariantsGateway(),
     this.posAssistantGateway = const EmptyPosAssistantGateway(),
     this.posAuthGateway = const EmptyPosAuthGateway(),
+    // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI.
+    this.posIdentityAdminGateway = const EmptyPosIdentityAdminGateway(),
+    this.posInventoryAdminGateway = const EmptyPosInventoryAdminGateway(),
+    this.posCategoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.posBrandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.posCatalogAdminGateway = const EmptyPosCatalogAdminGateway(),
+    this.posBranchAdminGateway = const EmptyPosBranchAdminGateway(),
     super.key,
   });
 
@@ -123,6 +136,15 @@ class AsOneApp extends StatefulWidget {
   // assistant — see `pos_assistant_gateway.dart`.
   final PosAssistantGateway posAssistantGateway;
   final PosAuthGateway posAuthGateway;
+  // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI —
+  // users/roles/permissions, inventory admin, catalog admin depth,
+  // branch admin — see `pos_shell.dart`'s own field doc comment.
+  final PosIdentityAdminGateway posIdentityAdminGateway;
+  final PosInventoryAdminGateway posInventoryAdminGateway;
+  final PosCategoryAdminGateway posCategoryAdminGateway;
+  final PosBrandAdminGateway posBrandAdminGateway;
+  final PosCatalogAdminGateway posCatalogAdminGateway;
+  final PosBranchAdminGateway posBranchAdminGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -167,6 +189,12 @@ class _AsOneAppState extends State<AsOneApp> {
       posProductVariantsGateway: widget.posProductVariantsGateway,
       posAssistantGateway: widget.posAssistantGateway,
       posAuthGateway: widget.posAuthGateway,
+      posIdentityAdminGateway: widget.posIdentityAdminGateway,
+      posInventoryAdminGateway: widget.posInventoryAdminGateway,
+      posCategoryAdminGateway: widget.posCategoryAdminGateway,
+      posBrandAdminGateway: widget.posBrandAdminGateway,
+      posCatalogAdminGateway: widget.posCatalogAdminGateway,
+      posBranchAdminGateway: widget.posBranchAdminGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -203,6 +231,12 @@ class PlatformScope extends InheritedWidget {
     this.posProductVariantsGateway = const EmptyPosProductVariantsGateway(),
     this.posAssistantGateway = const EmptyPosAssistantGateway(),
     this.posAuthGateway = const EmptyPosAuthGateway(),
+    this.posIdentityAdminGateway = const EmptyPosIdentityAdminGateway(),
+    this.posInventoryAdminGateway = const EmptyPosInventoryAdminGateway(),
+    this.posCategoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.posBrandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.posCatalogAdminGateway = const EmptyPosCatalogAdminGateway(),
+    this.posBranchAdminGateway = const EmptyPosBranchAdminGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -295,6 +329,15 @@ class PlatformScope extends InheritedWidget {
   final PosAssistantGateway posAssistantGateway;
   final PosAuthGateway posAuthGateway;
 
+  // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI — see
+  // `AsOneApp`'s own field doc comment.
+  final PosIdentityAdminGateway posIdentityAdminGateway;
+  final PosInventoryAdminGateway posInventoryAdminGateway;
+  final PosCategoryAdminGateway posCategoryAdminGateway;
+  final PosBrandAdminGateway posBrandAdminGateway;
+  final PosCatalogAdminGateway posCatalogAdminGateway;
+  final PosBranchAdminGateway posBranchAdminGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -333,6 +376,12 @@ class PlatformScope extends InheritedWidget {
       posProductVariantsGateway != oldWidget.posProductVariantsGateway ||
       posAssistantGateway != oldWidget.posAssistantGateway ||
       posAuthGateway != oldWidget.posAuthGateway ||
+      posIdentityAdminGateway != oldWidget.posIdentityAdminGateway ||
+      posInventoryAdminGateway != oldWidget.posInventoryAdminGateway ||
+      posCategoryAdminGateway != oldWidget.posCategoryAdminGateway ||
+      posBrandAdminGateway != oldWidget.posBrandAdminGateway ||
+      posCatalogAdminGateway != oldWidget.posCatalogAdminGateway ||
+      posBranchAdminGateway != oldWidget.posBranchAdminGateway ||
       environment != oldWidget.environment;
 }
 

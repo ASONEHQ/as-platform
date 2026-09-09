@@ -14,9 +14,25 @@ import 'pos_access_screen.dart';
 import 'pos_assistant_gateway.dart';
 import 'pos_assistant_screen.dart';
 import 'pos_auth_gateway.dart';
+import 'pos_branch_admin_gateway.dart';
+import 'pos_branch_admin_screen.dart';
+import 'pos_brand_admin_gateway.dart';
+import 'pos_brand_admin_screen.dart';
+import 'pos_catalog_admin_gateway.dart';
+import 'pos_catalog_admin_screen.dart';
+import 'pos_category_admin_gateway.dart';
+import 'pos_category_admin_screen.dart';
 import 'pos_cash_gateway.dart';
 import 'pos_customers_gateway.dart';
 import 'pos_dashboard_gateway.dart';
+import 'pos_identity_admin_gateway.dart';
+// `PosInventoryBalance` also exists in `pos_models.dart` (the pre-existing
+// read-only balances view's own type, used throughout this file) — hidden
+// here since nothing in `pos_shell.dart` itself needs the admin gateway's
+// own copy directly (only `PosInventoryAdminScreen`, in its own file,
+// does).
+import 'pos_inventory_admin_gateway.dart' hide PosInventoryBalance;
+import 'pos_inventory_admin_screen.dart';
 import 'pos_held_sales_gateway.dart';
 import 'pos_loyalty_gateway.dart';
 import 'pos_memberships_gateway.dart';
@@ -44,6 +60,7 @@ import 'pos_settings_gateway.dart';
 import 'pos_suppliers_gateway.dart';
 import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
+import 'pos_user_administration_screen.dart';
 import 'receipt_html.dart';
 import 'receipt_print.dart';
 import 'refund_receipt_html.dart';
@@ -77,9 +94,31 @@ class PosShell extends StatefulWidget {
     this.settingsGateway = const EmptyPosSettingsGateway(),
     this.productVariantsGateway = const EmptyPosProductVariantsGateway(),
     this.assistantGateway = const EmptyPosAssistantGateway(),
+    // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI —
+    // users/roles/permissions, inventory admin (6 sub-domains +
+    // locations), catalog admin depth (categories/brands/branch
+    // prices/options+barcodes/CSV export), branch admin. All default to
+    // an `Empty...` stub matching every other gateway's own convention.
+    this.identityAdminGateway = const EmptyPosIdentityAdminGateway(),
+    this.inventoryAdminGateway = const EmptyPosInventoryAdminGateway(),
+    this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.catalogAdminGateway = const EmptyPosCatalogAdminGateway(),
+    this.branchAdminGateway = const EmptyPosBranchAdminGateway(),
     // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): real quick-switch PIN/QR
     // staff login — see `pos_auth_gateway.dart`.
     this.authGateway = const EmptyPosAuthGateway(),
+    // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off —
+    // `AuthController.quickSwitchByPin`/`quickSwitchByQr`, threaded down
+    // as callbacks the same way `onBranchSelected` already is (see that
+    // field's own doc comment for why: avoids importing `AuthScope` here,
+    // which would create a circular import). Nullable/optional — every
+    // pre-existing call site (and test in this file) that doesn't thread
+    // these keeps `_StaffQuickSwitchDialog`'s original mere-verification
+    // behavior via `authGateway` above unchanged; see that dialog's
+    // `_submit`.
+    this.onQuickSwitchByPin,
+    this.onQuickSwitchByQr,
     required this.onLogout,
     required this.onBranchSelected,
     super.key,
@@ -145,7 +184,19 @@ class PosShell extends StatefulWidget {
   // TASK 14.5 (Wave 3, Phase 7, Item 6): real deterministic FAQ
   // assistant — see `pos_assistant_gateway.dart`.
   final PosAssistantGateway assistantGateway;
+  // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI — see
+  // this constructor's own doc comment above.
+  final PosIdentityAdminGateway identityAdminGateway;
+  final PosInventoryAdminGateway inventoryAdminGateway;
+  final PosCategoryAdminGateway categoryAdminGateway;
+  final PosBrandAdminGateway brandAdminGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosBranchAdminGateway branchAdminGateway;
   final PosAuthGateway authGateway;
+  // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
+  // this constructor's own doc comment above.
+  final Future<AuthenticatedContext> Function(String pin)? onQuickSwitchByPin;
+  final Future<AuthenticatedContext> Function(String code)? onQuickSwitchByQr;
   final VoidCallback onLogout;
   // POS branch-context fix: `AuthController.selectBranch` — the exact
   // canonical session-branch switch the login-time
@@ -396,7 +447,15 @@ class _PosShellState extends State<PosShell> {
                             settingsGateway: widget.settingsGateway,
                             productVariantsGateway: widget.productVariantsGateway,
                             assistantGateway: widget.assistantGateway,
+                            identityAdminGateway: widget.identityAdminGateway,
+                            inventoryAdminGateway: widget.inventoryAdminGateway,
+                            categoryAdminGateway: widget.categoryAdminGateway,
+                            brandAdminGateway: widget.brandAdminGateway,
+                            catalogAdminGateway: widget.catalogAdminGateway,
+                            branchAdminGateway: widget.branchAdminGateway,
                             authGateway: widget.authGateway,
+                            onQuickSwitchByPin: widget.onQuickSwitchByPin,
+                            onQuickSwitchByQr: widget.onQuickSwitchByQr,
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
@@ -2830,7 +2889,15 @@ class _Content extends StatelessWidget {
     required this.settingsGateway,
     required this.productVariantsGateway,
     required this.assistantGateway,
+    required this.identityAdminGateway,
+    required this.inventoryAdminGateway,
+    required this.categoryAdminGateway,
+    required this.brandAdminGateway,
+    required this.catalogAdminGateway,
+    required this.branchAdminGateway,
     required this.authGateway,
+    this.onQuickSwitchByPin,
+    this.onQuickSwitchByQr,
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
@@ -2885,7 +2952,19 @@ class _Content extends StatelessWidget {
   final PosSettingsGateway settingsGateway;
   final PosProductVariantsGateway productVariantsGateway;
   final PosAssistantGateway assistantGateway;
+  // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI — see
+  // `PosShell`'s own field doc comment.
+  final PosIdentityAdminGateway identityAdminGateway;
+  final PosInventoryAdminGateway inventoryAdminGateway;
+  final PosCategoryAdminGateway categoryAdminGateway;
+  final PosBrandAdminGateway brandAdminGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosBranchAdminGateway branchAdminGateway;
   final PosAuthGateway authGateway;
+  // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
+  // `PosShell`'s own field doc comment.
+  final Future<AuthenticatedContext> Function(String pin)? onQuickSwitchByPin;
+  final Future<AuthenticatedContext> Function(String code)? onQuickSwitchByQr;
   final VoidCallback onEnterCliente;
   final Future<void> Function(String? branchId) onBranchSelected;
   // TASK 12.8: lets a refund dialog (Sale Detail → "Devolver /
@@ -2942,6 +3021,8 @@ class _Content extends StatelessWidget {
                         onEnterCliente: onEnterCliente,
                         visualTileOnly: module == PosModule.cafeteria,
                         authGateway: authGateway,
+                        onQuickSwitchByPin: onQuickSwitchByPin,
+                        onQuickSwitchByQr: onQuickSwitchByQr,
                         settingsGateway: settingsGateway,
                       ),
               )
@@ -2958,6 +3039,8 @@ class _Content extends StatelessWidget {
                   PosModule.products => _Products(
                     state: controller.products,
                     allowed: this.context.permissions.contains('catalog.read'),
+                    canCreate: this.context.permissions.contains('product.manage'),
+                    catalogAdminGateway: catalogAdminGateway,
                     onRefresh: () => controller.loadProducts(refresh: true),
                   ),
                   // TASK 14.5 (Wave 3, Phase 7, Item 3): Variantes — manage
@@ -2977,10 +3060,13 @@ class _Content extends StatelessWidget {
                     ),
                     onOpenDirectPurchase: () => onNavigateToModule(PosModule.purchases),
                   ),
-                  PosModule.users => _Users(
-                    state: controller.users,
-                    allowed: this.context.permissions.contains('user.read'),
-                    onRefresh: () => controller.loadUsers(refresh: true),
+                  // TASK 15.1 Phase 2: closes the "role/user/permission
+                  // administration has no Flutter UI" YELLOW — a real,
+                  // tabbed Usuarios/Roles/Permisos admin screen replaces
+                  // the previous read-only `_Users` list.
+                  PosModule.users => PosUserAdministrationScreen(
+                    context: this.context,
+                    gateway: identityAdminGateway,
                   ),
                   PosModule.history => _SalesHistory(
                     context: this.context,
@@ -3118,6 +3204,39 @@ class _Content extends StatelessWidget {
                   PosModule.assistant => PosAssistantScreen(
                     context: this.context,
                     gateway: assistantGateway,
+                  ),
+                  // TASK 15.1 Phase 4: Categorías — previously had NO
+                  // Flutter screen at all (not even read-only); closes
+                  // that gap.
+                  PosModule.categories => PosCategoryAdminScreen(
+                    context: this.context,
+                    gateway: categoryAdminGateway,
+                  ),
+                  // TASK 15.1 Phase 4: Marcas — real brand admin.
+                  PosModule.brands => PosBrandAdminScreen(
+                    context: this.context,
+                    gateway: brandAdminGateway,
+                  ),
+                  // TASK 15.1 Phase 4: "catalog admin depth" — branch
+                  // price overrides, custom options/variant barcodes, and
+                  // catalog CSV export.
+                  PosModule.catalogAdmin => PosCatalogAdminScreen(
+                    context: this.context,
+                    gateway: catalogAdminGateway,
+                  ),
+                  // TASK 15.1 Phase 3: the six inventory sub-domains
+                  // (movement drafts/adjustments, transfers, counts,
+                  // reservations, reconciliation) plus locations setup.
+                  PosModule.inventoryAdmin => PosInventoryAdminScreen(
+                    context: this.context,
+                    gateway: inventoryAdminGateway,
+                  ),
+                  // TASK 15.1: branch create/edit — closes the
+                  // "BranchSelectionScreen only reads, never creates" gap
+                  // needed for a new tenant's second-location onboarding.
+                  PosModule.branches => PosBranchAdminScreen(
+                    context: this.context,
+                    branchAdminGateway: branchAdminGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -3776,6 +3895,8 @@ class _PosSale extends StatefulWidget {
     // disconnected second cart), only the category/product scope differs.
     this.visualTileOnly = false,
     this.authGateway = const EmptyPosAuthGateway(),
+    this.onQuickSwitchByPin,
+    this.onQuickSwitchByQr,
     this.settingsGateway = const EmptyPosSettingsGateway(),
   });
   final AuthenticatedContext context;
@@ -3800,6 +3921,10 @@ class _PosSale extends StatefulWidget {
   final VoidCallback onEnterCliente;
   final bool visualTileOnly;
   final PosAuthGateway authGateway;
+  // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
+  // `PosShell`'s own field doc comment.
+  final Future<AuthenticatedContext> Function(String pin)? onQuickSwitchByPin;
+  final Future<AuthenticatedContext> Function(String code)? onQuickSwitchByQr;
   // TASK 14.5A: real per-tenant receipt header/footer branding — read
   // once here and threaded down to `_ReceiptSuccessDialog` (see
   // `_TicketFooter`/`_PosCobrarButton`), matching `pos_receipt_branding_
@@ -4121,8 +4246,11 @@ class _PosSaleState extends State<_PosSale> {
                     onQuickSwitch: () => unawaited(
                       showDialog<void>(
                         context: context,
-                        builder: (dialogContext) =>
-                            _StaffQuickSwitchDialog(authGateway: widget.authGateway),
+                        builder: (dialogContext) => _StaffQuickSwitchDialog(
+                          authGateway: widget.authGateway,
+                          onQuickSwitchByPin: widget.onQuickSwitchByPin,
+                          onQuickSwitchByQr: widget.onQuickSwitchByQr,
+                        ),
                       ),
                     ),
                   ),
@@ -4521,6 +4649,27 @@ class _ModeButton extends StatelessWidget {
 /// on-screen keyboard (`#teclado-global-dock`) appears beside it in the
 /// canonical HTML; this reproduces that keypad's *presence*, and now also
 /// its actual verification.
+///
+/// TASK 15.1 Phase 5 — deliberately NOT given a session hand-off (unlike
+/// `_StaffQuickSwitchDialog`, which now adopts the resolved identity as
+/// the terminal's active session): this dialog's own job, both in V1's
+/// `requiereEmpleado(...)` original and in the TASK 14.5A doc comment
+/// above, is "prove an authorized employee is present to allow CAJERO
+/// mode back" — a gate on the MODE switch, not an identity switch. It
+/// never claims to establish WHO is now the cashier, only that someone
+/// with a real, valid PIN/password is standing at the terminal; whoever
+/// was already logged in before CLIENTE mode stays the logged-in
+/// identity after this succeeds (`_requestCajeroReturn` only ever flips
+/// `clienteMode` — the `AuthenticatedContext` powering the rest of this
+/// screen is untouched either way). Silently swapping the active session
+/// to whichever employee happens to key in their own PIN here — often a
+/// supervisor unlocking the register for someone else, not necessarily
+/// the person about to operate it — would be a real, surprising identity
+/// change disguised as a mode toggle, and is exactly the kind of
+/// "adjacent redesign" `docs/RC_FREEZE_POLICY.md` forbids introducing
+/// without a discovered blocker forcing it. If a genuine "become this
+/// person" hand-off is ever wanted here too, it should be an explicit,
+/// separately-reviewed product decision, not a side effect of this fix.
 class _CajeroReturnAuthDialog extends StatefulWidget {
   const _CajeroReturnAuthDialog({required this.authGateway});
   final PosAuthGateway authGateway;
@@ -4733,21 +4882,32 @@ class _PosModeLabel extends StatelessWidget {
   );
 }
 
-/// TASK 14.5 (Wave 3, Phase 4b/7 Item 8): "Cambiar cajero" — a real PIN or
-/// QR quick-switch verification, calling `PosAuthGateway.pinLogin`/
-/// `qrLogin` (see that file's own security-model doc comment: both
-/// require this terminal's OWN already-authenticated session, resolve
-/// company scope only from it, and mint a real backend session on
-/// success — this dialog never adopts that new session as the app's own
-/// active one, a deliberately-scoped-out follow-up documented in
-/// `pos_auth_gateway.dart`). Mirrors `_CajeroReturnAuthDialog`'s own
-/// canonical PIN-entry chrome (logo, `StartupPinKeypad`, Escape-to-
-/// cancel) and adds a second tab for the QR code, matching the legacy
-/// login modal's own PIN/QR tab pair (`docs/LEGACY_FUNCTIONAL_PARITY.md`
-/// §20) — never the legacy's own plaintext/master-bypass mechanism.
+/// TASK 14.5 (Wave 3, Phase 4b/7 Item 8) / TASK 15.1 Phase 5: "Cambiar
+/// cajero" — a real PIN or QR quick-switch. When [onQuickSwitchByPin]/
+/// [onQuickSwitchByQr] are supplied (real production usage — see
+/// `PosShell`'s own field doc comment), a submit calls straight through to
+/// `AuthController.quickSwitchByPin`/`quickSwitchByQr`, which both verify
+/// AND fully adopt the resolved staff member's real, independently-minted
+/// session (`AuthService.pinLogin`/`qrLogin`, `auth.service.ts`) as this
+/// terminal's own active session — a real identity hand-off, not mere
+/// verification. When they are `null` (only reachable in tests that don't
+/// thread them), this dialog falls back to its original behavior: calling
+/// `PosAuthGateway.pinLogin`/`qrLogin` directly for honest server-side
+/// verification only, with no session hand-off (see that gateway's own
+/// security-model doc comment). Mirrors `_CajeroReturnAuthDialog`'s own
+/// canonical PIN-entry chrome (logo, `StartupPinKeypad`, Escape-to-cancel)
+/// and adds a second tab for the QR code, matching the legacy login
+/// modal's own PIN/QR tab pair (`docs/LEGACY_FUNCTIONAL_PARITY.md` §20) —
+/// never the legacy's own plaintext/master-bypass mechanism.
 class _StaffQuickSwitchDialog extends StatefulWidget {
-  const _StaffQuickSwitchDialog({required this.authGateway});
+  const _StaffQuickSwitchDialog({
+    required this.authGateway,
+    this.onQuickSwitchByPin,
+    this.onQuickSwitchByQr,
+  });
   final PosAuthGateway authGateway;
+  final Future<AuthenticatedContext> Function(String pin)? onQuickSwitchByPin;
+  final Future<AuthenticatedContext> Function(String code)? onQuickSwitchByQr;
 
   @override
   State<_StaffQuickSwitchDialog> createState() => _StaffQuickSwitchDialogState();
@@ -4760,6 +4920,10 @@ class _StaffQuickSwitchDialogState extends State<_StaffQuickSwitchDialog> {
   bool _busy = false;
   String? _error;
   bool _verified = false;
+  // TASK 15.1 Phase 5: set only when a real session hand-off happened
+  // (`onQuickSwitchByPin`/`onQuickSwitchByQr` was supplied and succeeded)
+  // — drives the post-success message below.
+  AuthenticatedContext? _adopted;
 
   @override
   void dispose() {
@@ -4770,21 +4934,43 @@ class _StaffQuickSwitchDialogState extends State<_StaffQuickSwitchDialog> {
 
   Future<void> _submitPin() async {
     if (_pinController.text.isEmpty || _busy) return;
-    await _submit(() => widget.authGateway.pinLogin(_pinController.text));
+    final onSwitch = widget.onQuickSwitchByPin;
+    final pin = _pinController.text;
+    await _submit(
+      verify: () => widget.authGateway.pinLogin(pin),
+      adopt: onSwitch == null ? null : () => onSwitch(pin),
+    );
   }
 
   Future<void> _submitQr(String code) async {
-    if (code.trim().isEmpty || _busy) return;
-    await _submit(() => widget.authGateway.qrLogin(code.trim()));
+    final trimmed = code.trim();
+    if (trimmed.isEmpty || _busy) return;
+    final onSwitch = widget.onQuickSwitchByQr;
+    await _submit(
+      verify: () => widget.authGateway.qrLogin(trimmed),
+      adopt: onSwitch == null ? null : () => onSwitch(trimmed),
+    );
   }
 
-  Future<void> _submit(Future<void> Function() call) async {
+  // TASK 15.1 Phase 5: when `adopt` is available it fully replaces `verify`
+  // (never both) — `AuthController.quickSwitchByPin`/`quickSwitchByQr`
+  // already call the exact same `/pin-login`/`/qr-login` endpoint
+  // `verify` would, so calling both would be a redundant second real
+  // backend credential attempt with the same PIN/QR code.
+  Future<void> _submit({
+    required Future<void> Function() verify,
+    Future<AuthenticatedContext> Function()? adopt,
+  }) async {
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await call();
+      if (adopt != null) {
+        _adopted = await adopt();
+      } else {
+        await verify();
+      }
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -4834,9 +5020,18 @@ class _StaffQuickSwitchDialogState extends State<_StaffQuickSwitchDialog> {
               if (_verified) ...[
                 Icon(Icons.verified_outlined, color: palette.success, size: 40),
                 const SizedBox(height: 10),
-                const Text(
-                  'PIN/QR verificado por el servidor.',
-                  key: Key('pos-quick-switch-verified'),
+                // TASK 15.1 Phase 5: real session hand-off happened
+                // (`_adopted != null`) shows who the terminal is now
+                // operating as — the real, hydrated identity
+                // `AuthController._acceptCredentials` produced, never a
+                // fabricated name. The key stays the same either way so
+                // any caller (real or the mere-verification test
+                // fallback) can detect "success shown" the same way.
+                Text(
+                  _adopted != null
+                      ? 'Sesión cambiada a ${_adopted!.user.displayName}.'
+                      : 'PIN/QR verificado por el servidor.',
+                  key: const Key('pos-quick-switch-verified'),
                   textAlign: TextAlign.center,
                 ),
               ] else ...[
@@ -4886,8 +5081,25 @@ class _StaffQuickSwitchDialogState extends State<_StaffQuickSwitchDialog> {
                     key: const Key('pos-quick-switch-qr-input'),
                     controller: _qrController,
                     autofocus: true,
-                    decoration: const InputDecoration(
+                    // TASK 15.1 Phase 8 gap fix: without an explicit
+                    // `textInputAction`, Flutter web's default ("done") is
+                    // not reliably wired to a physical Enter keypress for
+                    // this field on every browser/input-method combination
+                    // — matching `_PosSearchRow`'s own working
+                    // `TextInputAction.search` precedent (that field's
+                    // Enter-to-submit is real and verified; this one
+                    // wasn't). A visible confirm button is added too so
+                    // submission never depends on Enter alone, mirroring
+                    // the PIN tab's always-visible checkmark affordance.
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
                       hintText: 'Escanea o escribe el código QR...',
+                      suffixIcon: IconButton(
+                        key: const Key('pos-quick-switch-qr-submit'),
+                        icon: const Icon(Icons.check_circle_outline),
+                        tooltip: 'Confirmar código',
+                        onPressed: () => unawaited(_submitQr(_qrController.text)),
+                      ),
                     ),
                     onSubmitted: (value) => unawaited(_submitQr(value)),
                   ),
@@ -9093,10 +9305,19 @@ class _Products extends StatefulWidget {
     required this.state,
     required this.allowed,
     required this.onRefresh,
+    this.canCreate = false,
+    this.catalogAdminGateway,
   });
   final PosReadState<PosProduct> state;
   final bool allowed;
   final VoidCallback onRefresh;
+
+  /// TASK 15.1 Phase 6 gap fix — see `PosCatalogAdminGateway.createProduct`
+  /// for why this exists. Both default to inert (`false`/`null`) so every
+  /// existing call site of this widget keeps its old read-only behavior
+  /// unless it opts in.
+  final bool canCreate;
+  final PosCatalogAdminGateway? catalogAdminGateway;
 
   @override
   State<_Products> createState() => _ProductsState();
@@ -9104,6 +9325,16 @@ class _Products extends StatefulWidget {
 
 class _ProductsState extends State<_Products> {
   String query = '';
+
+  Future<void> _createProduct() async {
+    final gateway = widget.catalogAdminGateway;
+    if (gateway == null) return;
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _NewProductDialog(gateway: gateway),
+    );
+    if (created == true) widget.onRefresh();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -9119,8 +9350,22 @@ class _ProductsState extends State<_Products> {
       children: [
         _SectionHeader(
           title: 'Productos',
-          description: 'Catálogo real en modo de solo lectura.',
-          action: _ReadOnlyButton(onPressed: widget.onRefresh),
+          description: 'Catálogo real de la empresa.',
+          action: widget.canCreate
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _ReadOnlyButton(onPressed: widget.onRefresh),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      key: const Key('pos-product-new-button'),
+                      onPressed: _createProduct,
+                      icon: const Icon(Icons.add_outlined),
+                      label: const Text('Nuevo producto'),
+                    ),
+                  ],
+                )
+              : _ReadOnlyButton(onPressed: widget.onRefresh),
         ),
         TextField(
           key: const Key('pos-product-search'),
@@ -9143,6 +9388,167 @@ class _ProductsState extends State<_Products> {
       ],
     );
   }
+}
+
+/// TASK 15.1 Phase 6 gap fix — real `POST /api/v1/products` (`product
+/// .manage`) caller, closing the "no way to create a product at all"
+/// launch-blocking dead end found live during the Phase 6 commercial
+/// onboarding walkthrough. Covers a normal product (código+nombre only),
+/// a barcode product (código de barras field filled), and a weighted
+/// product (unidad set to a weight unit with a nonzero número de
+/// decimales) — one small form, not three separate ones, since the
+/// underlying backend contract is the same single call either way.
+class _NewProductDialog extends StatefulWidget {
+  const _NewProductDialog({required this.gateway});
+  final PosCatalogAdminGateway gateway;
+
+  @override
+  State<_NewProductDialog> createState() => _NewProductDialogState();
+}
+
+class _NewProductDialogState extends State<_NewProductDialog> {
+  final _codeController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _skuController = TextEditingController();
+  final _barcodeController = TextEditingController();
+  final _costController = TextEditingController();
+  String _unit = 'unit';
+  bool _busy = false;
+  String? _error;
+
+  // Real, seeded `units_of_measure.code` values this company's database
+  // actually has active (never a guessed/free-text label) — 'unit' is the
+  // normal-product default; 'kg'/'l' are the weighted-product cases.
+  static const _units = ['unit', 'kg', 'l', 'g', 'ml'];
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _nameController.dispose();
+    _skuController.dispose();
+    _barcodeController.dispose();
+    _costController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    final code = _codeController.text.trim();
+    final name = _nameController.text.trim();
+    if (code.isEmpty || name.isEmpty) {
+      setState(() => _error = 'Captura código y nombre.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final sku = _skuController.text.trim();
+      final barcode = _barcodeController.text.trim();
+      final cost = _costController.text.trim();
+      await widget.gateway.createProduct(
+        PosNewProductInput(
+          code: code,
+          name: name,
+          sku: sku.isEmpty ? code : sku,
+          unitOfMeasureCode: _unit,
+          quantityScale: _unit == 'unit' ? 0 : 3,
+          standardCost: cost.isEmpty ? null : cost,
+          barcode: barcode.isEmpty ? null : barcode,
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible crear el producto.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Nuevo producto'),
+    content: SizedBox(
+      width: 380,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('pos-product-new-code'),
+            controller: _codeController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'Código'),
+            autofocus: true,
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-product-new-name'),
+            controller: _nameController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'Nombre'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-product-new-sku'),
+            controller: _skuController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'SKU (opcional, usa el código si se deja vacío)'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-product-new-barcode'),
+            controller: _barcodeController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'Código de barras (opcional)'),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            key: const Key('pos-product-new-unit'),
+            initialValue: _unit,
+            decoration: const InputDecoration(labelText: 'Unidad'),
+            items: [for (final unit in _units) DropdownMenuItem(value: unit, child: Text(unit))],
+            onChanged: _busy ? null : (value) => setState(() => _unit = value ?? 'unidad'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            key: const Key('pos-product-new-cost'),
+            controller: _costController,
+            enabled: !_busy,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Costo estándar (opcional)', prefixText: r'$ '),
+            onSubmitted: (_) => _busy ? null : _confirm(),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: Colors.red)),
+          ],
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        key: const Key('pos-product-new-confirm'),
+        onPressed: _busy ? null : _confirm,
+        child: _busy
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Text('Guardar'),
+      ),
+    ],
+  );
 }
 
 class _ProductGrid extends StatelessWidget {
@@ -10373,93 +10779,11 @@ class _DirectPurchaseTable extends StatelessWidget {
   }
 }
 
-class _Users extends StatelessWidget {
-  const _Users({
-    required this.state,
-    required this.allowed,
-    required this.onRefresh,
-  });
-  final PosReadState<PosUser> state;
-  final bool allowed;
-  final VoidCallback onRefresh;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _SectionHeader(
-        title: 'Usuarios',
-        description: 'Identidades y memberships de la empresa, solo lectura.',
-        action: _ReadOnlyButton(onPressed: onRefresh),
-      ),
-      if (!allowed)
-        const _PermissionState()
-      else
-        _ReadState<PosUser>(
-          state: state,
-          emptyMessage: 'No hay usuarios disponibles.',
-          onRetry: onRefresh,
-          ready: (items) => Column(
-            children: items.map((item) => _UserRow(item: item)).toList(),
-          ),
-        ),
-    ],
-  );
-}
-
-class _UserRow extends StatelessWidget {
-  const _UserRow({required this.item});
-  final PosUser item;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: _PosCard(
-        child: Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: palette.action,
-              child: Text(
-                item.displayName.isEmpty
-                    ? '?'
-                    : item.displayName[0].toUpperCase(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.displayName,
-                    style: TextStyle(
-                      color: palette.text,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  Text(
-                    item.email,
-                    style: TextStyle(
-                      color: palette.textSecondary,
-                      fontSize: 11,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            _StatusChip(label: item.membershipStatus),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// TASK 15.1 Phase 2: `_Users`/`_UserRow` (the previous read-only "Usuarios"
+// list) were removed here — `PosModule.users` now renders the real
+// `PosUserAdministrationScreen` (Usuarios/Roles/Permisos tabs), which
+// replaces this view entirely rather than sitting alongside it. See that
+// screen's own file.
 
 // TASK 12.6 Part C: Historial de ventas — real, backend-paginated sale
 // history. Deliberately self-contained (its own gateway calls/loading
@@ -14308,6 +14632,21 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     if (opened == true) await _load();
   }
 
+  /// TASK 15.1 Phase 6 gap fix — see `PosCashGateway.createRegister`'s own
+  /// doc comment for why this exists.
+  Future<void> _createRegister() async {
+    final branchId = _branchId;
+    if (branchId == null) return;
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _NewCashRegisterDialog(
+        branchId: branchId,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+    if (created == true) await _load();
+  }
+
   Future<void> _postMovement(String movementType) async {
     final session = _session;
     if (session == null) return;
@@ -14391,12 +14730,44 @@ class _CajaCurrentState extends State<_CajaCurrent> {
           onRetry: () => unawaited(_load()),
         );
       case _CajaPhase.noRegister:
-        return const _StateCard(
-          icon: Icons.point_of_sale_outlined,
-          title: 'Sin caja configurada',
-          message:
-              'Esta sucursal no tiene una caja registrada. Contacta a un '
-              'administrador para configurarla.',
+        final canManage = widget.context.permissions.contains(
+          'cash_register.manage',
+        );
+        return _PosCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.point_of_sale_outlined, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Sin caja configurada',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                canManage
+                    ? 'Esta sucursal no tiene una caja registrada. Crea una '
+                          'para empezar a cobrar en efectivo.'
+                    : 'Esta sucursal no tiene una caja registrada. Contacta '
+                          'a un administrador para configurarla.',
+              ),
+              if (canManage) ...[
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  key: const Key('pos-caja-new-register-button'),
+                  onPressed: _createRegister,
+                  icon: const Icon(Icons.add_outlined),
+                  label: const Text('Nueva caja'),
+                ),
+              ],
+            ],
+          ),
         );
       case _CajaPhase.closed:
         final canOpen = widget.context.permissions.contains(
@@ -14838,6 +15209,116 @@ class _PartialCloseRow extends StatelessWidget {
 /// selectable here since Part A requires supporting more than one per
 /// branch architecturally) → enter Fondo inicial → confirm. Never seeds or
 /// suggests an amount — the field starts empty.
+/// TASK 15.1 Phase 6 gap fix — real `POST /api/v1/cash-registers` (E039)
+/// caller, gated by `cash_register.manage` exactly like the backend route
+/// itself. Mirrors `_OpenCajaDialog`'s own small-form-dialog shape.
+class _NewCashRegisterDialog extends StatefulWidget {
+  const _NewCashRegisterDialog({required this.branchId, required this.cashGateway});
+  final String branchId;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_NewCashRegisterDialog> createState() => _NewCashRegisterDialogState();
+}
+
+class _NewCashRegisterDialogState extends State<_NewCashRegisterDialog> {
+  final _codeController = TextEditingController();
+  final _nameController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    final code = _codeController.text.trim();
+    final name = _nameController.text.trim();
+    if (code.isEmpty || name.isEmpty) {
+      setState(() => _error = 'Captura código y nombre.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.cashGateway.createRegister(
+        branchId: widget.branchId,
+        code: code,
+        name: name,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible crear la caja.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Nueva caja'),
+    content: SizedBox(
+      width: 360,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('pos-caja-new-code-input'),
+            controller: _codeController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'Código'),
+            autofocus: true,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const Key('pos-caja-new-name-input'),
+            controller: _nameController,
+            enabled: !_busy,
+            decoration: const InputDecoration(labelText: 'Nombre'),
+            onSubmitted: (_) => _busy ? null : _confirm(),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: Colors.red)),
+          ],
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        key: const Key('pos-caja-new-confirm'),
+        onPressed: _busy ? null : _confirm,
+        child: _busy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Text('Guardar'),
+      ),
+    ],
+  );
+}
+
 class _OpenCajaDialog extends StatefulWidget {
   const _OpenCajaDialog({
     required this.registers,

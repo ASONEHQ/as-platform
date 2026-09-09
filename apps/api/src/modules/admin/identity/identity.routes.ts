@@ -182,6 +182,44 @@ export function registerIdentityAdministrationRoutes(
       request.requestContext,
     );
   });
+  // TASK 15.1 (Phase 2) launch-blocker fix: `PUT /roles/:role_id/permissions`
+  // below is REPLACE-semantics (it deletes every existing `role_permissions`
+  // row for the role, then re-inserts exactly the body's list —
+  // `AdministrationService.replaceRolePermissions`, `admin.service.ts:
+  // 495-550`) — a caller that wants to add ONE permission to an already-
+  // configured role must first know the role's full existing permission
+  // set, or the write silently discards every permission not repeated in
+  // the body. `AdministrationService.rolePermissions` (`admin.service.ts:
+  // 483-493`) has always been able to answer this — it already existed and
+  // is already exercised directly at the service layer
+  // (`admin.integration.test.ts`'s "protects system roles and atomically
+  // applies allow and deny permissions") — but no HTTP route ever exposed
+  // it as a plain read: the only route that called it was this same `PUT`
+  // handler, AFTER performing the destructive replace. The result: there
+  // was no safe way for any real client (this task's own Flutter Roles
+  // tab included) to read a role's current permissions before editing them
+  // without either fabricating a guess (real data-loss risk on save) or
+  // reverse-engineering the set from other endpoints. Fixed here with a
+  // minimal, additive, read-only `GET` that calls the exact same
+  // already-permissioned (`role.read`), already-tested service method —
+  // no service-layer or permission-model change. Regression test:
+  // `identity.routes.test.ts`.
+  app.get<{ Params: { role_id: string } }>('/api/v1/roles/:role_id/permissions', async (request) => {
+    const context = await requireAuthenticatedUser(request, authentication);
+    return successResponse(
+      {
+        items: await administration.rolePermissions(
+          {
+            context,
+            requestId: request.requestContext.requestId,
+            correlationId: request.requestContext.correlationId,
+          },
+          request.params.role_id,
+        ),
+      },
+      request.requestContext,
+    );
+  });
   app.put<{
     Params: { role_id: string };
     Body: { permissions: { permission_id: string; effect: 'allow' | 'deny' }[] };

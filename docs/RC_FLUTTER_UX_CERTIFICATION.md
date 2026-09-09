@@ -428,3 +428,19 @@ process that predated that route, not from the current codebase. F1
 remain open as documented, non-launch-blocking YELLOW items — both are
 data/polish gaps in a test fixture and a display-only cosmetic issue
 respectively, neither affects a real tenant's actual usable functionality.
+
+## 7. TASK 15.1 update
+
+Six new admin surfaces (Usuarios/Roles/Permisos, Admin. Inventario,
+Categorías, Marcas, Catálogo Avanzado, Sucursales) plus the real PIN/QR
+session hand-off ("Cambiar cajero") were built, wired, and independently
+verified at both 1366×768 and 1920×1080 in
+`docs/RC_ADMIN_UX_VERIFICATION.md` — not duplicated here. One real
+keyboard/UX defect was found and fixed there (the QR quick-switch tab
+had no working submit path — no visible confirm button and an
+unreliable Enter handler, a genuine dead end for a cashier typing
+rather than scanning a code); everything else across those six surfaces
+was clean at both resolutions with no regressions to this document's
+own already-certified surfaces (re-confirmed: `flutter test` 537/537
+after the wiring, growing to reflect the new screens' own added test
+coverage).

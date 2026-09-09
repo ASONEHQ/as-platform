@@ -18,6 +18,16 @@ abstract interface class AuthGateway {
     String? branchId,
   });
   Future<SessionCredentials> switchBranch(String? branchId);
+  // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — calls
+  // the exact same `/api/v1/auth/pin-login`/`/api/v1/auth/qr-login`
+  // endpoints `PosAuthGateway.pinLogin`/`qrLogin` already use for mere
+  // verification (`pos_shell.dart`'s `_StaffQuickSwitchDialog`), but
+  // parsed into the same `SessionCredentials` shape every other
+  // login-shaped response already uses, so the resulting session can be
+  // adopted via `AuthController._acceptCredentials` exactly like
+  // `switchCompany`/`switchBranch` above.
+  Future<SessionCredentials> switchByPin(String pin);
+  Future<SessionCredentials> switchByQr(String code);
   Future<SessionCredentials> refresh(String csrfToken);
   Future<AuthenticatedContext> hydrate(SessionContext session);
   Future<void> logout();
@@ -131,6 +141,28 @@ class ApiAuthGateway implements AuthGateway {
           ),
         ),
       );
+
+  @override
+  Future<SessionCredentials> switchByPin(String pin) async => _credentials(
+    _data(
+      await client.postJson(
+        'api/v1/auth/pin-login',
+        csrfToken: _requiredCsrf(),
+        body: {'pin': pin},
+      ),
+    ),
+  );
+
+  @override
+  Future<SessionCredentials> switchByQr(String code) async => _credentials(
+    _data(
+      await client.postJson(
+        'api/v1/auth/qr-login',
+        csrfToken: _requiredCsrf(),
+        body: {'code': code},
+      ),
+    ),
+  );
 
   @override
   Future<SessionCredentials> refresh(String csrfToken) async => _credentials(

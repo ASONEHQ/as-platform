@@ -12,10 +12,16 @@ import '../features/authentication/auth_state.dart';
 import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_assistant_gateway.dart';
 import '../features/pos/pos_auth_gateway.dart';
+import '../features/pos/pos_branch_admin_gateway.dart';
+import '../features/pos/pos_brand_admin_gateway.dart';
+import '../features/pos/pos_catalog_admin_gateway.dart';
+import '../features/pos/pos_category_admin_gateway.dart';
 import '../features/pos/pos_cash_gateway.dart';
 import '../features/pos/pos_customers_gateway.dart';
 import '../features/pos/pos_dashboard_gateway.dart';
 import '../features/pos/pos_held_sales_gateway.dart';
+import '../features/pos/pos_identity_admin_gateway.dart';
+import '../features/pos/pos_inventory_admin_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
@@ -91,6 +97,13 @@ void bootstrap() {
       posProductVariantsGateway: ApiPosProductVariantsGateway(api),
       posAssistantGateway: ApiPosAssistantGateway(api),
       posAuthGateway: ApiPosAuthGateway(api),
+      // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI.
+      posIdentityAdminGateway: ApiPosIdentityAdminGateway(api),
+      posInventoryAdminGateway: ApiPosInventoryAdminGateway(api),
+      posCategoryAdminGateway: ApiPosCategoryAdminGateway(api),
+      posBrandAdminGateway: ApiPosBrandAdminGateway(api),
+      posCatalogAdminGateway: ApiPosCatalogAdminGateway(api),
+      posBranchAdminGateway: ApiPosBranchAdminGateway(api),
     ),
   );
   authController.bootstrapSession();

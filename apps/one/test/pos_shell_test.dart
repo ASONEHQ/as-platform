@@ -28,11 +28,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('keeps all 28 canonical modules in their inspected order', () {
+  test('keeps all 32 canonical modules in their inspected order', () {
     // TASK 14.5 (Wave 3): 3 new, real capabilities with no legacy sidebar
     // counterpart (Variantes/Marca del Ticket/Asistente) were appended
     // within their natural groups — 25 (Wave 2 baseline) + 3 = 28.
-    expect(PosModule.values, hasLength(28));
+    // TASK 15.1 (Phases 2-4): 4 more real, backend-wired commercial admin
+    // capabilities were inserted within their natural groups — Marcas/
+    // Catálogo Avanzado (Catálogo), Admin. Inventario (Inventario),
+    // Sucursales (Administración) — 28 + 4 = 32. Each was inserted
+    // alongside its sibling modules, not appended at the very end, so
+    // the first/last module and the last module's group are unchanged.
+    expect(PosModule.values, hasLength(32));
     // Matches the canonical `.sb-item[data-nav]` order: Ventas first
     // (Punto de Venta) — not an app-specific "Inicio first" ordering.
     // Sistema no longer ends on Configuración specifically now that two
@@ -42,7 +48,7 @@ void main() {
     expect(PosModule.values.first.label, 'Punto de Venta');
     expect(PosModule.values.last.label, 'Asistente');
     expect(PosModule.values.last.group, 'Sistema');
-    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(28));
+    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(32));
   });
 
   testWidgets('renders the canonical desktop shell without fake KPIs', (
@@ -68,16 +74,20 @@ void main() {
     // TASK 14.5 (Wave 3, Phase 6): Cafetería ("Acceso rápido") is now a
     // real screen — the exact same `_PosSale` surface as Punto de Venta,
     // scoped to visual-tile categories (see `pos_shell_wave3_cashier_
-    // experience_test.dart`). Categorías (no admin screen exists yet —
-    // confirmed by inspection) is still a genuinely unimplemented module,
-    // reused here purely to land on an open group before switching
-    // modules within it.
-    await tester.tap(find.byKey(const Key('nav-group-Catálogo')));
+    // experience_test.dart`).
+    // TASK 15.1 Phase 4: Categorías is no longer unimplemented — it now
+    // has a real `PosCategoryAdminScreen` (closing the "catalog admin
+    // depth" gap). Facturación CFDI has NO backend module at all
+    // (confirmed by `docs/RC_RELEASE_INVENTORY.md`'s MANAGEMENT section
+    // and re-confirmed here) and is explicitly out of this task's scope
+    // ("Do NOT expand into new product domains") — it remains the real,
+    // still-unimplemented module this test exercises.
+    await tester.tap(find.byKey(const Key('nav-group-Caja y Finanzas')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('nav-categories')));
+    await tester.tap(find.byKey(const Key('nav-billing')));
     await tester.pumpAndSettle();
     expect(find.text('Coming soon'), findsOneWidget);
-    expect(find.text('Categorías'), findsWidgets);
+    expect(find.text('Facturación CFDI'), findsWidgets);
   });
 
   testWidgets('loads products through the read gateway and filters locally', (
@@ -8430,6 +8440,13 @@ class _FakeCashGateway implements PosCashGateway {
           .toList(growable: false);
 
   @override
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  }) => Future.error(UnimplementedError('createRegister not faked'));
+
+  @override
   Future<PosCashSession> openSession({
     required String cashRegisterId,
     required String openingAmount,
@@ -8594,6 +8611,12 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
   @override
   Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
       const [];
+  @override
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  }) => Future.error(UnimplementedError('createRegister not faked'));
   @override
   Future<PosCashSession> openSession({
     required String cashRegisterId,

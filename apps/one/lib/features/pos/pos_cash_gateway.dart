@@ -344,6 +344,19 @@ abstract interface class PosCashGateway {
   /// selection step of "Abrir caja" (Part C).
   Future<List<PosCashRegister>> registersForBranch(String branchId);
 
+  /// `POST /api/v1/cash-registers` (E039) — TASK 15.1 Phase 6 gap fix:
+  /// the backend route already existed and was already gated by
+  /// `cash_register.manage`, but no Flutter caller ever reached it, which
+  /// left "create a cash register" as a genuine dead end (`noRegister`
+  /// phase's own copy told the operator to "contact an administrator" with
+  /// no in-app path for that administrator to actually do it). This is the
+  /// minimal real caller — see `_CajaCurrent`'s "Nueva caja" affordance.
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  });
+
   /// `POST /api/v1/cash-sessions` (E042) — the cashier's own entered
   /// opening float; never a fabricated or seeded amount (Part C).
   Future<PosCashSession> openSession({
@@ -452,6 +465,24 @@ class ApiPosCashGateway implements PosCashGateway {
         .whereType<Map<String, Object?>>()
         .map(PosCashRegister.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-registers',
+      idempotencyKey: createIdempotencyKey(),
+      body: {'branch_id': branchId, 'code': code, 'name': name},
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw StateError('cash register creation returned no data');
+    }
+    return PosCashRegister.fromJson(data);
   }
 
   @override
@@ -675,6 +706,13 @@ class EmptyPosCashGateway implements PosCashGateway {
   @override
   Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
       const [];
+
+  @override
+  Future<PosCashRegister> createRegister({
+    required String branchId,
+    required String code,
+    required String name,
+  }) => Future.error(StateError('No cash gateway is configured.'));
 
   @override
   Future<PosCashSession> openSession({

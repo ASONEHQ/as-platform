@@ -9,6 +9,16 @@ launch day. Every item below was exercised at least once during TASK
 HEAD; one new optional item added below (Branding / logo) for TASK
 14.5A's object-storage dependency — see `docs/RC_PRODUCTION_CONFIG.md`.
 
+**Updated by TASK 15.1 (Commercial Admin UX Closure)**: every item below
+that cites a raw `POST`/`PATCH` API call (branch, register, cashier/
+user/role, categories/products) is now **also** directly completable
+through the real Flutter product UI — Sucursales, Caja's "Nueva caja",
+Usuarios (Usuarios/Roles/Permisos tabs), Categorías, Marcas, and the
+Productos screen's "Nuevo producto" dialog — see
+`docs/RC_COMMERCIAL_ONBOARDING_WALKTHROUGH.md` for the live, end-to-end
+proof. The raw API calls remain accurate (the UI calls the exact same
+endpoints) and are kept here as the underlying mechanism reference.
+
 ## Infrastructure
 
 - [ ] DNS records created for the chosen domains (e.g. `app.asone.mx`, `api.asone.mx`)
@@ -31,7 +41,7 @@ HEAD; one new optional item added below (Branding / logo) for TASK
 
 - [ ] Backup taken and verified (`ops backup-verify`) before migrating an existing database
 - [ ] `pnpm --filter @asone/database db:migrate` run against production `DATABASE_URL`, completed with exit code 0
-- [ ] Migration count matches the repo's own count (24 as of this task — check `packages/database/drizzle/meta/_journal.json` for the current true count)
+- [ ] Migration count matches the repo's own count (29 as of TASK 15.1 — check `packages/database/drizzle/meta/_journal.json` for the current true count; confirmed zero new migrations added by TASK 15.1's own admin-UX work)
 
 ## Technical seed
 
