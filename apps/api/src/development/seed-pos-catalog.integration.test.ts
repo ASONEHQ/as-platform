@@ -112,6 +112,19 @@ integration('PostgreSQL development POS catalog seed', { concurrent: false }, ()
     expect(countsAfterReplay).toEqual(counts);
   }, 20_000);
 
+  // TASK 16.2B (production build/runtime validation): this test and the
+  // one below it independently repeat the exact same real bootstrap
+  // (`DevelopmentOwnerBootstrap`, 56 sequential `role_permissions`
+  // inserts) + catalog seed sequence as the test above them, but were
+  // never given that test's own 20s timeout when it was added — the same
+  // real, growing setup cost applies to both, not just the first test
+  // that happened to be observed failing at the time. Reliably exceeds
+  // vitest's 5000ms default even in a fully isolated re-run (no other
+  // process competing for the local Postgres container) — confirmed
+  // real, correct work, not a hang: passes cleanly at ~20-24s given a
+  // 30s budget. Same narrow fix as the sibling test: a dedicated
+  // timeout on only this one `it()`, no change to
+  // `DevelopmentOwnerBootstrap`/`PosCatalogSeed`'s own code.
   it('assigns IVA_GENERAL to every seeded product and leaves no fabricated price gaps', async () => {
     await new DevelopmentOwnerBootstrap(database).run(ownerPassword);
     await new PosCatalogSeed(database).run();
@@ -132,8 +145,10 @@ integration('PostgreSQL development POS catalog seed', { concurrent: false }, ()
     }
     const stockTracked = rows.rows.filter((row) => row.tracks_inventory).map((row) => row.code);
     expect(stockTracked.sort()).toEqual(['TDA-AGUA', 'TDA-CALCETAS', 'TDA-REFRESCO']);
-  });
+  }, 20_000);
 
+  // TASK 16.2B: same reasoning as the test immediately above — see that
+  // comment.
   it('gives every stock-tracked product a real, non-zero on-hand balance per branch', async () => {
     await new DevelopmentOwnerBootstrap(database).run(ownerPassword);
     await new PosCatalogSeed(database).run();
@@ -151,7 +166,7 @@ integration('PostgreSQL development POS catalog seed', { concurrent: false }, ()
     );
     expect(rows.rows).toHaveLength(18);
     for (const row of rows.rows) expect(Number(row.quantity_on_hand)).toBe(50);
-  });
+  }, 20_000);
 });
 
 async function catalogCounts(database: DatabaseClient): Promise<Readonly<Record<string, string>>> {
