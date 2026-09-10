@@ -120,6 +120,15 @@ TLS enforcement is out of scope for this task). No separate auth
 requirement is validated; a password is only as present as the operator
 embeds it in the URL (`redis://:password@host:port`).
 
+> **TASK 16.2D update:** the gap flagged above was not hypothetical — it is
+> exactly what caused a real DigitalOcean production boot to fail (DO's
+> Managed Valkey/Redis connection string is `rediss://...`, TLS-mandatory).
+> `packages/config/src/index.ts`'s `REDIS_URL` check was widened to a
+> `.refine()` accepting both `redis://` and `rediss://`; see
+> `docs/PRODUCTION_ENVIRONMENT.md`'s `REDIS_URL` section for the current
+> rule. The finding above is left as originally written for the historical
+> record of what this phase's audit found.
+
 ## 5. MinIO / object storage — required-for-boot vs. optional (the key finding)
 
 **Definitively (B): optional. The app boots completely fine with zero

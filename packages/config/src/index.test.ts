@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadApiConfig, loadWorkerConfig } from './index.js';
+import { describeConfigError, loadApiConfig, loadWorkerConfig } from './index.js';
 
 const validEnvironment = {
   NODE_ENV: 'test',
@@ -192,5 +192,80 @@ describe('configuration', () => {
       DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=verify-full',
     });
     expect(worker.databaseUrl).toContain('sslmode=verify-full');
+  });
+
+  // TASK 16.2D: a real DigitalOcean Managed Valkey/Redis cluster's own
+  // connection URI uses `rediss://` (TLS required by the provider) — the
+  // previous `redis://`-only check rejected it outright, which is exactly
+  // what caused a real production boot failure with no visible reason.
+  it('accepts a rediss:// REDIS_URL (a real managed-provider TLS connection string)', () => {
+    const config = loadApiConfig({
+      ...productionEnvironment,
+      DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=require',
+      REDIS_URL: 'rediss://default:pw@db-valkey-nyc1-example.db.ondigitalocean.com:25061',
+    });
+    expect(config.redisUrl.startsWith('rediss://')).toBe(true);
+  });
+
+  it('still accepts a plain redis:// REDIS_URL (local/test loopback, no TLS)', () => {
+    const config = loadApiConfig(validEnvironment);
+    expect(config.redisUrl).toBe('redis://127.0.0.1:6379');
+  });
+
+  it('rejects a REDIS_URL with neither the redis:// nor rediss:// scheme', () => {
+    expect(() =>
+      loadApiConfig({ ...validEnvironment, REDIS_URL: 'http://not-redis-at-all' }),
+    ).toThrow();
+  });
+
+  // TASK 16.2D: `describeConfigError` is the one function allowed to
+  // decide what's safe to surface for a real production startup failure
+  // (see `server.ts`) — every message it can return must name only a
+  // config KEY and a sanitized constraint description, never echo back
+  // the actual (possibly secret) value that was rejected.
+  describe('describeConfigError', () => {
+    it('returns undefined for a non-ZodError (an unrecognized throw shape)', () => {
+      expect(describeConfigError(new Error('unrelated failure'))).toBeUndefined();
+      expect(describeConfigError('not even an Error')).toBeUndefined();
+      expect(describeConfigError(undefined)).toBeUndefined();
+    });
+
+    it('describes exactly which key(s) failed and why, in a safe, non-secret-leaking form', () => {
+      let issues: readonly string[] | undefined;
+      try {
+        loadApiConfig({
+          ...productionEnvironment,
+          // Isolate the one thing under test — productionEnvironment's own
+          // inherited DATABASE_URL (from validEnvironment) has no
+          // sslmode, which would otherwise ALSO fail in production and
+          // add a second, unrelated issue to this assertion.
+          DATABASE_URL: 'postgresql://prod:prod@db.example.com:5432/asone_prod?sslmode=require',
+          AUTH_ACCESS_TOKEN_SECRET: 'too-short',
+        });
+      } catch (error: unknown) {
+        issues = describeConfigError(error);
+      }
+      if (issues === undefined) throw new Error('expected loadApiConfig to throw a ZodError');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toContain('AUTH_ACCESS_TOKEN_SECRET');
+      expect(issues[0]).not.toContain('too-short');
+    });
+
+    it('never includes the rejected value for a real, secret-shaped REDIS_URL/DATABASE_URL failure', () => {
+      const secretCanary = 'CANARY_SECRET_MUST_NEVER_APPEAR_9f8a7b';
+      let issues: readonly string[] | undefined;
+      try {
+        loadApiConfig({
+          ...productionEnvironment,
+          DATABASE_URL: `postgresql://user:${secretCanary}@db.example.com:5432/asone_prod?sslmode=require`,
+          REDIS_URL: `http://user:${secretCanary}@not-redis-at-all`,
+        });
+      } catch (error: unknown) {
+        issues = describeConfigError(error);
+      }
+      if (issues === undefined) throw new Error('expected loadApiConfig to throw a ZodError');
+      expect(issues.some((issue) => issue.startsWith('REDIS_URL:'))).toBe(true);
+      for (const issue of issues) expect(issue).not.toContain(secretCanary);
+    });
   });
 });

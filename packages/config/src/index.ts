@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 
 const environmentSchema = z.enum(['development', 'test', 'production']);
 const logLevelSchema = z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
@@ -41,7 +41,25 @@ const sharedSchema = z.object({
   // in-connection-string TLS requirement; it defaults to `false`, so the
   // default posture stays fail-closed.
   DATABASE_TLS_EXTERNALLY_TERMINATED: booleanSchema.default(false),
-  REDIS_URL: z.url().startsWith('redis://'),
+  // TASK 16.2D: a real DigitalOcean Managed Valkey/Redis cluster's own
+  // connection URI uses `rediss://` (TLS required — confirmed via
+  // DigitalOcean's own documentation: "all DigitalOcean database clusters
+  // are encrypted with TLS/SSL", example format
+  // `rediss://default:<password>@<host>:25061`), which the previous
+  // `redis://`-only check rejected outright, causing every real managed-
+  // Redis deployment to fail `loadApiConfig()` at boot with no visible
+  // reason (see the `server.ts` diagnostic fix in the same commit). The
+  // real `redis` npm client (v5) already resolves TLS automatically from
+  // the `rediss://` scheme with no extra socket configuration needed
+  // (`createClient({ url: ... })` in `infrastructure/dependencies.ts`) —
+  // this was purely a schema gap, not a missing runtime capability.
+  // `redis://` remains accepted unchanged for local/test loopback Redis,
+  // which has no TLS.
+  REDIS_URL: z
+    .url()
+    .refine((value) => value.startsWith('redis://') || value.startsWith('rediss://'), {
+      message: 'Invalid string: must start with "redis://" or "rediss://"',
+    }),
 });
 
 // PRODUCTION_GAPS.md section K1: mirrors the placeholder/weak-secret
@@ -158,12 +176,7 @@ const apiSchema = sharedSchema
     OPENAPI_UI_ENABLED: optionalBooleanSchema,
     RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(100_000).default(300),
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
-    REQUEST_BODY_LIMIT_BYTES: z.coerce
-      .number()
-      .int()
-      .min(1_024)
-      .max(10_485_760)
-      .default(1_048_576),
+    REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1_024).max(10_485_760).default(1_048_576),
     REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
     TRUST_PROXY: booleanSchema.default(false),
     // TASK 12.4B.1: Mercado Pago Point provider credentials. Deliberately
@@ -272,4 +285,26 @@ export function loadApiConfig(environment: Environment = process.env): ApiConfig
 
 export function loadWorkerConfig(environment: Environment = process.env): WorkerConfig {
   return toSharedConfig(sharedSchemaWithProductionChecks.parse(environment));
+}
+
+// TASK 16.2D: `loadApiConfig`/`loadWorkerConfig` throwing a bare, opaque
+// "configuration is invalid" (see `server.ts`) left a real production
+// startup failure with zero visible reason — an operator had no way to
+// tell "REDIS_URL has the wrong scheme" from "AUTH_ACCESS_TOKEN_SECRET is
+// too weak" from any other real cause without a local repro. This helper
+// is the one, single, centrally-owned place allowed to decide what's safe
+// to surface: every `ZodIssue.message` in this file is deliberately
+// written to describe a *constraint* ("must start with...", "must have
+// >=32 characters", "must request TLS...") and never to echo the actual
+// received value back — confirmed for every issue shape this schema can
+// produce (built-in `too_small`/`invalid_format`/`invalid_type` messages
+// included, which do not include the received value either). Returns
+// `undefined` for any error that is not a real `ZodError` (an unexpected
+// throw from somewhere else), so the caller can fall back to the fully
+// generic message rather than guessing at an unfamiliar error shape.
+// NEVER extend this to print `issue.input`/`issue.received` or any other
+// field a future Zod version might add that could carry the actual value.
+export function describeConfigError(error: unknown): readonly string[] | undefined {
+  if (!(error instanceof ZodError)) return undefined;
+  return Object.freeze(error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`));
 }

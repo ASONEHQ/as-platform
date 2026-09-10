@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 
-import { loadApiConfig, type ApiConfig } from '@asone/config';
+import { describeConfigError, loadApiConfig, type ApiConfig } from '@asone/config';
 import { createLogger } from '@asone/logger';
 
 import { buildApp } from './app.js';
@@ -11,8 +11,22 @@ export async function startServer(): Promise<void> {
   let config: ApiConfig;
   try {
     config = loadApiConfig();
-  } catch {
-    process.stderr.write('API configuration is invalid.\n');
+  } catch (error: unknown) {
+    // TASK 16.2D: `describeConfigError` is the one place allowed to decide
+    // what's safe to print — every line it can produce names only a
+    // config KEY plus a sanitized constraint description, never a raw
+    // env var value (see that function's own doc comment for the exact
+    // guarantee). A `describeConfigError` `undefined` result means the
+    // thrown error wasn't a real validation error at all (unexpected
+    // shape) — fall back to the fully generic message rather than risk
+    // printing anything about an error shape this code doesn't recognize.
+    const issues = describeConfigError(error);
+    if (issues === undefined) {
+      process.stderr.write('API configuration is invalid.\n');
+    } else {
+      process.stderr.write('API configuration is invalid:\n');
+      for (const issue of issues) process.stderr.write(`  - ${issue}\n`);
+    }
     process.exitCode = 1;
     return;
   }

@@ -155,7 +155,8 @@ validated identically for both processes via `loadApiConfig()` and
 
 ### `REDIS_URL`
 
-- **Required.** Must be a valid URL starting with `redis://`.
+- **Required.** Must be a valid URL starting with `redis://` or `rediss://`
+  (TLS).
 - **Purpose.** Builds a `redis` v4 client (`createClient()`), used **only**
   by `GET /ready`, the operations CLI (`apps/api/src/operations/cli.ts`,
   `operational-checks.service.ts`), and `apps/worker`'s own readiness check
@@ -168,19 +169,24 @@ validated identically for both processes via `loadApiConfig()` and
   alone while still reporting Redis's own state honestly in the response
   body and the `asone_readiness_dependency{service="redis"}` gauge.
 - **Example.** `redis://cache.internal:6379`
-- **Production constraint.** None beyond a well-formed URL — there is no
-  TLS/`rediss://` enforcement in code today (out of scope for this task;
-  flagged here for visibility since Redis is not authoritative data per
-  `docs/DISASTER_RECOVERY.md`'s T3 classification). **Phase 9
-  re-verification note:** the schema check is a literal
-  `.startsWith('redis://')` (exact 8-character prefix), which means a
-  `rediss://` (TLS) URL is not merely "unenforced" but would actually
-  **fail** validation outright (`"rediss://x".startsWith("redis://")` is
-  `false`) — a real constraint worth knowing before attempting a managed
-  Redis provider that requires `rediss://`. Not fixed in this task
-  (re-verification only, no launch-blocking Redis TLS requirement exists
-  today), but a genuine follow-up item if a future deployment needs
-  Redis-in-transit TLS.
+- **Production constraint.** None beyond a well-formed URL with the
+  `redis://` or `rediss://` scheme — TLS is not *required* by the schema
+  (Redis is not authoritative data per `docs/DISASTER_RECOVERY.md`'s T3
+  classification), but a `rediss://` value (used by every DigitalOcean
+  Managed Valkey/Redis cluster, which mandates TLS) is now accepted.
+  **TASK 16.2D:** a prior re-verification pass (Phase 9, see history below)
+  had flagged that the schema check was a literal `.startsWith('redis://')`
+  (exact 8-character prefix), which meant a real `rediss://` connection
+  string would **fail** validation outright
+  (`"rediss://x".startsWith("redis://")` is `false`) — this is exactly what
+  caused a real DigitalOcean production boot to fail with an opaque "API
+  configuration is invalid." error and no visible reason. Fixed by widening
+  the check to a `.refine()` accepting both `redis://` and `rediss://`
+  (`packages/config/src/index.ts`); `server.ts`'s startup catch block was
+  also changed to print the failing config key and a sanitized constraint
+  description (never the raw value) instead of swallowing the error, so a
+  future misconfiguration is diagnosable from the DigitalOcean runtime logs
+  directly.
 - **Failure mode.** Missing/malformed URL: boot refused. At runtime, an
   unreachable Redis degrades `/ready`'s reported `services.redis` to
   `unavailable` and the CLI's `check`/`readiness` commands, but no longer
