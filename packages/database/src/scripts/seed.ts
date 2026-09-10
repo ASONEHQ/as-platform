@@ -9,6 +9,10 @@ if (!databaseUrl?.startsWith('postgresql://')) {
 const client = createDatabaseClient({
   connectionString: databaseUrl,
   applicationName: 'asone-seed',
+  // TASK 16.3A — see `@asone/config`'s `DATABASE_SSL_CA_CERT` doc comment;
+  // this script bypasses `@asone/config` entirely (reads `DATABASE_URL`
+  // directly above), so it reads this one directly too.
+  sslRootCert: process.env.DATABASE_SSL_CA_CERT,
 });
 try {
   const count = await seedTechnicalPermissions(client.db);

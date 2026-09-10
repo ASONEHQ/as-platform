@@ -60,6 +60,20 @@ const sharedSchema = z.object({
     .refine((value) => value.startsWith('redis://') || value.startsWith('rediss://'), {
       message: 'Invalid string: must start with "redis://" or "rediss://"',
     }),
+  // TASK 16.3A — the PEM-encoded CA certificate content (never a file
+  // path) `packages/database`'s `createDatabaseClient` should trust when
+  // `DATABASE_URL`'s `sslmode` is `verify-ca`/`verify-full` — e.g.
+  // DigitalOcean Managed PostgreSQL "Standard Edition"'s own downloadable
+  // CA certificate. Optional: `sslmode=require` (the fail-closed-but-
+  // unverified production default already enforced by
+  // `validateProductionDatabaseTls` below) never uses it, and `verify-ca`/
+  // `verify-full` still fall back to Node's default trusted root store
+  // without it — this only ever WIDENS what a verifying connection can
+  // trust, never weakens verification. Not a secret — a CA certificate is
+  // public by design — but still never logged in full by this codebase's
+  // own discipline of not echoing raw config values (see
+  // `describeConfigError` below).
+  DATABASE_SSL_CA_CERT: z.string().min(1).optional(),
 });
 
 // PRODUCTION_GAPS.md section K1: mirrors the placeholder/weak-secret
@@ -209,6 +223,7 @@ export interface SharedConfig {
   readonly logLevel: z.infer<typeof logLevelSchema>;
   readonly databaseUrl: string;
   readonly databaseTlsExternallyTerminated: boolean;
+  readonly databaseSslCaCert: string | undefined;
   readonly redisUrl: string;
 }
 
@@ -248,6 +263,7 @@ function toSharedConfig(value: z.infer<typeof sharedSchema>): SharedConfig {
     logLevel: value.LOG_LEVEL,
     databaseUrl: value.DATABASE_URL,
     databaseTlsExternallyTerminated: value.DATABASE_TLS_EXTERNALLY_TERMINATED,
+    databaseSslCaCert: value.DATABASE_SSL_CA_CERT,
     redisUrl: value.REDIS_URL,
   });
 }

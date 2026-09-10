@@ -38,6 +38,7 @@ export async function startServer(): Promise<void> {
   const infrastructure = createInfrastructure({
     databaseUrl: config.databaseUrl,
     redisUrl: config.redisUrl,
+    databaseSslCaCert: config.databaseSslCaCert,
   });
   const app = await buildApp({ config, infrastructure, logger });
   const shutdown = installShutdownHandlers({

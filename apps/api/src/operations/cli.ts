@@ -134,6 +134,10 @@ export async function runOperationalCommand(
         databaseUrl,
         redisUrl: required(environment.REDIS_URL, 'REDIS_URL'),
         connectionTimeoutMs: thresholds.checkTimeoutMs,
+        // TASK 16.3A — see `@asone/config`'s `DATABASE_SSL_CA_CERT` doc
+        // comment; this CLI bypasses `@asone/config` entirely (reads
+        // DATABASE_URL directly, above), so it reads this one directly too.
+        databaseSslCaCert: environment.DATABASE_SSL_CA_CERT,
       });
       try {
         const report = await createOperationalChecksService({ infrastructure, thresholds }).run();
@@ -147,6 +151,7 @@ export async function runOperationalCommand(
       connectionString: databaseUrl,
       applicationName: 'asone-operations',
       connectionTimeoutMs: thresholds.checkTimeoutMs,
+      sslRootCert: environment.DATABASE_SSL_CA_CERT,
     });
     try {
       if (input.command === 'outbox') {

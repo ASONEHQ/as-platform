@@ -12,6 +12,8 @@ export function createWorkerInfrastructure(options: {
   readonly redisUrl: string;
   readonly connectionTimeoutMs?: number;
   readonly database?: DatabaseClient;
+  /** TASK 16.3A — see `@asone/config`'s `DATABASE_SSL_CA_CERT` doc comment. */
+  readonly databaseSslCaCert?: string | undefined;
 }): WorkerInfrastructure {
   const connectionTimeoutMs = options.connectionTimeoutMs ?? 2_000;
   const database =
@@ -21,6 +23,7 @@ export function createWorkerInfrastructure(options: {
       connectionString: options.databaseUrl,
       connectionTimeoutMs,
       maxConnections: 2,
+      sslRootCert: options.databaseSslCaCert,
     });
   const redis = createClient({
     url: options.redisUrl,

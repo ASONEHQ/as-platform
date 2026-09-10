@@ -20,6 +20,8 @@ export interface InfrastructureOptions {
   readonly redisUrl: string;
   readonly connectionTimeoutMs?: number;
   readonly database?: DatabaseClient;
+  /** TASK 16.3A — see `@asone/config`'s `DATABASE_SSL_CA_CERT` doc comment. */
+  readonly databaseSslCaCert?: string | undefined;
 }
 
 export function createInfrastructure(options: InfrastructureOptions): InfrastructureDependencies {
@@ -30,6 +32,7 @@ export function createInfrastructure(options: InfrastructureOptions): Infrastruc
       applicationName: 'asone-api',
       connectionString: options.databaseUrl,
       connectionTimeoutMs,
+      sslRootCert: options.databaseSslCaCert,
       // RC 15.0 Phase 11 (Performance/Scale Smoke) fix: was hard-coded to
       // 5. Proven too small by a real, reproducible measurement — 6
       // concurrent real `POST /api/v1/sales` requests (simulating 6

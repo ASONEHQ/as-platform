@@ -23,6 +23,7 @@ export async function startWorker(): Promise<void> {
   const infrastructure = createWorkerInfrastructure({
     databaseUrl: config.databaseUrl,
     redisUrl: config.redisUrl,
+    databaseSslCaCert: config.databaseSslCaCert,
   });
 
   try {

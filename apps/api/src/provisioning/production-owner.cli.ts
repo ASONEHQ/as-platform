@@ -110,7 +110,9 @@ export async function runProductionOwnerProvisioning(
 
     const databaseUrl = optionalFlag(flags, 'database-url') ?? environment.DATABASE_URL;
     if (databaseUrl === undefined || databaseUrl.trim().length === 0)
-      throw new ProvisioningInputError('DATABASE_URL is required (env var, or --database-url=...).');
+      throw new ProvisioningInputError(
+        'DATABASE_URL is required (env var, or --database-url=...).',
+      );
 
     const input: Omit<ProvisionOwnerInput, 'ownerPassword'> = {
       companyLegalName: requireFlag(flags, 'company-legal-name'),
@@ -130,7 +132,8 @@ export async function runProductionOwnerProvisioning(
     if (isInteractive()) {
       ownerPassword = await promptPasswordMasked(`Password for ${input.ownerEmail}: `);
       const confirmPassword = await promptPasswordMasked('Confirm password: ');
-      if (ownerPassword !== confirmPassword) throw new ProvisioningInputError('Passwords do not match.');
+      if (ownerPassword !== confirmPassword)
+        throw new ProvisioningInputError('Passwords do not match.');
     } else {
       const fromEnv = environment.PROVISION_OWNER_PASSWORD;
       if (fromEnv === undefined || fromEnv.length === 0)
@@ -164,10 +167,16 @@ export async function runProductionOwnerProvisioning(
     database = createDatabaseClient({
       connectionString: databaseUrl,
       applicationName: 'asone-production-owner-provisioning',
+      // TASK 16.3A — see `@asone/config`'s `DATABASE_SSL_CA_CERT` doc
+      // comment; this CLI bypasses `@asone/config` entirely (reads
+      // DATABASE_URL directly, above), so it reads this one directly too.
+      sslRootCert: environment.DATABASE_SSL_CA_CERT,
     });
     const summary = await new ProductionOwnerProvisioner(database).run({ ...input, ownerPassword });
     process.stdout.write(`\n${JSON.stringify(summary, null, 2)}\n`);
-    process.stdout.write('\nProvisioning complete. Log in at the API with the email/password just entered.\n');
+    process.stdout.write(
+      '\nProvisioning complete. Log in at the API with the email/password just entered.\n',
+    );
     return 0;
   } catch (error) {
     process.stderr.write(

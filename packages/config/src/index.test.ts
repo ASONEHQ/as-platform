@@ -218,6 +218,20 @@ describe('configuration', () => {
     ).toThrow();
   });
 
+  // TASK 16.3A: `DATABASE_SSL_CA_CERT` is the config-layer half of the
+  // `SELF_SIGNED_CERT_IN_CHAIN` fix — optional, never required, and must
+  // never change whether an otherwise-valid config loads.
+  it('boots with no DATABASE_SSL_CA_CERT set, leaving it undefined', () => {
+    const config = loadApiConfig(validEnvironment);
+    expect(config.databaseSslCaCert).toBeUndefined();
+  });
+
+  it('loads an explicit DATABASE_SSL_CA_CERT value unmodified when provided', () => {
+    const ca = '-----BEGIN CERTIFICATE-----\nFAKE-TEST-CA-ONLY\n-----END CERTIFICATE-----';
+    const config = loadApiConfig({ ...validEnvironment, DATABASE_SSL_CA_CERT: ca });
+    expect(config.databaseSslCaCert).toBe(ca);
+  });
+
   // TASK 16.2D: `describeConfigError` is the one function allowed to
   // decide what's safe to surface for a real production startup failure
   // (see `server.ts`) — every message it can return must name only a
