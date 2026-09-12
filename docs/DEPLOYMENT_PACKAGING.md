@@ -150,6 +150,25 @@ Compile-time defines carry no secrets by design (`README.md:45`: "secrets must
 never be supplied through Dart defines") — nothing about this build step
 requires a secrets manager.
 
+### 2.1bis DigitalOcean App Platform Static Site (TASK 16.4)
+
+DigitalOcean App Platform has no native Flutter buildpack and must not be
+assumed to have `flutter` pre-installed in its build image. `apps/one/scripts/build_web.sh`
+is the versioned, reproducible bootstrap: it pins an exact, checksum-verified
+Flutter SDK (currently `3.44.8` stable, matching `pubspec.yaml`'s
+`sdk: ^3.12.2` Dart constraint exactly — confirmed against Flutter's own
+release manifest), reuses an already-installed `flutter` on PATH only if it
+is precisely that pinned version, and otherwise downloads and verifies the
+official archive before using it — never `flutter upgrade`, never "latest".
+It reads `AS_ENV`/`AS_API_BASE_URL`/`AS_APP_NAME`/`AS_ENABLE_TELEMETRY` from
+the environment with the real production values as its own built-in
+defaults (`AS_ENV=production`, `AS_API_BASE_URL=https://api.asone.mx`), so it
+can never silently fall back to a localhost/dev value even if a DigitalOcean
+build-time environment variable is left unset. See the script's own header
+comment for the exact mechanism, and this task's own delivery report for the
+exact DigitalOcean Static Site component fields (Source Directory, Build
+Command, Output Directory, Catchall document).
+
 ### 2.2 Output directory
 
 `flutter build web --release` writes to the Flutter-standard `build/web/`
@@ -189,19 +208,34 @@ naive "cache everything under `build/web/`" policy breaks releases:
   Flutter-web deployment practice, not something this repo's build already
   configures.
 
-### 2.5 SPA fallback routing — a real hosting requirement
+### 2.5 SPA fallback routing — recommended, and confirmed not load-bearing today
 
 `apps/one/pubspec.yaml:36` depends on `go_router: ^17.1.0`, and
 `apps/one/README.md:78-84` describes named routes for bootstrap, login,
 company/branch selection, the authenticated dashboard, session-ended, and
 unavailable/not-found states — this is genuine client-side routing, not a
-single static page. **The static host must serve `index.html` (HTTP 200) for
-any unknown path**, rather than returning a host-level 404, or a browser
-refresh/deep-link on any route other than `/` breaks. This is a hosting
-configuration requirement for whichever static host is eventually chosen
-(e.g. an S3-compatible bucket behind a CDN, Cloudflare Pages, or an
-nginx/Traefik `try_files $uri /index.html;` rule) — nothing in this repo
-configures it today because no hosting choice has been made yet.
+single static page.
+
+**TASK 16.4 correction:** whether a host-level fallback is *load-bearing*
+depends on Flutter Web's URL strategy, which this codebase had not
+verified before. Confirmed by inspecting `apps/one/lib` directly: nothing
+calls `usePathUrlStrategy()` (from `package:flutter_web_plugins`), so
+Flutter Web's **default hash-based URL strategy is active** — routes render
+as `https://app.asone.mx/#/login`, etc. The `#fragment` never leaves the
+browser, so every request the server actually sees is for `/` — a browser
+refresh or deep link never 404s at the host level today, with **no fallback
+configured at all**.
+
+A fallback remains cheap, harmless, and worth configuring anyway (DigitalOcean
+App Platform Static Site's own "Catchall document" field, set to
+`index.html`) as a forward-compatible safety net — if a future change ever
+calls `usePathUrlStrategy()`, routes become real paths
+(`https://app.asone.mx/login`) and the fallback becomes load-bearing
+immediately, with zero other changes needed. For any other static host
+(S3-compatible bucket behind a CDN, Cloudflare Pages, nginx/Traefik
+`try_files $uri /index.html;`), the same applies: configure it, but do not
+treat its absence as a launch blocker while hash-based routing stays the
+active strategy.
 
 ---
 

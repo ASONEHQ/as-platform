@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# TASK 16.4 — downloaded/extracted by scripts/build_web.sh; never committed.
+/.flutter-sdk-cache/
+
 # Symbolication related
 app.*.symbols
 
