@@ -35,6 +35,23 @@
 
 set -euo pipefail
 
+# TASK 16.4A — a real DigitalOcean Static Site build failed with
+# "scripts/build_web.sh: No such file or directory" even though the file
+# was confirmed present in the exact commit on `release/as-pos-v1` DO was
+# configured to build (verified directly against the GitHub API, not
+# local git state) — root-caused to DigitalOcean not having re-checked-out
+# the branch after this script was added (Autodeploy was disabled, and no
+# manual redeploy had been triggered since). This line exists so that
+# question is never open again: it's the first thing in the build log,
+# self-reporting exactly which commit is actually being built. A build log
+# missing this line, or showing an unexpected SHA, means the checkout
+# itself is the problem — not this script.
+if git_sha="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse HEAD 2>/dev/null)"; then
+  echo "Building apps/one from commit ${git_sha}"
+else
+  echo "Building apps/one (git commit SHA unavailable — not a git checkout?)"
+fi
+
 # --- pinned, checksum-verified Flutter SDK (never "latest") ----------------
 # Confirmed live against Flutter's own official release manifest
 # (https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json)
