@@ -55,6 +55,8 @@ interface Fixture {
   listProducts: Mock;
   listVariants: Mock;
   exportCsv: Mock;
+  patchProduct: Mock;
+  duplicateProduct: Mock;
 }
 
 async function fixture(
@@ -104,11 +106,19 @@ async function fixture(
   const createProduct = vi.fn(() => Promise.resolve({ value: product, replayed: false }));
   const listVariants = vi.fn(() => Promise.resolve({ items: [variant], nextCursor: null }));
   const exportCsv = vi.fn(() => Promise.resolve('id,code\r\n'));
+  const patchProduct = vi.fn(() => Promise.resolve({ ...product, version: 2n }));
+  const duplicateProduct = vi.fn(() =>
+    Promise.resolve({
+      value: { ...product, id: 'duplicate', code: 'product-copia' },
+      replayed: false,
+    }),
+  );
   const service = {
     listProducts,
     product: vi.fn(() => Promise.resolve(product)),
     createProduct,
-    patchProduct: vi.fn(() => Promise.resolve({ ...product, version: 2n })),
+    patchProduct,
+    duplicateProduct,
     listVariants,
     variant: vi.fn(() => Promise.resolve(variant)),
     createVariant: vi.fn(() => Promise.resolve({ value: variant, replayed: false })),
@@ -117,7 +127,15 @@ async function fixture(
   } as unknown as ProductCatalogService;
   registerProductCatalogRoutes(app, authentication, service);
   await app.ready();
-  return { app, createProduct, listProducts, listVariants, exportCsv };
+  return {
+    app,
+    createProduct,
+    listProducts,
+    listVariants,
+    exportCsv,
+    patchProduct,
+    duplicateProduct,
+  };
 }
 
 afterEach(async () => {
@@ -298,6 +316,114 @@ describe('product catalog HTTP routes', () => {
     const deniedResponse = await denied.app.inject({
       method: 'GET',
       url: '/api/v1/products/export.csv',
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(deniedResponse.statusCode).toBe(403);
+  });
+
+  // TASK 16.6 (Productos/Catálogo legacy parity).
+  it('maps the new Extras-tab fields into the create/patch service input', async () => {
+    const { app, createProduct, patchProduct } = await fixture(['product.manage']);
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products',
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'key' },
+      payload: {
+        code: 'extras',
+        name: 'Extras',
+        product_type: 'simple',
+        status: 'active',
+        image_url: 'https://cdn.example.test/x.png',
+        icon_key: 'pizza',
+        card_style: 'solid',
+        card_color_hex: '#6B3FA0',
+        is_featured: true,
+        preferred_supplier_id: variantId,
+        default_variant: {
+          sku: 'extras-sku',
+          unit_of_measure_code: 'unit',
+          min_stock: '5',
+        },
+      },
+    });
+    expect(create.statusCode).toBe(201);
+    const call = createProduct.mock.calls[0] as [unknown, string, CreateProductInput] | undefined;
+    expect(call?.[2]).toMatchObject({
+      imageUrl: 'https://cdn.example.test/x.png',
+      iconKey: 'pizza',
+      cardStyle: 'solid',
+      cardColorHex: '#6B3FA0',
+      isFeatured: true,
+      preferredSupplierId: variantId,
+    });
+    expect(call?.[2].defaultVariant).toMatchObject({ minStock: '5' });
+
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/products/${productId}`,
+      headers: { authorization: 'Bearer x', 'if-match': '"1"' },
+      payload: { card_style: 'default', card_color_hex: null, image_url: null },
+    });
+    expect(patch.statusCode).toBe(200);
+    const patchCall = patchProduct.mock.calls[0] as
+      [unknown, string, bigint, Record<string, unknown>] | undefined;
+    expect(patchCall?.[3]).toMatchObject({
+      cardStyle: 'default',
+      cardColorHex: null,
+      imageUrl: null,
+    });
+  });
+
+  it('rejects an unrecognized icon_key, card_style, and a malformed card_color_hex/image_url at the schema boundary', async () => {
+    const { app } = await fixture(['product.manage']);
+    const badIcon = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products',
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'key' },
+      payload: { code: 'p', name: 'P', product_type: 'variable', icon_key: 'not-a-real-icon' },
+    });
+    const badCardStyle = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products',
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'key' },
+      payload: { code: 'p', name: 'P', product_type: 'variable', card_style: 'rainbow' },
+    });
+    const badHex = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products',
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'key' },
+      payload: { code: 'p', name: 'P', product_type: 'variable', card_color_hex: 'purple' },
+    });
+    const badUrl = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products',
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'key' },
+      payload: { code: 'p', name: 'P', product_type: 'variable', image_url: 'not-a-url' },
+    });
+    expect(badIcon.statusCode).toBe(400);
+    expect(badCardStyle.statusCode).toBe(400);
+    expect(badHex.statusCode).toBe(400);
+    expect(badUrl.statusCode).toBe(400);
+  });
+
+  it('duplicates a product, gated by product.manage, returning the new representation with a 201', async () => {
+    const { app, duplicateProduct } = await fixture(['product.manage']);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${productId}/duplicate`,
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(duplicateProduct).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId, actorId: userId }),
+      productId,
+    );
+    expect(response.json<{ data: { code: string } }>().data.code).toBe('product-copia');
+
+    const denied = await fixture([]);
+    const deniedResponse = await denied.app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${productId}/duplicate`,
       headers: { authorization: 'Bearer x' },
     });
     expect(deniedResponse.statusCode).toBe(403);

@@ -118,6 +118,11 @@ class PosProduct {
     this.pricing = const PosPricing.missing(),
     this.unitOfMeasureCode,
     this.quantityScale = 0,
+    this.imageUrl,
+    this.iconKey,
+    this.cardStyle = 'default',
+    this.cardColorHex,
+    this.isFeatured = false,
   });
 
   factory PosProduct.fromJson(Map<String, Object?> json) {
@@ -148,6 +153,16 @@ class PosProduct {
       // from this response.
       unitOfMeasureCode: variant?['unit_of_measure_code'] as String?,
       quantityScale: rawScale is int ? rawScale : 0,
+      // TASK 16.6 (Productos/Catálogo legacy parity) — real image/icon/
+      // card-appearance/featured fields (`productHttp()` in
+      // `product-catalog.routes.ts`); this is what makes a configured
+      // product image actually flow through to the real POS sell-screen
+      // card, not just the admin grid. See `_PosProductCard`.
+      imageUrl: json['image_url'] as String?,
+      iconKey: json['icon_key'] as String?,
+      cardStyle: json['card_style'] as String? ?? 'default',
+      cardColorHex: json['card_color_hex'] as String?,
+      isFeatured: json['is_featured'] == true,
     );
   }
 
@@ -180,6 +195,26 @@ class PosProduct {
   /// The default variant's own `quantity_scale` — how many fractional
   /// digits its quantity is tracked at (0 for whole-unit products).
   final int quantityScale;
+
+  /// TASK 16.6 — a real object-storage URL (uploaded photo) or pasted
+  /// external URL. `null` = no image configured; render [iconKey]/the
+  /// platform fallback icon instead. See `posProductCardIcon`.
+  final String? imageUrl;
+
+  /// TASK 16.6 — one of the platform's bounded `productIconKeys`, or
+  /// `null` for the generic fallback icon.
+  final String? iconKey;
+
+  /// TASK 16.6 — `default` | `gradient` | `solid` (legacy
+  /// `mpColorSetModo()` parity). See `posProductCardBackground`.
+  final String cardStyle;
+
+  /// TASK 16.6 — a `#RRGGBB` hex string; only meaningful when [cardStyle]
+  /// is not `default`.
+  final String? cardColorHex;
+
+  /// TASK 16.6 — legacy "Favorito" parity.
+  final bool isFeatured;
 }
 
 /// TASK 14.3 (Wave 1, Part B.3): the platform seeds a small, fixed,

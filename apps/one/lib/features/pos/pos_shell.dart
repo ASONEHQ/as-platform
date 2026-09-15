@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/networking/api_client.dart';
 import '../../design_system/tokens/as_tokens.dart';
@@ -44,6 +45,7 @@ import 'pos_payments_gateway.dart';
 import 'pos_people_gateway.dart';
 import 'pos_people_screen.dart';
 import 'pos_post_sale_feedback.dart';
+import 'pos_product_card_visual.dart';
 import 'pos_product_variants_gateway.dart';
 import 'pos_product_variants_screen.dart';
 import 'pos_promotions_gateway.dart';
@@ -66,6 +68,13 @@ import 'receipt_print.dart';
 import 'refund_receipt_html.dart';
 import 'sale_folio.dart';
 import 'sale_session.dart';
+
+/// TASK 16.6 — mirrors `pos_branding_screen.dart`'s own `LogoFilePicker`
+/// typedef: an injectable file-picker override so the product image
+/// upload flow (`_EditProductDialog`) is testable without a real platform
+/// image-picker plugin. `null` (every pre-existing call site) falls back
+/// to a real `ImagePicker().pickImage(source: ImageSource.gallery)`.
+typedef ProductImagePicker = Future<XFile?> Function();
 
 class PosShell extends StatefulWidget {
   const PosShell({
@@ -105,6 +114,8 @@ class PosShell extends StatefulWidget {
     this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.catalogAdminGateway = const EmptyPosCatalogAdminGateway(),
     this.branchAdminGateway = const EmptyPosBranchAdminGateway(),
+    // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
+    this.pickProductImage,
     // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): real quick-switch PIN/QR
     // staff login — see `pos_auth_gateway.dart`.
     this.authGateway = const EmptyPosAuthGateway(),
@@ -192,6 +203,8 @@ class PosShell extends StatefulWidget {
   final PosBrandAdminGateway brandAdminGateway;
   final PosCatalogAdminGateway catalogAdminGateway;
   final PosBranchAdminGateway branchAdminGateway;
+  // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
+  final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
   // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
   // this constructor's own doc comment above.
@@ -453,6 +466,7 @@ class _PosShellState extends State<PosShell> {
                             brandAdminGateway: widget.brandAdminGateway,
                             catalogAdminGateway: widget.catalogAdminGateway,
                             branchAdminGateway: widget.branchAdminGateway,
+                            pickProductImage: widget.pickProductImage,
                             authGateway: widget.authGateway,
                             onQuickSwitchByPin: widget.onQuickSwitchByPin,
                             onQuickSwitchByQr: widget.onQuickSwitchByQr,
@@ -2895,6 +2909,7 @@ class _Content extends StatelessWidget {
     required this.brandAdminGateway,
     required this.catalogAdminGateway,
     required this.branchAdminGateway,
+    this.pickProductImage,
     required this.authGateway,
     this.onQuickSwitchByPin,
     this.onQuickSwitchByQr,
@@ -2960,6 +2975,8 @@ class _Content extends StatelessWidget {
   final PosBrandAdminGateway brandAdminGateway;
   final PosCatalogAdminGateway catalogAdminGateway;
   final PosBranchAdminGateway branchAdminGateway;
+  // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
+  final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
   // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
   // `PosShell`'s own field doc comment.
@@ -3041,6 +3058,10 @@ class _Content extends StatelessWidget {
                     allowed: this.context.permissions.contains('catalog.read'),
                     canCreate: this.context.permissions.contains('product.manage'),
                     catalogAdminGateway: catalogAdminGateway,
+                    categoryAdminGateway: categoryAdminGateway,
+                    brandAdminGateway: brandAdminGateway,
+                    suppliersGateway: suppliersGateway,
+                    pickProductImage: pickProductImage,
                     onRefresh: () => controller.loadProducts(refresh: true),
                   ),
                   // TASK 14.5 (Wave 3, Phase 7, Item 3): Variantes — manage
@@ -3295,10 +3316,23 @@ class _PosCard extends StatelessWidget {
   const _PosCard({
     required this.child,
     this.padding = const EdgeInsets.all(14),
+    this.background,
+    this.gradient,
     super.key,
   });
   final Widget child;
   final EdgeInsets padding;
+
+  /// TASK 16.6 — overrides the card's own flat fill (e.g. a parsed
+  /// `card_color_hex`) while keeping the same border/shadow/radius every
+  /// other `_PosCard` call site already relies on. `null` (every
+  /// pre-existing call site) keeps the original `palette.surface` fill.
+  /// Ignored when [gradient] is set.
+  final Color? background;
+
+  /// TASK 16.6 — overrides the card's fill with a gradient (legacy
+  /// `mpColorSetModo('degradado')` parity) instead of a flat [background].
+  final Gradient? gradient;
 
   @override
   Widget build(BuildContext context) {
@@ -3306,7 +3340,8 @@ class _PosCard extends StatelessWidget {
     return Container(
       padding: padding,
       decoration: BoxDecoration(
-        color: palette.surface,
+        color: gradient == null ? (background ?? palette.surface) : null,
+        gradient: gradient,
         border: Border.all(color: palette.border),
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
@@ -5641,6 +5676,19 @@ class _PosProductCard extends StatelessWidget {
     final palette = PosPalette.of(context);
     final outOfStock = block == PosAddabilityBlock.outOfStock;
     final blocked = block != null;
+    // TASK 16.6 — real card-appearance parity (legacy `prodCard()`): a
+    // configured `card_style`/`card_color_hex` tints the whole card, not
+    // just an icon badge, matching the legacy's own visual intent.
+    final fill = posProductCardFill(
+      cardStyle: item.cardStyle,
+      cardColorHex: item.cardColorHex,
+      palette: palette,
+    );
+    final iconColor = posProductCardForeground(
+      cardStyle: item.cardStyle,
+      cardColorHex: item.cardColorHex,
+      fallback: palette.action,
+    );
     // Matches the canonical `.prod` card: radius 14, subtle shadow, a bare
     // accent-colored icon (no circular badge), and a compact name.
     // TASK 12.3C: the reference's own `.prod-precio` now has a real value
@@ -5655,7 +5703,7 @@ class _PosProductCard extends StatelessWidget {
     // canonical equivalent to match either.
     return Material(
       key: Key('pos-product-${item.id}'),
-      color: palette.surface,
+      color: fill.background ?? palette.surface,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onTap,
@@ -5663,6 +5711,7 @@ class _PosProductCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.fromLTRB(10, 16, 10, 12),
           decoration: BoxDecoration(
+            gradient: fill.gradient,
             border: Border.all(color: palette.border, width: 1.5),
             borderRadius: BorderRadius.circular(14),
             boxShadow: [
@@ -5674,44 +5723,55 @@ class _PosProductCard extends StatelessWidget {
             ],
           ),
           alignment: Alignment.center,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
+          child: Stack(
             children: [
-              Icon(Icons.inventory_2_outlined, size: 34, color: palette.action),
-              const SizedBox(height: 7),
-              Text(
-                item.name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: palette.text,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                  height: 1.35,
-                ),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  PosProductCardVisual(
+                    imageUrl: item.imageUrl,
+                    iconKey: item.iconKey,
+                    size: 34,
+                    color: iconColor,
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    item.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: palette.text,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _priceCaption(item.pricing),
+                    style: TextStyle(
+                      color: item.pricing.isSellable
+                          ? palette.action
+                          : palette.textMuted,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    outOfStock ? 'Sin existencia' : item.code,
+                    style: TextStyle(
+                      color: blocked ? palette.error : palette.textMuted,
+                      fontWeight: blocked ? FontWeight.w700 : FontWeight.w400,
+                      fontSize: 9,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 2),
-              Text(
-                _priceCaption(item.pricing),
-                style: TextStyle(
-                  color: item.pricing.isSellable
-                      ? palette.action
-                      : palette.textMuted,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 11,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                outOfStock ? 'Sin existencia' : item.code,
-                style: TextStyle(
-                  color: blocked ? palette.error : palette.textMuted,
-                  fontWeight: blocked ? FontWeight.w700 : FontWeight.w400,
-                  fontSize: 9,
-                ),
-              ),
+              if (item.isFeatured)
+                const Positioned(top: 0, right: 0, child: PosProductFeaturedBadge()),
             ],
           ),
         ),
@@ -9307,6 +9367,10 @@ class _Products extends StatefulWidget {
     required this.onRefresh,
     this.canCreate = false,
     this.catalogAdminGateway,
+    this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
+    this.pickProductImage,
   });
   final PosReadState<PosProduct> state;
   final bool allowed;
@@ -9318,6 +9382,19 @@ class _Products extends StatefulWidget {
   /// unless it opts in.
   final bool canCreate;
   final PosCatalogAdminGateway? catalogAdminGateway;
+
+  /// TASK 16.6 — real category/brand/supplier pickers for the create/edit
+  /// dialogs' Extras fields (categoría, marca, proveedor preferido).
+  /// Default to their own inert `Empty*` gateways so every pre-existing
+  /// call site of this widget keeps working with empty picker lists
+  /// rather than a crash.
+  final PosCategoryAdminGateway categoryAdminGateway;
+  final PosBrandAdminGateway brandAdminGateway;
+  final PosSuppliersGateway suppliersGateway;
+
+  /// TASK 16.6 — see `ProductImagePicker`'s own doc comment; threaded
+  /// through to `_EditProductDialog`'s own real photo-upload affordance.
+  final ProductImagePicker? pickProductImage;
 
   @override
   State<_Products> createState() => _ProductsState();
@@ -9331,9 +9408,77 @@ class _ProductsState extends State<_Products> {
     if (gateway == null) return;
     final created = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _NewProductDialog(gateway: gateway),
+      builder: (dialogContext) => _NewProductDialog(
+        gateway: gateway,
+        categoryAdminGateway: widget.categoryAdminGateway,
+        brandAdminGateway: widget.brandAdminGateway,
+        suppliersGateway: widget.suppliersGateway,
+      ),
     );
     if (created == true) widget.onRefresh();
+  }
+
+  // TASK 16.6 (Productos/Catálogo legacy parity — "Editar") — fetches the
+  // real current product (never trusts the grid's own possibly-stale row)
+  // via `GET /api/v1/products/{id}` before opening the edit dialog, so the
+  // dialog always starts from a real, current `version` for its own
+  // `If-Match` write.
+  Future<void> _editProduct(PosProduct item) async {
+    final gateway = widget.catalogAdminGateway;
+    if (gateway == null) return;
+    try {
+      final full = await gateway.product(item.id);
+      if (!mounted) return;
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => _EditProductDialog(
+          gateway: gateway,
+          product: full,
+          categoryAdminGateway: widget.categoryAdminGateway,
+          brandAdminGateway: widget.brandAdminGateway,
+          suppliersGateway: widget.suppliersGateway,
+          pickImage: widget.pickProductImage,
+        ),
+      );
+      if (saved == true) widget.onRefresh();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.failure.message)));
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No fue posible abrir el producto.')));
+    }
+  }
+
+  // TASK 16.6 — "Duplicar" (`AS POS V1.html:1202,6279-6290`): a real
+  // server-side clone (see `ProductCatalogService.duplicateProduct`), no
+  // dialog needed — the new product lands as a real `draft` row the
+  // operator reviews from the refreshed grid.
+  Future<void> _duplicateProduct(PosProduct item) async {
+    final gateway = widget.catalogAdminGateway;
+    if (gateway == null) return;
+    try {
+      final duplicate = await gateway.duplicateProduct(item.id);
+      if (!mounted) return;
+      widget.onRefresh();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Se creó "${duplicate.name}" como borrador.')),
+      );
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.failure.message)));
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No fue posible duplicar el producto.')));
+    }
   }
 
   @override
@@ -9345,6 +9490,7 @@ class _ProductsState extends State<_Products> {
           ),
         )
         .toList();
+    final canManage = widget.canCreate && widget.catalogAdminGateway != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -9383,24 +9529,299 @@ class _ProductsState extends State<_Products> {
             state: widget.state,
             emptyMessage: 'No hay productos disponibles.',
             onRetry: widget.onRefresh,
-            ready: (_) => _ProductGrid(items: filtered),
+            ready: (_) => _ProductGrid(
+              items: filtered,
+              onEdit: canManage ? _editProduct : null,
+              onDuplicate: canManage ? _duplicateProduct : null,
+            ),
           ),
       ],
     );
   }
 }
 
-/// TASK 15.1 Phase 6 gap fix — real `POST /api/v1/products` (`product
-/// .manage`) caller, closing the "no way to create a product at all"
-/// launch-blocking dead end found live during the Phase 6 commercial
-/// onboarding walkthrough. Covers a normal product (código+nombre only),
-/// a barcode product (código de barras field filled), and a weighted
-/// product (unidad set to a weight unit with a nonzero número de
-/// decimales) — one small form, not three separate ones, since the
-/// underlying backend contract is the same single call either way.
+/// TASK 16.6 — a small, self-contained "pick a real record by id" dropdown
+/// shared by the category/brand/supplier pickers below (mirrors
+/// `_DirectPurchaseFormState._loadSuppliers`'s own established
+/// load-then-show-honestly-empty-on-failure pattern). `(id, label)` pairs
+/// rather than a generic model type, so this one widget serves all three
+/// without depending on their otherwise-unrelated gateway model classes.
+class _IdNamePicker extends StatefulWidget {
+  const _IdNamePicker({
+    required this.fieldKey,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    required this.load,
+    this.enabled = true,
+  });
+  final Key fieldKey;
+  final String label;
+  final String? value;
+  final ValueChanged<String?> onChanged;
+  final Future<List<(String id, String label)>> Function() load;
+  final bool enabled;
+
+  @override
+  State<_IdNamePicker> createState() => _IdNamePickerState();
+}
+
+class _IdNamePickerState extends State<_IdNamePicker> {
+  List<(String, String)> _options = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    try {
+      final options = await widget.load();
+      if (!mounted) return;
+      setState(() => _options = options);
+    } on Object {
+      // Leaves the picker honestly empty on failure — never a fabricated
+      // option list.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // The currently-selected value may not (yet) be among the loaded
+    // options — e.g. still loading, or referencing a retired/inactive
+    // record — so it is always included as its own selectable entry
+    // rather than silently dropped from the dropdown.
+    final value = widget.value;
+    final known = _options.map((option) => option.$1).toSet();
+    return DropdownButtonFormField<String?>(
+      key: widget.fieldKey,
+      initialValue: value,
+      decoration: InputDecoration(labelText: widget.label),
+      items: [
+        const DropdownMenuItem(child: Text('Ninguno')),
+        if (value != null && !known.contains(value))
+          DropdownMenuItem(value: value, child: Text(value)),
+        for (final option in _options) DropdownMenuItem(value: option.$1, child: Text(option.$2)),
+      ],
+      onChanged: widget.enabled ? widget.onChanged : null,
+    );
+  }
+}
+
+/// TASK 16.6 (Productos/Catálogo legacy parity) — a real icon selector,
+/// legacy `ICONOS_SUGERIDOS` parity (`AS POS V1.html:7514`, confirmed
+/// genuinely functional), shared by the create and edit product dialogs.
+class _IconKeyPicker extends StatelessWidget {
+  const _IconKeyPicker({required this.value, required this.onChanged, this.enabled = true});
+  final String? value;
+  final ValueChanged<String?> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 6,
+    runSpacing: 6,
+    children: [
+      ChoiceChip(
+        label: const Text('Sin ícono'),
+        selected: value == null,
+        onSelected: enabled ? (_) => onChanged(null) : null,
+      ),
+      for (final key in posProductIconKeys)
+        ChoiceChip(
+          avatar: Icon(posProductIconFor(key), size: 16),
+          label: Text(posProductIconLabels[key] ?? key),
+          selected: value == key,
+          onSelected: enabled ? (_) => onChanged(key) : null,
+        ),
+    ],
+  );
+}
+
+/// TASK 16.6 — the legacy's own exact 3-mode card-appearance system
+/// (`mpColorSetModo()`, `AS POS V1.html:7557-7565`, confirmed genuinely
+/// functional): Predeterminado/Degradado/Sólido, plus a preset-swatch
+/// color picker (this codebase pulls in no external color-wheel package)
+/// shown only once a color mode is selected.
+class _CardStylePicker extends StatelessWidget {
+  const _CardStylePicker({
+    required this.cardStyle,
+    required this.cardColorHex,
+    required this.onCardStyleChanged,
+    required this.onCardColorHexChanged,
+    this.enabled = true,
+  });
+  final String cardStyle;
+  final String? cardColorHex;
+  final ValueChanged<String> onCardStyleChanged;
+  final ValueChanged<String?> onCardColorHexChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final selectedHex = cardColorHex?.toUpperCase();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SegmentedButton<String>(
+          key: const Key('pos-product-card-style'),
+          segments: const [
+            ButtonSegment(value: 'default', label: Text('Predeterminado')),
+            ButtonSegment(value: 'gradient', label: Text('Degradado')),
+            ButtonSegment(value: 'solid', label: Text('Sólido')),
+          ],
+          selected: {cardStyle},
+          onSelectionChanged: enabled
+              ? (selection) {
+                  final next = selection.first;
+                  onCardStyleChanged(next);
+                  if (next == 'default') {
+                    onCardColorHexChanged(null);
+                  } else if (cardColorHex == null) {
+                    onCardColorHexChanged(posProductHexFromColor(posProductColorPresets.first));
+                  }
+                }
+              : null,
+        ),
+        if (cardStyle != 'default') ...[
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final color in posProductColorPresets)
+                InkWell(
+                  onTap: enabled ? () => onCardColorHexChanged(posProductHexFromColor(color)) : null,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: selectedHex == posProductHexFromColor(color)
+                          ? Border.all(color: palette.text, width: 2)
+                          : null,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// TASK 16.6 — reuses the SAME `PosProductCardVisual`/`posProductCardFill`
+/// rendering the real POS/admin cards use, exactly mirroring the legacy's
+/// own `mpCardPreview()` (`AS POS V1.html:7567-7582`, confirmed to reuse
+/// its `prodCard()` verbatim) — a true live preview, not a decorative
+/// mockup.
+class _ProductCardLivePreview extends StatelessWidget {
+  const _ProductCardLivePreview({
+    required this.name,
+    required this.code,
+    required this.imageUrl,
+    required this.iconKey,
+    required this.cardStyle,
+    required this.cardColorHex,
+    required this.isFeatured,
+  });
+  final String name;
+  final String code;
+  final String? imageUrl;
+  final String? iconKey;
+  final String cardStyle;
+  final String? cardColorHex;
+  final bool isFeatured;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final fill = posProductCardFill(cardStyle: cardStyle, cardColorHex: cardColorHex, palette: palette);
+    final iconColor = posProductCardForeground(
+      cardStyle: cardStyle,
+      cardColorHex: cardColorHex,
+      fallback: palette.action,
+    );
+    return SizedBox(
+      key: const Key('pos-product-card-preview'),
+      width: 140,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 16, 10, 12),
+        decoration: BoxDecoration(
+          color: fill.background ?? palette.surface,
+          gradient: fill.gradient,
+          border: Border.all(color: palette.border, width: 1.5),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PosProductCardVisual(imageUrl: imageUrl, iconKey: iconKey, size: 34, color: iconColor),
+                const SizedBox(height: 7),
+                Text(
+                  name.isEmpty ? 'Nombre del producto' : name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w600, fontSize: 12),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  code.isEmpty ? 'código' : code,
+                  style: TextStyle(color: palette.textMuted, fontSize: 9),
+                ),
+              ],
+            ),
+            if (isFeatured) const Positioned(top: 0, right: 0, child: PosProductFeaturedBadge()),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+const List<String> _posProductTaxCodes = ['IVA_GENERAL', 'IVA_EXEMPT'];
+const Map<String, String> _posProductTaxCodeLabels = {
+  'IVA_GENERAL': 'IVA general (16%)',
+  'IVA_EXEMPT': 'IVA exento (0%)',
+};
+
+/// TASK 15.1 Phase 6 gap fix, extended by TASK 16.6 — real
+/// `POST /api/v1/products` (`product.manage`) caller, closing the "no way
+/// to create a product at all" launch-blocking dead end found live during
+/// the Phase 6 commercial onboarding walkthrough. Covers a normal product
+/// (código+nombre only), a barcode product (código de barras field
+/// filled), and a weighted product (unidad set to a weight unit with a
+/// nonzero número de decimales) — one small form, not three separate
+/// ones, since the underlying backend contract is the same single call
+/// either way. TASK 16.6 adds the legacy's real General/Precios/Extras
+/// fields the base form never exposed (categoría, marca, proveedor,
+/// descripción, IVA, favorito, ícono, apariencia de tarjeta, imagen
+/// externa, stock mínimo) as clearly labeled sections within this one
+/// dialog — functionally equivalent to the legacy's own tabs, not a
+/// literal tab widget. A real uploaded photo is intentionally NOT offered
+/// here (the backend's image-upload endpoint requires an existing product
+/// id/version) — only the legacy's OTHER real image path, pasting an
+/// external URL; the edit dialog adds real upload/remove once the product
+/// exists.
 class _NewProductDialog extends StatefulWidget {
-  const _NewProductDialog({required this.gateway});
+  const _NewProductDialog({
+    required this.gateway,
+    this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
+  });
   final PosCatalogAdminGateway gateway;
+  final PosCategoryAdminGateway categoryAdminGateway;
+  final PosBrandAdminGateway brandAdminGateway;
+  final PosSuppliersGateway suppliersGateway;
 
   @override
   State<_NewProductDialog> createState() => _NewProductDialogState();
@@ -9409,10 +9830,22 @@ class _NewProductDialog extends StatefulWidget {
 class _NewProductDialogState extends State<_NewProductDialog> {
   final _codeController = TextEditingController();
   final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
   final _skuController = TextEditingController();
   final _barcodeController = TextEditingController();
   final _costController = TextEditingController();
+  final _minStockController = TextEditingController();
+  final _imageUrlController = TextEditingController();
   String _unit = 'unit';
+  String _status = 'active';
+  String _taxCode = 'IVA_GENERAL';
+  String? _categoryId;
+  String? _brandId;
+  String? _preferredSupplierId;
+  String? _iconKey;
+  String _cardStyle = 'default';
+  String? _cardColorHex;
+  bool _isFeatured = false;
   bool _busy = false;
   String? _error;
 
@@ -9425,9 +9858,12 @@ class _NewProductDialogState extends State<_NewProductDialog> {
   void dispose() {
     _codeController.dispose();
     _nameController.dispose();
+    _descriptionController.dispose();
     _skuController.dispose();
     _barcodeController.dispose();
     _costController.dispose();
+    _minStockController.dispose();
+    _imageUrlController.dispose();
     super.dispose();
   }
 
@@ -9446,14 +9882,29 @@ class _NewProductDialogState extends State<_NewProductDialog> {
       final sku = _skuController.text.trim();
       final barcode = _barcodeController.text.trim();
       final cost = _costController.text.trim();
+      final description = _descriptionController.text.trim();
+      final minStock = _minStockController.text.trim();
+      final imageUrl = _imageUrlController.text.trim();
       await widget.gateway.createProduct(
         PosNewProductInput(
           code: code,
           name: name,
+          status: _status,
+          taxCode: _taxCode,
+          categoryId: _categoryId,
+          brandId: _brandId,
+          preferredSupplierId: _preferredSupplierId,
+          isFeatured: _isFeatured,
+          iconKey: _iconKey,
+          cardStyle: _cardStyle,
+          cardColorHex: _cardColorHex,
+          description: description.isEmpty ? null : description,
+          imageUrl: imageUrl.isEmpty ? null : imageUrl,
           sku: sku.isEmpty ? code : sku,
           unitOfMeasureCode: _unit,
           quantityScale: _unit == 'unit' ? 0 : 3,
           standardCost: cost.isEmpty ? null : cost,
+          minStock: minStock.isEmpty ? null : minStock,
           barcode: barcode.isEmpty ? null : barcode,
         ),
       );
@@ -9478,61 +9929,183 @@ class _NewProductDialogState extends State<_NewProductDialog> {
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('Nuevo producto'),
     content: SizedBox(
-      width: 380,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TextField(
-            key: const Key('pos-product-new-code'),
-            controller: _codeController,
-            enabled: !_busy,
-            decoration: const InputDecoration(labelText: 'Código'),
-            autofocus: true,
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            key: const Key('pos-product-new-name'),
-            controller: _nameController,
-            enabled: !_busy,
-            decoration: const InputDecoration(labelText: 'Nombre'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            key: const Key('pos-product-new-sku'),
-            controller: _skuController,
-            enabled: !_busy,
-            decoration: const InputDecoration(labelText: 'SKU (opcional, usa el código si se deja vacío)'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            key: const Key('pos-product-new-barcode'),
-            controller: _barcodeController,
-            enabled: !_busy,
-            decoration: const InputDecoration(labelText: 'Código de barras (opcional)'),
-          ),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            key: const Key('pos-product-new-unit'),
-            initialValue: _unit,
-            decoration: const InputDecoration(labelText: 'Unidad'),
-            items: [for (final unit in _units) DropdownMenuItem(value: unit, child: Text(unit))],
-            onChanged: _busy ? null : (value) => setState(() => _unit = value ?? 'unidad'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            key: const Key('pos-product-new-cost'),
-            controller: _costController,
-            enabled: !_busy,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'Costo estándar (opcional)', prefixText: r'$ '),
-            onSubmitted: (_) => _busy ? null : _confirm(),
-          ),
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Text(_error!, style: const TextStyle(color: Colors.red)),
+      width: 460,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _DialogSectionLabel('General'),
+            TextField(
+              key: const Key('pos-product-new-code'),
+              controller: _codeController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'Código'),
+              autofocus: true,
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-new-name'),
+              controller: _nameController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'Nombre'),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-new-description'),
+              controller: _descriptionController,
+              enabled: !_busy,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Descripción (opcional)'),
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-new-category'),
+              label: 'Categoría',
+              value: _categoryId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _categoryId = value),
+              load: () async {
+                final page = await widget.categoryAdminGateway.listCategories(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-new-brand'),
+              label: 'Marca',
+              value: _brandId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _brandId = value),
+              load: () async {
+                final page = await widget.brandAdminGateway.listBrands(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-new-supplier'),
+              label: 'Proveedor preferido',
+              value: _preferredSupplierId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _preferredSupplierId = value),
+              load: () async {
+                final page = await widget.suppliersGateway.listSuppliers(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: const Key('pos-product-new-status'),
+              initialValue: _status,
+              decoration: const InputDecoration(labelText: 'Estado'),
+              items: const [
+                DropdownMenuItem(value: 'draft', child: Text('Borrador')),
+                DropdownMenuItem(value: 'active', child: Text('Activo')),
+                DropdownMenuItem(value: 'inactive', child: Text('Inactivo')),
+              ],
+              onChanged: _busy ? null : (value) => setState(() => _status = value ?? 'active'),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile.adaptive(
+              key: const Key('pos-product-new-featured'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Favorito'),
+              value: _isFeatured,
+              onChanged: _busy ? null : (value) => setState(() => _isFeatured = value),
+            ),
+            const SizedBox(height: 6),
+            const _DialogSectionLabel('Precios'),
+            TextField(
+              key: const Key('pos-product-new-sku'),
+              controller: _skuController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'SKU (opcional, usa el código si se deja vacío)'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-new-barcode'),
+              controller: _barcodeController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'Código de barras (opcional)'),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: const Key('pos-product-new-unit'),
+              initialValue: _unit,
+              decoration: const InputDecoration(labelText: 'Unidad'),
+              items: [for (final unit in _units) DropdownMenuItem(value: unit, child: Text(unit))],
+              onChanged: _busy ? null : (value) => setState(() => _unit = value ?? 'unit'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-new-cost'),
+              controller: _costController,
+              enabled: !_busy,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Costo estándar (opcional)', prefixText: r'$ '),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-new-min-stock'),
+              controller: _minStockController,
+              enabled: !_busy,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Stock mínimo (opcional)'),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: const Key('pos-product-new-tax-code'),
+              initialValue: _taxCode,
+              decoration: const InputDecoration(labelText: 'IVA'),
+              items: [
+                for (final code in _posProductTaxCodes)
+                  DropdownMenuItem(value: code, child: Text(_posProductTaxCodeLabels[code] ?? code)),
+              ],
+              onChanged: _busy ? null : (value) => setState(() => _taxCode = value ?? 'IVA_GENERAL'),
+            ),
+            const SizedBox(height: 6),
+            const _DialogSectionLabel('Extras'),
+            TextField(
+              key: const Key('pos-product-new-image-url'),
+              controller: _imageUrlController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'URL de imagen (opcional)'),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 10),
+            _IconKeyPicker(
+              value: _iconKey,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _iconKey = value),
+            ),
+            const SizedBox(height: 10),
+            _CardStylePicker(
+              cardStyle: _cardStyle,
+              cardColorHex: _cardColorHex,
+              enabled: !_busy,
+              onCardStyleChanged: (value) => setState(() => _cardStyle = value),
+              onCardColorHexChanged: (value) => setState(() => _cardColorHex = value),
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: _ProductCardLivePreview(
+                name: _nameController.text.trim(),
+                code: _codeController.text.trim(),
+                imageUrl: _imageUrlController.text.trim().isEmpty ? null : _imageUrlController.text.trim(),
+                iconKey: _iconKey,
+                cardStyle: _cardStyle,
+                cardColorHex: _cardColorHex,
+                isFeatured: _isFeatured,
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            ],
           ],
-        ],
+        ),
       ),
     ),
     actions: [
@@ -9551,9 +10124,424 @@ class _NewProductDialogState extends State<_NewProductDialog> {
   );
 }
 
+/// TASK 16.6 (Productos/Catálogo legacy parity) — the product edit dialog
+/// the legacy's own real "Editar" action had a Flutter equivalent for
+/// nowhere in this app until now (Agent-confirmed: zero `updateProduct`
+/// call sites anywhere). Scoped to the PRODUCT-level General/Extras
+/// fields this task calls out (categoría, marca, descripción, estado,
+/// IVA, favorito, imagen/ícono/apariencia de tarjeta, proveedor
+/// preferido) — price/costo/stock-mínimo editing intentionally stays on
+/// the ALREADY-REAL, already-tested `PosProductVariantsScreen` (parity A
+/// per `docs/LEGACY_FUNCTIONAL_PARITY.md`) rather than inventing a second,
+/// divergent variant-edit path here.
+class _EditProductDialog extends StatefulWidget {
+  const _EditProductDialog({
+    required this.gateway,
+    required this.product,
+    this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
+    this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
+    this.suppliersGateway = const EmptyPosSuppliersGateway(),
+    this.pickImage,
+  });
+  final PosCatalogAdminGateway gateway;
+  final PosCatalogProduct product;
+  final PosCategoryAdminGateway categoryAdminGateway;
+  final PosBrandAdminGateway brandAdminGateway;
+  final PosSuppliersGateway suppliersGateway;
+
+  /// TASK 16.6 — see `ProductImagePicker`'s own doc comment; `null` falls
+  /// back to a real `ImagePicker`.
+  final ProductImagePicker? pickImage;
+
+  @override
+  State<_EditProductDialog> createState() => _EditProductDialogState();
+}
+
+class _EditProductDialogState extends State<_EditProductDialog> {
+  late final _nameController = TextEditingController(text: widget.product.name);
+  late final _descriptionController = TextEditingController(text: widget.product.description ?? '');
+  late String _status = widget.product.status;
+  late String _taxCode = widget.product.taxCode ?? 'IVA_GENERAL';
+  late String? _categoryId = widget.product.categoryId;
+  late String? _brandId = widget.product.brandId;
+  late String? _preferredSupplierId = widget.product.preferredSupplierId;
+  late String? _iconKey = widget.product.iconKey;
+  late String _cardStyle = widget.product.cardStyle;
+  late String? _cardColorHex = widget.product.cardColorHex;
+  late bool _isFeatured = widget.product.isFeatured;
+  late int _version = widget.product.version;
+  late String? _imageUrl = widget.product.imageUrl;
+  bool _busy = false;
+  bool _uploadingImage = false;
+  String? _error;
+  late final ProductImagePicker _pickImageImpl =
+      widget.pickImage ?? (() => ImagePicker().pickImage(source: ImageSource.gallery));
+
+  static const _statuses = ['draft', 'active', 'inactive', 'retired'];
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickAndUploadImage() async {
+    if (_busy || _uploadingImage) return;
+    setState(() {
+      _uploadingImage = true;
+      _error = null;
+    });
+    try {
+      final picked = await _pickImageImpl();
+      if (picked == null) {
+        setState(() => _uploadingImage = false);
+        return;
+      }
+      final bytes = await picked.readAsBytes();
+      final contentType = picked.mimeType ?? _guessProductImageContentType(picked.name);
+      if (contentType == null) {
+        setState(() {
+          _uploadingImage = false;
+          _error = 'Formato no soportado. Usa PNG, JPEG o WEBP.';
+        });
+        return;
+      }
+      final updated = await widget.gateway.uploadProductImage(
+        widget.product.id,
+        bytes: bytes,
+        filename: picked.name,
+        contentType: contentType,
+        expectedVersion: _version,
+      );
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _imageUrl = updated.imageUrl;
+        _version = updated.version;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _error = switch (error.statusCode) {
+          415 => 'Ese archivo no es una imagen válida (PNG, JPEG o WEBP).',
+          413 => 'La imagen supera el tamaño máximo permitido.',
+          409 => 'Otra sesión cambió este producto. Cierra y vuelve a abrirlo.',
+          _ => error.failure.message,
+        };
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _error = 'No fue posible subir la imagen.';
+      });
+    }
+  }
+
+  Future<void> _removeImage() async {
+    if (_busy || _uploadingImage || _imageUrl == null) return;
+    setState(() {
+      _uploadingImage = true;
+      _error = null;
+    });
+    try {
+      final updated = await widget.gateway.deleteProductImage(widget.product.id, _version);
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _imageUrl = updated.imageUrl;
+        _version = updated.version;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _uploadingImage = false;
+        _error = 'No fue posible quitar la imagen.';
+      });
+    }
+  }
+
+  Future<void> _confirm() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'Captura el nombre.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final description = _descriptionController.text.trim();
+      await widget.gateway.updateProduct(
+        widget.product.id,
+        _version,
+        PosProductPatchInput(
+          name: name,
+          description: description,
+          status: _status,
+          taxCode: _taxCode,
+          categoryId: _categoryId,
+          brandId: _brandId,
+          preferredSupplierId: _preferredSupplierId,
+          clearPreferredSupplierId: _preferredSupplierId == null,
+          isFeatured: _isFeatured,
+          iconKey: _iconKey,
+          clearIconKey: _iconKey == null,
+          cardStyle: _cardStyle,
+          cardColorHex: _cardColorHex,
+          clearCardColorHex: _cardStyle == 'default',
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.statusCode == 409
+            ? 'Otra sesión cambió este producto. Cierra y vuelve a abrirlo.'
+            : error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible guardar los cambios.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('Editar ${widget.product.name}'),
+    content: SizedBox(
+      width: 460,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _DialogSectionLabel('General'),
+            InputDecorator(
+              decoration: const InputDecoration(labelText: 'Código'),
+              child: Text(widget.product.code),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-edit-name'),
+              controller: _nameController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'Nombre'),
+              onChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-product-edit-description'),
+              controller: _descriptionController,
+              enabled: !_busy,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Descripción (opcional)'),
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-edit-category'),
+              label: 'Categoría',
+              value: _categoryId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _categoryId = value),
+              load: () async {
+                final page = await widget.categoryAdminGateway.listCategories(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-edit-brand'),
+              label: 'Marca',
+              value: _brandId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _brandId = value),
+              load: () async {
+                final page = await widget.brandAdminGateway.listBrands(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            _IdNamePicker(
+              fieldKey: const Key('pos-product-edit-supplier'),
+              label: 'Proveedor preferido',
+              value: _preferredSupplierId,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _preferredSupplierId = value),
+              load: () async {
+                final page = await widget.suppliersGateway.listSuppliers(status: 'active');
+                return [for (final item in page.items) (item.id, item.name)];
+              },
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: const Key('pos-product-edit-status'),
+              initialValue: _status,
+              decoration: const InputDecoration(labelText: 'Estado'),
+              items: [
+                for (final status in _statuses)
+                  DropdownMenuItem(value: status, child: Text(_posProductStatusLabel(status))),
+              ],
+              onChanged: _busy ? null : (value) => setState(() => _status = value ?? _status),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile.adaptive(
+              key: const Key('pos-product-edit-featured'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Favorito'),
+              value: _isFeatured,
+              onChanged: _busy ? null : (value) => setState(() => _isFeatured = value),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              key: const Key('pos-product-edit-tax-code'),
+              initialValue: _taxCode,
+              decoration: const InputDecoration(labelText: 'IVA'),
+              items: [
+                for (final code in _posProductTaxCodes)
+                  DropdownMenuItem(value: code, child: Text(_posProductTaxCodeLabels[code] ?? code)),
+              ],
+              onChanged: _busy ? null : (value) => setState(() => _taxCode = value ?? 'IVA_GENERAL'),
+            ),
+            const SizedBox(height: 6),
+            const _DialogSectionLabel('Extras'),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _imageUrl == null ? 'Sin imagen' : 'Imagen configurada',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                TextButton(
+                  key: const Key('pos-product-edit-upload-image'),
+                  onPressed: _busy || _uploadingImage ? null : _pickAndUploadImage,
+                  child: _uploadingImage
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Subir imagen'),
+                ),
+                if (_imageUrl != null)
+                  TextButton(
+                    key: const Key('pos-product-edit-remove-image'),
+                    onPressed: _busy || _uploadingImage ? null : _removeImage,
+                    child: const Text('Quitar'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            _IconKeyPicker(
+              value: _iconKey,
+              enabled: !_busy,
+              onChanged: (value) => setState(() => _iconKey = value),
+            ),
+            const SizedBox(height: 10),
+            _CardStylePicker(
+              cardStyle: _cardStyle,
+              cardColorHex: _cardColorHex,
+              enabled: !_busy,
+              onCardStyleChanged: (value) => setState(() => _cardStyle = value),
+              onCardColorHexChanged: (value) => setState(() => _cardColorHex = value),
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: _ProductCardLivePreview(
+                name: _nameController.text.trim(),
+                code: widget.product.code,
+                imageUrl: _imageUrl,
+                iconKey: _iconKey,
+                cardStyle: _cardStyle,
+                cardColorHex: _cardColorHex,
+                isFeatured: _isFeatured,
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            ],
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        key: const Key('pos-product-edit-confirm'),
+        onPressed: _busy ? null : _confirm,
+        child: _busy
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Text('Guardar'),
+      ),
+    ],
+  );
+}
+
+String _posProductStatusLabel(String status) => switch (status) {
+  'draft' => 'Borrador',
+  'active' => 'Activo',
+  'inactive' => 'Inactivo',
+  'retired' => 'Retirado',
+  _ => status,
+};
+
+/// Mirrors `pos_branding_screen.dart`'s own `_guessContentType` — a
+/// filename-extension fallback for when the platform's file picker does
+/// not report a MIME type, restricted to this endpoint's own accepted
+/// image types (`ALLOWED_IMAGE_CONTENT_TYPES`, `image-upload-validation
+/// .ts`; SVG is deliberately excluded here since a product photo is a
+/// real raster upload, not a vector logo).
+String? _guessProductImageContentType(String filename) {
+  final lower = filename.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return null;
+}
+
+/// A small bold section label ("General"/"Precios"/"Extras") inside the
+/// product dialogs — TASK 16.6's functional (not literal-tab) equivalent
+/// of the legacy's own tabbed modal sections.
+class _DialogSectionLabel extends StatelessWidget {
+  const _DialogSectionLabel(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 6),
+      child: Text(
+        label,
+        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13, color: palette.textSecondary),
+      ),
+    );
+  }
+}
+
 class _ProductGrid extends StatelessWidget {
-  const _ProductGrid({required this.items});
+  const _ProductGrid({required this.items, this.onEdit, this.onDuplicate});
   final List<PosProduct> items;
+
+  /// TASK 16.6 — `null` (every pre-existing call site) keeps every card
+  /// read-only, exactly as before.
+  final ValueChanged<PosProduct>? onEdit;
+  final ValueChanged<PosProduct>? onDuplicate;
 
   @override
   Widget build(BuildContext context) {
@@ -9576,7 +10564,15 @@ class _ProductGrid extends StatelessWidget {
           crossAxisSpacing: 10,
           mainAxisSpacing: 10,
           childAspectRatio: .98,
-          children: items.map((item) => _ProductCard(item: item)).toList(),
+          children: items
+              .map(
+                (item) => _ProductCard(
+                  item: item,
+                  onEdit: onEdit == null ? null : () => onEdit!(item),
+                  onDuplicate: onDuplicate == null ? null : () => onDuplicate!(item),
+                ),
+              )
+              .toList(),
         );
       },
     );
@@ -9584,45 +10580,101 @@ class _ProductGrid extends StatelessWidget {
 }
 
 class _ProductCard extends StatelessWidget {
-  const _ProductCard({required this.item});
+  const _ProductCard({required this.item, this.onEdit, this.onDuplicate});
   final PosProduct item;
+
+  /// TASK 16.6 (Productos/Catálogo legacy parity — "Editar"/"Duplicar")
+  /// — `null` (the default, every pre-existing call site) keeps this
+  /// card's original read-only presentation with no menu at all.
+  final VoidCallback? onEdit;
+  final VoidCallback? onDuplicate;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final fill = posProductCardFill(
+      cardStyle: item.cardStyle,
+      cardColorHex: item.cardColorHex,
+      palette: palette,
+    );
+    final iconColor = posProductCardForeground(
+      cardStyle: item.cardStyle,
+      cardColorHex: item.cardColorHex,
+      fallback: palette.blueDeep,
+    );
     return _PosCard(
       padding: const EdgeInsets.all(10),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      background: fill.background,
+      gradient: fill.gradient,
+      child: Stack(
         children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: palette.blueTint,
-              shape: BoxShape.circle,
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: item.imageUrl == null || item.imageUrl!.isEmpty ? palette.blueTint : null,
+                  shape: BoxShape.circle,
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: PosProductCardVisual(
+                  imageUrl: item.imageUrl,
+                  iconKey: item.iconKey,
+                  size: 48,
+                  color: iconColor,
+                ),
+              ),
+              const SizedBox(height: 9),
+              Text(
+                item.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: palette.text,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                item.code,
+                style: TextStyle(color: palette.textMuted, fontSize: 10),
+              ),
+              const SizedBox(height: 7),
+              _StatusChip(label: item.status),
+            ],
+          ),
+          if (item.isFeatured)
+            const Positioned(top: 0, right: 0, child: PosProductFeaturedBadge()),
+          if (onEdit != null || onDuplicate != null)
+            Positioned(
+              top: -6,
+              left: -6,
+              child: PopupMenuButton<String>(
+                key: Key('pos-product-menu-${item.id}'),
+                tooltip: 'Más acciones',
+                icon: Icon(Icons.more_vert, size: 18, color: palette.textMuted),
+                onSelected: (value) {
+                  if (value == 'edit') onEdit?.call();
+                  if (value == 'duplicate') onDuplicate?.call();
+                },
+                itemBuilder: (context) => [
+                  if (onEdit != null)
+                    const PopupMenuItem(
+                      value: 'edit',
+                      child: Text('Editar'),
+                    ),
+                  if (onDuplicate != null)
+                    const PopupMenuItem(
+                      value: 'duplicate',
+                      child: Text('Duplicar'),
+                    ),
+                ],
+              ),
             ),
-            child: Icon(Icons.inventory_2_outlined, color: palette.blueDeep),
-          ),
-          const SizedBox(height: 9),
-          Text(
-            item.name,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: palette.text,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            item.code,
-            style: TextStyle(color: palette.textMuted, fontSize: 10),
-          ),
-          const SizedBox(height: 7),
-          _StatusChip(label: item.status),
         ],
       ),
     );

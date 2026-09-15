@@ -20,6 +20,7 @@ import {
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
 import { companyMemberships } from './identity.js';
 import { branches, companies } from './organizations.js';
+import { suppliers } from './suppliers.js';
 
 export const productCategories = pgTable(
   'product_categories',
@@ -192,6 +193,43 @@ export const products = pgTable(
     // tax engine.
     taxCode: text('tax_code').notNull().default('IVA_GENERAL'),
     status: text('status').notNull().default('draft'),
+    // TASK 16.6 (Productos/Catálogo legacy parity, `AS POS V1.html`'s
+    // Extras tab) — a real, previously-missing per-product image, icon,
+    // and card-appearance configuration. `imageUrl` is never binary/
+    // base64 — always an object-storage URL (`product-images.storage.ts`,
+    // generalized from the same real MinIO/S3-compatible pattern
+    // `branding.storage.ts` already proved for the tenant logo), tenant-
+    // isolated by company-scoped key prefix. `iconKey` is a stable,
+    // platform-defined identifier (never a raw font-icon class name tied
+    // to one client) resolved to a real icon on whichever client renders
+    // it — see `apps/one/lib/features/pos/product_icon_catalog.dart`.
+    // `cardStyle` mirrors the legacy's own exact 3-mode
+    // `mpColorSetModo('default'|'degradado'|'solido')` system
+    // (`AS POS V1.html:7557-7565`) exactly: `default` means "no tenant-
+    // chosen color, use the platform's own neutral accent" (never a
+    // hardcoded tenant-specific hex), `gradient`/`solid` require a real
+    // `cardColorHex`.
+    imageUrl: text('image_url'),
+    iconKey: text('icon_key'),
+    cardStyle: text('card_style').notNull().default('default'),
+    cardColorHex: char('card_color_hex', { length: 7 }),
+    // TASK 16.6 — legacy parity for the General tab's real "Favorito"
+    // boolean (`AS POS V1.html:3685,6345` — a genuine, persisted,
+    // list-rendered star flag, not a placeholder).
+    isFeatured: boolean('is_featured').notNull().default(false),
+    // TASK 16.6 — legacy parity for the Extras tab's "Marca / Proveedor"
+    // field, upgraded from the legacy's own free-text, non-relational
+    // `mp-marca` input (`AS POS V1.html:3751`, confirmed by forensic
+    // audit to have NO real `proveedorId` FK anywhere — a placeholder
+    // "relationship" in the legacy sense) into a REAL FK against the
+    // platform's own already-real `suppliers` entity
+    // (`packages/database/src/schema/suppliers.ts`) — a genuine
+    // improvement over the legacy's shallow implementation, not a
+    // like-for-like port of something that never actually worked as a
+    // relationship. Nullable and optional everywhere: a product need not
+    // declare a preferred supplier, exactly like the legacy field was
+    // always optional.
+    preferredSupplierId: uuid('preferred_supplier_id'),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
       .default(sql`1`),
@@ -215,6 +253,11 @@ export const products = pgTable(
       name: 'products_brand_scope_fk',
     }).onDelete('restrict'),
     foreignKey({
+      columns: [table.companyId, table.preferredSupplierId],
+      foreignColumns: [suppliers.companyId, suppliers.id],
+      name: 'products_preferred_supplier_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
       columns: [table.companyId, table.createdBy],
       foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
       name: 'products_created_by_membership_fk',
@@ -227,6 +270,7 @@ export const products = pgTable(
     index('products_company_category_idx').on(table.companyId, table.categoryId),
     index('products_company_brand_idx').on(table.companyId, table.brandId),
     index('products_company_status_idx').on(table.companyId, table.status),
+    index('products_company_supplier_idx').on(table.companyId, table.preferredSupplierId),
     check('products_code_nonblank_ck', sql`length(btrim(${table.code})) > 0`),
     check(
       'products_normalized_code_ck',
@@ -249,6 +293,15 @@ export const products = pgTable(
       sql`${table.productType} not in ('service', 'kit') or ${table.tracksInventory} is false`,
     ),
     check('products_tax_code_ck', sql`${table.taxCode} in ('IVA_GENERAL', 'IVA_EXEMPT')`),
+    check('products_card_style_ck', sql`${table.cardStyle} in ('default', 'gradient', 'solid')`),
+    check(
+      'products_card_color_hex_ck',
+      sql`${table.cardColorHex} is null or ${table.cardColorHex} ~ '^#[0-9A-Fa-f]{6}$'`,
+    ),
+    check(
+      'products_card_style_color_ck',
+      sql`${table.cardStyle} = 'default' or ${table.cardColorHex} is not null`,
+    ),
   ],
 );
 
@@ -423,6 +476,17 @@ export const productVariants = pgTable(
     tracksInventory: boolean('tracks_inventory').notNull(),
     standardCost: numeric('standard_cost', { precision: 19, scale: 4 }).notNull().default('0'),
     currencyCode: char('currency_code', { length: 3 }).notNull(),
+    // TASK 16.6 (Productos/Catálogo legacy parity) — real "Stock mínimo"
+    // reorder-point threshold. Lives on the variant, not the product,
+    // matching where `standardCost`/`sku`/`tracksInventory` already live
+    // in this schema's own (already-more-correct-than-legacy)
+    // per-variant inventory model — the legacy itself had no real
+    // variant concept (`AS POS V1.html`'s own "Variantes" tab was a
+    // 100%-static placeholder), so there is no legacy per-variant
+    // precedent to match; this simply extends the existing real model.
+    // `null` means "no threshold configured" (never implicitly `0`,
+    // which would read as "alert only when fully out of stock").
+    minStock: numeric('min_stock', { precision: 19, scale: 6 }),
     isDefault: boolean('is_default').notNull().default(false),
     optionSignature: char('option_signature', { length: 64 }).notNull(),
     status: text('status').notNull().default('active'),
@@ -472,6 +536,10 @@ export const productVariants = pgTable(
     ),
     check('product_variants_quantity_scale_ck', sql`${table.quantityScale} between 0 and 6`),
     check('product_variants_standard_cost_ck', sql`${table.standardCost} >= 0`),
+    check(
+      'product_variants_min_stock_ck',
+      sql`${table.minStock} is null or ${table.minStock} >= 0`,
+    ),
     check('product_variants_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check('product_variants_option_signature_ck', sql`${table.optionSignature} ~ '^[0-9a-f]{64}$'`),
     check('product_variants_status_ck', sql`${table.status} in ('active', 'inactive', 'retired')`),
@@ -638,9 +706,7 @@ export const productPrices = pgTable(
     priceType: text('price_type').notNull().default('standard'),
     amount: numeric('amount', { precision: 19, scale: 4 }).notNull(),
     currencyCode: char('currency_code', { length: 3 }).notNull(),
-    validFrom: timestamp('valid_from', { withTimezone: true, mode: 'date' })
-      .notNull()
-      .defaultNow(),
+    validFrom: timestamp('valid_from', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     validUntil: timestamp('valid_until', { withTimezone: true, mode: 'date' }),
     status: text('status').notNull().default('active'),
     version: bigint('version', { mode: 'bigint' })

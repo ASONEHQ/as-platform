@@ -37,6 +37,12 @@ interface ProductDb {
   tracks_inventory: boolean;
   tax_code: ProductRow['taxCode'];
   status: ProductRow['status'];
+  image_url: string | null;
+  icon_key: ProductRow['iconKey'];
+  card_style: ProductRow['cardStyle'];
+  card_color_hex: string | null;
+  is_featured: boolean;
+  preferred_supplier_id: string | null;
   version: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -67,6 +73,7 @@ interface VariantDb {
   tracks_inventory: boolean;
   standard_cost: string;
   currency_code: string;
+  min_stock: string | null;
   is_default: boolean;
   status: ProductVariantRow['status'];
   version: string;
@@ -106,11 +113,11 @@ interface BarcodeDb {
 }
 
 const PRODUCT_COLUMNS =
-  'id,company_id,category_id,brand_id,code,name,description,product_type,tracks_inventory,tax_code,status,version,created_at,updated_at';
+  'id,company_id,category_id,brand_id,code,name,description,product_type,tracks_inventory,tax_code,status,image_url,icon_key,card_style,card_color_hex,is_featured,preferred_supplier_id,version,created_at,updated_at';
 const PRICE_COLUMNS =
   'id,company_id,branch_id,product_id,price_type,amount,currency_code,valid_from,valid_until,status,version,created_at,updated_at';
 const VARIANT_COLUMNS =
-  'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,status,version,created_at,updated_at';
+  'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,min_stock,is_default,status,version,created_at,updated_at';
 const OPTION_COLUMNS =
   'id,company_id,product_id,code,name,sort_order,status,version,created_at,updated_at';
 const VALUE_COLUMNS =
@@ -134,6 +141,12 @@ function product(row: ProductDb): ProductRow {
     tracksInventory: row.tracks_inventory,
     taxCode: row.tax_code,
     status: row.status,
+    imageUrl: row.image_url,
+    iconKey: row.icon_key,
+    cardStyle: row.card_style,
+    cardColorHex: row.card_color_hex,
+    isFeatured: row.is_featured,
+    preferredSupplierId: row.preferred_supplier_id,
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -168,6 +181,7 @@ function variant(row: VariantDb): ProductVariantRow {
     tracksInventory: row.tracks_inventory,
     standardCost: row.standard_cost,
     currencyCode: row.currency_code,
+    minStock: row.min_stock,
     isDefault: row.is_default,
     status: row.status,
     version: BigInt(row.version),
@@ -466,6 +480,7 @@ export class ProductCatalogRepository {
     companyId: string,
     categoryId: string | null,
     brandId: string | null,
+    preferredSupplierId: string | null = null,
   ): Promise<void> {
     if (categoryId !== null) {
       const found = result<{ id: string }>(
@@ -491,6 +506,23 @@ export class ProductCatalogRepository {
         throw new ProductCatalogError(
           'validation_error',
           'The brand is not active or does not exist.',
+        );
+    }
+    // TASK 16.6 — `preferredSupplierId` is a real FK against the
+    // platform's own `suppliers` entity (see `catalog.ts`'s own doc
+    // comment on `products.preferred_supplier_id` for why this replaces
+    // the legacy's free-text, non-relational "Marca/Proveedor" field).
+    if (preferredSupplierId !== null) {
+      const found = result<{ id: string }>(
+        await client.query(
+          `select id from suppliers where company_id=$1 and id=$2 and status='active' for update`,
+          [companyId, preferredSupplierId],
+        ),
+      ).rows[0];
+      if (found === undefined)
+        throw new ProductCatalogError(
+          'validation_error',
+          'The preferred supplier is not active or does not exist.',
         );
     }
   }
@@ -527,14 +559,21 @@ export class ProductCatalogRepository {
       tracksInventory: boolean;
       taxCode: ProductRow['taxCode'];
       status: ProductRow['status'];
+      imageUrl: string | null;
+      iconKey: ProductRow['iconKey'];
+      cardStyle: ProductRow['cardStyle'];
+      cardColorHex: string | null;
+      isFeatured: boolean;
+      preferredSupplierId: string | null;
     },
   ): Promise<ProductRow> {
     const row = result<ProductDb>(
       await client.query(
         `insert into products
          (id,company_id,category_id,brand_id,code,normalized_code,name,description,product_type,
-          tracks_inventory,tax_code,status,deleted_at,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$15)
+          tracks_inventory,tax_code,status,image_url,icon_key,card_style,card_color_hex,
+          is_featured,preferred_supplier_id,deleted_at,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$20,$21,$21)
          returning ${PRODUCT_COLUMNS}`,
         [
           input.id,
@@ -549,6 +588,12 @@ export class ProductCatalogRepository {
           input.tracksInventory,
           input.taxCode,
           input.status,
+          input.imageUrl,
+          input.iconKey,
+          input.cardStyle,
+          input.cardColorHex,
+          input.isFeatured,
+          input.preferredSupplierId,
           input.status === 'retired' ? input.timestamp : null,
           input.actorId,
           input.timestamp,
@@ -568,6 +613,8 @@ export class ProductCatalogRepository {
       await client.query(
         `update products set category_id=$4,brand_id=$5,code=$6,normalized_code=$7,name=$8,
          description=$9,product_type=$10,tracks_inventory=$11,tax_code=$12,status=$13,
+         image_url=$16,icon_key=$17,card_style=$18,card_color_hex=$19,is_featured=$20,
+         preferred_supplier_id=$21,
          deleted_at=case when $13='retired' then $14::timestamptz else null end,
          updated_by=$15,updated_at=$14,version=version+1
          where company_id=$1 and id=$2 and version=$3 returning ${PRODUCT_COLUMNS}`,
@@ -587,6 +634,12 @@ export class ProductCatalogRepository {
           input.status,
           input.timestamp,
           input.actorId,
+          input.imageUrl,
+          input.iconKey,
+          input.cardStyle,
+          input.cardColorHex,
+          input.isFeatured,
+          input.preferredSupplierId,
         ],
       ),
     ).rows[0];
@@ -607,7 +660,10 @@ export class ProductCatalogRepository {
       ),
     ).rows[0];
     if (found === undefined)
-      throw new ProductCatalogError('validation_error', 'The branch is not active or does not exist.');
+      throw new ProductCatalogError(
+        'validation_error',
+        'The branch is not active or does not exist.',
+      );
   }
 
   public async insertProductPrice(
@@ -662,6 +718,7 @@ export class ProductCatalogRepository {
       tracksInventory: boolean;
       standardCost: string;
       currencyCode: string;
+      minStock: string | null;
       isDefault: boolean;
       optionSignature: string;
       status: ProductVariantRow['status'];
@@ -671,9 +728,9 @@ export class ProductCatalogRepository {
       await client.query(
         `insert into product_variants
          (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
-          tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,deleted_at,
-          created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16,$17,$17)
+          tracks_inventory,standard_cost,currency_code,min_stock,is_default,option_signature,status,
+          deleted_at,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17,$18,$18)
          returning ${VARIANT_COLUMNS}`,
         [
           input.id,
@@ -687,6 +744,7 @@ export class ProductCatalogRepository {
           input.tracksInventory,
           input.standardCost,
           input.currencyCode,
+          input.minStock,
           input.isDefault,
           input.optionSignature,
           input.status,
@@ -713,7 +771,7 @@ export class ProductCatalogRepository {
         `update product_variants set sku=$4,normalized_sku=$5,name=$6,unit_of_measure_code=$7,
          quantity_scale=$8,tracks_inventory=$9,standard_cost=$10,currency_code=$11,is_default=$12,
          status=$13,deleted_at=case when $13='retired' then $14::timestamptz else null end,
-         updated_by=$15,updated_at=$14,version=version+1
+         updated_by=$15,updated_at=$14,min_stock=$16,version=version+1
          where company_id=$1 and id=$2 and version=$3 returning ${VARIANT_COLUMNS}`,
         [
           input.companyId,
@@ -731,6 +789,7 @@ export class ProductCatalogRepository {
           input.status,
           input.timestamp,
           input.actorId,
+          input.minStock,
         ],
       ),
     ).rows[0];
@@ -1268,7 +1327,10 @@ export class ProductCatalogRepository {
   // page reduced in Node. Mirrors `reports.repository.ts`'s own two
   // CSV-export methods' shape (real individual rows, not an aggregate) and
   // `listProducts`' own filter semantics exactly, minus `cursor`/`limit`.
-  public async exportRows(companyId: string, input: ProductExportFilters): Promise<ProductExportRow[]> {
+  public async exportRows(
+    companyId: string,
+    input: ProductExportFilters,
+  ): Promise<ProductExportRow[]> {
     const values: unknown[] = [companyId];
     const where = ['p.company_id=$1'];
     const add = (value: unknown): string => {

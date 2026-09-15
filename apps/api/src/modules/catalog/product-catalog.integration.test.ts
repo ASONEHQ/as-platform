@@ -15,6 +15,15 @@ const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
 const migrationsPath = resolve(import.meta.dirname, '../../../../../packages/database/drizzle');
 
+// Narrows an optional value fetched from a query result/response into a
+// definite one for later use as required test input — never a silent
+// `!`, so a genuinely missing row fails the test with a clear message
+// instead of an unexplained downstream type error.
+function required<T>(value: T | undefined | null, what: string): T {
+  if (value === undefined || value === null) throw new Error(`Expected ${what} to be present.`);
+  return value;
+}
+
 integration('PostgreSQL products and default variants', { concurrent: false }, () => {
   let database: DatabaseClient;
   let catalog: CatalogService;
@@ -112,6 +121,13 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       otherCompanyId,
     ]);
     await database.pool.query('delete from products where company_id in ($1,$2)', [
+      companyId,
+      otherCompanyId,
+    ]);
+    // TASK 16.6: products.preferred_supplier_id is onDelete:'restrict' —
+    // supplier rows created by the tests below must be cleared after the
+    // products that may reference them, before the owning companies.
+    await database.pool.query('delete from suppliers where company_id in ($1,$2)', [
       companyId,
       otherCompanyId,
     ]);
@@ -811,5 +827,170 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
     const filteredCsv = await products.exportCsv(companyId, { search: 'Export Widget' });
     expect(filteredCsv).toContain(exported.value.id);
     expect(filteredCsv).not.toContain(unrelated.value.id);
+  });
+
+  // TASK 16.6 (Productos/Catálogo legacy parity) — round-trips every new
+  // Extras-tab field (image/icon/card-appearance/featured/supplier/
+  // min-stock) through create, patch, and a fresh reload from Postgres —
+  // proving these are real persisted columns, not merely accepted input.
+  it('round-trips image, icon, card appearance, featured, supplier, and min_stock through create and patch', async () => {
+    const supplier = await database.pool.query<{ id: string }>(
+      `insert into suppliers(id,company_id,name,status,created_by,updated_by)
+       values($1,$2,'Real Supplier','active',$3,$3) returning id`,
+      [randomUUID(), companyId, userId],
+    );
+    const supplierId = required(supplier.rows[0]?.id, 'inserted supplier id');
+
+    const created = await products.createProduct(context, 'extras-round-trip', {
+      code: 'extras-round-trip',
+      name: 'Extras round trip',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      imageUrl: 'https://cdn.example.test/products/extras.png',
+      iconKey: 'pizza',
+      cardStyle: 'solid',
+      cardColorHex: '#6b3fa0',
+      isFeatured: true,
+      preferredSupplierId: supplierId,
+      defaultVariant: {
+        sku: 'extras-round-trip',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+        minStock: '3.5',
+      },
+    });
+    expect(created.value).toMatchObject({
+      imageUrl: 'https://cdn.example.test/products/extras.png',
+      iconKey: 'pizza',
+      cardStyle: 'solid',
+      cardColorHex: '#6B3FA0',
+      isFeatured: true,
+      preferredSupplierId: supplierId,
+    });
+    expect(created.value.defaultVariant).toMatchObject({ minStock: '3.500000' });
+
+    const reloaded = await products.product(companyId, created.value.id);
+    expect(reloaded).toMatchObject({
+      imageUrl: 'https://cdn.example.test/products/extras.png',
+      iconKey: 'pizza',
+      cardStyle: 'solid',
+      cardColorHex: '#6B3FA0',
+      isFeatured: true,
+      preferredSupplierId: supplierId,
+    });
+
+    const patched = await products.patchProduct(context, created.value.id, created.value.version, {
+      cardStyle: 'default',
+      cardColorHex: null,
+      isFeatured: false,
+      imageUrl: null,
+      iconKey: null,
+      preferredSupplierId: null,
+    });
+    expect(patched).toMatchObject({
+      cardStyle: 'default',
+      cardColorHex: null,
+      isFeatured: false,
+      imageUrl: null,
+      iconKey: null,
+      preferredSupplierId: null,
+    });
+
+    const defaultVariant = required(created.value.defaultVariant, 'created default variant');
+    const variant = await products.patchVariant(
+      context,
+      defaultVariant.id,
+      defaultVariant.version,
+      { minStock: '10' },
+    );
+    expect(variant.minStock).toBe('10.000000');
+    const clearedVariant = await products.patchVariant(context, variant.id, variant.version, {
+      minStock: null,
+    });
+    expect(clearedVariant.minStock).toBeNull();
+  });
+
+  it('rejects a cross-tenant or inactive preferred_supplier_id', async () => {
+    const foreignSupplier = await database.pool.query<{ id: string }>(
+      `insert into suppliers(id,company_id,name,status,created_by,updated_by)
+       values($1,$2,'Foreign Supplier','active',$3,$3) returning id`,
+      [randomUUID(), otherCompanyId, userId],
+    );
+    const inactiveSupplier = await database.pool.query<{ id: string }>(
+      `insert into suppliers(id,company_id,name,status,created_by,updated_by)
+       values($1,$2,'Inactive Supplier','inactive',$3,$3) returning id`,
+      [randomUUID(), companyId, userId],
+    );
+    await expect(
+      products.createProduct(context, 'cross-tenant-supplier', {
+        code: 'cross-tenant-supplier',
+        name: 'Cross tenant supplier',
+        productType: 'variable',
+        tracksInventory: false,
+        status: 'draft',
+        preferredSupplierId: required(foreignSupplier.rows[0]?.id, 'foreign supplier id'),
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
+    await expect(
+      products.createProduct(context, 'inactive-supplier', {
+        code: 'inactive-supplier',
+        name: 'Inactive supplier',
+        productType: 'variable',
+        tracksInventory: false,
+        status: 'draft',
+        preferredSupplierId: required(inactiveSupplier.rows[0]?.id, 'inactive supplier id'),
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' });
+  });
+
+  // TASK 16.6 — "Duplicar" (`AS POS V1.html:1202,6279-6290`): a real
+  // server-side clone with a guaranteed-unique code/sku and every other
+  // real field copied, always landing in `draft`.
+  it('duplicates a product into a new draft with a unique code/sku and copies its real fields', async () => {
+    const source = await products.createProduct(context, 'duplicate-source', {
+      code: 'duplicate-source',
+      name: 'Duplicate source',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      imageUrl: 'https://cdn.example.test/products/source.png',
+      iconKey: 'gift',
+      cardStyle: 'gradient',
+      cardColorHex: '#123ABC',
+      isFeatured: true,
+      defaultVariant: {
+        sku: 'duplicate-source-sku',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '9.99',
+        currencyCode: 'MXN',
+        minStock: '2',
+      },
+    });
+    const duplicate = await products.duplicateProduct(context, source.value.id);
+    expect(duplicate.value.id).not.toBe(source.value.id);
+    expect(duplicate.value.code).not.toBe(source.value.code);
+    expect(duplicate.value.status).toBe('draft');
+    expect(duplicate.value).toMatchObject({
+      name: 'Duplicate source (copia)',
+      imageUrl: 'https://cdn.example.test/products/source.png',
+      iconKey: 'gift',
+      cardStyle: 'gradient',
+      cardColorHex: '#123ABC',
+      isFeatured: true,
+    });
+    expect(duplicate.value.defaultVariant).toMatchObject({ standardCost: '9.9900' });
+    expect(duplicate.value.defaultVariant?.sku).not.toBe(source.value.defaultVariant?.sku);
+
+    const secondDuplicate = await products.duplicateProduct(context, source.value.id);
+    expect(secondDuplicate.value.id).not.toBe(duplicate.value.id);
+    expect(secondDuplicate.value.code).not.toBe(duplicate.value.code);
+
+    await expect(products.duplicateProduct(context, randomUUID())).rejects.toMatchObject({
+      code: 'resource_not_found',
+    });
   });
 });

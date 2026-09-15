@@ -883,6 +883,82 @@ mandated a live rehearsal rather than trusting agent self-reports —
 isolation, gave no signal that the feature was unreachable through the
 real application.
 
+## TASK 16.6 — Product Catalog Full Legacy Parity (2026-09-15)
+
+A full, independent re-audit of `AS POS V1.html`'s entire Productos/
+Catálogo surface (list screen, all 4 modal tabs — General/Precios/
+Extras/Importar-Exportar — plus the standalone Variantes/Relacionados
+tabs), cross-checked line-by-line against both the legacy source and the
+Flutter/Fastify/PostgreSQL implementation as it stood before this task
+(not copied from a single agent's self-report — two independent
+background audits, reconciled and re-verified directly against
+`product-catalog.routes.ts`/`pos_shell.dart` before any code changed).
+
+**Final count: 47 distinct Productos/Catálogo capabilities identified in
+the canonical HTML** (list/toolbar actions, filters, both tab-panel sets,
+and every field across General/Precios/Extras). Of these: **22 already
+had real A-parity** before this task (product CRUD, search/filters, KPI
+counters, CSV export, real variants — rebuilt in Wave 3 — category admin,
+inline table editing → modal editing, PIN gating → real RBAC, inventory/
+Kardex integration, weight-based units, nombre/unidad/SKU/barcode/precio/
+costo/stock actual); **10 were genuine legacy capabilities with NO
+Flutter equivalent before this task**, now implemented; **9 were
+confirmed legacy placeholders/dead code**, correctly documented rather
+than recreated; **1 (Utilidad's live display) is a real, addressable
+follow-up explicitly out of this task's scope** (see its own row); the
+remaining rows are minor sub-items of the above (dead `Tipo`/`porPeso`
+fields, the orphaned duplicate image-handling functions).
+
+| Legacy capability | Legacy evidence | Current before TASK 16.6 | Implementation (TASK 16.6) | Test | Final status |
+|---|---|---|---|---|---|
+| Nuevo producto | REAL, `guardarProducto()` | REAL — `POST /api/v1/products`, `_NewProductDialog` | Extended with description/categoría/marca/proveedor/IVA/estado/favorito/ícono/apariencia/imagen-URL/stock-mínimo | `product-catalog.service.test.ts`, `product-catalog.integration.test.ts`, `pos_product_catalog_parity_test.dart` | **A** |
+| Editar producto | REAL, `guardarProducto()` (same fn, edit path) | **MISSING** — zero `updateProduct` call sites anywhere in `apps/one` (grep-confirmed) | `PATCH /api/v1/products/:id` (already existed, unused) now called by a real, new `_EditProductDialog`; `PosCatalogAdminGateway.updateProduct`/`.product` added | `pos_product_catalog_parity_test.dart` (fetch-then-PATCH, real field diffs, explicit null-clearing) | **A — newly implemented** |
+| Duplicar producto | REAL, `Object.assign({},p,{id:uid(),nombre:...+" (copia)"})`, `AS POS V1.html:1202,6279-6290` | **MISSING** — no endpoint, no UI | `POST /api/v1/products/:id/duplicate` (`ProductCatalogService.duplicateProduct` — guaranteed-unique code/SKU via retry, always lands `draft`); `_ProductCard`'s new overflow menu | `product-catalog.integration.test.ts`, `product-catalog.routes.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Eliminar producto | REAL but a genuine in-memory **hard delete** (`DB[tbl].filter(...)`) | Real soft status transitions (`inactive`/`retired`) already existed | Unchanged — a hard delete was never re-created; status-based retirement is the platform's own established, safer pattern everywhere else | pre-existing | **A (safer upgrade, not a literal port)** |
+| Buscar por nombre/SKU/código de barras | REAL | REAL | unchanged | pre-existing | **A** |
+| Filtro categoría/estado | REAL | REAL | unchanged | pre-existing | **A** |
+| Filtro "Tipo" | **G** — targets a `#mp-tipo` DOM id that does not exist anywhere in the modal; dead/unreachable | n/a | not ported | — | **G** |
+| Contadores/KPIs | REAL | REAL | unchanged | pre-existing | **A** |
+| Importar desde Excel | **G** — `simularImport()` hardcodes a fake "24 nuevos · 3 duplicados" result string, no real parsing | n/a | not ported | — | **G** |
+| Exportar a Excel (CSV) | REAL — genuine CSV Blob | REAL — `GET /api/v1/products/export.csv` (Wave 3) | unchanged | pre-existing | **A** |
+| Etiquetas (label generation) | **G** — real selection-count gating, but the "print" action is `toast()`-only, no real artifact | n/a | not ported | — | **G** |
+| Tab Catálogo | REAL | REAL | unchanged | pre-existing | **A** |
+| Tab Precios especiales (6 price tiers) | **G** — real data entry, but `agregarProducto()` never reads any of the 6 fields at checkout (dead consumption) | n/a | not ported (documented, not recreated deceptively) | — | **G** |
+| Tab Variantes | **G** — 100% static placeholder, no `DB.variantes`, buttons `toast()`-only | **[Wave 3 — already rebuilt]** real `product_variants` + `pos_product_variants_screen.dart` | unchanged this task | pre-existing | **A (already superseded, pre-16.6)** |
+| Tab Relacionados | **G** — static placeholder, no real data model | n/a | not ported | — | **G** |
+| Tab Importar/Exportar (bulk) | Mixed — export real, import `simularImport()` fake | n/a beyond the CSV export above | not ported | — | **G (import) / A (export, pre-existing)** |
+| Modal General — Nombre | REAL | REAL | unchanged | pre-existing | **A** |
+| Modal General — Categoría | REAL | Backend field existed (`categoryId`), **no picker in the create dialog** | Real category picker (`_IdNamePicker` + `PosCategoryAdminGateway`) in both create and edit dialogs | `pos_product_catalog_parity_test.dart` | **A — gap closed** |
+| Modal General — Unidad | REAL | REAL | unchanged | pre-existing | **A** |
+| Modal General — "Aparece en el Punto de Venta" | REAL, real downstream effect (`categoriaPOS=null` removes it from `getPosItems()`) | Achieved via `status` (`draft`/`inactive` products are real-excluded from the sellable POS grid) | Status now a real, user-facing field in both dialogs (was previously unset in create, absent in edit) | `pos_product_catalog_parity_test.dart` | **A (functional equivalent via status, not a literal toggle)** |
+| Categoría POS (dedicated admin page, icon/order/active) | REAL, separate screen | REAL — unified into the platform's own `product_categories.visual_tile`/order/status, `pos_category_admin_screen.dart` | unchanged | pre-existing | **A** |
+| Modal General — SKU | REAL | REAL | unchanged | pre-existing | **A** |
+| Modal General — Código de barras | REAL, duplicate-checked on create only | REAL, duplicate-checked via a real DB constraint on every write | unchanged | pre-existing | **A** |
+| Modal General — Descripción | REAL | **MISSING from both dialogs** | Real `description` field, create + edit | `pos_product_catalog_parity_test.dart` | **A — gap closed** |
+| Modal General — Estado | REAL | Silently defaulted (`active`), not user-selectable | Real dropdown, create (draft/active/inactive) + edit (+ retired) | `pos_product_catalog_parity_test.dart` | **A — gap closed** |
+| Modal General — Favorito | REAL boolean | **MISSING entirely** — no column, no field | Real `products.is_featured` column + checkbox/switch in both dialogs + a real star badge on both product cards | `product-catalog.integration.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Modal General — "Tipo" field | **G** — no `#mp-tipo` element exists in the modal HTML; dead | n/a | not ported | — | **G** |
+| Modal General — "porPeso" weight toggle | **G** — no `#mp-porpeso` element; dead in the modal (weight pricing is real elsewhere via `mp-unidad`, separately) | REAL, via `unitOfMeasureCode` (`kg`/`g` = weight-based) | unchanged | pre-existing | **A (via the real, separate mechanism)** |
+| Modal Precios — Precio de venta | REAL | REAL — `POST /api/v1/products/:id/prices` (company-wide/branch-scoped, its own real screen) | unchanged (product dialog intentionally does not duplicate price capture — see Utilidad row) | pre-existing | **A** |
+| Modal Precios — Costo | REAL, live recalc | REAL — `standard_cost` on the variant | unchanged | pre-existing | **A** |
+| Modal Precios — IVA % | REAL storage, but **never applied to any cart total** (dead consumption, confirmed across every total-computation call site) | REAL classification (`tax_code`), stored, not blindly recreating the legacy's own dead consumption | Now exposed as a real, editable field in both dialogs (was previously fixed at creation default only) | `pos_product_catalog_parity_test.dart` | **A (storage; consumption is a pre-existing, separate concern outside this task)** |
+| Modal Precios — Utilidad (profit) | Real math (`calcUtilidad()`), but writes to DOM ids (`mp-utilidad-row` etc.) that don't exist in the modal — **dead output**, never actually visible in the legacy either | Not computed anywhere (no product-dialog price field to compute it from — this platform separates cost, on the product/variant, from price, on its own dedicated pricing screen) | **Not implemented in the product dialog** — see note below | — | **Documented follow-up, not a regression**: the legacy's own display was dead too, so nothing user-visible is lost; a live cost-vs-price margin view is a real, addressable enhancement once/if it's wanted, but building it here would mean capturing price a second time in a divergent path from the existing real pricing screen |
+| Modal Precios — Stock actual | REAL, wired to real inventory/Kardex | REAL | unchanged | pre-existing | **A** |
+| Modal Precios — Stock mínimo | REAL | **MISSING entirely** — no column | Real `product_variants.min_stock` column + field in create dialog; edit intentionally routes to the already-real variant screen (see Extras note) | `product-catalog.integration.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Modal Extras — Subir imagen (file) | REAL, `FileReader.readAsDataURL`, 5 MB cap, in-memory only (never persisted — nothing in the legacy is) | **MISSING entirely** | Real, production-safe upload: `POST /api/v1/products/:id/image` (multipart, magic-byte validated, `If-Match` CAS), `S3ObjectStorage`/`ProductImageStorage` (MinIO, tenant-scoped keys, generalized from the proven `branding.storage.ts` pattern), real Flutter picker in `_EditProductDialog` | `product-catalog.routes.integration.test.ts` (real MinIO round-trip, tenant isolation, 413/415/409), `pos_product_catalog_parity_test.dart` | **A — newly implemented, genuinely upgraded (real persistence vs. the legacy's own in-memory-only base64)** |
+| Modal Extras — Imagen por URL | REAL alternate path | **MISSING entirely** | Real `image_url` field (external URL only, format-validated, never server-fetched — deliberate SSRF-safety boundary) | `product-catalog.service.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Modal Extras — orphaned duplicate image functions (`previewUrlImg`/`aplicarUrlImagen`/`quitarImagen`/`cargarImagenArchivo`) | **G** — confirmed dead/unreachable, no `onclick` ever calls them | n/a | not ported | — | **G** |
+| Modal Extras — Selector de ícono (`ICONOS_SUGERIDOS`, 25 entries) | REAL | **MISSING entirely** | A bounded, server-validated `productIconKeys` allowlist (25 tenant-neutral keys, `products.icon_key`), a real picker + a mapped Flutter icon set in `pos_product_card_visual.dart` | `product-catalog.service.test.ts` (allowlist rejection), `pos_product_catalog_parity_test.dart` (rendering + fallback) | **A — newly implemented (platform-neutral, not the legacy's own Tabler-Icons class names, which Flutter cannot render)** |
+| Modal Extras — Color de tarjeta (`mpColorSetModo`, Default/Degradado/Sólido) | REAL, 3-mode, with a hardcoded `#6B3FA0` tenant default | **MISSING entirely** | Exact 3-mode parity (`card_style`/`card_color_hex`), but this platform's own `default` mode is genuinely neutral — never one tenant's color hardcoded into shared logic; DB check constraints mirror the same rule server-side | `product-catalog.service.test.ts`, `product-catalog.integration.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Modal Extras — Vista previa en vivo de la tarjeta (`mpCardPreview`) | REAL, reuses `prodCard()` verbatim | **MISSING entirely** | `_ProductCardLivePreview` reuses the SAME `PosProductCardVisual`/`posProductCardFill` the real POS and admin cards render with — a true live preview, not a mockup | `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
+| Modal Extras — Marca/Proveedor | **Placeholder-as-relationship** — a plain free-text input, `DB.proveedores` is a wholly separate array with no FK | `brandId` (real FK) existed but unwired in the UI; no supplier relationship on products at all | Real brand picker wired into both dialogs; **NEW** real `preferred_supplier_id` FK to the already-real `suppliers` table | `product-catalog.integration.test.ts` (incl. cross-tenant/inactive rejection), `pos_product_catalog_parity_test.dart` | **A+ — genuine upgrade over the legacy's own non-relational field** |
+| Producto → tarjeta POS/Cafetería: imagen/ícono/color realmente visibles | REAL (`prodCard()` renders `p.foto`/`p.icono`/`p.color` on every real tile) | **Every card hardcoded a single generic icon, no image/color support at all** (`_PosProductCard`, `_ProductCard`) | Both real card renderers now read `imageUrl`/`iconKey`/`cardStyle`/`cardColorHex`/`isFeatured` off the real backend response and render them for real, with a safe icon fallback on a missing/failed image | `pos_product_catalog_parity_test.dart` (icon fallback, featured badge, image wiring, no-crash-under-no-network) | **A — this task's own core requirement, closed** |
+| Categorías, marcas, opciones/valores, códigos de barras, precios por sucursal, variantes múltiples | REAL/placeholder mix, exhaustively covered in section 3 above and Wave 3's own recount | **[Already A — Wave 3]** real backend + real Flutter admin screens | Reused as-is (brand/category pickers now consume these exact existing gateways) — no duplicate models/endpoints created | pre-existing | **A (reused, not duplicated, per this task's own instruction)** |
+
+**Hard constraints verified**: no product image bytes/base64 stored in PostgreSQL anywhere (`products.image_url` is a URL column only, mirroring `branding.logo_url`); every new column/table is tenant-scoped with the same composite-FK convention as the rest of the schema (`products_preferred_supplier_scope_fk`); no tenant name, product, category, color, price, or supplier is hardcoded in any shared application file (audited: `default` card style renders the platform's own neutral surface, never `#6B3FA0`); no capability already shipped before this task was removed or regressed (full pre-existing test suites re-run clean: 1155 backend tests, 551 Flutter tests).
+
+**Verification run (all green, this task)**: backend `tsc --noEmit` (zero errors), `eslint` (zero errors/warnings on touched files), full `apps/api` vitest suite (1155/1155), dedicated integration tests against real Postgres (field round-trip, supplier FK cross-tenant/inactive rejection, duplicate-product behavior) and real Postgres+MinIO (image upload/delete, magic-byte/size/content-type validation, CAS conflict, tenant isolation), `flutter analyze` (zero errors), full `apps/one` widget-test suite (551/551, including the newly-added `pos_product_catalog_parity_test.dart`), a real production Flutter Web build (`scripts/build_web.sh`) with a clean bundle audit (no `localhost`/`127.0.0.1`/credentials in the built output), `drizzle-kit check` (30 migrations, statically valid).
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

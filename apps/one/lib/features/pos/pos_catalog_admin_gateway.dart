@@ -64,36 +64,154 @@ class PosCatalogEffectivePrice {
   final String status;
 }
 
-/// A lightweight `products` row for this screen's own product picker —
-/// mirrors `PosVariantProduct` (`pos_product_variants_gateway.dart`)'s
-/// shape plus the real `effective_price` that gateway's model omits.
+/// A `product_variants` row as embedded under a product's own
+/// `default_variant` (`variantHttp()` in `product-catalog.routes.ts`) —
+/// distinct from [PosCatalogVariant] (the barcode picker's trimmed list
+/// row): this one carries [minStock] (TASK 16.6, legacy "Stock mínimo"
+/// parity) and the real [version] the Extras/Precios tabs need to PATCH
+/// the variant itself.
+class PosCatalogDefaultVariant {
+  const PosCatalogDefaultVariant({
+    required this.id,
+    required this.sku,
+    this.name,
+    required this.unitOfMeasureCode,
+    required this.quantityScale,
+    this.standardCost,
+    this.currencyCode,
+    this.minStock,
+    required this.version,
+  });
+
+  factory PosCatalogDefaultVariant.fromJson(Map<String, Object?> json) => PosCatalogDefaultVariant(
+    id: json['id']! as String,
+    sku: json['sku']! as String,
+    name: json['name'] as String?,
+    unitOfMeasureCode: json['unit_of_measure_code']! as String,
+    quantityScale: json['quantity_scale']! as int,
+    // `standard_cost`/`currency_code` are only present when the caller
+    // holds `inventory.cost.read` (`variantHttp()`'s own `showCost`
+    // gate) — never assume present.
+    standardCost: json['standard_cost'] as String?,
+    currencyCode: json['currency_code'] as String?,
+    minStock: json['min_stock'] as String?,
+    version: json['version']! as int,
+  );
+
+  final String id;
+  final String sku;
+  final String? name;
+  final String unitOfMeasureCode;
+  final int quantityScale;
+  final String? standardCost;
+  final String? currencyCode;
+
+  /// TASK 16.6 — legacy "Stock mínimo" parity. `null` = no threshold
+  /// configured, always a decimal string (ADR-0001), never a Dart number.
+  final String? minStock;
+  final int version;
+}
+
+/// A `products` row for this screen's own product picker, product grid,
+/// and (TASK 16.6) the full product edit dialog — mirrors `PosVariantProduct`
+/// (`pos_product_variants_gateway.dart`)'s shape plus the real
+/// `effective_price` that gateway's model omits, plus (TASK 16.6) the real
+/// image/icon/card-appearance/featured/supplier fields `productHttp()` now
+/// returns (`apps/api/src/modules/catalog/product-catalog.routes.ts`).
 class PosCatalogProduct {
   const PosCatalogProduct({
     required this.id,
     required this.code,
     required this.name,
+    this.description,
+    this.productType = 'simple',
+    this.tracksInventory = false,
+    this.taxCode,
     required this.status,
+    this.categoryId,
+    this.brandId,
+    this.imageUrl,
+    this.iconKey,
+    this.cardStyle = 'default',
+    this.cardColorHex,
+    this.isFeatured = false,
+    this.preferredSupplierId,
+    this.version = 0,
     required this.effectivePrice,
+    this.defaultVariant,
   });
 
   factory PosCatalogProduct.fromJson(Map<String, Object?> json) {
     final rawPrice = json['effective_price'];
+    final rawVariant = json['default_variant'];
     return PosCatalogProduct(
       id: json['id']! as String,
       code: json['code']! as String,
       name: json['name']! as String,
+      description: json['description'] as String?,
+      productType: json['product_type'] as String? ?? 'simple',
+      tracksInventory: json['tracks_inventory'] == true,
+      taxCode: json['tax_code'] as String?,
       status: json['status']! as String,
+      categoryId: json['category_id'] as String?,
+      brandId: json['brand_id'] as String?,
+      imageUrl: json['image_url'] as String?,
+      iconKey: json['icon_key'] as String?,
+      cardStyle: json['card_style'] as String? ?? 'default',
+      cardColorHex: json['card_color_hex'] as String?,
+      isFeatured: json['is_featured'] == true,
+      preferredSupplierId: json['preferred_supplier_id'] as String?,
+      version: json['version'] as int? ?? 0,
       effectivePrice: rawPrice is Map<String, Object?> ? PosCatalogEffectivePrice.fromJson(rawPrice) : null,
+      defaultVariant: rawVariant is Map<String, Object?>
+          ? PosCatalogDefaultVariant.fromJson(rawVariant)
+          : null,
     );
   }
 
   final String id;
   final String code;
   final String name;
+  final String? description;
+
+  /// `simple` | `variable` | `kit` | `service`.
+  final String productType;
+  final bool tracksInventory;
+
+  /// `IVA_GENERAL` | `IVA_EXEMPT`, `null` when absent from the response.
+  final String? taxCode;
 
   /// `draft` | `active` | `inactive` | `retired`.
   final String status;
+  final String? categoryId;
+  final String? brandId;
+
+  /// TASK 16.6 — a real uploaded photo (object-storage URL) or a pasted
+  /// external URL. `null` = no image configured; the icon/fallback below
+  /// is used instead.
+  final String? imageUrl;
+
+  /// TASK 16.6 — one of the platform's bounded `productIconKeys` (see
+  /// `product-catalog.types.ts`), or `null` for no icon configured.
+  final String? iconKey;
+
+  /// TASK 16.6 — `default` | `gradient` | `solid` (legacy
+  /// `mpColorSetModo()` parity).
+  final String cardStyle;
+
+  /// TASK 16.6 — a `#RRGGBB` hex string, required whenever [cardStyle] is
+  /// not `default`.
+  final String? cardColorHex;
+
+  /// TASK 16.6 — legacy "Favorito" parity.
+  final bool isFeatured;
+
+  /// TASK 16.6 — a real FK to `suppliers` (upgrades the legacy's own
+  /// free-text, non-relational "Marca/Proveedor" field).
+  final String? preferredSupplierId;
+  final int version;
   final PosCatalogEffectivePrice? effectivePrice;
+  final PosCatalogDefaultVariant? defaultVariant;
 }
 
 class PosCatalogProductPage {
@@ -113,26 +231,50 @@ class PosNewProductInput {
   const PosNewProductInput({
     required this.code,
     required this.name,
+    this.description,
     this.productType = 'simple',
     this.categoryId,
     this.brandId,
+    this.taxCode,
     this.sku,
     this.unitOfMeasureCode = 'unit',
     this.quantityScale = 0,
     this.standardCost,
+    this.minStock,
     this.barcode,
     this.barcodeType,
     this.tracksInventory = true,
     this.status = 'active',
+    this.imageUrl,
+    this.iconKey,
+    this.cardStyle,
+    this.cardColorHex,
+    this.isFeatured = false,
+    this.preferredSupplierId,
   });
 
   final String code;
   final String name;
+  final String? description;
 
   /// `simple` | `variable` | `kit` | `service`.
   final String productType;
   final String? categoryId;
   final String? brandId;
+
+  /// `IVA_GENERAL` | `IVA_EXEMPT`; `null` lets the backend apply its own
+  /// default (`IVA_GENERAL`).
+  final String? taxCode;
+
+  /// TASK 16.6 — see `PosCatalogProduct`'s own field doc comments for what
+  /// each of these means; all optional/omittable, matching the backend's
+  /// own optional Extras-tab fields.
+  final String? imageUrl;
+  final String? iconKey;
+  final String? cardStyle;
+  final String? cardColorHex;
+  final bool isFeatured;
+  final String? preferredSupplierId;
 
   /// Defaults to `'active'` — TASK 15.1 Phase 6 gap fix: the backend's
   /// own `products.status` column defaults to `'draft'` when this field
@@ -167,14 +309,27 @@ class PosNewProductInput {
   /// inventory unless the caller explicitly says otherwise.
   final bool tracksInventory;
 
+  /// TASK 16.6 — legacy "Stock mínimo" parity for the default variant
+  /// created alongside the product; omitted/`null` = no threshold
+  /// configured. Always a decimal string (ADR-0001).
+  final String? minStock;
+
   Map<String, Object?> toJson() => {
     'code': code,
     'name': name,
     'product_type': productType,
     'tracks_inventory': tracksInventory,
     'status': status,
+    'is_featured': isFeatured,
+    if (description != null) 'description': description,
     if (categoryId != null) 'category_id': categoryId,
     if (brandId != null) 'brand_id': brandId,
+    if (taxCode != null) 'tax_code': taxCode,
+    if (imageUrl != null) 'image_url': imageUrl,
+    if (iconKey != null) 'icon_key': iconKey,
+    if (cardStyle != null) 'card_style': cardStyle,
+    if (cardColorHex != null) 'card_color_hex': cardColorHex,
+    if (preferredSupplierId != null) 'preferred_supplier_id': preferredSupplierId,
     if (sku != null)
       'default_variant': {
         'sku': sku,
@@ -182,9 +337,85 @@ class PosNewProductInput {
         'quantity_scale': quantityScale,
         'tracks_inventory': tracksInventory,
         if (standardCost != null) 'standard_cost': standardCost,
+        if (minStock != null) 'min_stock': minStock,
         if (barcode != null)
           'barcode': {'type': barcodeType ?? 'code128', 'value': barcode, 'is_primary': true},
       },
+  };
+}
+
+/// `PATCH /api/v1/products/{id}`'s real request body (`productPatchSchema`
+/// in `product-catalog.routes.ts`) — TASK 16.6: this real, already-existing
+/// backend route had ZERO Flutter caller anywhere in `apps/one` until now
+/// (Agent-confirmed via grep). Every field is optional/omittable, matching
+/// the backend's own PATCH semantics (only supplied fields change). Three
+/// fields — [iconKey]/[cardColorHex]/[preferredSupplierId] — support a real
+/// explicit "clear back to none" via their own `clear*` flag, since Dart's
+/// `T?` alone cannot distinguish "omit this field" from "set it to JSON
+/// `null`" the way the backend's own optional-vs-nullable PATCH fields do.
+class PosProductPatchInput {
+  const PosProductPatchInput({
+    this.name,
+    this.description,
+    this.status,
+    this.categoryId,
+    this.brandId,
+    this.taxCode,
+    this.imageUrl,
+    this.iconKey,
+    this.clearIconKey = false,
+    this.cardStyle,
+    this.cardColorHex,
+    this.clearCardColorHex = false,
+    this.isFeatured,
+    this.preferredSupplierId,
+    this.clearPreferredSupplierId = false,
+  });
+
+  final String? name;
+  final String? description;
+
+  /// `draft` | `active` | `inactive` | `retired`.
+  final String? status;
+  final String? categoryId;
+  final String? brandId;
+  final String? taxCode;
+
+  /// A real uploaded photo goes through [PosCatalogAdminGateway
+  /// .uploadProductImage] instead — this only ever carries a pasted
+  /// external URL, matching the backend's own SSRF-safe contract.
+  final String? imageUrl;
+  final String? iconKey;
+  final bool clearIconKey;
+  final String? cardStyle;
+  final String? cardColorHex;
+  final bool clearCardColorHex;
+  final bool? isFeatured;
+  final String? preferredSupplierId;
+  final bool clearPreferredSupplierId;
+
+  Map<String, Object?> toJson() => {
+    if (name != null) 'name': name,
+    if (description != null) 'description': description,
+    if (status != null) 'status': status,
+    if (categoryId != null) 'category_id': categoryId,
+    if (brandId != null) 'brand_id': brandId,
+    if (taxCode != null) 'tax_code': taxCode,
+    if (imageUrl != null) 'image_url': imageUrl,
+    if (clearIconKey)
+      'icon_key': null
+    else if (iconKey != null)
+      'icon_key': iconKey,
+    if (cardStyle != null) 'card_style': cardStyle,
+    if (clearCardColorHex)
+      'card_color_hex': null
+    else if (cardColorHex != null)
+      'card_color_hex': cardColorHex,
+    if (isFeatured != null) 'is_featured': isFeatured,
+    if (clearPreferredSupplierId)
+      'preferred_supplier_id': null
+    else if (preferredSupplierId != null)
+      'preferred_supplier_id': preferredSupplierId,
   };
 }
 
@@ -514,6 +745,44 @@ abstract interface class PosCatalogAdminGateway {
   /// (`pos_shell.dart`) for the real caller this closes the gap for.
   Future<PosCatalogProduct> createProduct(PosNewProductInput input);
 
+  /// `GET /api/v1/products/{id}` (`catalog.read`) — the full single-product
+  /// representation (TASK 16.6: fetched before opening the edit dialog, so
+  /// the dialog always starts from the real current [PosCatalogProduct
+  /// .version] rather than a possibly-stale grid row).
+  Future<PosCatalogProduct> product(String id);
+
+  /// `PATCH /api/v1/products/{id}` (`product.manage`) — requires `If-Match`
+  /// carrying the product's own current [version]. TASK 16.6 gap fix: this
+  /// real, already-existing backend route had ZERO Flutter caller anywhere
+  /// in `apps/one` until now — see `_EditProductDialog` for the real
+  /// caller.
+  Future<PosCatalogProduct> updateProduct(String id, int version, PosProductPatchInput input);
+
+  /// `POST /api/v1/products/{id}/duplicate` (`product.manage`) — no request
+  /// body; the backend derives a guaranteed-unique code/SKU and always
+  /// creates the new product as `draft`. TASK 16.6 (Productos/Catálogo
+  /// legacy parity, "Duplicar", `AS POS V1.html:1202,6279-6290`).
+  Future<PosCatalogProduct> duplicateProduct(String id);
+
+  /// `POST /api/v1/products/{id}/image` (`product.manage`, multipart) —
+  /// requires `If-Match` carrying the product's own current
+  /// [expectedVersion]. TASK 16.6 (Extras tab real image management,
+  /// `AS POS V1.html`'s `cargarImagenProducto()`). Only present on this
+  /// interface when the platform's object storage is actually configured
+  /// server-side — callers should treat a real HTTP 404 here as "image
+  /// upload is not available," never retry-loop it.
+  Future<PosCatalogProduct> uploadProductImage(
+    String id, {
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  });
+
+  /// `DELETE /api/v1/products/{id}/image` (`product.manage`) — requires
+  /// `If-Match` carrying the product's own current [expectedVersion].
+  Future<PosCatalogProduct> deleteProductImage(String id, int expectedVersion);
+
   /// `GET /api/v1/products/{product_id}/variants` (`catalog.read`) — the
   /// barcode tab's own variant picker for a selected product.
   Future<PosCatalogVariantPage> listVariants(String productId, {String? cursor, int limit = 50});
@@ -608,6 +877,73 @@ class ApiPosCatalogAdminGateway implements PosCatalogAdminGateway {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
       throw const FormatException('Missing created product data.');
+    }
+    return PosCatalogProduct.fromJson(data);
+  }
+
+  @override
+  Future<PosCatalogProduct> product(String id) async {
+    final envelope = await _client.getJson('/api/v1/products/$id');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product data.');
+    }
+    return PosCatalogProduct.fromJson(data);
+  }
+
+  @override
+  Future<PosCatalogProduct> updateProduct(String id, int version, PosProductPatchInput input) async {
+    final envelope = await _client.patchJson(
+      '/api/v1/products/$id',
+      ifMatch: '"$version"',
+      body: input.toJson(),
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing updated product data.');
+    }
+    return PosCatalogProduct.fromJson(data);
+  }
+
+  @override
+  Future<PosCatalogProduct> duplicateProduct(String id) async {
+    final envelope = await _client.postJson('/api/v1/products/$id/duplicate');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing duplicated product data.');
+    }
+    return PosCatalogProduct.fromJson(data);
+  }
+
+  @override
+  Future<PosCatalogProduct> uploadProductImage(
+    String id, {
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) async {
+    final envelope = await _client.postMultipart(
+      '/api/v1/products/$id/image',
+      fieldName: 'file',
+      filename: filename,
+      bytes: bytes,
+      contentType: contentType,
+      ifMatch: '"$expectedVersion"',
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product image data.');
+    }
+    return PosCatalogProduct.fromJson(data);
+  }
+
+  @override
+  Future<PosCatalogProduct> deleteProductImage(String id, int expectedVersion) async {
+    final envelope = await _client.deleteJson('/api/v1/products/$id/image', ifMatch: '"$expectedVersion"');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product image data.');
     }
     return PosCatalogProduct.fromJson(data);
   }
@@ -806,6 +1142,31 @@ class EmptyPosCatalogAdminGateway implements PosCatalogAdminGateway {
 
   @override
   Future<PosCatalogProduct> createProduct(PosNewProductInput input) =>
+      Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosCatalogProduct> product(String id) =>
+      Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosCatalogProduct> updateProduct(String id, int version, PosProductPatchInput input) =>
+      Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosCatalogProduct> duplicateProduct(String id) =>
+      Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosCatalogProduct> uploadProductImage(
+    String id, {
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) => Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosCatalogProduct> deleteProductImage(String id, int expectedVersion) =>
       Future.error(StateError('No catalog admin gateway is configured.'));
 
   @override

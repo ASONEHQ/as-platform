@@ -14,15 +14,18 @@ import {
 } from '@asone/database';
 
 import type { ProductCatalogRepository } from './product-catalog.repository.js';
+import type { ProductImageStorage } from './product-images.storage.js';
 import type {
   CreateBarcodeInput,
   CreateProductInput,
   CreateProductPriceInput,
   CreateVariantInput,
+  ProductCardStyle,
   ProductDetail,
   ProductExportFilters,
   ProductExportRow,
   ProductFilters,
+  ProductIconKey,
   ProductMutationContext,
   ProductPage,
   ProductPriceRow,
@@ -32,7 +35,7 @@ import type {
   UpdateProductInput,
   UpdateVariantInput,
 } from './product-catalog.types.js';
-import { ProductCatalogError } from './product-catalog.types.js';
+import { ProductCatalogError, productIconKeys } from './product-catalog.types.js';
 
 function clean(value: string, field: string): string {
   const result = value.trim();
@@ -59,6 +62,65 @@ function currency(value: string): string {
   const result = value.trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(result))
     throw new ProductCatalogError('validation_error', 'currency_code must be ISO 4217.');
+  return result;
+}
+// TASK 16.6 — `min_stock` (legacy "Stock mínimo" parity) is a decimal
+// like `standardCost`, but matches this column's own `numeric(19, 6)`
+// scale (packages/database/src/schema/catalog.ts) rather than
+// `standardCost`'s 4-decimal money scale — a reorder-point quantity, not
+// a currency amount.
+function stockAmount(value: string): string {
+  if (!/^(?:0|[1-9]\d{0,14})(?:\.\d{1,6})?$/.test(value))
+    throw new ProductCatalogError(
+      'validation_error',
+      'min_stock must be a non-negative decimal with at most six decimals.',
+    );
+  const [matchedWhole, fraction = ''] = value.split('.');
+  const whole = matchedWhole ?? '0';
+  return `${whole}.${fraction.padEnd(6, '0')}`;
+}
+// TASK 16.6 — `icon_key` is enum-validated at the route's JSON schema
+// (see product-catalog.routes.ts) the same way `status`/`product_type`
+// already are; this is the service-layer normalizer that mirrors
+// `normalizedTaxCode()`'s own belt-and-suspenders pattern just below it
+// for every other enum-like field in this file.
+function validatedIconKey(value: string): ProductIconKey {
+  if (!(productIconKeys as readonly string[]).includes(value))
+    throw new ProductCatalogError('validation_error', 'icon_key is not a recognized product icon.');
+  return value as ProductIconKey;
+}
+// TASK 16.6 — mirrors the legacy's own `mpColorSetModo()` 3-mode system
+// (see `productCardStyles`'s own doc comment in product-catalog.types.ts)
+// exactly at the DB level via `products_card_color_hex_ck`; re-asserted
+// here so a caller gets a real 400 rather than a raw 500 from a
+// constraint violation.
+function hexColor(value: string): string {
+  const result = value.trim();
+  if (!/^#[0-9A-Fa-f]{6}$/.test(result))
+    throw new ProductCatalogError(
+      'validation_error',
+      'card_color_hex must be a 6-digit hex color, e.g. #6B3FA0.',
+    );
+  return result.toUpperCase();
+}
+function assertCardAppearance(cardStyle: ProductCardStyle, cardColorHex: string | null): void {
+  if (cardStyle !== 'default' && cardColorHex === null)
+    throw new ProductCatalogError(
+      'validation_error',
+      'card_color_hex is required when card_style is not "default".',
+    );
+}
+// TASK 16.6 — see `CreateProductInput.imageUrl`'s own doc comment: this
+// field is ONLY ever an already-hosted external http(s) reference the
+// server stores as-is and NEVER fetches itself (no SSRF surface); a real
+// uploaded photo goes through the dedicated multipart image endpoint
+// instead, which never accepts this field as raw client input.
+function externalImageUrl(value: string): string {
+  const result = value.trim();
+  if (result.length > 2048)
+    throw new ProductCatalogError('validation_error', 'image_url must be at most 2048 characters.');
+  if (!/^https?:\/\//i.test(result))
+    throw new ProductCatalogError('validation_error', 'image_url must be an absolute http(s) URL.');
   return result;
 }
 function hash(value: Readonly<Record<string, unknown>>): string {
@@ -241,7 +303,16 @@ function buildProductExportCsv(rows: readonly ProductExportRow[]): string {
 }
 
 export class ProductCatalogService {
-  public constructor(private readonly repository: ProductCatalogRepository) {}
+  // TASK 16.6 — `imageStorage` is optional, mirroring
+  // `branding.storage.ts`'s own established "optional external
+  // dependency" pattern (see register-plugins.ts): when the `MINIO_*`
+  // env vars aren't present, the two image routes are simply never
+  // registered rather than the whole app failing to boot, and this
+  // service never touches the object store from any other code path.
+  public constructor(
+    private readonly repository: ProductCatalogRepository,
+    private readonly imageStorage?: ProductImageStorage,
+  ) {}
 
   public listProducts(companyId: string, input: ProductFilters): Promise<ProductPage> {
     return this.repository.listProducts(companyId, {
@@ -314,6 +385,12 @@ export class ProductCatalogService {
       status: input.status,
       categoryId: input.categoryId ?? null,
       brandId: input.brandId ?? null,
+      imageUrl: input.imageUrl === undefined ? null : externalImageUrl(input.imageUrl),
+      iconKey: input.iconKey === undefined ? null : validatedIconKey(input.iconKey),
+      cardStyle: input.cardStyle ?? 'default',
+      cardColorHex: input.cardColorHex === undefined ? null : hexColor(input.cardColorHex),
+      isFeatured: input.isFeatured ?? false,
+      preferredSupplierId: input.preferredSupplierId ?? null,
       defaultVariant:
         input.defaultVariant === undefined
           ? null
@@ -333,6 +410,10 @@ export class ProductCatalogService {
                   : (input.defaultVariant.tracksInventory ?? input.tracksInventory),
               standardCost: money(input.defaultVariant.standardCost),
               currencyCode: currency(input.defaultVariant.currencyCode),
+              minStock:
+                input.defaultVariant.minStock === undefined
+                  ? null
+                  : stockAmount(input.defaultVariant.minStock),
               barcode:
                 input.defaultVariant.barcode === undefined
                   ? null
@@ -343,6 +424,7 @@ export class ProductCatalogService {
                     },
             },
     };
+    assertCardAppearance(normalized.cardStyle, normalized.cardColorHex);
     const requestHash = hash({
       ...normalized,
       id: input.id ?? null,
@@ -391,6 +473,7 @@ export class ProductCatalogService {
             context.companyId,
             normalized.categoryId,
             normalized.brandId,
+            normalized.preferredSupplierId,
           );
           const created = await this.repository.insertProduct(client, {
             ...context,
@@ -446,6 +529,157 @@ export class ProductCatalogService {
     );
   }
 
+  // TASK 16.6 (Productos/Catálogo legacy parity) — "Duplicar"
+  // (`AS POS V1.html:1202,6279-6290`, confirmed genuinely functional:
+  // `Object.assign({},p,{id:uid(),nombre:p.nombre+" (copia)"...})`). The
+  // legacy could get away with a literal in-memory clone because it had
+  // no real uniqueness constraints; this schema enforces a real
+  // `products_company_code_uq`/`product_variants_company_sku_active_uq`,
+  // so a byte-for-byte duplicate is never valid here. Instead this
+  // derives a new, guaranteed-unique `code`/`sku` (a short numeric
+  // suffix, retried on a real 409 collision — bounded, no infinite
+  // loop) and delegates entirely to the already-real, already-validated,
+  // already-idempotent `createProduct` — never a second, divergent
+  // insert path. The new product starts as `draft` regardless of the
+  // source's own status (mirrors this schema's own "a product cannot be
+  // created retired" rule and avoids silently activating a duplicate
+  // the operator hasn't reviewed yet); every other real field (category,
+  // brand, tax code, tracks-inventory, image/icon/card appearance,
+  // featured flag, preferred supplier, default variant's unit/cost/
+  // currency) is copied — matching the legacy's own real intent of
+  // "start from an exact copy," just landing in `draft` for a real
+  // review step the legacy never had (and never enforced) either.
+  public async duplicateProduct(
+    context: ProductMutationContext,
+    sourceId: string,
+  ): Promise<{ value: ProductDetail; replayed: boolean }> {
+    const source = await this.repository.product(context.companyId, sourceId, null);
+    if (source === null)
+      throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+    const MAX_ATTEMPTS = 20;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const suffix = attempt === 1 ? '-copia' : `-copia-${String(attempt)}`;
+      // Built via conditional spread, never `x ?? undefined`, so an
+      // explicit `undefined` is never assigned to an optional key — this
+      // file's `tsconfig` enables `exactOptionalPropertyTypes`, under
+      // which those are NOT equivalent to omitting the key.
+      const input: CreateProductInput = {
+        code: `${source.code}${suffix}`,
+        name: `${source.name} (copia)`,
+        productType: source.productType,
+        tracksInventory: source.tracksInventory,
+        taxCode: source.taxCode,
+        status: 'draft',
+        cardStyle: source.cardStyle,
+        isFeatured: source.isFeatured,
+        ...(source.description === null ? {} : { description: source.description }),
+        ...(source.categoryId === null ? {} : { categoryId: source.categoryId }),
+        ...(source.brandId === null ? {} : { brandId: source.brandId }),
+        ...(source.imageUrl === null ? {} : { imageUrl: source.imageUrl }),
+        ...(source.iconKey === null ? {} : { iconKey: source.iconKey }),
+        ...(source.cardColorHex === null ? {} : { cardColorHex: source.cardColorHex }),
+        ...(source.preferredSupplierId === null
+          ? {}
+          : { preferredSupplierId: source.preferredSupplierId }),
+        ...(source.defaultVariant === null
+          ? {}
+          : {
+              defaultVariant: {
+                sku: `${source.defaultVariant.sku}${suffix.toUpperCase()}`,
+                unitOfMeasureCode: source.defaultVariant.unitOfMeasureCode,
+                quantityScale: source.defaultVariant.quantityScale,
+                tracksInventory: source.defaultVariant.tracksInventory,
+                standardCost: source.defaultVariant.standardCost,
+                currencyCode: source.defaultVariant.currencyCode,
+                ...(source.defaultVariant.name === null
+                  ? {}
+                  : { name: source.defaultVariant.name }),
+                ...(source.defaultVariant.minStock === null
+                  ? {}
+                  : { minStock: source.defaultVariant.minStock }),
+              },
+            }),
+      };
+      try {
+        // A fresh idempotency key per attempt — this is a brand-new
+        // logical creation each time (not a retry of the SAME request),
+        // so replaying the prior attempt's key would incorrectly return
+        // the prior (colliding, never-committed) attempt's cached
+        // response instead of actually creating anything.
+        return await this.createProduct(
+          context,
+          `duplicate-${sourceId}-${String(attempt)}-${randomUUID()}`,
+          input,
+        );
+      } catch (error) {
+        const isCodeOrSkuCollision =
+          error instanceof ProductCatalogError &&
+          (error.code === 'duplicate_product_code' || error.code === 'duplicate_sku');
+        if (!isCodeOrSkuCollision || attempt === MAX_ATTEMPTS) throw error;
+      }
+    }
+    throw new ProductCatalogError(
+      'validation_error',
+      'Could not generate a unique code for the duplicated product.',
+    );
+  }
+
+  // TASK 16.6 (Productos/Catálogo legacy parity, `AS POS V1.html`'s
+  // Extras tab, `cargarImagenProducto()`) — the real-photo-upload half
+  // of the legacy's genuinely functional image management (the OTHER
+  // half, pasting an external URL, is `imageUrl` on
+  // `createProduct`/`patchProduct` above). Mirrors
+  // `BrandingService.uploadLogo()`'s own orchestration exactly: upload
+  // the real bytes to object storage FIRST, then persist the resulting
+  // URL through the normal CAS-guarded product-update path
+  // (`patchProduct`, never a second, divergent write) — best-effort
+  // cleanup of the just-uploaded object if that commit fails, so a
+  // rejected request (most commonly a stale `If-Match`) never leaves an
+  // orphaned file behind.
+  public async uploadProductImage(
+    context: ProductMutationContext,
+    id: string,
+    expectedVersion: bigint,
+    file: { readonly buffer: Buffer; readonly contentType: string; readonly extension: string },
+  ): Promise<ProductRow> {
+    if (this.imageStorage === undefined)
+      throw new ProductCatalogError('validation_error', 'Product image storage is not configured.');
+    const uploaded = await this.imageStorage.uploadImage(
+      context.companyId,
+      file.buffer,
+      file.contentType,
+      file.extension,
+    );
+    try {
+      return await this.patchProduct(context, id, expectedVersion, { imageUrl: uploaded.url });
+    } catch (error) {
+      await this.imageStorage.deleteObjectBestEffort(uploaded.key);
+      throw error;
+    }
+  }
+
+  // Clears `image_url` back to `null` through the same CAS-guarded
+  // `patchProduct` path, then best-effort deletes the previously-stored
+  // object. The current URL is read BEFORE the mutation (so the delete
+  // can proceed even though the row no longer carries it afterward),
+  // exactly like `BrandingService.deleteLogo()`; if the mutation itself
+  // fails (e.g. a stale `If-Match`), nothing is deleted.
+  public async deleteProductImage(
+    context: ProductMutationContext,
+    id: string,
+    expectedVersion: bigint,
+  ): Promise<ProductRow> {
+    if (this.imageStorage === undefined)
+      throw new ProductCatalogError('validation_error', 'Product image storage is not configured.');
+    const before = await this.product(context.companyId, id, null);
+    const updated = await this.patchProduct(context, id, expectedVersion, { imageUrl: null });
+    if (before.imageUrl !== null) {
+      const key = this.imageStorage.keyFromUrl(before.imageUrl);
+      if (key !== undefined) await this.imageStorage.deleteObjectBestEffort(key);
+    }
+    return updated;
+  }
+
   public patchProduct(
     context: ProductMutationContext,
     id: string,
@@ -470,17 +704,43 @@ export class ProductCatalogService {
         status: patch.status ?? current.status,
         categoryId: patch.categoryId === undefined ? current.categoryId : patch.categoryId,
         brandId: patch.brandId === undefined ? current.brandId : patch.brandId,
+        imageUrl:
+          patch.imageUrl === undefined
+            ? current.imageUrl
+            : patch.imageUrl === null
+              ? null
+              : externalImageUrl(patch.imageUrl),
+        iconKey:
+          patch.iconKey === undefined
+            ? current.iconKey
+            : patch.iconKey === null
+              ? null
+              : validatedIconKey(patch.iconKey),
+        cardStyle: patch.cardStyle ?? current.cardStyle,
+        cardColorHex:
+          patch.cardColorHex === undefined
+            ? current.cardColorHex
+            : patch.cardColorHex === null
+              ? null
+              : hexColor(patch.cardColorHex),
+        isFeatured: patch.isFeatured ?? current.isFeatured,
+        preferredSupplierId:
+          patch.preferredSupplierId === undefined
+            ? current.preferredSupplierId
+            : patch.preferredSupplierId,
       };
       if ((next.productType === 'service' || next.productType === 'kit') && next.tracksInventory)
         throw new ProductCatalogError(
           'invalid_product_state',
           'Service and kit products cannot track inventory.',
         );
+      assertCardAppearance(next.cardStyle, next.cardColorHex);
       await this.repository.validateReferences(
         client,
         context.companyId,
         next.categoryId,
         next.brandId,
+        next.preferredSupplierId,
       );
       const variants = await this.repository.variantsForState(client, context.companyId, id);
       assertState(next, variants);
@@ -520,6 +780,7 @@ export class ProductCatalogService {
       tracksInventory: input.tracksInventory,
       standardCost: money(input.standardCost),
       currencyCode: currency(input.currencyCode),
+      minStock: input.minStock === undefined ? null : stockAmount(input.minStock),
       isDefault: input.isDefault,
       status: input.status,
       optionValueIds,
@@ -649,6 +910,12 @@ export class ProductCatalogService {
           patch.standardCost === undefined ? current.standardCost : money(patch.standardCost),
         currencyCode:
           patch.currencyCode === undefined ? current.currencyCode : currency(patch.currencyCode),
+        minStock:
+          patch.minStock === undefined
+            ? current.minStock
+            : patch.minStock === null
+              ? null
+              : stockAmount(patch.minStock),
         isDefault: patch.isDefault ?? current.isDefault,
         status: patch.status ?? current.status,
       };

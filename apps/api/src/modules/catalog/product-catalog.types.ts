@@ -14,6 +14,52 @@ export type VariantStatus = (typeof variantStatuses)[number];
 export const barcodeTypes = ['ean13', 'upca', 'code128', 'qr', 'internal'] as const;
 export type BarcodeType = (typeof barcodeTypes)[number];
 
+// TASK 16.6 (Productos/Catálogo legacy parity) — mirrors the legacy's own
+// exact 3-mode card-appearance system (`AS POS V1.html`'s
+// `mpColorSetModo('default'|'degradado'|'solido')`, confirmed by forensic
+// audit to be genuinely functional, not a placeholder): `default` means
+// "no tenant-chosen color — render with the platform's own neutral
+// accent," `gradient`/`solid` require `cardColorHex`.
+export const productCardStyles = ['default', 'gradient', 'solid'] as const;
+export type ProductCardStyle = (typeof productCardStyles)[number];
+
+// TASK 16.6 — a bounded, server-validated set of icon identifiers (never
+// an arbitrary client-supplied string/font class) a product card can
+// render when it has no photo. Platform-defined and tenant-neutral —
+// each client (Flutter today) maps these same stable keys to its own
+// real icon set. Mirrors the SPIRIT of the legacy's own
+// `ICONOS_SUGERIDOS` list (`AS POS V1.html:7514`, confirmed genuinely
+// functional) without depending on that list's Tabler-Icons-specific
+// class names, which Flutter cannot render directly.
+export const productIconKeys = [
+  'ticket',
+  'guests',
+  'attraction',
+  'protection',
+  'apparel',
+  'kitchen',
+  'premium',
+  'gift',
+  'store',
+  'bakery',
+  'celebration',
+  'shirt',
+  'bag',
+  'balloon',
+  'featured',
+  'award',
+  'music',
+  'photo',
+  'snack',
+  'pizza',
+  'burger',
+  'drink',
+  'candy',
+  'palette',
+  'box',
+] as const;
+export type ProductIconKey = (typeof productIconKeys)[number];
+
 export interface ProductRow {
   id: string;
   companyId: string;
@@ -28,6 +74,19 @@ export interface ProductRow {
   // see packages/database/src/schema/catalog.ts's `products.tax_code`.
   taxCode: ProductTaxCode;
   status: ProductStatus;
+  // TASK 16.6 — see `productCardStyles`/`productIconKeys` above and
+  // packages/database/src/schema/catalog.ts's own doc comment on these
+  // columns for the full design rationale (real object-storage image,
+  // never binary/base64; bounded icon-key set; legacy-matching 3-mode
+  // card appearance; real "Favorito" boolean; a real FK — never the
+  // legacy's own free-text, non-relational "Marca/Proveedor" field — to
+  // the platform's existing `suppliers` entity).
+  imageUrl: string | null;
+  iconKey: ProductIconKey | null;
+  cardStyle: ProductCardStyle;
+  cardColorHex: string | null;
+  isFeatured: boolean;
+  preferredSupplierId: string | null;
   version: bigint;
   createdAt: Date;
   updatedAt: Date;
@@ -64,6 +123,12 @@ export interface ProductVariantRow {
   tracksInventory: boolean;
   standardCost: string;
   currencyCode: string;
+  // TASK 16.6 — legacy "Stock mínimo" parity, see
+  // packages/database/src/schema/catalog.ts's own doc comment on
+  // `product_variants.min_stock` for why this lives on the variant.
+  // `null` means "no threshold configured," always a decimal string
+  // (ADR-0001) like `standardCost`, never a JS number.
+  minStock: string | null;
   isDefault: boolean;
   status: VariantStatus;
   version: bigint;
@@ -197,6 +262,7 @@ export interface CreateDefaultVariantInput {
   tracksInventory?: boolean;
   standardCost: string;
   currencyCode: string;
+  minStock?: string;
   barcode?: CreateBarcodeInput;
 }
 
@@ -212,6 +278,20 @@ export interface CreateProductInput {
   categoryId?: string;
   brandId?: string;
   defaultVariant?: CreateDefaultVariantInput;
+  // TASK 16.6 — `imageUrl` here is ONLY ever an already-validated,
+  // externally-hosted http(s) reference the caller pastes in directly
+  // (the legacy's own real "paste an image URL" path,
+  // `AS POS V1.html:3728`) — the server NEVER fetches it (no SSRF
+  // surface). A real uploaded photo goes through the dedicated
+  // `POST .../products/{id}/image` multipart endpoint instead, which
+  // computes and persists the object-storage URL itself; that path never
+  // accepts this field as raw client input.
+  imageUrl?: string;
+  iconKey?: ProductIconKey;
+  cardStyle?: ProductCardStyle;
+  cardColorHex?: string;
+  isFeatured?: boolean;
+  preferredSupplierId?: string;
 }
 
 export interface UpdateProductInput {
@@ -222,6 +302,15 @@ export interface UpdateProductInput {
   status?: ProductStatus;
   categoryId?: string | null;
   brandId?: string | null;
+  /** See `CreateProductInput.imageUrl`'s own doc comment — same
+   * external-URL-only, never-fetched-server-side contract. `null` clears
+   * it. */
+  imageUrl?: string | null;
+  iconKey?: ProductIconKey | null;
+  cardStyle?: ProductCardStyle;
+  cardColorHex?: string | null;
+  isFeatured?: boolean;
+  preferredSupplierId?: string | null;
 }
 
 /** TASK 12.3C: E058-equivalent — creates one effective-dated price. Only
@@ -248,6 +337,9 @@ export interface CreateVariantInput {
   tracksInventory?: boolean;
   standardCost: string;
   currencyCode: string;
+  /** TASK 16.6 — legacy "Stock mínimo" parity; omitted/`undefined` means
+   * no threshold configured. */
+  minStock?: string;
   isDefault: boolean;
   status: VariantStatus;
   optionValueIds: readonly string[];
@@ -262,6 +354,8 @@ export interface UpdateVariantInput {
   tracksInventory?: boolean;
   standardCost?: string;
   currencyCode?: string;
+  /** `null` clears the threshold. */
+  minStock?: string | null;
   isDefault?: boolean;
   status?: VariantStatus;
 }

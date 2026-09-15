@@ -360,6 +360,145 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     return created;
   }
 
+  // TASK 16.6 — real in-memory recording fakes for the product edit/
+  // duplicate/image endpoints, mirroring this fixture's own established
+  // "record the call, return a real-shaped response" convention (never a
+  // mock framework).
+  PosProductPatchInput? lastUpdateProductInput;
+  final List<({String id, int expectedVersion})> deleteImageCalls = [];
+
+  @override
+  Future<PosCatalogProduct> product(String id) async =>
+      products.firstWhere((item) => item.id == id, orElse: () => PosCatalogProduct(id: id, code: id, name: id, status: 'active', effectivePrice: null));
+
+  @override
+  Future<PosCatalogProduct> updateProduct(String id, int version, PosProductPatchInput input) async {
+    lastUpdateProductInput = input;
+    final current = await product(id);
+    final updated = PosCatalogProduct(
+      id: current.id,
+      code: current.code,
+      name: input.name ?? current.name,
+      description: input.description ?? current.description,
+      productType: current.productType,
+      tracksInventory: current.tracksInventory,
+      taxCode: input.taxCode ?? current.taxCode,
+      status: input.status ?? current.status,
+      categoryId: input.categoryId ?? current.categoryId,
+      brandId: input.brandId ?? current.brandId,
+      imageUrl: input.imageUrl ?? current.imageUrl,
+      iconKey: input.clearIconKey ? null : (input.iconKey ?? current.iconKey),
+      cardStyle: input.cardStyle ?? current.cardStyle,
+      cardColorHex: input.clearCardColorHex ? null : (input.cardColorHex ?? current.cardColorHex),
+      isFeatured: input.isFeatured ?? current.isFeatured,
+      preferredSupplierId: input.clearPreferredSupplierId
+          ? null
+          : (input.preferredSupplierId ?? current.preferredSupplierId),
+      version: version + 1,
+      effectivePrice: current.effectivePrice,
+      defaultVariant: current.defaultVariant,
+    );
+    final index = products.indexWhere((item) => item.id == id);
+    if (index == -1) {
+      products.add(updated);
+    } else {
+      products[index] = updated;
+    }
+    return updated;
+  }
+
+  @override
+  Future<PosCatalogProduct> duplicateProduct(String id) async {
+    final source = await product(id);
+    final duplicate = PosCatalogProduct(
+      id: 'duplicate-${_autoId++}',
+      code: '${source.code}-copia',
+      name: '${source.name} (copia)',
+      description: source.description,
+      productType: source.productType,
+      tracksInventory: source.tracksInventory,
+      taxCode: source.taxCode,
+      status: 'draft',
+      categoryId: source.categoryId,
+      brandId: source.brandId,
+      imageUrl: source.imageUrl,
+      iconKey: source.iconKey,
+      cardStyle: source.cardStyle,
+      cardColorHex: source.cardColorHex,
+      isFeatured: source.isFeatured,
+      preferredSupplierId: source.preferredSupplierId,
+      version: 1,
+      effectivePrice: null,
+      defaultVariant: source.defaultVariant,
+    );
+    products.add(duplicate);
+    return duplicate;
+  }
+
+  @override
+  Future<PosCatalogProduct> uploadProductImage(
+    String id, {
+    required List<int> bytes,
+    required String filename,
+    required String contentType,
+    required int expectedVersion,
+  }) async {
+    final current = await product(id);
+    final updated = PosCatalogProduct(
+      id: current.id,
+      code: current.code,
+      name: current.name,
+      description: current.description,
+      productType: current.productType,
+      tracksInventory: current.tracksInventory,
+      taxCode: current.taxCode,
+      status: current.status,
+      categoryId: current.categoryId,
+      brandId: current.brandId,
+      imageUrl: 'https://fake-storage.test/products/$id/$filename',
+      iconKey: current.iconKey,
+      cardStyle: current.cardStyle,
+      cardColorHex: current.cardColorHex,
+      isFeatured: current.isFeatured,
+      preferredSupplierId: current.preferredSupplierId,
+      version: expectedVersion + 1,
+      effectivePrice: current.effectivePrice,
+      defaultVariant: current.defaultVariant,
+    );
+    final index = products.indexWhere((item) => item.id == id);
+    if (index != -1) products[index] = updated;
+    return updated;
+  }
+
+  @override
+  Future<PosCatalogProduct> deleteProductImage(String id, int expectedVersion) async {
+    deleteImageCalls.add((id: id, expectedVersion: expectedVersion));
+    final current = await product(id);
+    final updated = PosCatalogProduct(
+      id: current.id,
+      code: current.code,
+      name: current.name,
+      description: current.description,
+      productType: current.productType,
+      tracksInventory: current.tracksInventory,
+      taxCode: current.taxCode,
+      status: current.status,
+      categoryId: current.categoryId,
+      brandId: current.brandId,
+      iconKey: current.iconKey,
+      cardStyle: current.cardStyle,
+      cardColorHex: current.cardColorHex,
+      isFeatured: current.isFeatured,
+      preferredSupplierId: current.preferredSupplierId,
+      version: expectedVersion + 1,
+      effectivePrice: current.effectivePrice,
+      defaultVariant: current.defaultVariant,
+    );
+    final index = products.indexWhere((item) => item.id == id);
+    if (index != -1) products[index] = updated;
+    return updated;
+  }
+
   @override
   Future<PosCatalogVariantPage> listVariants(String productId, {String? cursor, int limit = 50}) async =>
       PosCatalogVariantPage(items: List.of(variantsByProduct[productId] ?? const []), nextCursor: null);

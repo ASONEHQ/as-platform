@@ -1,5 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { AppError } from '@asone/errors';
+
+import {
+  ALLOWED_IMAGE_CONTENT_TYPES,
+  MAX_IMAGE_BYTES,
+  imageFileExtension,
+  isAllowedImageContentType,
+  matchesImageFileSignature,
+  type AllowedImageContentType,
+} from '../../http/image-upload-validation.js';
 import { responseMeta, successResponse } from '../../http/response.js';
 import {
   requireAuthenticatedUser,
@@ -15,6 +25,8 @@ import type {
   CreateProductInput,
   CreateProductPriceInput,
   CreateVariantInput,
+  ProductCardStyle,
+  ProductIconKey,
   ProductMutationContext,
   ProductPriceRow,
   ProductRow,
@@ -26,7 +38,8 @@ import type {
   UpdateVariantInput,
   VariantStatus,
 } from './product-catalog.types.js';
-import { productTaxCodes } from './product-catalog.types.js';
+import { productCardStyles, productIconKeys, productTaxCodes } from './product-catalog.types.js';
+import type { ProductImageStorage } from './product-images.storage.js';
 
 interface Params {
   id: string;
@@ -67,6 +80,7 @@ interface DefaultVariantBody {
   tracks_inventory?: boolean;
   standard_cost?: string;
   currency_code?: string;
+  min_stock?: string;
   barcode?: BarcodeBody;
 }
 interface ProductBody {
@@ -80,6 +94,12 @@ interface ProductBody {
   status?: ProductStatus;
   category_id?: string;
   brand_id?: string;
+  image_url?: string;
+  icon_key?: ProductIconKey;
+  card_style?: ProductCardStyle;
+  card_color_hex?: string;
+  is_featured?: boolean;
+  preferred_supplier_id?: string;
   default_variant?: DefaultVariantBody;
 }
 interface ProductPatchBody {
@@ -90,6 +110,12 @@ interface ProductPatchBody {
   status?: ProductStatus;
   category_id?: string | null;
   brand_id?: string | null;
+  image_url?: string | null;
+  icon_key?: ProductIconKey | null;
+  card_style?: ProductCardStyle;
+  card_color_hex?: string | null;
+  is_featured?: boolean;
+  preferred_supplier_id?: string | null;
 }
 interface ProductPriceBody {
   id?: string;
@@ -108,6 +134,7 @@ interface VariantBody {
   tracks_inventory?: boolean;
   standard_cost?: string;
   currency_code?: string;
+  min_stock?: string;
   is_default?: boolean;
   status?: VariantStatus;
   option_value_ids?: [];
@@ -121,6 +148,7 @@ interface VariantPatchBody {
   tracks_inventory?: boolean;
   standard_cost?: string;
   currency_code?: string;
+  min_stock?: string | null;
   is_default?: boolean;
   status?: VariantStatus;
 }
@@ -158,6 +186,13 @@ const barcodeSchema = {
     is_primary: { type: 'boolean' },
   },
 } as const;
+// TASK 16.6 — `min_stock` matches `product_variants.min_stock`'s own
+// `numeric(19, 6)` scale (packages/database/src/schema/catalog.ts), NOT
+// `standard_cost`'s 4-decimal money pattern — a reorder-point quantity,
+// not a currency amount.
+const minStockPattern = '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,6})?$';
+const imageUrlSchema = { type: 'string', minLength: 1, maxLength: 2048, format: 'uri' } as const;
+const cardColorHexSchema = { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' } as const;
 const defaultVariantSchema = {
   type: 'object',
   additionalProperties: rejectUnknown,
@@ -170,6 +205,7 @@ const defaultVariantSchema = {
     tracks_inventory: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+    min_stock: { type: 'string', pattern: minStockPattern },
     barcode: barcodeSchema,
   },
 } as const;
@@ -188,6 +224,12 @@ const productBodySchema = {
     status: { type: 'string', enum: ['draft', 'active', 'inactive'] },
     category_id: uuid,
     brand_id: uuid,
+    image_url: imageUrlSchema,
+    icon_key: { type: 'string', enum: productIconKeys },
+    card_style: { type: 'string', enum: productCardStyles },
+    card_color_hex: cardColorHexSchema,
+    is_featured: { type: 'boolean' },
+    preferred_supplier_id: uuid,
     default_variant: defaultVariantSchema,
   },
 } as const;
@@ -203,6 +245,12 @@ const productPatchSchema = {
     status: { type: 'string', enum: ['draft', 'active', 'inactive', 'retired'] },
     category_id: { anyOf: [uuid, { type: 'null' }] },
     brand_id: { anyOf: [uuid, { type: 'null' }] },
+    image_url: { anyOf: [imageUrlSchema, { type: 'null' }] },
+    icon_key: { anyOf: [{ type: 'string', enum: productIconKeys }, { type: 'null' }] },
+    card_style: { type: 'string', enum: productCardStyles },
+    card_color_hex: { anyOf: [cardColorHexSchema, { type: 'null' }] },
+    is_featured: { type: 'boolean' },
+    preferred_supplier_id: { anyOf: [uuid, { type: 'null' }] },
   },
 } as const;
 const productPriceBodySchema = {
@@ -231,6 +279,7 @@ const variantBodySchema = {
     tracks_inventory: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+    min_stock: { type: 'string', pattern: minStockPattern },
     is_default: { type: 'boolean' },
     status: { type: 'string', enum: ['active', 'inactive'] },
     option_value_ids: { type: 'array', maxItems: 16, uniqueItems: true, items: uuid },
@@ -249,6 +298,7 @@ const variantPatchSchema = {
     tracks_inventory: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+    min_stock: { anyOf: [{ type: 'string', pattern: minStockPattern }, { type: 'null' }] },
     is_default: { type: 'boolean' },
     status: { type: 'string', enum: ['active', 'inactive', 'retired'] },
   },
@@ -293,6 +343,7 @@ function variantHttp(
     quantity_scale: value.quantityScale,
     tracks_inventory: value.tracksInventory,
     ...(showCost ? { standard_cost: value.standardCost, currency_code: value.currencyCode } : {}),
+    min_stock: value.minStock,
     is_default: value.isDefault,
     status: value.status,
     version: Number(value.version),
@@ -337,6 +388,12 @@ function productHttp(
     tracks_inventory: value.tracksInventory,
     tax_code: value.taxCode,
     status: value.status,
+    image_url: value.imageUrl,
+    icon_key: value.iconKey,
+    card_style: value.cardStyle,
+    card_color_hex: value.cardColorHex,
+    is_featured: value.isFeatured,
+    preferred_supplier_id: value.preferredSupplierId,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -355,10 +412,93 @@ function productHttp(
   };
 }
 
+// TASK 16.6 — real photo upload for a product's Extras tab, mirroring
+// `branding.routes.ts`'s own `readLogoFile`/error-mapping pattern
+// exactly (same magic-byte sniffing, same Fastify error-code mapping),
+// generalized onto `../../http/image-upload-validation.js` rather than
+// hand-copied.
+const PRODUCT_IMAGE_ROUTE_BODY_LIMIT_BYTES = MAX_IMAGE_BYTES + 64 * 1024;
+
+function isFileTooLargeError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'FST_REQ_FILE_TOO_LARGE'
+  );
+}
+function isNotMultipartError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'FST_INVALID_MULTIPART_CONTENT_TYPE'
+  );
+}
+function oversizedImageError(): AppError {
+  return new AppError({
+    code: 'payload_too_large',
+    message: `The product image exceeds the maximum size of ${String(MAX_IMAGE_BYTES)} bytes.`,
+    statusCode: 413,
+  });
+}
+function unsupportedImageTypeError(message: string): AppError {
+  return new AppError({ code: 'unsupported_media_type', message, statusCode: 415 });
+}
+interface ReadProductImageFileResult {
+  readonly buffer: Buffer;
+  readonly contentType: AllowedImageContentType;
+  readonly extension: string;
+}
+async function readProductImageFile(request: FastifyRequest): Promise<ReadProductImageFileResult> {
+  const file = await request
+    .file({ limits: { fileSize: MAX_IMAGE_BYTES } })
+    .catch((error: unknown) => {
+      if (isFileTooLargeError(error)) throw oversizedImageError();
+      if (isNotMultipartError(error))
+        throw new AppError({
+          code: 'validation_error',
+          message: 'The request must be a multipart/form-data upload.',
+          statusCode: 400,
+        });
+      throw error;
+    });
+  if (file === undefined)
+    throw new AppError({
+      code: 'validation_error',
+      message: 'A product image file is required.',
+      statusCode: 400,
+    });
+  const declared = file.mimetype.toLowerCase();
+  if (!isAllowedImageContentType(declared))
+    throw unsupportedImageTypeError(
+      `The image content type must be one of: ${ALLOWED_IMAGE_CONTENT_TYPES.join(', ')}.`,
+    );
+  let buffer: Buffer;
+  try {
+    buffer = await file.toBuffer();
+  } catch (error) {
+    if (isFileTooLargeError(error)) throw oversizedImageError();
+    throw error;
+  }
+  if (buffer.length > MAX_IMAGE_BYTES) throw oversizedImageError();
+  if (!matchesImageFileSignature(declared, buffer))
+    throw unsupportedImageTypeError(
+      'The uploaded file does not match its declared image content type.',
+    );
+  return { buffer, contentType: declared, extension: imageFileExtension(declared) };
+}
+
 export function registerProductCatalogRoutes(
   app: FastifyInstance,
   authentication: AuthService,
   service: ProductCatalogService,
+  // TASK 16.6 — optional, mirroring `register-plugins.ts`'s own
+  // established "optional external dependency" pattern for branding:
+  // when `undefined` (the `MINIO_*` env vars aren't provisioned), the
+  // two image routes below are simply never registered, a real 404
+  // rather than a runtime failure.
+  imageStorage?: ProductImageStorage,
 ): void {
   app.get<{ Querystring: ListQuery }>(
     '/api/v1/products',
@@ -491,6 +631,9 @@ export function registerProductCatalogRoutes(
                 ...(body.default_variant.tracks_inventory === undefined
                   ? {}
                   : { tracksInventory: body.default_variant.tracks_inventory }),
+                ...(body.default_variant.min_stock === undefined
+                  ? {}
+                  : { minStock: body.default_variant.min_stock }),
                 ...(body.default_variant.barcode === undefined
                   ? {}
                   : {
@@ -512,6 +655,14 @@ export function registerProductCatalogRoutes(
           ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
           ...(body.category_id === undefined ? {} : { categoryId: body.category_id }),
           ...(body.brand_id === undefined ? {} : { brandId: body.brand_id }),
+          ...(body.image_url === undefined ? {} : { imageUrl: body.image_url }),
+          ...(body.icon_key === undefined ? {} : { iconKey: body.icon_key }),
+          ...(body.card_style === undefined ? {} : { cardStyle: body.card_style }),
+          ...(body.card_color_hex === undefined ? {} : { cardColorHex: body.card_color_hex }),
+          ...(body.is_featured === undefined ? {} : { isFeatured: body.is_featured }),
+          ...(body.preferred_supplier_id === undefined
+            ? {}
+            : { preferredSupplierId: body.preferred_supplier_id }),
           ...(defaultVariant === undefined ? {} : { defaultVariant }),
         };
         const created = await service.createProduct(
@@ -520,6 +671,42 @@ export function registerProductCatalogRoutes(
           input,
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
+        return reply
+          .code(201)
+          .header('etag', `"${created.value.version.toString()}"`)
+          .send(
+            successResponse(
+              productHttp(created.value, hasCostPermission(context.permissions)),
+              request.requestContext,
+            ),
+          );
+      }),
+  );
+
+  // TASK 16.6 (Productos/Catálogo legacy parity) — "Duplicar"
+  // (`AS POS V1.html:1202,6279-6290`). No request body: everything the
+  // duplicate needs comes from the source product itself, resolved and
+  // validated entirely server-side in `service.duplicateProduct`. Gated
+  // by the SAME `product.manage` permission as every other product
+  // mutation in this module — a real 201 with the new product's full
+  // representation, exactly like `POST /api/v1/products`.
+  app.post<{ Params: Params }>(
+    '/api/v1/products/:id/duplicate',
+    {
+      schema: {
+        tags: ['catalog'],
+        params: idParamsSchema,
+        response: { 201: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withProductCatalogErrors(async () => {
+        const context = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, context, 'product.manage');
+        const created = await service.duplicateProduct(
+          mutationContext(request, context.companyId, context.userId),
+          request.params.id,
+        );
         return reply
           .code(201)
           .header('etag', `"${created.value.version.toString()}"`)
@@ -590,6 +777,14 @@ export function registerProductCatalogRoutes(
           ...(body.status === undefined ? {} : { status: body.status }),
           ...(body.category_id === undefined ? {} : { categoryId: body.category_id }),
           ...(body.brand_id === undefined ? {} : { brandId: body.brand_id }),
+          ...(body.image_url === undefined ? {} : { imageUrl: body.image_url }),
+          ...(body.icon_key === undefined ? {} : { iconKey: body.icon_key }),
+          ...(body.card_style === undefined ? {} : { cardStyle: body.card_style }),
+          ...(body.card_color_hex === undefined ? {} : { cardColorHex: body.card_color_hex }),
+          ...(body.is_featured === undefined ? {} : { isFeatured: body.is_featured }),
+          ...(body.preferred_supplier_id === undefined
+            ? {}
+            : { preferredSupplierId: body.preferred_supplier_id }),
         };
         const value = await service.patchProduct(
           mutationContext(request, context.companyId, context.userId),
@@ -607,6 +802,82 @@ export function registerProductCatalogRoutes(
           );
       }),
   );
+
+  // TASK 16.6 (Productos/Catálogo legacy parity, `AS POS V1.html`'s
+  // Extras tab, `cargarImagenProducto()`) — real multipart photo upload/
+  // removal, only registered when the platform's object storage is
+  // actually configured (see `imageStorage`'s own doc comment above).
+  // Same `product.manage` permission and `If-Match`/CAS semantics as
+  // every other product mutation in this module.
+  if (imageStorage !== undefined) {
+    app.post<{ Params: Params }>(
+      '/api/v1/products/:id/image',
+      {
+        bodyLimit: PRODUCT_IMAGE_ROUTE_BODY_LIMIT_BYTES,
+        schema: {
+          tags: ['catalog'],
+          summary: 'Upload a product image',
+          consumes: ['multipart/form-data'],
+          params: idParamsSchema,
+          headers: ifMatchHeaders,
+          response: { 200: responseSchema, ...commonErrors, 413: errorSchema, 415: errorSchema },
+        },
+      },
+      async (request, reply) =>
+        withProductCatalogErrors(async () => {
+          const context = await requireAuthenticatedUser(request, authentication);
+          requirePermission(authentication, context, 'product.manage');
+          const expectedVersion = parseIfMatch(request.headers['if-match']);
+          const file = await readProductImageFile(request);
+          const value = await service.uploadProductImage(
+            mutationContext(request, context.companyId, context.userId),
+            request.params.id,
+            expectedVersion,
+            file,
+          );
+          return reply
+            .header('etag', `"${value.version.toString()}"`)
+            .send(
+              successResponse(
+                productHttp(value, hasCostPermission(context.permissions)),
+                request.requestContext,
+              ),
+            );
+        }),
+    );
+
+    app.delete<{ Params: Params }>(
+      '/api/v1/products/:id/image',
+      {
+        schema: {
+          tags: ['catalog'],
+          summary: 'Remove a product image',
+          params: idParamsSchema,
+          headers: ifMatchHeaders,
+          response: { 200: responseSchema, ...commonErrors },
+        },
+      },
+      async (request, reply) =>
+        withProductCatalogErrors(async () => {
+          const context = await requireAuthenticatedUser(request, authentication);
+          requirePermission(authentication, context, 'product.manage');
+          const expectedVersion = parseIfMatch(request.headers['if-match']);
+          const value = await service.deleteProductImage(
+            mutationContext(request, context.companyId, context.userId),
+            request.params.id,
+            expectedVersion,
+          );
+          return reply
+            .header('etag', `"${value.version.toString()}"`)
+            .send(
+              successResponse(
+                productHttp(value, hasCostPermission(context.permissions)),
+                request.requestContext,
+              ),
+            );
+        }),
+    );
+  }
 
   app.get<{ Params: ProductParams; Querystring: VariantListQuery }>(
     '/api/v1/products/:product_id/variants',
@@ -675,6 +946,7 @@ export function registerProductCatalogRoutes(
           ...(body.tracks_inventory === undefined
             ? {}
             : { tracksInventory: body.tracks_inventory }),
+          ...(body.min_stock === undefined ? {} : { minStock: body.min_stock }),
           ...(body.barcode === undefined
             ? {}
             : {
@@ -801,6 +1073,7 @@ export function registerProductCatalogRoutes(
             : { tracksInventory: body.tracks_inventory }),
           ...(body.standard_cost === undefined ? {} : { standardCost: body.standard_cost }),
           ...(body.currency_code === undefined ? {} : { currencyCode: body.currency_code }),
+          ...(body.min_stock === undefined ? {} : { minStock: body.min_stock }),
           ...(body.is_default === undefined ? {} : { isDefault: body.is_default }),
           ...(body.status === undefined ? {} : { status: body.status }),
         };

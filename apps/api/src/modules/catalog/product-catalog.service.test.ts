@@ -106,4 +106,158 @@ describe('product catalog service validation', () => {
     await service.createProduct(context, 'two', input);
     expect(hashes).toEqual([hashes[0], hashes[0]]);
   });
+
+  // TASK 16.6 (Productos/Catálogo legacy parity) — validation for the
+  // new Extras-tab fields (image/icon/card-appearance/featured/
+  // supplier) added to `createProduct`. Each of these throws
+  // synchronously before ever touching the repository, mirroring the
+  // existing sync-validation tests above.
+  it('rejects an icon_key that is not in the platform-defined allowlist', () => {
+    const service = new ProductCatalogService({} as ProductCatalogRepository);
+    expect(() =>
+      service.createProduct(context, 'bad-icon', {
+        code: 'bad-icon',
+        name: 'Bad icon',
+        productType: 'service',
+        tracksInventory: false,
+        status: 'draft',
+        iconKey: 'not-a-real-icon' as never,
+        defaultVariant: {
+          sku: 'bad-icon-sku',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      }),
+    ).toThrow(ProductCatalogError);
+  });
+
+  it('requires card_color_hex when card_style is not "default"', () => {
+    const service = new ProductCatalogService({} as ProductCatalogRepository);
+    for (const cardStyle of ['gradient', 'solid'] as const)
+      expect(() =>
+        service.createProduct(context, `card-${cardStyle}`, {
+          code: `card-${cardStyle}`,
+          name: 'Card style',
+          productType: 'service',
+          tracksInventory: false,
+          status: 'draft',
+          cardStyle,
+          defaultVariant: {
+            sku: `card-${cardStyle}-sku`,
+            unitOfMeasureCode: 'unit',
+            quantityScale: 0,
+            standardCost: '0',
+            currencyCode: 'MXN',
+          },
+        }),
+      ).toThrow(ProductCatalogError);
+  });
+
+  it('allows card_style "default" without a card_color_hex, and a valid hex with "solid"', () => {
+    const repository = {
+      transaction: vi.fn(),
+    } as unknown as ProductCatalogRepository;
+    const service = new ProductCatalogService(repository);
+    expect(() =>
+      service.createProduct(context, 'card-default', {
+        code: 'card-default',
+        name: 'Default card',
+        productType: 'service',
+        tracksInventory: false,
+        status: 'draft',
+        defaultVariant: {
+          sku: 'card-default-sku',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      service.createProduct(context, 'card-solid', {
+        code: 'card-solid',
+        name: 'Solid card',
+        productType: 'service',
+        tracksInventory: false,
+        status: 'draft',
+        cardStyle: 'solid',
+        cardColorHex: '#6B3FA0',
+        defaultVariant: {
+          sku: 'card-solid-sku',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a malformed card_color_hex', () => {
+    const service = new ProductCatalogService({} as ProductCatalogRepository);
+    expect(() =>
+      service.createProduct(context, 'bad-hex', {
+        code: 'bad-hex',
+        name: 'Bad hex',
+        productType: 'service',
+        tracksInventory: false,
+        status: 'draft',
+        cardStyle: 'solid',
+        cardColorHex: 'purple',
+        defaultVariant: {
+          sku: 'bad-hex-sku',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      }),
+    ).toThrow(ProductCatalogError);
+  });
+
+  it('rejects an image_url that is not an absolute http(s) URL (no SSRF-relevant scheme)', () => {
+    const service = new ProductCatalogService({} as ProductCatalogRepository);
+    for (const imageUrl of ['ftp://example.com/x.png', 'javascript:alert(1)', 'not-a-url'])
+      expect(() =>
+        service.createProduct(context, `bad-url-${imageUrl}`, {
+          code: `bad-url-${imageUrl}`,
+          name: 'Bad url',
+          productType: 'service',
+          tracksInventory: false,
+          status: 'draft',
+          imageUrl,
+          defaultVariant: {
+            sku: `bad-url-sku-${imageUrl}`,
+            unitOfMeasureCode: 'unit',
+            quantityScale: 0,
+            standardCost: '0',
+            currencyCode: 'MXN',
+          },
+        }),
+      ).toThrow(ProductCatalogError);
+  });
+
+  it('rejects a malformed min_stock on the default variant', () => {
+    const service = new ProductCatalogService({} as ProductCatalogRepository);
+    expect(() =>
+      service.createProduct(context, 'bad-min-stock', {
+        code: 'bad-min-stock',
+        name: 'Bad min stock',
+        productType: 'service',
+        tracksInventory: false,
+        status: 'draft',
+        defaultVariant: {
+          sku: 'bad-min-stock-sku',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+          minStock: '-5',
+        },
+      }),
+    ).toThrow(ProductCatalogError);
+  });
 });

@@ -19,6 +19,10 @@ import { CatalogService } from '../modules/catalog/catalog.service.js';
 import { ProductCatalogRepository } from '../modules/catalog/product-catalog.repository.js';
 import { registerProductCatalogRoutes } from '../modules/catalog/product-catalog.routes.js';
 import { ProductCatalogService } from '../modules/catalog/product-catalog.service.js';
+import {
+  ProductImageStorage,
+  productImageStorageConfigFromEnv,
+} from '../modules/catalog/product-images.storage.js';
 import { registerProductOptionsRoutes } from '../modules/catalog/product-options.routes.js';
 import { ProductOptionsService } from '../modules/catalog/product-options.service.js';
 import {
@@ -215,10 +219,25 @@ export async function registerPlugins(
         authentication,
         new CatalogService(new CatalogRepository(options.infrastructure.database)),
       );
+      // TASK 16.6 — reuses the exact same optional-external-dependency
+      // pattern as `brandingStorageConfig` just above: when the
+      // `MINIO_*` env vars are present, product images get real object
+      // storage AND the two upload/delete routes; otherwise the routes
+      // are absent (a real 404) and every other product-catalog route
+      // still works normally.
+      const productImageStorageConfig = productImageStorageConfigFromEnv();
+      const productImageStorage =
+        productImageStorageConfig === undefined
+          ? undefined
+          : new ProductImageStorage(productImageStorageConfig);
       registerProductCatalogRoutes(
         app,
         authentication,
-        new ProductCatalogService(new ProductCatalogRepository(options.infrastructure.database)),
+        new ProductCatalogService(
+          new ProductCatalogRepository(options.infrastructure.database),
+          productImageStorage,
+        ),
+        productImageStorage,
       );
       registerProductOptionsRoutes(
         app,
@@ -300,7 +319,11 @@ export async function registerPlugins(
       // `customersRepository` (Part Q — redemption checks the customer
       // is still active).
       const rewardsRepository = new RewardsRepository(options.infrastructure.database);
-      const rewardsService = new RewardsService(rewardsRepository, loyaltyRepository, customersRepository);
+      const rewardsService = new RewardsService(
+        rewardsRepository,
+        loyaltyRepository,
+        customersRepository,
+      );
       // TASK 12.9: constructed before `salesService` — real sale
       // creation independently re-evaluates promotions/coupons/manual
       // discounts/reward benefit through the exact same pricing engine
@@ -311,7 +334,12 @@ export async function registerPlugins(
       // own reward-benefit preview.
       const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
       const promotionsService = new PromotionsService(promotionsRepository, rewardsService);
-      const salesService = new SalesService(salesRepository, promotionsRepository, customersRepository, rewardsService);
+      const salesService = new SalesService(
+        salesRepository,
+        promotionsRepository,
+        customersRepository,
+        rewardsService,
+      );
       const paymentRepository = new PaymentRepository(options.infrastructure.database);
       // TASK 12.7: constructed before `paymentService` — a cash payment
       // confirmation now requires it (open-session enforcement + drawer
@@ -371,7 +399,10 @@ export async function registerPlugins(
       registerHeldSaleCartRoutes(
         app,
         authentication,
-        new HeldSaleCartsService(new HeldSaleCartsRepository(options.infrastructure.database), salesRepository),
+        new HeldSaleCartsService(
+          new HeldSaleCartsRepository(options.infrastructure.database),
+          salesRepository,
+        ),
       );
       registerRefundRoutes(app, authentication, refundsService);
       // TASK 14.4 (Wave 2, Part C.1) — real supplier records, company-
@@ -389,7 +420,10 @@ export async function registerPlugins(
       registerPurchasingRoutes(
         app,
         authentication,
-        new PurchasingService(new PurchasingRepository(options.infrastructure.database), suppliersRepository),
+        new PurchasingService(
+          new PurchasingRepository(options.infrastructure.database),
+          suppliersRepository,
+        ),
       );
       registerPromotionRoutes(app, authentication, promotionsService);
       // TASK 14.3 (Wave 1, Part A) — Fiestas/party reservations. Reuses
@@ -403,7 +437,10 @@ export async function registerPlugins(
       // Dashboard module below reuses these SAME instances directly
       // (never a second/duplicate one).
       const partyRoomsService = new PartyRoomsService(partiesRepository);
-      const partyReservationsService = new PartyReservationsService(partiesRepository, cashRepository);
+      const partyReservationsService = new PartyReservationsService(
+        partiesRepository,
+        cashRepository,
+      );
       registerPartyRoomRoutes(app, authentication, partyRoomsService);
       registerPartyPackageRoutes(app, authentication, new PartyPackagesService(partiesRepository));
       registerPartyReservationRoutes(app, authentication, partyReservationsService);
@@ -430,13 +467,19 @@ export async function registerPlugins(
       // `salesRepository` directly (never a second instance) — a
       // credential can only ever be issued against a real, already-paid
       // sale.
-      registerAccessRoutes(app, authentication, new AccessService(new AccessRepository(options.infrastructure.database), salesRepository));
+      registerAccessRoutes(
+        app,
+        authentication,
+        new AccessService(new AccessRepository(options.infrastructure.database), salesRepository),
+      );
       // TASK 14.4 (Wave 2, Part D) — Business Intelligence/Reports. A
       // read-only aggregation layer over the platform's own authoritative
       // tables (including the real cash ledger, via the same
       // `cashMovementDirection` fold `CashService.summary()` uses) — no
       // dependency on any other module's constructed instance.
-      const reportsService = new ReportsService(new ReportsRepository(options.infrastructure.database));
+      const reportsService = new ReportsService(
+        new ReportsRepository(options.infrastructure.database),
+      );
       registerReportsRoutes(app, authentication, reportsService);
       // TASK 14.5 (Wave 3, Phase 2) — Dashboard ("today at a glance").
       // A thin aggregation over already-constructed Wave 1/2 service
