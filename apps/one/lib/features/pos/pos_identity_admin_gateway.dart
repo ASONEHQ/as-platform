@@ -24,17 +24,32 @@
 /// method's doc comment cites the exact route + permission code it calls,
 /// mirroring `pos_people_gateway.dart`'s own citation style.
 ///
-/// Branch scope for role assignment / branch access (this file does not
-/// call any `/companies/{id}/branches` listing endpoint — that belongs to a
-/// separate TENANT-area "Branch list/create/update" surface, out of this
-/// task's endpoint list): callers pass branches from the acting admin's own
-/// already-loaded `AuthenticatedContext.branches`, exactly like
+/// Branch scope for role assignment: callers pass branches from the acting
+/// admin's own already-loaded `AuthenticatedContext.branches`, exactly like
 /// `pos_receipt_branding_screen.dart` and other screens already do for
-/// branch-scoped pickers — never a fabricated or separately-fetched branch
-/// list.
+/// branch-scoped pickers.
+///
+/// TASK 16.5 exception — [listGrantableBranches]: the "Otorgar acceso a
+/// sucursal" branch picker used to reuse that same cached
+/// `AuthenticatedContext.branches` too, which is populated only once, at
+/// login/token-refresh (`auth_gateway.dart`'s `hydrate`, the single call
+/// site — `auth_state.dart`). That caused a real production bootstrap bug:
+/// a brand-new company's first Owner creates their first branch
+/// (`PosBranchAdminScreen`, which fetches fresh on every load and correctly
+/// showed it), then opens "Otorgar acceso" and finds the branch missing —
+/// the picker was still showing the stale snapshot from before that branch
+/// existed. [listGrantableBranches] instead calls
+/// `GET /api/v1/companies/{company_id}/branches` FRESH, every time the
+/// grant dialog opens — mirroring exactly what `PosBranchAdminScreen`
+/// already does, and matching what the backend's own `changeBranchAccess`
+/// mutation already allows unconditionally (granting access to any branch
+/// in the actor's own company, regardless of the actor's own current
+/// branch scope — see `admin.service.ts`'s own doc comment on
+/// `listBranches`/`changeBranchAccess`).
 library;
 
 import '../../core/networking/api_client.dart';
+import '../authentication/auth_models.dart' show BranchSummary;
 import 'pos_models.dart' show PosUser;
 
 export 'pos_models.dart' show PosUser;
@@ -350,6 +365,14 @@ abstract interface class PosIdentityAdminGateway {
   /// `DELETE /api/v1/users/{userId}/branch-access/{branchId}`
   /// (`branch_access.manage`).
   Future<void> revokeBranchAccess(String userId, String branchId);
+
+  /// `GET /api/v1/companies/{companyId}/branches` (`branch.read`) — see this
+  /// file's own header doc comment for why this exists and is deliberately
+  /// fetched fresh on every call, never cached. Populates the "Otorgar
+  /// acceso a sucursal" branch picker. `current`/`isDefault` on the
+  /// returned [BranchSummary]s are always `false` — this listing is not
+  /// session-context-aware and neither field is read by that picker.
+  Future<List<BranchSummary>> listGrantableBranches(String companyId);
 }
 
 class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
@@ -468,6 +491,26 @@ class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
     await _client.deleteJson('/api/v1/users/$userId/branch-access/$branchId');
   }
 
+  @override
+  Future<List<BranchSummary>> listGrantableBranches(String companyId) async {
+    final envelope = await _client.getJson('/api/v1/companies/$companyId/branches');
+    return _items(envelope)
+        // `changeBranchAccess` itself 404s for an inactive branch
+        // (`admin.service.ts`: `select ... from branches where ... and
+        // status='active'`) — filtered here too so the picker never offers
+        // a branch that would fail on submit.
+        .where((item) => item['status'] == 'active')
+        .map(
+          (item) => BranchSummary(
+            id: item['id']! as String,
+            code: item['code']! as String,
+            name: item['name']! as String,
+            timezone: item['timezone']! as String,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   Map<String, Object?> _map(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -548,4 +591,7 @@ class EmptyPosIdentityAdminGateway implements PosIdentityAdminGateway {
   @override
   Future<void> revokeBranchAccess(String userId, String branchId) =>
       Future.error(StateError('No identity admin gateway is configured.'));
+
+  @override
+  Future<List<BranchSummary>> listGrantableBranches(String companyId) async => const [];
 }

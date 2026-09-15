@@ -658,6 +658,16 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   PosUserDetail? _detail;
   bool _changed = false;
 
+  // TASK 16.5 — populated the first time [_openGrantBranchAccess] fetches
+  // fresh branches (see that method and [PosIdentityAdminGateway
+  // .listGrantableBranches]'s own doc comment). [_branchLabel] prefers
+  // this over `widget.adminContext.branches` so a branch access row for a
+  // just-granted, brand-new branch resolves to its real name instead of
+  // falling back to its raw id — the same staleness this task fixed for
+  // the grant dialog itself would otherwise resurface here right after a
+  // successful grant.
+  List<BranchSummary> _freshBranches = const [];
+
   late String _statusValue = widget.user.membershipStatus == 'invited' ? 'active' : widget.user.membershipStatus;
   final _passwordController = TextEditingController();
   bool _statusBusy = false;
@@ -778,12 +788,29 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   }
 
   Future<void> _openGrantBranchAccess() async {
+    // TASK 16.5 — fetched fresh here, deliberately NOT
+    // `widget.adminContext.branches` (populated only once, at login/token
+    // refresh — see `pos_identity_admin_gateway.dart`'s own header doc
+    // comment on [PosIdentityAdminGateway.listGrantableBranches] for the
+    // real production bootstrap bug this fixes: a brand-new company's
+    // first Owner creates their first branch, then finds "Otorgar acceso"
+    // shows it as unavailable because the session snapshot predates it).
+    List<BranchSummary> branches;
+    try {
+      branches = await widget.gateway.listGrantableBranches(widget.adminContext.session.companyId);
+    } on Object {
+      if (!mounted) return;
+      _showSnack('No fue posible cargar las sucursales.');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _freshBranches = branches);
     final granted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => _GrantBranchAccessDialog(
         userId: widget.user.id,
         gateway: widget.gateway,
-        branches: widget.adminContext.branches,
+        branches: branches,
       ),
     );
     if (granted == true) {
@@ -813,7 +840,9 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
 
   String _branchLabel(String? branchId) {
     if (branchId == null) return 'Todas las sucursales';
-    final match = widget.adminContext.branches.where((branch) => branch.id == branchId).firstOrNull;
+    final match =
+        _freshBranches.where((branch) => branch.id == branchId).firstOrNull ??
+        widget.adminContext.branches.where((branch) => branch.id == branchId).firstOrNull;
     return match == null ? branchId : '${match.name} (${match.code})';
   }
 
@@ -983,7 +1012,20 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
         ),
         const SizedBox(height: 6),
         if (detail.branchAccess.isEmpty)
-          Text('Sin acceso a sucursales.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+          // TASK 16.5 — an active company-wide (branch_id null) role
+          // already grants every branch, present and future, with no
+          // explicit `user_branch_access` row needed at all (see
+          // `auth.repository.ts`'s `resolveContext`) — showing a plain
+          // "sin acceso" here for that actor was misleading, not merely
+          // stale: it read as "this user cannot access any branch," which
+          // was never true and is exactly what made the reported
+          // bootstrap bug look worse than it was.
+          Text(
+            detail.roles.any((assignment) => assignment.branchId == null && assignment.status == 'active')
+                ? 'Todas las sucursales (por rol de alcance completo).'
+                : 'Sin acceso a sucursales.',
+            style: TextStyle(color: palette.textMuted, fontSize: 12),
+          )
         else
           for (final access in detail.branchAccess)
             Padding(

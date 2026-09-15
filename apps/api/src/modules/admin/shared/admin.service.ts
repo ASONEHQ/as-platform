@@ -108,10 +108,41 @@ export class AdministrationService {
 
   public async listBranches(actor: AdminActor): Promise<readonly Record<string, unknown>[]> {
     requirePermission(this.authentication, actor.context, 'branch.read');
-    return this.repository.query<Record<string, unknown>>(
-      `select id,company_id,code,name,status,timezone,address,created_at,updated_at from branches where company_id=$1 and id=any($2::uuid[]) order by code,id`,
-      [actor.context.companyId, actor.context.permittedBranchIds],
-    );
+    // TASK 16.5 — first-branch bootstrap fix. A company-wide actor (e.g.
+    // the first production Owner, always provisioned with `branch_id:
+    // null` — a company-wide role — see `production-owner.service.ts`)
+    // already sees every company branch here via `permittedBranchIds`
+    // itself (`auth.repository.ts`'s `resolveContext` returns ALL active
+    // branches once it detects a company-wide role grant), so this only
+    // changes behavior for a BRANCH-SCOPED actor: one who is not
+    // company-wide but does hold `branch_access.manage` or
+    // `branch.create` — the two permissions that mean "this actor
+    // administers the company's branch roster," as distinct from
+    // "this actor operates business data (sales/cash/inventory/...) at a
+    // specific branch." Without this, such an actor could create a new
+    // branch (`createBranch`, gated on `branch.create`) and then have no
+    // way to ever list/see it again here or grant anyone (including
+    // themselves) access to it — `changeBranchAccess` below already lets
+    // `branch_access.manage` grant access to ANY branch in the actor's
+    // own company regardless of the actor's own branch scope, so this
+    // listing was the one place lagging behind what the mutation already
+    // allowed. Scoped strictly to the actor's own company
+    // (`actor.context.companyId`) either way — never cross-tenant, and
+    // this never widens OPERATIONAL access to branch-scoped business
+    // data, which stays governed by `permittedBranchIds`/
+    // `requireBranchAccess` everywhere else, unchanged.
+    const canAdministerBranches =
+      actor.context.permissions.includes('branch_access.manage') ||
+      actor.context.permissions.includes('branch.create');
+    return canAdministerBranches
+      ? this.repository.query<Record<string, unknown>>(
+          `select id,company_id,code,name,status,timezone,address,created_at,updated_at from branches where company_id=$1 order by code,id`,
+          [actor.context.companyId],
+        )
+      : this.repository.query<Record<string, unknown>>(
+          `select id,company_id,code,name,status,timezone,address,created_at,updated_at from branches where company_id=$1 and id=any($2::uuid[]) order by code,id`,
+          [actor.context.companyId, actor.context.permittedBranchIds],
+        );
   }
 
   public async createBranch(
@@ -324,7 +355,10 @@ export class AdministrationService {
     password?: string,
   ): Promise<void> {
     requirePermission(this.authentication, actor.context, 'user.update');
-    const [identity] = await this.repository.query<{ status: string; password_hash: string | null }>(
+    const [identity] = await this.repository.query<{
+      status: string;
+      password_hash: string | null;
+    }>(
       `select u.status, u.password_hash from users u
        join company_memberships m on m.user_id = u.id
        where m.company_id = $1 and m.user_id = $2`,
@@ -361,10 +395,10 @@ export class AdministrationService {
         )) as { rowCount?: number };
         if (result.rowCount !== 1) throw missing();
         if (isFirstActivation) {
-          await client.query(`update users set status='active',password_hash=$2,updated_at=now() where id=$1`, [
-            userId,
-            passwordHash,
-          ]);
+          await client.query(
+            `update users set status='active',password_hash=$2,updated_at=now() where id=$1`,
+            [userId, passwordHash],
+          );
         }
         if (status !== 'active') {
           await client.query(
@@ -504,6 +538,31 @@ export class AdministrationService {
         message: 'A permission may be assigned once per role.',
         statusCode: 400,
       });
+    // TASK 16.5 — self-escalation / privilege-escalation guard: an actor
+    // must never be able to use `role.permission.manage` to grant ANY
+    // role (including one they themselves hold) an `allow` permission the
+    // actor does not currently hold — otherwise this endpoint alone is a
+    // universal privilege-escalation primitive, regardless of whose role
+    // is being edited. `deny` assignments are exempt (denying is never an
+    // escalation). Checked against the actor's own CURRENT effective
+    // permission set (`actor.context.permissions`, the same deny-aware
+    // list `auth.repository.ts`'s `resolveContext` computes fresh on
+    // every request) before touching the database.
+    const allowedPermissionIds = assignments
+      .filter((item) => item.effect === 'allow')
+      .map((item) => item.permissionId);
+    if (allowedPermissionIds.length > 0) {
+      const grantedCodes = await this.repository.query<{ code: string }>(
+        `select code from permissions where id = any($1::uuid[])`,
+        [allowedPermissionIds],
+      );
+      if (grantedCodes.some((row) => !actor.context.permissions.includes(row.code)))
+        throw new AppError({
+          code: 'permission_denied',
+          message: 'Cannot grant a permission you do not hold.',
+          statusCode: 403,
+        });
+    }
     await this.repository.mutate({
       companyId: actor.context.companyId,
       actorId: actor.context.userId,
@@ -596,6 +655,29 @@ export class AdministrationService {
     values: { roleId: string; branchId?: string | undefined },
   ): Promise<Record<string, unknown>> {
     requirePermission(this.authentication, actor.context, 'role.assign');
+    // TASK 16.5 — self-escalation / privilege-escalation guard: an actor
+    // must never be able to use `role.assign` to grant ANY user
+    // (including themselves) a role that carries a permission the actor
+    // does not currently hold — otherwise `role.assign` alone is a
+    // universal privilege-escalation primitive (assign yourself, or a
+    // puppet account, a role with more power than you have). Checked
+    // against the role's current granted (`allow`) permission set,
+    // company-scoped like every other query in this file. An unknown/
+    // wrong-company roleId simply yields zero rows here (never an
+    // escalation) — the existing "role not found" check inside the
+    // transaction below still fires for it, unchanged.
+    const grantedCodes = await this.repository.query<{ code: string }>(
+      `select p.code from role_permissions rp
+       join permissions p on p.id = rp.permission_id
+       where rp.company_id = $1 and rp.role_id = $2 and rp.effect = 'allow'`,
+      [actor.context.companyId, values.roleId],
+    );
+    if (grantedCodes.some((row) => !actor.context.permissions.includes(row.code)))
+      throw new AppError({
+        code: 'permission_denied',
+        message: 'Cannot assign a role that grants permissions you do not hold.',
+        statusCode: 403,
+      });
     const assignmentId = randomUUID();
     let result: Record<string, unknown> | undefined;
     await this.repository.mutate({

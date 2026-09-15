@@ -105,7 +105,18 @@ integration('PostgreSQL administration foundation', () => {
       address: { company_id: second.companyId },
     });
     expect(created).toMatchObject({ company_id: first.companyId });
-    expect(await service.listBranches(first.actor)).toHaveLength(1);
+    // TASK 16.5: `first.actor` holds `branch_access.manage`/`branch.create`
+    // (`allPermissions`), so `listBranches` now correctly returns EVERY
+    // branch in the actor's own company — the original fixture branch
+    // plus the one just created — never restricted to a stale
+    // `permittedBranchIds` snapshot for an actor who administers the
+    // branch roster. Company isolation still holds: `second`'s branch
+    // never appears, confirming this widening is same-company only.
+    const listed = await service.listBranches(first.actor);
+    expect(listed.map((row) => row.id)).toEqual(
+      expect.arrayContaining([first.branchId, created.id]),
+    );
+    expect(listed.map((row) => row.id)).not.toContain(second.branchId);
   });
 
   // TASK 14.2 (launch-blocker regression): omitting `address` entirely is
@@ -370,6 +381,152 @@ integration('PostgreSQL administration foundation', () => {
       ).rows[0]?.count,
     ).toBe('1');
   });
+
+  // TASK 16.5 — first-branch bootstrap + self-escalation certification.
+  //
+  // Root cause of the reported production bug: a brand-new company's
+  // first Owner (always provisioned with a COMPANY-WIDE role — `branch_id
+  // null` on `user_roles`, `production-owner.service.ts`) creates their
+  // first branch, then finds the "Otorgar acceso" branch picker empty.
+  // The backend was never actually the blocker — `changeBranchAccess`
+  // (below) already let `branch_access.manage` grant access to ANY
+  // branch in the actor's own company, regardless of the actor's own
+  // branch scope. The real gap was `listBranches` restricting its result
+  // to the actor's OWN `permittedBranchIds` even for an actor who
+  // administers the branch roster (`branch_access.manage`/
+  // `branch.create`) — the Flutter picker had nothing to show. These
+  // tests certify the fixed `listBranches` alongside the pre-existing,
+  // already-correct `changeBranchAccess` behavior.
+  it('lets an actor without company-wide access, but holding branch_access.manage/branch.create, list every company branch — the first-Owner bootstrap fix', async () => {
+    const tenant = await tenantFixture(database, 'bootstrap-list');
+    const secondBranchId = await insertBranch(database, tenant.companyId, 'SECOND');
+    // `tenant.actor` already has `branch_access.manage`/`branch.create` in
+    // `allPermissions` and only `tenant.branchId` in `permittedBranchIds`
+    // (no company-wide role) — exactly a branch-scoped admin who just
+    // created a new branch and needs to see it to grant access to it.
+    const branches = await service.listBranches(tenant.actor);
+    expect(branches.map((row) => row.id)).toEqual(
+      expect.arrayContaining([tenant.branchId, secondBranchId]),
+    );
+  });
+
+  it('restricts listBranches to the operational branch list for an actor lacking branch_access.manage and branch.create', async () => {
+    const tenant = await tenantFixture(database, 'bootstrap-list-restricted');
+    const secondBranchId = await insertBranch(database, tenant.companyId, 'SECOND');
+    const limited = withPermissions(tenant.actor, ['branch.read']);
+    const branches = await service.listBranches(limited);
+    expect(branches.map((row) => row.id)).toEqual([tenant.branchId]);
+    expect(branches.map((row) => row.id)).not.toContain(secondBranchId);
+  });
+
+  it("lets branch_access.manage grant access to a branch outside the actor's own permitted branches — the actual bootstrap unblock", async () => {
+    const tenant = await tenantFixture(database, 'bootstrap-grant');
+    const secondBranchId = await insertBranch(database, tenant.companyId, 'SECOND');
+    // `tenant.actor`'s own `permittedBranchIds` is only `[tenant.branchId]`
+    // — never `secondBranchId` — yet the grant must still succeed.
+    const granted = await service.changeBranchAccess(tenant.actor, tenant.userId, secondBranchId, {
+      isDefault: false,
+      status: 'active',
+    });
+    expect(granted.access).toMatchObject({ branch_id: secondBranchId, status: 'active' });
+  });
+
+  it('never lets branch access be granted for a branch belonging to another company — no tenant-crossing assignment', async () => {
+    const first = await tenantFixture(database, 'branch-grant-tenant-a');
+    const second = await tenantFixture(database, 'branch-grant-tenant-b');
+    await expect(
+      service.changeBranchAccess(first.actor, first.userId, second.branchId, {
+        isDefault: false,
+        status: 'active',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('blocks role.assign from granting a role that carries a permission the actor does not hold — no self- or puppet-account escalation', async () => {
+    const tenant = await tenantFixture(database, 'escalation-assign');
+    const permissionId = randomUUID();
+    await database.pool.query(
+      `insert into permissions (id,code,description,domain) values ($1,'sale.create','Create sales','sale')`,
+      [permissionId],
+    );
+    const role = await service.createRole(tenant.actor, { code: 'cashier-role', name: 'Cashier' });
+    // Setup uses an actor who genuinely holds `sale.create` (`tenant.actor`
+    // itself does not — it's outside `allPermissions` on purpose, see the
+    // top of this file) so the role's own permission grant isn't itself
+    // blocked by the very guard this test is certifying.
+    await service.replaceRolePermissions(
+      withPermissions(tenant.actor, ['role.permission.manage', 'sale.create']),
+      String(role.id),
+      [{ effect: 'allow', permissionId }],
+    );
+    // Holds `role.assign` but not `sale.create` — the role above grants
+    // more than this actor personally has.
+    const limitedAssigner = withPermissions(tenant.actor, [
+      'role.assign',
+      'role.read',
+      'user.read',
+    ]);
+    await expect(
+      service.assignRole(limitedAssigner, tenant.userId, { roleId: String(role.id) }),
+    ).rejects.toMatchObject({ code: 'permission_denied', statusCode: 403 });
+    // Assigning it to THEMSELVES (genuine self-escalation, not just a
+    // puppet account) is equally blocked by the same check.
+    await expect(
+      service.assignRole(limitedAssigner, limitedAssigner.context.userId, {
+        roleId: String(role.id),
+      }),
+    ).rejects.toMatchObject({ code: 'permission_denied', statusCode: 403 });
+  });
+
+  it('allows role.assign to grant a role whose permissions are already a subset of what the actor holds', async () => {
+    const tenant = await tenantFixture(database, 'escalation-assign-allowed');
+    const permissionId = randomUUID();
+    await database.pool.query(
+      `insert into permissions (id,code,description,domain) values ($1,'sale.create','Create sales','sale')`,
+      [permissionId],
+    );
+    const role = await service.createRole(tenant.actor, {
+      code: 'cashier-role-2',
+      name: 'Cashier',
+    });
+    await service.replaceRolePermissions(
+      withPermissions(tenant.actor, ['role.permission.manage', 'sale.create']),
+      String(role.id),
+      [{ effect: 'allow', permissionId }],
+    );
+    const assigner = withPermissions(tenant.actor, [
+      'role.assign',
+      'role.read',
+      'user.read',
+      'sale.create',
+    ]);
+    await expect(
+      service.assignRole(assigner, tenant.userId, { roleId: String(role.id) }),
+    ).resolves.toMatchObject({ role_id: role.id });
+  });
+
+  it('blocks role.permission.manage from granting a permission the actor does not hold, but still allows denying it', async () => {
+    const tenant = await tenantFixture(database, 'escalation-permissions');
+    const permissionId = randomUUID();
+    await database.pool.query(
+      `insert into permissions (id,code,description,domain) values ($1,'payroll.close','Close payroll','payroll')`,
+      [permissionId],
+    );
+    const role = await service.createRole(tenant.actor, { code: 'manager-role', name: 'Manager' });
+    const limitedManager = withPermissions(tenant.actor, ['role.permission.manage', 'role.read']);
+    await expect(
+      service.replaceRolePermissions(limitedManager, String(role.id), [
+        { effect: 'allow', permissionId },
+      ]),
+    ).rejects.toMatchObject({ code: 'permission_denied', statusCode: 403 });
+    // Denying a permission the actor doesn't personally hold is never an
+    // escalation — must still succeed.
+    await expect(
+      service.replaceRolePermissions(limitedManager, String(role.id), [
+        { effect: 'deny', permissionId },
+      ]),
+    ).resolves.toBeUndefined();
+  });
 });
 
 async function ensureMigrations(database: DatabaseClient): Promise<void> {
@@ -448,6 +605,10 @@ async function insertBranch(
 
 function withBranches(actor: AdminActor, permittedBranchIds: readonly string[]): AdminActor {
   return { ...actor, context: { ...actor.context, permittedBranchIds } };
+}
+
+function withPermissions(actor: AdminActor, permissions: readonly string[]): AdminActor {
+  return { ...actor, context: { ...actor.context, permissions } };
 }
 
 async function insertSession(

@@ -89,6 +89,50 @@ const REQUIRED_ADMIN_PERMISSIONS = Object.freeze([
   'branch_access.manage',
 ]);
 
+// TASK 16.5 — `AdministrationService.replaceRolePermissions`/`assignRole`
+// now refuse to grant a role/permission the ACTING actor does not itself
+// currently hold (a real self-/puppet-account privilege-escalation guard
+// that previously did not exist — see `admin.service.ts`'s own doc
+// comment on that check). This tool's synthetic actor previously held
+// only `REQUIRED_ADMIN_PERMISSIONS` — deliberately minimal, but that
+// minimalism was about documentation hygiene, not a genuine authority
+// boundary: `applyRoles` below can already grant an arbitrary role ANY
+// permission in the full catalogue (`role.permissions ===
+// ALL_PERMISSIONS_IN_CATALOGUE` grants literally every one), and
+// `buildAdminActor`'s own `userId`/`membershipId` are the REAL company
+// owner's (looked up from `user_roles` below, never fabricated) — an
+// owner who, per `provisioning/production-owner.service.ts`, already
+// holds every permission that exists at provisioning time. Once the
+// escalation guard exists, this actor's OWN permission set must
+// accurately reflect that same real authority, or this already-real,
+// already-documented, owner-run bulk-provisioning tool would be unable
+// to do anything it was always meant to do. Resolved fresh from the
+// database (`ownerPermissionCodes` below) rather than re-hardcoded here,
+// so it stays correct even if the permission catalogue changes.
+async function ownerPermissionCodes(
+  database: DatabaseClient,
+  companyId: string,
+  membershipId: string,
+): Promise<readonly string[]> {
+  const rows = await database.pool.query<{ code: string }>(
+    `select distinct p.code from user_roles ur
+     join roles r on r.id = ur.role_id and r.company_id = ur.company_id and r.status = 'active'
+     join role_permissions rp on rp.role_id = r.id and rp.company_id = r.company_id and rp.effect = 'allow'
+     join permissions p on p.id = rp.permission_id
+     where ur.membership_id = $1 and ur.company_id = $2 and ur.status = 'active'
+       and not exists (
+         select 1 from user_roles denied_ur
+         join roles denied_r on denied_r.id = denied_ur.role_id and denied_r.company_id = denied_ur.company_id and denied_r.status = 'active'
+         join role_permissions denied_rp on denied_rp.role_id = denied_r.id and denied_rp.company_id = denied_r.company_id
+         where denied_ur.membership_id = ur.membership_id and denied_ur.company_id = ur.company_id
+           and denied_ur.status = 'active' and denied_rp.permission_id = rp.permission_id
+           and denied_rp.effect = 'deny'
+       )`,
+    [membershipId, companyId],
+  );
+  return rows.rows.map((row) => row.code);
+}
+
 /**
  * Fixed epoch used only for an inventory opening-balance movement's own
  * `occurredAt` — mirrors `../development/seed-pos-catalog.service.ts`'s
@@ -132,9 +176,12 @@ interface SharedMutationContext {
  * method this tool calls only ever reaches `requirePermission`, never
  * `login`/`authenticate`/`refresh`); any accidental invocation of either
  * stub throws immediately rather than silently returning fake data. The
- * synthetic context is granted EXACTLY the permission codes the handful
- * of `AdministrationService` methods this tool calls require — never a
- * wildcard/superuser grant.
+ * synthetic context's own `AuthContext` object carries no permissions
+ * itself — `buildAdminActor` (below, at the real call site) is what
+ * actually sets `context.permissions`, resolved to the REAL company
+ * owner's real, currently-granted permission set (never a fabricated
+ * wildcard) — see that function's own doc comment for why, after TASK
+ * 16.5's self-escalation guard.
  */
 function buildSyntheticAuthService(): AuthService {
   const neverCalled = (): never => {
@@ -160,6 +207,7 @@ function buildAdminActor(input: {
   readonly membershipId: string;
   readonly requestId: string;
   readonly correlationId: string;
+  readonly permissions: readonly string[];
 }): AdminActor {
   const context: AuthContext = {
     sessionId: 'business-config-cli',
@@ -168,7 +216,7 @@ function buildAdminActor(input: {
     companyId: input.companyId,
     expiresAt: new Date(Date.now() + 3_600_000),
     companyWideAccess: true,
-    permissions: REQUIRED_ADMIN_PERMISSIONS,
+    permissions: input.permissions,
     permittedBranchIds: [],
   };
   return { context, requestId: input.requestId, correlationId: input.correlationId };
@@ -193,7 +241,10 @@ export class BusinessConfigProvisioner {
   private readonly loyalty: LoyaltyService;
 
   public constructor(private readonly database: DatabaseClient) {
-    this.administration = new AdministrationService(new AdminRepository(database), buildSyntheticAuthService());
+    this.administration = new AdministrationService(
+      new AdminRepository(database),
+      buildSyntheticAuthService(),
+    );
     this.catalog = new CatalogService(new CatalogRepository(database));
     this.products = new ProductCatalogService(new ProductCatalogRepository(database));
     this.locations = new InventoryLocationService(new InventoryLocationRepository(database));
@@ -257,10 +308,22 @@ export class BusinessConfigProvisioner {
       membershipId: owner.membership_id,
       requestId,
       correlationId,
+      permissions: [
+        ...new Set([
+          ...REQUIRED_ADMIN_PERMISSIONS,
+          ...(await ownerPermissionCodes(this.database, companyId, owner.membership_id)),
+        ]),
+      ],
     });
 
     const branches = await this.applyBranches(config, companyId, actor, dryRun);
-    const registers = await this.applyRegisters(config, companyId, mutationContext, branches.idByCode, dryRun);
+    const registers = await this.applyRegisters(
+      config,
+      companyId,
+      mutationContext,
+      branches.idByCode,
+      dryRun,
+    );
     const roles = await this.applyRoles(config, companyId, actor, dryRun);
     const users = await this.applyUsers(
       config,
@@ -271,7 +334,12 @@ export class BusinessConfigProvisioner {
       options.resolveUserPassword,
     );
     const categories = await this.applyCategories(config, mutationContext, dryRun);
-    const catalogResult = await this.applyProducts(config, mutationContext, categories.idByCode, dryRun);
+    const catalogResult = await this.applyProducts(
+      config,
+      mutationContext,
+      categories.idByCode,
+      dryRun,
+    );
     const inventoryResult = await this.applyInventoryOpeningBalances(
       config,
       mutationContext,
@@ -279,7 +347,12 @@ export class BusinessConfigProvisioner {
       catalogResult.variantIdByCode,
       dryRun,
     );
-    const rewardsProgram = await this.applyRewards(config, mutationContext, catalogResult.products.idByCode, dryRun);
+    const rewardsProgram = await this.applyRewards(
+      config,
+      mutationContext,
+      catalogResult.products.idByCode,
+      dryRun,
+    );
 
     return Object.freeze({
       dryRun,
@@ -437,7 +510,10 @@ export class BusinessConfigProvisioner {
         created += 1;
         continue;
       }
-      const createdRole = await this.administration.createRole(actor, { name: role.name, code: role.code });
+      const createdRole = await this.administration.createRole(actor, {
+        name: role.name,
+        code: role.code,
+      });
       const roleId = createdRole.id as string;
 
       let permissionIds: readonly string[];
@@ -519,7 +595,9 @@ export class BusinessConfigProvisioner {
         );
       const password = await resolveUserPassword(user, index);
       if (password.length === 0)
-        throw new BusinessConfigInputError(`users[${index.toString()}]: an empty password was supplied.`);
+        throw new BusinessConfigInputError(
+          `users[${index.toString()}]: an empty password was supplied.`,
+        );
 
       const createdUser = await this.administration.createUser(actor, {
         email: user.email.trim(),
@@ -531,7 +609,10 @@ export class BusinessConfigProvisioner {
       // parallel activation flow is invented here.
       await this.administration.updateMembership(actor, userId, 'active', password);
       await this.administration.assignRole(actor, userId, { roleId, branchId });
-      await this.administration.changeBranchAccess(actor, userId, branchId, { status: 'active', isDefault: true });
+      await this.administration.changeBranchAccess(actor, userId, branchId, {
+        status: 'active',
+        isDefault: true,
+      });
       created += 1;
     }
     return { count: Object.freeze({ created, existing, conflicts: Object.freeze([]) }) };
@@ -624,7 +705,8 @@ export class BusinessConfigProvisioner {
           'select id from product_variants where company_id=$1 and product_id=$2 and is_default=true',
           [mutationContext.companyId, row.id],
         );
-        if (variantRow.rows[0] !== undefined) variantIdByCode.set(product.code, variantRow.rows[0].id);
+        if (variantRow.rows[0] !== undefined)
+          variantIdByCode.set(product.code, variantRow.rows[0].id);
         continue;
       }
       if (dryRun) {
@@ -662,17 +744,31 @@ export class BusinessConfigProvisioner {
         mutationContext,
         productResult.value.id,
         `business-config:${mutationContext.companyId}:price:${product.code}`,
-        { amount: product.unit_price, currencyCode: config.company.currency_code, validFrom: mutationContext.timestamp },
+        {
+          amount: product.unit_price,
+          currencyCode: config.company.currency_code,
+          validFrom: mutationContext.timestamp,
+        },
       );
       pricesCreated += 1;
     }
 
     return {
       products: {
-        count: Object.freeze({ created: productsCreated, existing: productsExisting, conflicts: Object.freeze(productConflicts) }),
+        count: Object.freeze({
+          created: productsCreated,
+          existing: productsExisting,
+          conflicts: Object.freeze(productConflicts),
+        }),
         idByCode,
       },
-      prices: { count: Object.freeze({ created: pricesCreated, existing: pricesExisting, conflicts: Object.freeze([]) }) },
+      prices: {
+        count: Object.freeze({
+          created: pricesCreated,
+          existing: pricesExisting,
+          conflicts: Object.freeze([]),
+        }),
+      },
       variantIdByCode,
     };
   }
@@ -732,7 +828,8 @@ export class BusinessConfigProvisioner {
         movementType: 'opening_balance',
         occurredAt: OPENING_BALANCE_EPOCH,
         reasonCode: 'business_config_opening_stock',
-        notes: 'AS ONE TASK 14.2 business-config launch tool — initial stock from the launch config file.',
+        notes:
+          'AS ONE TASK 14.2 business-config launch tool — initial stock from the launch config file.',
       });
       const movementId = createResult.value.id as string;
       const movement = await this.drafts.get(mutationContext.companyId, [branchId], movementId);
@@ -758,20 +855,49 @@ export class BusinessConfigProvisioner {
           movementId,
           version,
           `${movementKey}:line:${line.productCode}`,
-          { productVariantId: variantId, destinationLocationId: locationResult.value.id, quantity: line.quantity, unitOfMeasureCode: 'unit' },
+          {
+            productVariantId: variantId,
+            destinationLocationId: locationResult.value.id,
+            quantity: line.quantity,
+            unitOfMeasureCode: 'unit',
+          },
           false,
         );
         version = BigInt((lineResult.value as { version: number }).version);
       }
-      const submitResult = await this.posting.submit(mutationContext, [branchId], movementId, version, `${movementKey}:submit`);
+      const submitResult = await this.posting.submit(
+        mutationContext,
+        [branchId],
+        movementId,
+        version,
+        `${movementKey}:submit`,
+      );
       const submitVersion = BigInt((submitResult.value as { version: number }).version);
-      await this.posting.post(mutationContext, [branchId], movementId, submitVersion, `${movementKey}:post`);
+      await this.posting.post(
+        mutationContext,
+        [branchId],
+        movementId,
+        submitVersion,
+        `${movementKey}:post`,
+      );
       balancesCreated += lines.length;
     }
 
     return {
-      locations: { count: Object.freeze({ created: locationsCreated, existing: locationsExisting, conflicts: Object.freeze([]) }) },
-      balances: { count: Object.freeze({ created: balancesCreated, existing: balancesExisting, conflicts: Object.freeze([]) }) },
+      locations: {
+        count: Object.freeze({
+          created: locationsCreated,
+          existing: locationsExisting,
+          conflicts: Object.freeze([]),
+        }),
+      },
+      balances: {
+        count: Object.freeze({
+          created: balancesCreated,
+          existing: balancesExisting,
+          conflicts: Object.freeze([]),
+        }),
+      },
     };
   }
 
@@ -810,7 +936,9 @@ export class BusinessConfigProvisioner {
     for (const code of config.rewards.reward_benefit_scope_product_codes) {
       const id = productIdByCode.get(code);
       if (id === undefined)
-        throw new BusinessConfigInputError(`rewards: reward_benefit_scope_product_codes references unknown product "${code}".`);
+        throw new BusinessConfigInputError(
+          `rewards: reward_benefit_scope_product_codes references unknown product "${code}".`,
+        );
       if (isPending(id))
         throw new BusinessConfigInputError(
           `rewards: internal ordering error — product "${code}" was not actually created before the rewards program.`,

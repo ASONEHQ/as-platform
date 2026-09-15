@@ -245,6 +245,109 @@ void main() {
     });
   });
 
+  group('Usuarios — acceso a sucursales (TASK 16.5: corrección del bootstrap circular)', () {
+    testWidgets('"Otorgar acceso" muestra sucursales frescas del gateway, incluso una que no está en la sesión cacheada', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      // `_context` (below) only knows about branch-1/branch-2 — `plv` is a
+      // branch created AFTER that cached session snapshot, exactly
+      // mirroring the real reported bug (first Owner creates PLV, then
+      // "Otorgar acceso" showed nothing because the dialog used to read
+      // `AuthenticatedContext.branches` instead of fetching fresh).
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+        grantableBranches: const [
+          BranchSummary(id: 'plv', code: 'PLV', name: 'Puerta La Victoria', timezone: 'America/Mexico_City'),
+        ],
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.listGrantableBranchesCalls, 1);
+      expect(gateway.listGrantableBranchesLastCompanyId, 'company-id');
+      expect(find.text('Puerta La Victoria'), findsOneWidget);
+      expect(find.text('No hay sucursales disponibles en tu sesión.'), findsNothing);
+    });
+
+    testWidgets('otorgar acceso a la sucursal recién descubierta llama a changeBranchAccess y refresca el detalle', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+        grantableBranches: const [
+          BranchSummary(id: 'plv', code: 'PLV', name: 'Puerta La Victoria', timezone: 'America/Mexico_City'),
+        ],
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
+      await tester.pumpAndSettle();
+      // A single grantable branch is already pre-selected by the dialog's
+      // own `initState` — no dropdown interaction needed to submit it.
+      await tester.tap(find.byKey(const Key('pos-grant-branch-access-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.changeBranchAccessCalls, hasLength(1));
+      expect(gateway.changeBranchAccessCalls.single.userId, user.id);
+      expect(gateway.changeBranchAccessCalls.single.branchId, 'plv');
+      expect(gateway.changeBranchAccessCalls.single.status, 'active');
+      expect(find.text('Puerta La Victoria (PLV)'), findsOneWidget);
+    });
+
+    testWidgets('sin sucursales otorgables reales, el diálogo sigue mostrando el mensaje honesto de vacío', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No hay sucursales disponibles en tu sesión.'), findsOneWidget);
+    });
+
+    testWidgets('un actor con rol activo de alcance completo y sin accesos explícitos ve "Todas las sucursales", no "Sin acceso"', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final ownerRole = _role('r-owner', 'Owner', 'owner');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {
+          user.id: PosUserDetail(
+            user: user,
+            roles: [
+              PosUserRoleAssignment(
+                id: 'assignment-1',
+                roleId: ownerRole.id,
+                roleCode: ownerRole.code,
+                roleName: ownerRole.name,
+                branchId: null,
+                status: 'active',
+              ),
+            ],
+            branchAccess: const [],
+          ),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Todas las sucursales (por rol de alcance completo).'), findsOneWidget);
+      expect(find.text('Sin acceso a sucursales.'), findsNothing);
+    });
+  });
+
   group('Permisos — catálogo de solo lectura', () {
     testWidgets('agrupa el catálogo real por dominio', (tester) async {
       final gateway = _RecordingIdentityAdminGateway(
@@ -329,17 +432,20 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     List<PosPermission> permissions = const [],
     Map<String, List<PosRolePermissionAssignment>> rolePermissionsByRole = const {},
     Map<String, PosUserDetail> userDetails = const {},
+    List<BranchSummary> grantableBranches = const [],
   }) : _users = List.of(users),
        _roles = List.of(roles),
        _permissions = List.of(permissions),
        _rolePermissions = Map.of(rolePermissionsByRole),
-       _userDetails = Map.of(userDetails);
+       _userDetails = Map.of(userDetails),
+       _grantableBranches = List.of(grantableBranches);
 
   final List<PosUser> _users;
   final List<PosRole> _roles;
   final List<PosPermission> _permissions;
   final Map<String, List<PosRolePermissionAssignment>> _rolePermissions;
   final Map<String, PosUserDetail> _userDetails;
+  final List<BranchSummary> _grantableBranches;
 
   int listUsersCalls = 0;
   int listRolesCalls = 0;
@@ -351,6 +457,8 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final List<({String userId, String roleId, String? branchId})> assignRoleCalls = [];
   final List<({String userId, String assignmentId})> revokeRoleCalls = [];
   final List<({String userId, String branchId, String status, bool isDefault})> changeBranchAccessCalls = [];
+  int listGrantableBranchesCalls = 0;
+  String? listGrantableBranchesLastCompanyId;
 
   @override
   Future<List<PosUser>> listUsers() async {
@@ -560,6 +668,13 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
             access,
       ],
     );
+  }
+
+  @override
+  Future<List<BranchSummary>> listGrantableBranches(String companyId) async {
+    listGrantableBranchesCalls++;
+    listGrantableBranchesLastCompanyId = companyId;
+    return List.of(_grantableBranches);
   }
 }
 
