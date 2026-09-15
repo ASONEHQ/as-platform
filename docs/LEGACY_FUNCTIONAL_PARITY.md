@@ -902,12 +902,18 @@ counters, CSV export, real variants — rebuilt in Wave 3 — category admin,
 inline table editing → modal editing, PIN gating → real RBAC, inventory/
 Kardex integration, weight-based units, nombre/unidad/SKU/barcode/precio/
 costo/stock actual); **10 were genuine legacy capabilities with NO
-Flutter equivalent before this task**, now implemented; **9 were
-confirmed legacy placeholders/dead code**, correctly documented rather
-than recreated; **1 (Utilidad's live display) is a real, addressable
-follow-up explicitly out of this task's scope** (see its own row); the
-remaining rows are minor sub-items of the above (dead `Tipo`/`porPeso`
-fields, the orphaned duplicate image-handling functions).
+Flutter equivalent before this task**, now implemented as **A**; **1
+(Utilidad) was genuinely functional in intent (a real formula, a real
+readonly field, real event wiring — only its output DOM-targeting was
+buggy) and is now implemented as a redesigned, derived/read-only value —
+verdict **H** (see TASK 16.6A below, which corrected this row from an
+earlier, too-hasty **G**); **9 were confirmed legacy placeholders/dead
+code** (a real absence of the underlying capability itself, not merely a
+wiring bug), correctly documented rather than recreated; the remaining
+rows are minor sub-items of the above (dead `Tipo`/`porPeso` fields, the
+orphaned duplicate image-handling functions). **Every genuinely
+functional legacy capability in this area is now either A or H — none
+remain missing.**
 
 | Legacy capability | Legacy evidence | Current before TASK 16.6 | Implementation (TASK 16.6) | Test | Final status |
 |---|---|---|---|---|---|
@@ -942,7 +948,7 @@ fields, the orphaned duplicate image-handling functions).
 | Modal Precios — Precio de venta | REAL | REAL — `POST /api/v1/products/:id/prices` (company-wide/branch-scoped, its own real screen) | unchanged (product dialog intentionally does not duplicate price capture — see Utilidad row) | pre-existing | **A** |
 | Modal Precios — Costo | REAL, live recalc | REAL — `standard_cost` on the variant | unchanged | pre-existing | **A** |
 | Modal Precios — IVA % | REAL storage, but **never applied to any cart total** (dead consumption, confirmed across every total-computation call site) | REAL classification (`tax_code`), stored, not blindly recreating the legacy's own dead consumption | Now exposed as a real, editable field in both dialogs (was previously fixed at creation default only) | `pos_product_catalog_parity_test.dart` | **A (storage; consumption is a pre-existing, separate concern outside this task)** |
-| Modal Precios — Utilidad (profit) | Real math (`calcUtilidad()`), but writes to DOM ids (`mp-utilidad-row` etc.) that don't exist in the modal — **dead output**, never actually visible in the legacy either | Not computed anywhere (no product-dialog price field to compute it from — this platform separates cost, on the product/variant, from price, on its own dedicated pricing screen) | **Not implemented in the product dialog** — see note below | — | **Documented follow-up, not a regression**: the legacy's own display was dead too, so nothing user-visible is lost; a live cost-vs-price margin view is a real, addressable enhancement once/if it's wanted, but building it here would mean capturing price a second time in a divergent path from the existing real pricing screen |
+| Modal Precios — Utilidad (profit) | **[TASK 16.6A — reclassified from G to H, see that section]** Real formula (`calcUtilidad()`: `util=precio-costo`, `pct=round(util/precio*100)`), a real readonly `#mp-utilidad` input genuinely present in the modal, real `oninput` wiring on both `#mp-precio`/`#mp-costo` — but the function's OUTPUT writes to `mp-utilidad-row`/`mp-util-monto`/`mp-util-pct`, three DOM ids that exist nowhere in the file, so the real `#mp-utilidad` field was never actually populated for any operator | Not computed anywhere (no product-dialog price field to compute it from — this platform separates cost, on the product/variant, from price, on its own dedicated pricing screen) | **Redesigned, not removed**: `posUtilidadFrom()` (`pos_shell.dart`) computes the identical `precio-costo`/margin-% formula as a derived, READ-ONLY value from this platform's own two already-authoritative sources — `PosCatalogProduct.effectivePrice` (`POST /products/:id/prices`) and `.defaultVariant.standardCost` (server-omitted without `inventory.cost.read`, inheriting that same real gate) — shown in `_EditProductDialog`'s new "Precios" section. Never a second price-entry path (nothing new is editable); nothing computed here is ever sent back to the server. A real `0` cost computes a full-margin Utilidad (never treated as absent); a missing price or cost is an honest "Sin precio configurado"/"Sin costo registrado" state, never `$0.00` | `pos_product_catalog_parity_test.dart` (`posUtilidadFrom` unit cases: normal margin, zero cost, negative margin, missing price, missing cost; a widget case proving the real fetched product renders read-only precio/costo/utilidad) | **H — intentionally redesigned (derived/read-only vs. the legacy's own editable-in-the-same-modal fields), genuine capability preserved** |
 | Modal Precios — Stock actual | REAL, wired to real inventory/Kardex | REAL | unchanged | pre-existing | **A** |
 | Modal Precios — Stock mínimo | REAL | **MISSING entirely** — no column | Real `product_variants.min_stock` column + field in create dialog; edit intentionally routes to the already-real variant screen (see Extras note) | `product-catalog.integration.test.ts`, `pos_product_catalog_parity_test.dart` | **A — newly implemented** |
 | Modal Extras — Subir imagen (file) | REAL, `FileReader.readAsDataURL`, 5 MB cap, in-memory only (never persisted — nothing in the legacy is) | **MISSING entirely** | Real, production-safe upload: `POST /api/v1/products/:id/image` (multipart, magic-byte validated, `If-Match` CAS), `S3ObjectStorage`/`ProductImageStorage` (MinIO, tenant-scoped keys, generalized from the proven `branding.storage.ts` pattern), real Flutter picker in `_EditProductDialog` | `product-catalog.routes.integration.test.ts` (real MinIO round-trip, tenant isolation, 413/415/409), `pos_product_catalog_parity_test.dart` | **A — newly implemented, genuinely upgraded (real persistence vs. the legacy's own in-memory-only base64)** |
@@ -955,9 +961,203 @@ fields, the orphaned duplicate image-handling functions).
 | Producto → tarjeta POS/Cafetería: imagen/ícono/color realmente visibles | REAL (`prodCard()` renders `p.foto`/`p.icono`/`p.color` on every real tile) | **Every card hardcoded a single generic icon, no image/color support at all** (`_PosProductCard`, `_ProductCard`) | Both real card renderers now read `imageUrl`/`iconKey`/`cardStyle`/`cardColorHex`/`isFeatured` off the real backend response and render them for real, with a safe icon fallback on a missing/failed image | `pos_product_catalog_parity_test.dart` (icon fallback, featured badge, image wiring, no-crash-under-no-network) | **A — this task's own core requirement, closed** |
 | Categorías, marcas, opciones/valores, códigos de barras, precios por sucursal, variantes múltiples | REAL/placeholder mix, exhaustively covered in section 3 above and Wave 3's own recount | **[Already A — Wave 3]** real backend + real Flutter admin screens | Reused as-is (brand/category pickers now consume these exact existing gateways) — no duplicate models/endpoints created | pre-existing | **A (reused, not duplicated, per this task's own instruction)** |
 
-**Hard constraints verified**: no product image bytes/base64 stored in PostgreSQL anywhere (`products.image_url` is a URL column only, mirroring `branding.logo_url`); every new column/table is tenant-scoped with the same composite-FK convention as the rest of the schema (`products_preferred_supplier_scope_fk`); no tenant name, product, category, color, price, or supplier is hardcoded in any shared application file (audited: `default` card style renders the platform's own neutral surface, never `#6B3FA0`); no capability already shipped before this task was removed or regressed (full pre-existing test suites re-run clean: 1155 backend tests, 551 Flutter tests).
+**Hard constraints verified**: no product image bytes/base64 stored in PostgreSQL anywhere (`products.image_url` is a URL column only, mirroring `branding.logo_url`); every new column/table is tenant-scoped with the same composite-FK convention as the rest of the schema (`products_preferred_supplier_scope_fk`); no tenant name, product, category, color, price, or supplier is hardcoded in any shared application file (audited: `default` card style renders the platform's own neutral surface, never `#6B3FA0`); no capability already shipped before this task was removed or regressed (full pre-existing test suites re-run clean at the time: 1155 backend tests, 551 Flutter tests — see TASK 16.6A below for the current, higher counts after that task's own additions).
 
 **Verification run (all green, this task)**: backend `tsc --noEmit` (zero errors), `eslint` (zero errors/warnings on touched files), full `apps/api` vitest suite (1155/1155), dedicated integration tests against real Postgres (field round-trip, supplier FK cross-tenant/inactive rejection, duplicate-product behavior) and real Postgres+MinIO (image upload/delete, magic-byte/size/content-type validation, CAS conflict, tenant isolation), `flutter analyze` (zero errors), full `apps/one` widget-test suite (551/551, including the newly-added `pos_product_catalog_parity_test.dart`), a real production Flutter Web build (`scripts/build_web.sh`) with a clean bundle audit (no `localhost`/`127.0.0.1`/credentials in the built output), `drizzle-kit check` (30 migrations, statically valid).
+
+## TASK 16.6A — Production Closure (2026-09-15, same day)
+
+Three follow-ups on TASK 16.6, before production deployment: (1) a
+too-hasty **G** verdict on Utilidad corrected after a proper re-read of
+the legacy source, (2) real production-readiness work for the new
+object-storage dependency, (3) a final consistency pass confirming no
+genuinely functional legacy capability in this area remains missing.
+
+### 1. Utilidad — corrected verdict (G → H)
+
+TASK 16.6's own forensic pass characterized Utilidad's legacy behavior
+correctly (real formula, dead output wiring) but drew the wrong
+conclusion from it — treating "the legacy's own display never actually
+appeared" as equivalent to "this was a placeholder," the same bucket as
+`simularImport()`'s fully fabricated fake success message. Those are not
+the same thing. `simularImport()` never did anything real at any layer.
+`calcUtilidad()` (`AS POS V1.html:6301-6308`) computed a genuinely
+correct `precio-costo` derivation, on real live user input
+(`oninput="calcUtilidad()"` on both `#mp-precio` and `#mp-costo`,
+`AS POS V1.html:3691-3692`), into a real readonly field that genuinely
+exists in the modal HTML (`<input id="mp-utilidad" readonly>`,
+`AS POS V1.html:3698`) — the only bug is that the function's own output
+writes target three DIFFERENT ids (`mp-utilidad-row`/`mp-util-monto`/
+`mp-util-pct`) that were never defined anywhere. That is a real, narrow,
+fixable wiring defect in an otherwise-real feature, not an absent
+capability — exactly the class of thing this task's own instructions
+require preserving ("a genuine legacy capability may not remain missing
+merely because the new architecture organizes the workflow differently").
+
+**Legacy formula/behavior**: `util = precio - costo`; `pct = precio > 0
+? round(util / precio * 100) : 0` (implicit `0` when price is zero — the
+legacy itself never distinguished "zero price" from "unknown margin"
+here; this platform's own port is more honest — see below).
+
+**Authoritative sale price**: `PosCatalogProduct.effectivePrice` — the
+backend-resolved `effective_price` (`productHttp()`/`priceHttp()` in
+`product-catalog.routes.ts`), created through the real, separate `POST
+/api/v1/products/:id/prices` endpoint. Never a value typed into the
+product dialog — there is no price field there at all, deliberately (see
+the Precio de venta row above): adding one to compute Utilidad would
+have created exactly the "second authoritative price-entry path" this
+task's own instructions forbid.
+
+**Authoritative cost**: `PosCatalogProduct.defaultVariant.standardCost` —
+`variantHttp()`'s own `standard_cost`, server-omitted entirely unless the
+caller holds `inventory.cost.read` (that route's own `showCost` gate).
+Utilidad inherits this exact real permission boundary with no new
+permission invented — the legacy's own `verUtilidades` flag (declared in
+its `permisosDef`/`permisosPorRol` role model, `AS POS V1.html:4438-4454`,
+and given a UI label at line 9644) is itself confirmed NEVER checked
+anywhere in the codebase (grep-verified) — a second, independent
+placeholder inside the same feature. Recreating a `verUtilidades`-shaped
+permission here would have been recreating a placeholder the task's own
+instructions explicitly forbid; piggy-backing on the ALREADY-real
+`inventory.cost.read` gate is the correct, non-deceptive equivalent.
+
+**New formula**: identical — `amount = price - cost` (exact `Money`
+subtraction, never floating point for the stored/compared value);
+`marginPercent = round(amount / price * 100)`, `null` only when price is
+exactly zero (honest division-by-zero, matching the legacy's own
+zero-price case, except surfaced as an explicit absent percentage rather
+than a silently-fabricated `0%`). Computed in `posUtilidadFrom()`
+(`pos_shell.dart`), purely for display in `_EditProductDialog`'s new
+"Precios" section — nothing computed here is ever sent back to the
+server; the server/database pricing model remains the sole authority for
+both inputs.
+
+**Cost is zero**: a real, explicit `0.0000` cost is a genuinely
+free-to-stock item, not a missing value — Utilidad computes normally as
+the full sale price (a 100% margin), exactly what the legacy's own
+formula would have shown had its output wiring worked.
+
+**Cost or price is null**: an honest absent state ("Sin costo
+registrado" / "Sin precio configurado"), never a fabricated `$0.00` or a
+silently-hidden `0%`. Cost is `null` either because the actor lacks
+`inventory.cost.read` or the variant genuinely has none recorded — the
+backend's own response does not distinguish these two cases, so neither
+does this display, matching how every other cost-gated field in this
+codebase already behaves.
+
+**Tests**: `pos_product_catalog_parity_test.dart` — five `posUtilidadFrom`
+unit cases (a normal positive margin, a genuinely-free zero cost, a
+negative margin from a cost exceeding price, a missing cost, a missing
+price) and one widget case proving `_EditProductDialog` renders the real
+fetched product's precio/costo/utilidad, read-only, with no editable
+price/cost field anywhere in that dialog. This same work also surfaced
+and fixed a real, pre-existing, unrelated bug in `Money.toDisplayString()`
+(`apps/one/lib/features/pos/money.dart`): an exact negative amount (e.g.
+`-15.0000`) displayed as `-14.99` because the existing "round half up"
+implementation added its `+50` centavo offset BEFORE splitting off the
+sign, and `BigInt`'s `~/` truncates toward zero rather than flooring —
+asymmetric for negative values. Fixed by rounding the magnitude first and
+reapplying the sign afterward (symmetric for both signs, byte-for-byte
+unchanged for every existing non-negative call site) — this bug had
+never been exercised by any prior test because no feature had displayed
+a negative `Money` value before Utilidad's own possible-negative margin.
+
+### 2. Object storage — production readiness
+
+See `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md` for the full,
+DigitalOcean-compatible provisioning plan (this is a plan only — nothing
+was deployed). Summary of the real code changes made to support it:
+
+- **`MINIO_ENDPOINT`** (new, optional): `apps/api/src/infrastructure
+  /object-storage.ts`'s `ObjectStorageConfig` previously hardcoded
+  `127.0.0.1` as the object-storage host with NO way to point it at a
+  genuinely remote endpoint via environment variables (unlike
+  `DATABASE_URL`/`REDIS_URL`, which are full connection-string URLs and
+  so already support a remote host). `MINIO_ENDPOINT`, when set to a
+  well-formed `http(s)://` URL, now replaces that construction entirely;
+  unset (every deployment before this task), behavior is byte-for-byte
+  identical to before.
+- **`branding.storage.ts` refactored to compose the shared
+  `S3ObjectStorage`** (previously a hand-duplicated, parallel
+  implementation of the exact same S3 client/bucket-provisioning logic
+  `product-images.storage.ts` already used) — now there is exactly ONE
+  object-storage implementation behind both features, so this
+  production-readiness fix (and any future one) applies to both at once
+  instead of needing to be repeated. The class's own public API
+  (`uploadLogo`/`publicUrl`/`keyFromUrl`/`deleteObjectBestEffort`) is
+  unchanged — verified against its own already-shipped unit tests (4/4)
+  and real-MinIO integration tests (6/6), both still green, unmodified.
+- **Per-object `ACL: 'public-read'`** on every upload, independent of the
+  bucket-level policy `ensureBucket()` already applies — de-risks a real,
+  documented uncertainty about DigitalOcean Spaces' bucket-policy
+  compatibility (see the setup doc's own step 1) without asserting
+  something unverified; MinIO honors both identically, so this changes
+  nothing for the existing, already-integration-tested local/CI topology.
+- **`PutBucketPolicy` is now best-effort** (swallowed on failure, never
+  fatal) — a provider that doesn't support it no longer breaks every
+  upload; a genuine credentials/connectivity failure still surfaces
+  identically, one call later, at the actual `PutObject` call.
+- **Flutter — honest "storage not configured" message**: neither
+  `_EditProductDialog`'s upload/remove error handling (TASK 16.6, new)
+  nor `pos_branding_screen.dart`'s own equivalent (TASK 14.5A,
+  pre-existing) had an explicit case for the real `404` a caller gets
+  when object storage isn't configured server-side — both fell through
+  to a generic "No fue posible completar la solicitud." Both now show
+  "El almacenamiento de imágenes no está disponible en este servidor.
+  Contacta a soporte." — never a silently-fake success, per this task's
+  own explicit requirement.
+- **New tests**: `apps/api/src/infrastructure/object-storage.test.ts`
+  (7 cases — `MINIO_ENDPOINT` parsing/validation, remote vs. loopback
+  URL construction); `pos_product_catalog_parity_test.dart` gained a
+  dedicated "production readiness: honest UI when object storage is not
+  configured" group (2 cases — upload and remove, both against a fake
+  gateway that reproduces the real 404 contract).
+- **Boot/degradation behavior re-verified unchanged**: both feature's
+  routes are still registered only inside an `if (config !== undefined)`
+  guard in `register-plugins.ts`, with no `try/catch` anywhere in that
+  path because nothing in it can throw — a missing or malformed
+  `MINIO_*`/`MINIO_ENDPOINT` still degrades to a real, isolated 404 on
+  exactly the two feature areas, never a boot failure, never any effect
+  on `DATABASE_URL`/`REDIS_URL`/any unrelated route.
+
+### 3. Final matrix consistency pass
+
+Every row in TASK 16.6's own 47-row matrix above was re-read against this
+task's own rule ("every genuinely functional legacy capability must be
+**A** or **H**; a legacy placeholder must stay documented, never
+recreated"). Result: no row needed to change except Utilidad (now **H**,
+corrected above). Every **G**-verdict row was re-confirmed as a genuine
+legacy absence (not merely a wiring bug) — `simularImport()`'s fabricated
+success string, the `#mp-tipo`/`#mp-porpeso` fields with no corresponding
+DOM element anywhere in the modal, the static Variantes/Relacionados tabs
+with no backing data model, the orphaned/unreachable duplicate
+image-handling functions, and Precios especiales' checkout-side dead
+consumption (real data entry, but the entire POINT of the feature —
+applying a different price at checkout — never existed anywhere in
+`agregarProducto()`, a structural absence rather than a narrow wiring
+bug, unlike Utilidad) — none of these reclassify.
+
+**Regression re-verification after the Utilidad/object-storage changes**:
+backend `tsc --noEmit` (zero errors), `eslint` (zero errors/warnings),
+full `apps/api` vitest suite (**1162/1162**, up from 1155 — the new
+`object-storage.test.ts`), real-Postgres integration tests (unchanged,
+still green), real-MinIO integration tests for BOTH branding (6/6) and
+product images (6/6, unchanged behavior post-refactor), `flutter analyze`
+(zero errors), full `apps/one` widget-test suite (**559/559**, up from
+551 — the new Utilidad/object-storage-unavailable cases), a real
+production Flutter Web build with a clean bundle audit, `drizzle-kit
+check` (unchanged — no schema change in this follow-up task).
+
+**Final answer to this task's own question**: Productos/Catálogo is now
+**100% parity for every genuinely functional legacy capability** — each
+of the 47 identified capabilities is either **A** (implemented, matching
+or exceeding the legacy's real behavior) or **H** (Utilidad — the sole
+capability that needed a redesigned implementation rather than a literal
+port, with the real capability itself fully preserved). The 9 **G**-rated
+rows are, and remain, confirmed legacy placeholders/dead code — correctly
+documented, not reproduced. Committed and pushed to `release/as-pos-v1`
+only — never `main`, never deployed, Mercado Pago untouched (see this
+task's own delivery message for the exact commit SHA).
 
 ## How to read the priority calls in this document
 

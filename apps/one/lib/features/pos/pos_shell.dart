@@ -10224,12 +10224,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       if (!mounted) return;
       setState(() {
         _uploadingImage = false;
-        _error = switch (error.statusCode) {
-          415 => 'Ese archivo no es una imagen válida (PNG, JPEG o WEBP).',
-          413 => 'La imagen supera el tamaño máximo permitido.',
-          409 => 'Otra sesión cambió este producto. Cierra y vuelve a abrirlo.',
-          _ => error.failure.message,
-        };
+        _error = _productImageErrorMessage(error);
       });
     } on Object {
       if (!mounted) return;
@@ -10258,7 +10253,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       if (!mounted) return;
       setState(() {
         _uploadingImage = false;
-        _error = error.failure.message;
+        _error = _productImageErrorMessage(error);
       });
     } on Object {
       if (!mounted) return;
@@ -10418,6 +10413,19 @@ class _EditProductDialogState extends State<_EditProductDialog> {
               onChanged: _busy ? null : (value) => setState(() => _taxCode = value ?? 'IVA_GENERAL'),
             ),
             const SizedBox(height: 6),
+            const _DialogSectionLabel('Precios'),
+            // TASK 16.6A — legacy "Utilidad" parity (see `posUtilidadFrom`'s
+            // own doc comment for the full forensic finding and design
+            // rationale). Read-only: precio/costo editing stay on their own
+            // real, already-authoritative paths (the branch-price screen
+            // and `PosProductVariantsScreen`) — this never adds a second
+            // price-entry path, and nothing here is ever sent back to the
+            // backend.
+            _PosUtilidadRow(
+              effectivePrice: widget.product.effectivePrice,
+              variant: widget.product.defaultVariant,
+            ),
+            const SizedBox(height: 6),
             const _DialogSectionLabel('Extras'),
             Row(
               children: [
@@ -10492,6 +10500,171 @@ class _EditProductDialogState extends State<_EditProductDialog> {
   );
 }
 
+// TASK 16.6A — legacy "Utilidad" (profit) parity.
+//
+// **Legacy formula/behavior** (`AS POS V1.html:3691-3698,6301-6308`): the
+// product modal's Precios tab has a real readonly `<input id="mp-utilidad">`
+// field, and `calcUtilidad()` fires on every keystroke in `Precio de venta`
+// (`#mp-precio`) and `Costo` (`#mp-costo`) (`oninput="calcUtilidad()"` on
+// both). It computes `util = precio - costo` and `pct = round(util/precio
+// *100)` — real math, exactly the "sale price minus cost" formula. But its
+// OUTPUT WIRING targets THREE DOM ids (`mp-utilidad-row`, `mp-util-monto`,
+// `mp-util-pct`) that do not exist ANYWHERE in the modal HTML — confirmed
+// by an exhaustive search of the file. The one real `#mp-utilidad` input
+// that visibly exists is never written to by this function. So the
+// legacy's own Utilidad display never actually appeared for any operator,
+// ever — a genuine bug, not a designed no-op — but the CAPABILITY (a live,
+// derived profit readout from price and cost) was clearly, genuinely
+// intended: real inputs, a real readonly output field, a real formula, and
+// real event wiring, all present and consistent with that intent.
+//
+// **Authoritative sale price**: this platform's own backend-resolved
+// `effective_price` (`product-catalog.routes.ts`'s `productHttp()`/
+// `priceHttp()`) — the exact same value `PosCatalogProduct.effectivePrice`
+// already carries, created via the real, separate `POST /products/{id}
+// /prices` endpoint. Never a value typed into this dialog.
+//
+// **Authoritative cost**: the product's default variant's own
+// `standard_cost` (`variantHttp()`), already present on `PosCatalogProduct
+// .defaultVariant` — server-omitted entirely unless the caller holds
+// `inventory.cost.read` (`variantHttp()`'s own `showCost` gate), so this
+// naturally inherits that same real permission gate with no new one
+// invented (the legacy's own `verUtilidades` permission was declared in
+// its role model but never actually enforced anywhere — a dead permission
+// flag; recreating it here would itself be recreating a placeholder).
+//
+// **New formula**: identical to the legacy's real math —
+// `utilidad = precio - costo`, `margen% = round(utilidad / precio * 100)`
+// — computed HERE, client-side, purely for display, from the two values
+// above. This is not a second price-entry path (nothing here is editable)
+// and nothing computed here is ever sent back to the server — the
+// server/database pricing model stays the sole source of truth for both
+// inputs.
+//
+// **Cost is zero**: a real, explicit `0.0000` cost is a genuinely free-
+// to-stock item, not a missing value — `utilidad` computes normally as
+// the full sale price (100% margin), same as the legacy's own formula
+// would if its output wiring had worked.
+//
+// **Cost or price is null**: an honest absent state ("Sin costo
+// registrado" / "Sin precio configurado" — see `_PosUtilidadRow`), never
+// a fabricated `$0.00` or hidden `0%`. Cost is `null` when the actor
+// lacks `inventory.cost.read` OR the variant genuinely has none recorded
+// (the backend does not distinguish these two cases in the response, so
+// neither does this display); price is `null` when no active
+// `product_prices` row exists yet for this product.
+//
+// **Tests**: `pos_product_catalog_parity_test.dart` — `posUtilidadFrom`
+// unit cases (normal margin, zero cost, missing cost, missing price,
+// negative margin) and a widget case proving the row renders in
+// `_EditProductDialog` from the real fetched product, never editable.
+@immutable
+class PosUtilidad {
+  const PosUtilidad({required this.amount, required this.marginPercent});
+  final Money amount;
+
+  /// `null` only when the sale price is exactly zero (division by zero) —
+  /// never fabricated.
+  final int? marginPercent;
+}
+
+/// Returns `null` — an honest absent state — whenever either input is
+/// unavailable; see this section's own "Cost or price is null" note
+/// above. See "Cost is zero" above for why a real zero cost is NOT
+/// treated as absent.
+PosUtilidad? posUtilidadFrom(PosCatalogEffectivePrice? effectivePrice, PosCatalogDefaultVariant? variant) {
+  final standardCost = variant?.standardCost;
+  final costCurrency = variant?.currencyCode;
+  if (effectivePrice == null || standardCost == null || costCurrency == null) {
+    return null;
+  }
+  // Defensive: this platform never mixes currencies within one company in
+  // practice, but a derived display must never silently combine two
+  // different currencies if that ever happened.
+  if (costCurrency != effectivePrice.currencyCode) return null;
+  try {
+    final price = Money.parse(effectivePrice.amount, effectivePrice.currencyCode);
+    final cost = Money.parse(standardCost, costCurrency);
+    final amount = price - cost;
+    final marginPercent = price.isZero
+        ? null
+        : (double.parse(amount.toApiString()) / double.parse(price.toApiString()) * 100).round();
+    return PosUtilidad(amount: amount, marginPercent: marginPercent);
+  } on MoneyFormatException {
+    return null;
+  }
+}
+
+/// The read-only "Precios" row in `_EditProductDialog` — real sale price/
+/// cost/utilidad, all sourced from the already-fetched authoritative
+/// product, never an input.
+class _PosUtilidadRow extends StatelessWidget {
+  const _PosUtilidadRow({required this.effectivePrice, required this.variant});
+  final PosCatalogEffectivePrice? effectivePrice;
+  final PosCatalogDefaultVariant? variant;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final priceText = effectivePrice == null
+        ? 'Sin precio configurado'
+        : Money.parse(effectivePrice!.amount, effectivePrice!.currencyCode).toDisplayString();
+    final costText = variant?.standardCost == null
+        ? 'Sin costo registrado'
+        : Money.parse(variant!.standardCost!, variant!.currencyCode ?? effectivePrice?.currencyCode ?? 'MXN')
+              .toDisplayString();
+    final utilidad = posUtilidadFrom(effectivePrice, variant);
+    return Container(
+      key: const Key('pos-product-edit-utilidad'),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: palette.actionTint,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Precio de venta', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+              Text(priceText, style: TextStyle(color: palette.text, fontWeight: FontWeight.w600, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Costo', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+              Text(costText, style: TextStyle(color: palette.text, fontWeight: FontWeight.w600, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Utilidad', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+              Text(
+                utilidad == null
+                    ? 'No disponible'
+                    : '${utilidad.amount.toDisplayString()}'
+                          '${utilidad.marginPercent == null ? '' : ' (${utilidad.marginPercent}%)'}',
+                style: TextStyle(
+                  color: utilidad == null
+                      ? palette.textMuted
+                      : (utilidad.amount.isNegative ? palette.error : palette.success),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 String _posProductStatusLabel(String status) => switch (status) {
   'draft' => 'Borrador',
   'active' => 'Activo',
@@ -10513,6 +10686,23 @@ String? _guessProductImageContentType(String filename) {
   if (lower.endsWith('.webp')) return 'image/webp';
   return null;
 }
+
+/// TASK 16.6A — production readiness: a real, honest message for the
+/// case this dialog's own doc comment on `uploadProductImage` already
+/// documented but never implemented — the platform's object storage is
+/// simply not configured (a real `404` from the two image routes, which
+/// `register-plugins.ts` only registers when `MINIO_*`/`MINIO_ENDPOINT`
+/// resolve — see `object-storage.ts`), never a generic "something went
+/// wrong." Mirrors `pos_branding_screen.dart`'s own
+/// `_uploadErrorMessage()` for the other three real cases (415/413/409),
+/// extended with the one case that switch was ALSO missing.
+String _productImageErrorMessage(ApiException error) => switch (error.statusCode) {
+  404 => 'El almacenamiento de imágenes no está disponible en este servidor. Contacta a soporte.',
+  415 => 'Ese archivo no es una imagen válida (PNG, JPEG o WEBP).',
+  413 => 'La imagen supera el tamaño máximo permitido.',
+  409 => 'Otra sesión cambió este producto. Cierra y vuelve a abrirlo.',
+  _ => error.failure.message,
+};
 
 /// A small bold section label ("General"/"Precios"/"Extras") inside the
 /// product dialogs — TASK 16.6's functional (not literal-tab) equivalent

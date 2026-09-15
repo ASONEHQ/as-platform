@@ -14,6 +14,8 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:as_one/core/errors/app_error.dart';
+import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_brand_admin_gateway.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
@@ -248,6 +250,8 @@ void main() {
       await tester.tap(find.text('Editar').last);
       await tester.pumpAndSettle();
 
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-product-edit-upload-image')));
       await tester.pumpAndSettle();
 
@@ -271,11 +275,227 @@ void main() {
       await tester.tap(find.text('Editar').last);
       await tester.pumpAndSettle();
 
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-remove-image')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-product-edit-remove-image')));
       await tester.pumpAndSettle();
 
       expect(catalogGateway.deleteImageCalls, hasLength(1));
       expect(catalogGateway.deleteImageCalls.single.id, _imageEditableProduct.id);
+    });
+  });
+
+  group('TASK 16.6A — production readiness: honest UI when object storage is not configured', () {
+    testWidgets(
+      'attempting an upload with no object storage configured shows the real, honest 404 message — never a fake success',
+      (tester) async {
+        final catalogGateway = _RecordingCatalogAdminGateway(
+          products: [_editableProduct],
+          imageStorageConfigured: false,
+        );
+        final bytes = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+        await _pump(
+          tester,
+          catalogAdminGateway: catalogGateway,
+          readGateway: const _FixtureReadGateway([_plainProduct]),
+          pickProductImage: () async => XFile.fromData(bytes, path: 'foto.png', mimeType: 'image/png'),
+        );
+        await _navigateToProducts(tester);
+
+        await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Editar').last);
+        await tester.pumpAndSettle();
+
+        await tester.ensureVisible(find.byKey(const Key('pos-product-edit-upload-image')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-product-edit-upload-image')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('El almacenamiento de imágenes no está disponible en este servidor. Contacta a soporte.'),
+          findsOneWidget,
+        );
+        // Never a silent/fake success: no image URL was ever set.
+        expect(find.text('Imagen configurada'), findsNothing);
+      },
+    );
+
+    testWidgets('removing an image with no object storage configured shows the same honest 404 message', (
+      tester,
+    ) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(
+        products: [_imageEditableProduct],
+        imageStorageConfigured: false,
+      );
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+      );
+      await _navigateToProducts(tester);
+
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-remove-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-edit-remove-image')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('El almacenamiento de imágenes no está disponible en este servidor. Contacta a soporte.'),
+        findsOneWidget,
+      );
+      // The remove button stays, since the image was never actually cleared.
+      expect(find.byKey(const Key('pos-product-edit-remove-image')), findsOneWidget);
+    });
+  });
+
+  group('TASK 16.6A — legacy "Utilidad" parity (derived, read-only, never a second price-entry path)', () {
+    test('a normal price/cost pair computes utilidad = precio - costo and a rounded margin %', () {
+      final utilidad = posUtilidadFrom(
+        PosCatalogEffectivePrice(
+          id: 'price-1',
+          branchId: null,
+          amount: '100.0000',
+          currencyCode: 'MXN',
+          validFrom: _fixedValidFrom,
+          validUntil: null,
+          status: 'active',
+        ),
+        const PosCatalogDefaultVariant(
+          id: 'variant-1',
+          sku: 'SKU-1',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '60.0000',
+          currencyCode: 'MXN',
+          version: 1,
+        ),
+      );
+      expect(utilidad, isNotNull);
+      expect(utilidad!.amount.toDisplayString(), '40.00');
+      expect(utilidad.marginPercent, 40);
+    });
+
+    test('a genuinely free-to-stock (zero) cost computes a full 100% margin, never "missing"', () {
+      final utilidad = posUtilidadFrom(
+        PosCatalogEffectivePrice(
+          id: 'price-2',
+          branchId: null,
+          amount: '50.0000',
+          currencyCode: 'MXN',
+          validFrom: _fixedValidFrom,
+          validUntil: null,
+          status: 'active',
+        ),
+        const PosCatalogDefaultVariant(
+          id: 'variant-2',
+          sku: 'SKU-2',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0.0000',
+          currencyCode: 'MXN',
+          version: 1,
+        ),
+      );
+      expect(utilidad, isNotNull);
+      expect(utilidad!.amount.toDisplayString(), '50.00');
+      expect(utilidad.marginPercent, 100);
+    });
+
+    test('a cost higher than price computes a real negative utilidad, never clamped', () {
+      final utilidad = posUtilidadFrom(
+        PosCatalogEffectivePrice(
+          id: 'price-3',
+          branchId: null,
+          amount: '20.0000',
+          currencyCode: 'MXN',
+          validFrom: _fixedValidFrom,
+          validUntil: null,
+          status: 'active',
+        ),
+        const PosCatalogDefaultVariant(
+          id: 'variant-3',
+          sku: 'SKU-3',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '35.0000',
+          currencyCode: 'MXN',
+          version: 1,
+        ),
+      );
+      expect(utilidad, isNotNull);
+      expect(utilidad!.amount.isNegative, isTrue);
+      expect(utilidad.amount.toDisplayString(), '-15.00');
+      expect(utilidad.marginPercent, -75);
+    });
+
+    test('a missing cost (no inventory.cost.read, or genuinely unset) is an honest absent state, never \$0.00', () {
+      final utilidad = posUtilidadFrom(
+        PosCatalogEffectivePrice(
+          id: 'price-4',
+          branchId: null,
+          amount: '20.0000',
+          currencyCode: 'MXN',
+          validFrom: _fixedValidFrom,
+          validUntil: null,
+          status: 'active',
+        ),
+        const PosCatalogDefaultVariant(
+          id: 'variant-4',
+          sku: 'SKU-4',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          version: 1,
+        ),
+      );
+      expect(utilidad, isNull);
+    });
+
+    test('a missing effective price (no active product_prices row yet) is an honest absent state', () {
+      final utilidad = posUtilidadFrom(
+        null,
+        const PosCatalogDefaultVariant(
+          id: 'variant-5',
+          sku: 'SKU-5',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '10.0000',
+          currencyCode: 'MXN',
+          version: 1,
+        ),
+      );
+      expect(utilidad, isNull);
+    });
+
+    testWidgets('the edit dialog renders the real precio/costo/utilidad from the fetched product, read-only', (
+      tester,
+    ) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(products: [_pricedEditableProduct]);
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+      );
+      await _navigateToProducts(tester);
+
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-product-edit-utilidad')), findsOneWidget);
+      expect(find.text('100.00'), findsOneWidget);
+      expect(find.text('60.00'), findsOneWidget);
+      expect(find.text('40.00 (40%)'), findsOneWidget);
+      // Read-only: no editable price/cost TextField exists in the edit
+      // dialog anywhere (they stay on their own real, separate screens).
+      expect(find.byKey(const Key('pos-product-edit-price')), findsNothing);
+      expect(find.byKey(const Key('pos-product-edit-cost')), findsNothing);
     });
   });
 }
@@ -354,6 +574,47 @@ const _imageEditableProduct = PosCatalogProduct(
   effectivePrice: null,
 );
 
+/// A fixed, arbitrary `valid_from` for the Utilidad fixtures below —
+/// `PosCatalogEffectivePrice.validFrom` is non-nullable, matching the
+/// backend's own `priceHttp()` (always a real timestamp); its exact value
+/// is irrelevant to every Utilidad test, which only inspects `amount`.
+final _fixedValidFrom = DateTime.utc(2026, 9, 15);
+
+final _pricedEditableProduct = PosCatalogProduct(
+  id: 'plain-product',
+  code: 'PLAIN-1',
+  name: 'Editable original',
+  status: 'active',
+  version: 3,
+  effectivePrice: PosCatalogEffectivePrice(
+    id: 'price-live',
+    branchId: null,
+    amount: '100.0000',
+    currencyCode: 'MXN',
+    validFrom: _fixedValidFrom,
+    validUntil: null,
+    status: 'active',
+  ),
+  defaultVariant: PosCatalogDefaultVariant(
+    id: 'variant-live',
+    sku: 'SKU-LIVE',
+    unitOfMeasureCode: 'unit',
+    quantityScale: 0,
+    standardCost: '60.0000',
+    currencyCode: 'MXN',
+    version: 1,
+  ),
+);
+
+/// TASK 16.6A — the real shape a genuine "object storage isn't configured"
+/// failure takes by the time it reaches Flutter: a real Fastify 404 for
+/// an unregistered route decodes to `AppFailure.fromCode`'s own default
+/// (`unknown`) arm — never a bespoke "storage unavailable" exception type.
+const _notFoundApiException = ApiException(
+  AppFailure(AppErrorKind.unknown, 'No fue posible completar la solicitud.'),
+  statusCode: 404,
+);
+
 class _FixtureReadGateway implements PosReadGateway {
   const _FixtureReadGateway(this._products);
   final List<PosProduct> _products;
@@ -375,9 +636,19 @@ class _FixtureReadGateway implements PosReadGateway {
 }
 
 class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
-  _RecordingCatalogAdminGateway({List<PosCatalogProduct>? products}) : products = List.of(products ?? const []);
+  _RecordingCatalogAdminGateway({List<PosCatalogProduct>? products, this.imageStorageConfigured = true})
+    : products = List.of(products ?? const []);
 
   final List<PosCatalogProduct> products;
+
+  /// TASK 16.6A — `false` simulates the real, production-honest state
+  /// when the platform's object storage isn't configured server-side:
+  /// `register-plugins.ts` never registers the two image routes at all,
+  /// so any call reaches a real Fastify `404`, never a fabricated
+  /// success. Mirrors that exact contract here rather than inventing a
+  /// separate "storage unavailable" exception type the real gateway
+  /// doesn't have.
+  final bool imageStorageConfigured;
   PosNewProductInput? lastCreateProductInput;
   PosProductPatchInput? lastUpdateProductInput;
   final List<String> productFetchCalls = [];
@@ -473,6 +744,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     required String contentType,
     required int expectedVersion,
   }) async {
+    if (!imageStorageConfigured) throw _notFoundApiException;
     uploadImageCalls.add((id: id, filename: filename, contentType: contentType));
     final current = await product(id);
     final updated = PosCatalogProduct(
@@ -491,6 +763,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
 
   @override
   Future<PosCatalogProduct> deleteProductImage(String id, int expectedVersion) async {
+    if (!imageStorageConfigured) throw _notFoundApiException;
     deleteImageCalls.add((id: id, expectedVersion: expectedVersion));
     final current = await product(id);
     final updated = PosCatalogProduct(

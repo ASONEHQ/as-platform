@@ -34,6 +34,17 @@ export interface ObjectStorageConfig {
   /** Overridable only for tests; production/dev always resolves to the
    * documented `127.0.0.1` convention described in this file's header. */
   readonly host?: string;
+  /** TASK 16.6A — a real, full base URL (e.g.
+   * `https://nyc3.digitaloceanspaces.com`) for a genuinely remote
+   * S3-compatible endpoint (a self-hosted MinIO NOT co-located with the
+   * API host, or a managed provider such as DigitalOcean Spaces). When
+   * present, this REPLACES the `http://{host}:{apiPort}` construction
+   * entirely — `host`/`apiPort` are then only used for `keyFromUrl`'s own
+   * bucket-marker matching, never for building a request URL. `undefined`
+   * (every pre-existing call site, local dev, and this session's own
+   * MinIO integration tests) keeps the original `127.0.0.1`-loopback
+   * behavior byte-for-byte unchanged. */
+  readonly endpoint?: string;
 }
 
 export function objectStorageConfigFromEnv(
@@ -45,6 +56,24 @@ export function objectStorageConfigFromEnv(
   if (rootUser === undefined || rootUser.length === 0) return undefined;
   if (rootPassword === undefined || rootPassword.length === 0) return undefined;
   if (!Number.isInteger(apiPort) || apiPort <= 0) return undefined;
+  // TASK 16.6A — `MINIO_ENDPOINT` is new, optional, and additive: every
+  // existing deployment (local dev, this session's own integration tests,
+  // and any production host that never sets it) is completely unaffected.
+  // Rejecting an unparseable value here (rather than passing it through)
+  // means a typo'd endpoint fails the SAME "storage not configured, real
+  // 404" path as a missing credential — never a confusing runtime S3
+  // client error deep inside an upload request.
+  const rawEndpoint = env.MINIO_ENDPOINT;
+  if (rawEndpoint !== undefined && rawEndpoint.length > 0) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawEndpoint);
+    } catch {
+      return undefined;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return { rootUser, rootPassword, apiPort, endpoint: rawEndpoint };
+  }
   return { rootUser, rootPassword, apiPort };
 }
 
@@ -63,19 +92,21 @@ export interface UploadedObject {
  * idempotent. */
 export class S3ObjectStorage {
   private readonly client: S3Client;
-  private readonly host: string;
-  private readonly port: number;
+  private readonly baseUrl: string;
   private readonly bucket: string;
   private readonly prefix: string;
   private ensured: Promise<void> | undefined;
 
   public constructor(config: ObjectStorageConfig, bucket: string, prefix: string) {
-    this.host = config.host ?? '127.0.0.1';
-    this.port = config.apiPort;
+    // TASK 16.6A — `config.endpoint` (a full remote base URL) takes
+    // priority when present; otherwise this is byte-for-byte the
+    // original `http://{host}:{apiPort}` loopback construction.
+    this.baseUrl =
+      config.endpoint ?? `http://${config.host ?? '127.0.0.1'}:${String(config.apiPort)}`;
     this.bucket = bucket;
     this.prefix = prefix;
     this.client = new S3Client({
-      endpoint: `http://${this.host}:${String(this.port)}`,
+      endpoint: this.baseUrl,
       region: 'us-east-1',
       forcePathStyle: true,
       credentials: {
@@ -102,12 +133,27 @@ export class S3ObjectStorage {
         if (!isBucketAlreadyOwned(error)) throw error;
       }
     }
-    await this.client.send(
-      new PutBucketPolicyCommand({
-        Bucket: this.bucket,
-        Policy: JSON.stringify(publicReadPolicy(this.bucket, this.prefix)),
-      }),
-    );
+    // TASK 16.6A — best-effort: MinIO always honors this bucket-level
+    // policy, but a managed provider's S3-compatible API may not support
+    // `PutBucketPolicy` identically (bucket-policy support genuinely
+    // varies by provider). This is never the sole guard against a
+    // private/unreadable upload — every object also carries its own
+    // `ACL: 'public-read'` (see `uploadObject()`) as an independent,
+    // provider-agnostic guarantee. A REAL credentials/connectivity
+    // failure still surfaces to the caller: it fails identically on the
+    // `PutObjectCommand` moments later in `uploadObject()`, at the exact
+    // point that actually matters, with a clearer error than an opaque
+    // bucket-provisioning failure would have given.
+    try {
+      await this.client.send(
+        new PutBucketPolicyCommand({
+          Bucket: this.bucket,
+          Policy: JSON.stringify(publicReadPolicy(this.bucket, this.prefix)),
+        }),
+      );
+    } catch {
+      // Swallowed — see the comment above.
+    }
   }
 
   private async bucketExists(): Promise<boolean> {
@@ -141,13 +187,24 @@ export class S3ObjectStorage {
         Key: key,
         Body: body,
         ContentType: contentType,
+        // TASK 16.6A — a per-object ACL alongside the bucket-level policy
+        // `ensureBucket()` already applies. MinIO honors both identically
+        // (this is a pure no-op there — every existing MinIO integration
+        // test still passes unchanged); a managed provider whose
+        // bucket-policy support differs from MinIO's (e.g. DigitalOcean
+        // Spaces, which documents ACLs as its own primary/native public-
+        // read mechanism) still gets a real, independently-sufficient
+        // guarantee that an uploaded image is actually publicly
+        // viewable — never an upload that reports success while the
+        // resulting URL is silently unreachable.
+        ACL: 'public-read',
       }),
     );
     return { key, url: this.publicUrl(key) };
   }
 
   public publicUrl(key: string): string {
-    return `http://${this.host}:${String(this.port)}/${this.bucket}/${key}`;
+    return `${this.baseUrl}/${this.bucket}/${key}`;
   }
 
   /** Extracts the object key from a URL this same instance produced (via

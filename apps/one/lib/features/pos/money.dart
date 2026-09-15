@@ -134,16 +134,26 @@ class Money {
     }
   }
 
-  /// The exact 2-decimal display amount (e.g. `"149.00"`) — rounds
-  /// half-up from the internal 4-decimal scale using integer division
-  /// only, never `double`.
+  /// The exact 2-decimal display amount (e.g. `"149.00"`, `"-15.00"`) —
+  /// rounds half-up from the internal 4-decimal scale using integer
+  /// division only, never `double`.
+  ///
+  /// TASK 16.6A: the sign is now factored out BEFORE the `+50` half-up
+  /// offset is applied. `BigInt`'s `~/` truncates toward zero (not
+  /// floor), so adding `+50` and only then splitting off the sign made
+  /// an exact negative amount round one centavo toward zero instead of
+  /// staying exact — e.g. the exact `-15.0000` (`_minorUnits == -150000`)
+  /// previously displayed as `"-14.99"` (`(-150000+50)~/100 == -1499`,
+  /// not `-1500`), first surfaced by a real derived-and-displayed
+  /// negative `Utilidad` value. Rounding the *magnitude* and reapplying
+  /// the sign afterward is symmetric for both signs and leaves every
+  /// existing non-negative call site byte-for-byte unchanged.
   String toDisplayString() {
-    final centavos =
-        (_minorUnits + BigInt.from(50)) ~/ BigInt.from(100);
-    final negative = centavos < BigInt.zero;
-    final magnitude = negative ? -centavos : centavos;
-    final pesos = magnitude ~/ BigInt.from(100);
-    final cents = (magnitude % BigInt.from(100)).toString().padLeft(2, '0');
+    final negative = _minorUnits < BigInt.zero;
+    final magnitudeMinorUnits = negative ? -_minorUnits : _minorUnits;
+    final centavos = (magnitudeMinorUnits + BigInt.from(50)) ~/ BigInt.from(100);
+    final pesos = centavos ~/ BigInt.from(100);
+    final cents = (centavos % BigInt.from(100)).toString().padLeft(2, '0');
     return '${negative ? '-' : ''}$pesos.$cents';
   }
 

@@ -464,55 +464,90 @@ These extend `sharedSchema` into `apiSchema` and only apply to
 
 ---
 
-## Business logo / object-storage (MinIO) — TASK 14.5A, real but outside `packages/config`
+## Object storage (MinIO/S3-compatible) — business logo + product images — TASK 14.5A / 16.6 / 16.6A, real but outside `packages/config`
 
 TASK 14.5A wired a real dependency this document's TASK 14.1 version did
 not yet have: business-logo upload/delete
 (`apps/api/src/modules/admin/branding/`) against MinIO's S3-compatible
-API. Re-verified at TASK 15.0 Phase 9 by reading the actual code path
-(not just its own doc comment) — see `docs/RC_PRODUCTION_CONFIG.md`
-section 5 for the full evidence trail. The short version:
+API. TASK 16.6 added a second, real consumer of the SAME configuration —
+product-image upload/delete (`apps/api/src/modules/catalog/product-images
+.storage.ts`) — by generalizing the branding class into a shared
+`S3ObjectStorage` (`apps/api/src/infrastructure/object-storage.ts`); TASK
+16.6A then refactored `BrandingObjectStorage` itself to compose that same
+shared class (previously a hand-duplicated copy), so there is now exactly
+ONE object-storage implementation behind both features, reading exactly
+ONE set of environment variables. Re-verified at TASK 15.0 Phase 9 by
+reading the actual code path (not just its own doc comment) — see
+`docs/RC_PRODUCTION_CONFIG.md` section 5 for the original evidence trail
+and `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md` for the concrete
+DigitalOcean-compatible provisioning plan. The short version:
 
 - `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_API_PORT` are real,
   consumed environment variables — read directly via `process.env` by
-  `brandingStorageConfigFromEnv()`
-  (`apps/api/src/modules/admin/branding/branding.storage.ts`), **not**
-  through the Zod-validated `packages/config` schema (they are not, and
-  as of this task still are not, declared in `sharedSchema`/`apiSchema`).
-  This is a deliberate architectural choice mirroring
-  `MERCADO_PAGO_ACCESS_TOKEN`'s own "optional external dependency, fails
-  cleanly when actually invoked" pattern, applied at the route-
-  registration boundary instead of at request time.
-- **All three are optional as a group, with a fail-open-to-absent (never
-  fail-closed-to-crash) posture**: `brandingStorageConfigFromEnv()`
-  returns `undefined` — a normal value, never a thrown error — when any
-  of the three is missing/empty/malformed.
+  `objectStorageConfigFromEnv()`
+  (`apps/api/src/infrastructure/object-storage.ts`; both
+  `brandingStorageConfigFromEnv` and `productImageStorageConfigFromEnv`
+  are now plain re-exports of this one function), **not** through the
+  Zod-validated `packages/config` schema (they are not, and as of this
+  task still are not, declared in `sharedSchema`/`apiSchema`). This is a
+  deliberate architectural choice mirroring `MERCADO_PAGO_ACCESS_TOKEN`'s
+  own "optional external dependency, fails cleanly when actually invoked"
+  pattern, applied at the route-registration boundary instead of at
+  request time.
+- **TASK 16.6A — `MINIO_ENDPOINT` (new, optional, fourth variable)**: a
+  real, full base URL (e.g. `https://nyc3.digitaloceanspaces.com`) for a
+  genuinely remote S3-compatible endpoint — a self-hosted MinIO NOT
+  co-located with the API host, or a managed provider such as
+  DigitalOcean Spaces. When present and well-formed (`http://`/`https://`
+  only), it REPLACES the previous hardcoded `http://127.0.0.1:{MINIO_API
+  _PORT}` construction entirely for BOTH features. When absent (every
+  deployment before this task, and any production host that never sets
+  it), behavior is byte-for-byte unchanged — this is purely additive. A
+  malformed `MINIO_ENDPOINT` makes `objectStorageConfigFromEnv()` return
+  `undefined` (the same "not configured" outcome as a missing
+  credential), never a confusing runtime S3-client error deep inside an
+  upload request.
+- **All four are optional as a group, with a fail-open-to-absent (never
+  fail-closed-to-crash) posture**: `objectStorageConfigFromEnv()` returns
+  `undefined` — a normal value, never a thrown error — when either
+  required credential is missing/empty, the port is invalid, or
+  `MINIO_ENDPOINT` (when set) is malformed.
   `apps/api/src/bootstrap/register-plugins.ts` only calls
-  `registerBrandingRoutes(...)` when that value is defined; when it is
-  `undefined`, the plain `if` guard is simply skipped and every other
-  route in `registerPlugins` (auth, sales, cash, payments, refunds,
-  inventory, customers, loyalty, rewards, reports, dashboard, and
-  everything else) registers exactly as it always does. There is no
+  `registerBrandingRoutes(...)` / passes a real `ProductImageStorage`
+  into `registerProductCatalogRoutes(...)` when that value is defined;
+  when it is `undefined`, the branding routes are skipped entirely and
+  the two product-image routes (`POST`/`DELETE .../products/:id/image`)
+  are simply never registered — every other route in `registerPlugins`
+  (auth, sales, cash, payments, refunds, inventory, customers, loyalty,
+  rewards, reports, dashboard, the rest of the product-catalog module,
+  and everything else) registers exactly as it always does. There is no
   `try/catch` anywhere in this path because nothing in it can throw.
 - **Practical effect**: with no `MINIO_*` variables set, the API boots
-  normally and every POS capability except the two branding routes
-  (`POST`/`DELETE .../branding/logo`) works. Those two routes simply
-  don't exist — a request to either gets Fastify's ordinary 404 for an
-  unmatched route, not a 503 or a crash. This is NOT a launch blocker for
-  the POS itself; it only determines whether the optional
-  topbar/receipt/café-watermark logo feature is available.
-- **Example** (only meaningful if the business-logo feature is wanted at
-  launch): `MINIO_ROOT_USER=asone_prod_minio`,
-  `MINIO_ROOT_PASSWORD=<high-entropy value>`, `MINIO_API_PORT=9000`,
-  pointed at a real, network-reachable MinIO (or other S3-compatible)
-  deployment — `BrandingObjectStorage` currently always connects to
-  `127.0.0.1` (see that file's own header comment for why, matching this
-  codebase's existing `DATABASE_URL`/`REDIS_URL` `*_PORT`-on-localhost
-  convention), so a genuinely remote object-storage host is not yet
-  configurable through these three variables alone; that is a scope note
-  for a future task, not a defect this task's certification is blocked
-  by, since local/loopback MinIO alongside the API host is a fully valid
-  topology for a single-store launch.
+  normally and every POS capability except the branding routes AND the
+  two product-image routes works. Those routes simply don't exist — a
+  request to any of them gets Fastify's ordinary 404 for an unmatched
+  route, not a 503 or a crash. The Flutter app surfaces this honestly:
+  `_EditProductDialog`/`PosBrandingScreen` show a real "El almacenamiento
+  de imágenes no está disponible en este servidor. Contacta a soporte."
+  message on that 404 (TASK 16.6A) rather than a generic error or (worse)
+  a silently-fake success. This is NOT a launch blocker for the POS
+  itself; it only determines whether the business-logo and product-photo
+  features are available.
+- **TASK 16.6A — per-object `ACL: 'public-read'`**: every upload now also
+  sets this per-object, independent of the bucket-level policy
+  `ensureBucket()` applies (which is now best-effort — see
+  `object-storage.ts`'s own doc comment). MinIO honors both identically
+  (this changes nothing for the existing local/CI topology); this exists
+  specifically so a managed provider whose bucket-policy support differs
+  from MinIO's (documented as a real, unresolved uncertainty for
+  DigitalOcean Spaces specifically — see
+  `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md`) still gets a real,
+  independently-sufficient guarantee that an uploaded file is actually
+  publicly viewable, never an upload that reports success while the
+  resulting URL is silently unreachable.
+- **Example** (only meaningful if the business-logo and/or product-image
+  features are wanted at launch) and the full provisioning walkthrough:
+  see `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md`.
 
 ## Variables that do **not** exist in `packages/config`
 
@@ -523,12 +558,13 @@ above) real application code, as local-dev-parity services or
 non-`packages/config` configuration:
 
 - **MinIO** — no `MINIO_*` variable exists in `packages/config`'s Zod
-  schema, but as of TASK 14.5A (see the section immediately above) three
-  of them ARE real, consumed application configuration read directly via
-  `process.env` — this is different from "not wired" (the TASK 14.1-era
-  state this document previously described here); it is "wired, but
-  intentionally outside the Zod-validated schema, with a documented
-  optional/fail-open posture."
+  schema, but as of TASK 14.5A/16.6A (see the section immediately above)
+  four of them ARE real, consumed application configuration read directly
+  via `process.env` — this is different from "not wired" (the TASK
+  14.1-era state this document previously described here); it is "wired,
+  but intentionally outside the Zod-validated schema, with a documented
+  optional/fail-open posture," now gating BOTH the business-logo and
+  product-image features identically.
 - **RabbitMQ** — no `RABBITMQ_*`/`AMQP_*` variable exists. Not present in
   `compose.yaml`, not referenced anywhere in `apps/api/src` or
   `apps/worker/src` — an aspirational future option in architecture docs

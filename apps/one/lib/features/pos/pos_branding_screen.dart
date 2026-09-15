@@ -387,6 +387,14 @@ String? _guessContentType(String filename) {
 /// (415/413) instead of showing something misleadingly generic.
 String _uploadErrorMessage(ApiException error) {
   switch (error.statusCode) {
+    // TASK 16.6A — the object-storage-not-configured case (see
+    // `pos_shell.dart`'s own `_productImageErrorMessage`, added for the
+    // product-image feature this same fix now also applies to here): a
+    // real 404 when `register-plugins.ts` never registered these routes
+    // because `MINIO_*`/`MINIO_ENDPOINT` don't resolve server-side —
+    // never left to fall through to the generic default message below.
+    case 404:
+      return 'El almacenamiento de imágenes no está disponible en este servidor. Contacta a soporte.';
     case 415:
       return 'Ese archivo no es una imagen válida (PNG, JPEG, WEBP o SVG).';
     case 413:

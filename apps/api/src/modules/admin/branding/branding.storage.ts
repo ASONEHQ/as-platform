@@ -6,18 +6,31 @@
 /// infrastructure service is stood up here, only a real client against
 /// what already exists.
 ///
+/// TASK 16.6A: this class now COMPOSES the shared `S3ObjectStorage`
+/// (`apps/api/src/infrastructure/object-storage.ts`) instead of
+/// duplicating its own S3 client/bucket-provisioning logic -- the exact
+/// same real refactor `product-images.storage.ts` already established for
+/// the product-image feature, applied here now that this class needs the
+/// SAME production-readiness fix (a configurable remote endpoint,
+/// per-object ACL) that feature required; the class's own public API
+/// (`uploadLogo`/`publicUrl`/`keyFromUrl`/`deleteObjectBestEffort`) is
+/// completely unchanged, so `branding.service.ts`/`branding.routes.ts`
+/// and this class's own already-shipped tests needed zero changes.
+///
 /// Configuration reuses the SAME `MINIO_*` env vars already in
-/// `.env.example`/`compose.yaml` -- no new env var names are invented.
-/// `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` are the root credentials (this
-/// is local/self-hosted MinIO, not a scoped IAM principal -- the same
-/// trust level this codebase's other infra credentials already assume,
-/// e.g. `POSTGRES_USER`/`POSTGRES_PASSWORD`). `MINIO_API_PORT` is the
-/// container's S3 API port, mapped to the host at `127.0.0.1` exactly the
-/// way `DATABASE_URL`/`REDIS_URL` both already hardcode `127.0.0.1` as the
-/// host for their own `*_PORT` variables (see `.env.example`) -- this
-/// module follows that SAME established convention rather than inventing
-/// a `MINIO_ENDPOINT`/`MINIO_HOST` variable nowhere else in this codebase
-/// has a sibling for.
+/// `.env.example`/`compose.yaml` -- no new env var names are invented for
+/// the credentials themselves. `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` are
+/// the root credentials (this is local/self-hosted MinIO, not a scoped
+/// IAM principal -- the same trust level this codebase's other infra
+/// credentials already assume, e.g. `POSTGRES_USER`/`POSTGRES_PASSWORD`).
+/// `MINIO_API_PORT` is the container's S3 API port, mapped to the host at
+/// `127.0.0.1` by default -- exactly the way `DATABASE_URL`/`REDIS_URL`
+/// both already hardcode `127.0.0.1` as the host for their own `*_PORT`
+/// variables (see `.env.example`) -- unless the NEW, optional
+/// `MINIO_ENDPOINT` (see `object-storage.ts`'s own doc comment) points
+/// this at a genuinely remote S3-compatible provider (a MinIO host not
+/// co-located with the API, or a managed provider like DigitalOcean
+/// Spaces) instead.
 ///
 /// The bucket name (`asone-branding`) and object key layout
 /// (`logos/{companyId}/{uuid}.{ext}`) are infrastructure implementation
@@ -37,41 +50,17 @@
 /// enforced the normal way, by `SettingsService`'s own company-scoped
 /// resolution -- unrelated to whether the underlying image bytes are
 /// world-readable.
-import { randomUUID } from 'node:crypto';
-
+import type { ObjectStorageConfig } from '../../../infrastructure/object-storage.js';
 import {
-  CreateBucketCommand,
-  DeleteObjectCommand,
-  HeadBucketCommand,
-  PutBucketPolicyCommand,
-  PutObjectCommand,
-  S3Client,
-  S3ServiceException,
-} from '@aws-sdk/client-s3';
+  S3ObjectStorage,
+  objectStorageConfigFromEnv,
+} from '../../../infrastructure/object-storage.js';
 
 export const BRANDING_BUCKET = 'asone-branding';
 const BRANDING_PREFIX = 'logos';
 
-export interface BrandingStorageConfig {
-  readonly rootUser: string;
-  readonly rootPassword: string;
-  readonly apiPort: number;
-  /** Overridable only for tests; production/dev always resolves to the
-   * documented `127.0.0.1` convention described in this file's header. */
-  readonly host?: string;
-}
-
-export function brandingStorageConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): BrandingStorageConfig | undefined {
-  const rootUser = env.MINIO_ROOT_USER;
-  const rootPassword = env.MINIO_ROOT_PASSWORD;
-  const apiPort = Number(env.MINIO_API_PORT ?? '9000');
-  if (rootUser === undefined || rootUser.length === 0) return undefined;
-  if (rootPassword === undefined || rootPassword.length === 0) return undefined;
-  if (!Number.isInteger(apiPort) || apiPort <= 0) return undefined;
-  return { rootUser, rootPassword, apiPort };
-}
+export type { ObjectStorageConfig as BrandingStorageConfig };
+export const brandingStorageConfigFromEnv = objectStorageConfigFromEnv;
 
 export interface UploadedLogo {
   readonly key: string;
@@ -83,60 +72,10 @@ export interface UploadedLogo {
  * `ensureBucket` is cheap and idempotent so it is safe to call once at
  * startup or lazily before the first upload. */
 export class BrandingObjectStorage {
-  private readonly client: S3Client;
-  private readonly host: string;
-  private readonly port: number;
-  private ensured: Promise<void> | undefined;
+  private readonly storage: S3ObjectStorage;
 
-  public constructor(config: BrandingStorageConfig) {
-    this.host = config.host ?? '127.0.0.1';
-    this.port = config.apiPort;
-    this.client = new S3Client({
-      endpoint: `http://${this.host}:${String(this.port)}`,
-      region: 'us-east-1',
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId: config.rootUser,
-        secretAccessKey: config.rootPassword,
-      },
-    });
-  }
-
-  /** Idempotent -- safe to call before every upload. Creates the bucket if
-   * missing and (re)applies the public-read policy for the `logos/`
-   * prefix; both operations are naturally idempotent against MinIO. */
-  public async ensureBucket(): Promise<void> {
-    this.ensured ??= this.ensureBucketOnce();
-    return this.ensured;
-  }
-
-  private async ensureBucketOnce(): Promise<void> {
-    const exists = await this.bucketExists();
-    if (!exists) {
-      try {
-        await this.client.send(new CreateBucketCommand({ Bucket: BRANDING_BUCKET }));
-      } catch (error) {
-        if (!isBucketAlreadyOwned(error)) throw error;
-      }
-    }
-    await this.client.send(
-      new PutBucketPolicyCommand({
-        Bucket: BRANDING_BUCKET,
-        Policy: JSON.stringify(publicReadPolicy()),
-      }),
-    );
-  }
-
-  private async bucketExists(): Promise<boolean> {
-    try {
-      await this.client.send(new HeadBucketCommand({ Bucket: BRANDING_BUCKET }));
-      return true;
-    } catch (error) {
-      if (error instanceof S3ServiceException && error.$metadata.httpStatusCode === 404)
-        return false;
-      if (isNotFound(error)) return false;
-      throw error;
-    }
+  public constructor(config: ObjectStorageConfig) {
+    this.storage = new S3ObjectStorage(config, BRANDING_BUCKET, BRANDING_PREFIX);
   }
 
   public async uploadLogo(
@@ -145,21 +84,11 @@ export class BrandingObjectStorage {
     contentType: string,
     extension: string,
   ): Promise<UploadedLogo> {
-    await this.ensureBucket();
-    const key = `${BRANDING_PREFIX}/${companyId}/${randomUUID()}.${extension}`;
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: BRANDING_BUCKET,
-        Key: key,
-        Body: body,
-        ContentType: contentType,
-      }),
-    );
-    return { key, url: this.publicUrl(key) };
+    return this.storage.uploadObject([companyId], body, contentType, extension);
   }
 
   public publicUrl(key: string): string {
-    return `http://${this.host}:${String(this.port)}/${BRANDING_BUCKET}/${key}`;
+    return this.storage.publicUrl(key);
   }
 
   /** Extracts the object key from a URL this same class produced (via
@@ -167,16 +96,7 @@ export class BrandingObjectStorage {
    * bucket's own path-style URLs (e.g. it predates this feature, or was
    * hand-edited) -- callers treat `undefined` as "nothing to delete". */
   public keyFromUrl(url: string): string | undefined {
-    const prefix = `/${BRANDING_BUCKET}/`;
-    let pathname: string;
-    try {
-      pathname = new URL(url).pathname;
-    } catch {
-      return undefined;
-    }
-    const index = pathname.indexOf(prefix);
-    if (index === -1) return undefined;
-    return pathname.slice(index + prefix.length);
+    return this.storage.keyFromUrl(url);
   }
 
   /** Best-effort delete -- a missing object (already gone, or the URL
@@ -184,33 +104,6 @@ export class BrandingObjectStorage {
    * failure is swallowed too since a failed cleanup must never block the
    * setting mutation that already succeeded (see `branding.service.ts`). */
   public async deleteObjectBestEffort(key: string): Promise<void> {
-    try {
-      await this.client.send(new DeleteObjectCommand({ Bucket: BRANDING_BUCKET, Key: key }));
-    } catch {
-      // Best-effort: never let object cleanup fail the caller's own request.
-    }
+    await this.storage.deleteObjectBestEffort(key);
   }
-}
-
-function isBucketAlreadyOwned(error: unknown): boolean {
-  if (!(error instanceof S3ServiceException)) return false;
-  return error.name === 'BucketAlreadyOwnedByYou' || error.name === 'BucketAlreadyExists';
-}
-
-function isNotFound(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotFound';
-}
-
-function publicReadPolicy(): Readonly<Record<string, unknown>> {
-  return {
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Allow',
-        Principal: { AWS: ['*'] },
-        Action: ['s3:GetObject'],
-        Resource: [`arn:aws:s3:::${BRANDING_BUCKET}/${BRANDING_PREFIX}/*`],
-      },
-    ],
-  };
 }

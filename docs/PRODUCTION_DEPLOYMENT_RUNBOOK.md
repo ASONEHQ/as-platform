@@ -37,7 +37,7 @@ The smallest reliable architecture for a September 15 single-store launch:
 | PostgreSQL | **REQUIRED** | The only datastore the core POS flow (login → sale → payment → receipt) reads or writes. |
 | Redis | **REQUIRED to boot, not required for core POS** | `packages/config` requires `REDIS_URL` to parse at startup, but grepping every module under `apps/api/src/modules/{auth,sales,cash,payments,refunds,promotions,loyalty,rewards}` finds zero references — nothing on the login→sale→payment→receipt path touches it (confirmed directly, not assumed; see `docs/PRODUCTION_ENVIRONMENT.md`). `/ready`'s HTTP status now reflects this (Part D, below) — a Redis outage degrades observability/ops tooling, never the register. |
 | RabbitMQ | **DEV-ONLY / not wired** | No config key, no client, no reference anywhere in `apps/api`'s real request path. |
-| MinIO | **OPTIONAL — branding logo upload only** | TASK 14.5A wired `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`/`MINIO_API_PORT` (read directly, outside `packages/config`'s schema) for the business-logo upload/delete routes only. Verified directly in `apps/api/src/bootstrap/register-plugins.ts`: when these vars are absent, `brandingStorageConfigFromEnv()` returns `undefined` (never throws) and the branding routes are simply never registered (a real 404) — every other route, and the app's own boot, is completely unaffected. Provision it only if the operator wants the logo-upload feature live at launch; skip it otherwise. |
+| MinIO / S3-compatible object storage | **OPTIONAL — branding logo upload AND product-photo upload** | TASK 14.5A wired `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`/`MINIO_API_PORT` (read directly, outside `packages/config`'s schema) for the business-logo upload/delete routes; TASK 16.6 added the product-image upload/delete routes as a second consumer of the exact same variables (TASK 16.6A also added an optional `MINIO_ENDPOINT` for a genuinely remote provider like DigitalOcean Spaces — see `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md`). Verified directly in `apps/api/src/bootstrap/register-plugins.ts`: when these vars are absent, `objectStorageConfigFromEnv()` returns `undefined` (never throws) and BOTH sets of routes are simply never registered (a real 404) — every other route, and the app's own boot, is completely unaffected. Provision it only if the operator wants the logo-upload and/or product-photo features live at launch; skip it otherwise. |
 | Mailpit | **DEV-ONLY** | Local SMTP capture for developer convenience; nothing in the API sends real email yet. |
 | API (Fastify) | **REQUIRED** | Runs compiled (`node dist/server.js`), never `tsx watch`, in production — see Part J of `docs/DEPLOYMENT_PACKAGING.md`. |
 | Flutter Web | **REQUIRED** | The cashier/owner-facing app; a separate, independently-deployed static build — see `docs/DEPLOYMENT_PACKAGING.md`. |
@@ -81,15 +81,22 @@ No value in this step should ever be committed to git or pasted into a
 chat/ticket in plaintext — use whatever secrets manager your host
 provides.
 
-**Optional — only if the business-logo branding feature should be live at
-launch:** also set `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, and
-`MINIO_API_PORT` (pointed at a real, reachable MinIO/S3-compatible
-deployment). These are read directly by `branding.storage.ts`, not
-through `packages/config`, and are entirely optional — omitting them does
-not affect `DATABASE_URL`/`REDIS_URL`/any other step below, boots the API
-normally, and simply leaves the two branding routes returning 404. See
-`docs/PRODUCTION_ENVIRONMENT.md`'s MinIO section and
-`docs/RC_PRODUCTION_CONFIG.md` section 5 for the full evidence.
+**Optional — only if the business-logo branding and/or product-image
+features should be live at launch (TASK 16.6A: both now share ONE
+provisioning step):** also set `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`,
+and either `MINIO_API_PORT` (co-located MinIO) or the newer
+`MINIO_ENDPOINT` (a genuinely remote S3-compatible endpoint, e.g.
+DigitalOcean Spaces) — pointed at a real, reachable S3-compatible
+deployment. These are read directly by `objectStorageConfigFromEnv()`
+(`apps/api/src/infrastructure/object-storage.ts`), not through
+`packages/config`, and are entirely optional — omitting them does not
+affect `DATABASE_URL`/`REDIS_URL`/any other step below, boots the API
+normally, and simply leaves the two branding routes AND the two
+product-image routes returning 404. See
+`docs/PRODUCTION_OBJECT_STORAGE_SETUP.md` for the full, concrete
+DigitalOcean-compatible provisioning plan, `docs/PRODUCTION_ENVIRONMENT
+.md`'s object-storage section, and `docs/RC_PRODUCTION_CONFIG.md`
+section 5 for the original evidence trail.
 
 ### 4. Backup
 
@@ -389,28 +396,47 @@ against isolated API instances, not generic boilerplate.
    table) before deciding whether a manual rollback or a forward-fix
    migration is the safe path.
 
-### Logo storage (MinIO) unavailable
+### Object storage (MinIO/S3-compatible — logo AND product-photo) unavailable
 
-1. First determine which of the two MinIO failure modes you're in: **not
-   configured** (env vars absent — branding routes are simply a real
-   `404`, expected/normal) vs. **configured but unreachable** (env vars
-   present, MinIO itself down — branding upload/delete return a generic
-   `500 internal_error`).
-2. To tell them apart: hit the branding logo route with a valid auth
-   token — `404` means not configured (not an incident); `500` logged
-   server-side as `'request failed'` means configured-but-down (a real
-   incident).
+TASK 16.6A note: branding logo and product-photo storage now share ONE
+implementation and ONE set of env vars (see
+`docs/PRODUCTION_OBJECT_STORAGE_SETUP.md`) — an outage or misconfiguration
+affects both features identically; there is no longer a scenario where
+only one of the two is degraded while the other works.
+
+1. First determine which of the two failure modes you're in: **not
+   configured** (env vars absent — both the branding routes and the
+   product-image routes are simply a real `404`, expected/normal) vs.
+   **configured but unreachable** (env vars present, the S3-compatible
+   endpoint itself down or credentials wrong — upload/delete on either
+   feature return a generic `500 internal_error`, or a `415`/`413` for a
+   genuinely bad file, which is not an incident).
+2. To tell them apart: hit either the branding logo route or a product's
+   image route with a valid auth token — `404` means not configured (not
+   an incident); `500` logged server-side as `'request failed'` means
+   configured-but-down (a real incident). The Flutter app itself now
+   shows an honest, specific message for the `404` case ("El
+   almacenamiento de imágenes no está disponible en este servidor.
+   Contacta a soporte.") rather than a generic error — if a user reports
+   that exact message, it is confirmation, not a new symptom to chase.
 3. `ops check`'s `object_storage.connectivity` row will **not** help
    here — it is hardcoded to always report `unknown` regardless of actual
-   MinIO state (a documented gap) — do not rely on it.
-4. Confirm MinIO's own health directly:
+   object-storage state (a documented gap) — do not rely on it.
+4. Confirm the endpoint's own health directly. Self-hosted MinIO (Option
+   B in `docs/PRODUCTION_OBJECT_STORAGE_SETUP.md`):
    `curl -s http://<minio-host>:<MINIO_API_PORT>/minio/health/live`, and
-   confirm the container/service is actually running.
-5. **Every other route is unaffected** — a MinIO outage never blocks app
-   boot or any non-branding route. Treat it as a scoped incident against
-   the branding/logo feature only.
-6. Once MinIO is restored, no API restart is needed — the very next
-   upload/delete call will succeed.
+   confirm the container/service is actually running. DigitalOcean
+   Spaces (Option A): check DigitalOcean's own status page and confirm
+   the configured `MINIO_ENDPOINT`/access key are still correct — a
+   rotated or revoked Spaces key looks identical to "MinIO is down" from
+   the API's perspective (a real `500`, not a `404`).
+5. **Every other route is unaffected** — an object-storage outage never
+   blocks app boot or any unrelated route. Treat it as a scoped incident
+   against the branding/logo and product-photo features only; the rest
+   of Productos/Catálogo (create, edit, duplicate, categoría/marca/
+   proveedor/IVA/favorito/ícono/card-color) is completely unaffected.
+6. Once the endpoint is restored, no API restart is needed — the very
+   next upload/delete call will succeed.
 
 ### Cashier cannot login
 
