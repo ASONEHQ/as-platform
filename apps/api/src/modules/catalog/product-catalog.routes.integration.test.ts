@@ -138,9 +138,24 @@ integration('real Postgres + real MinIO product image routes', () => {
       companyId: otherCompanyId,
       branchId: randomUUID(),
     };
+    // TASK 16.6B — same tenant as `authContext`, but missing `product
+    // .manage` (only `catalog.read`) — proves the image routes are gated
+    // server-side, not merely by hiding the UI button: a cashier who
+    // knows the endpoint and has a valid session still gets a real 403.
+    const readOnlyAuthContext: AuthContext = {
+      ...authContext,
+      sessionId: randomUUID(),
+      permissions: ['catalog.read'],
+    };
     const authentication = {
       authenticate: vi.fn((token: string) =>
-        Promise.resolve(token === 'product-images-other' ? otherAuthContext : authContext),
+        Promise.resolve(
+          token === 'product-images-other'
+            ? otherAuthContext
+            : token === 'product-images-readonly'
+              ? readOnlyAuthContext
+              : authContext,
+        ),
       ),
       requirePermission: vi.fn((context: AuthContext, permission: string) => {
         if (!context.permissions.includes(permission))
@@ -371,6 +386,30 @@ integration('real Postgres + real MinIO product image routes', () => {
       headers: { authorization: 'Bearer product-images-other', 'if-match': '"1"' },
     });
     expect(crossTenantDelete.statusCode).toBe(404);
+  });
+
+  it("enforces product.manage server-side on the image routes — a same-tenant actor with only catalog.read is rejected even with a valid session", async () => {
+    const { body, contentType } = multipartImage(pngBytes(256));
+    const upload = await app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${productId}/image`,
+      headers: {
+        authorization: 'Bearer product-images-readonly',
+        'content-type': contentType,
+        'if-match': '"1"',
+      },
+      payload: body,
+    });
+    expect(upload.statusCode).toBe(403);
+    expect(upload.json<{ error: { code: string } }>().error.code).toBe('permission_denied');
+
+    const remove = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/products/${productId}/image`,
+      headers: { authorization: 'Bearer product-images-readonly', 'if-match': '"1"' },
+    });
+    expect(remove.statusCode).toBe(403);
+    expect(remove.json<{ error: { code: string } }>().error.code).toBe('permission_denied');
   });
 });
 

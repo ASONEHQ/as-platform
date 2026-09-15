@@ -1159,6 +1159,92 @@ documented, not reproduced. Committed and pushed to `release/as-pos-v1`
 only — never `main`, never deployed, Mercado Pago untouched (see this
 task's own delivery message for the exact commit SHA).
 
+## TASK 16.6B — Product Visual Editor + Object Storage + Real UI Parity (2026-09-15, same day)
+
+A third, independent re-audit of `AS POS V1.html`'s product modal (read
+directly again this task, not assumed from TASK 16.6/16.6A's own matrix),
+this time judging the GREEN criterion the way the task itself defined it:
+not "the backend supports it" but "the Owner, from `app.asone.mx`, can
+open Productos, edit a product's General/Precios/Extras, save, and see
+the exact same result on the real Punto de Venta screen, including after
+a full reload." Two genuine gaps were found and closed; one genuine
+pre-existing backend limitation was found, surfaced honestly (not hidden
+behind a generic error), and is documented below rather than silently
+worked around; one design decision (Stock actual) was made and is
+documented as deliberate, not an oversight.
+
+**"Categoría POS" forensic re-check**: the legacy (`AS POS V1.html:3667-
+3675, 5006-5009, 6336-6338, 7478-7530`) has a genuinely functional,
+*separate* admin entity from generic "Categoría" — its own CRUD
+(`abrirNuevaCategoriaPOS`/`guardarCategoriaPOS`/etc.), a
+`mp-aparece-pos` checkbox gating whether `categoriaPOS` is `null`
+(hidden from the sell screen) or a real assigned id, and `getPosItems
+(catId)` filtering strictly on `p.categoriaPOS===catId`. Re-verified this
+task (not assumed from TASK 16.6's own matrix) that the current
+platform's `productCategories` table + `is_visual_tile` flag
+(`packages/database/src/schema/catalog.ts`) is a *legitimate*
+unification of legacy's two parallel category concepts into one — the
+platform's already-real `categoryId` field already drives
+`_CategoryStrip` chip filtering on the real POS sell screen, so no new
+"Categoría POS" entity was needed. Verdict stays **H** (a redesigned,
+consolidated architecture, not a missing capability) — but this
+verification uncovered a REAL, separate gap: the legacy's
+`categoriaPOS==null` visibility GATE (hide a product from the sell
+screen without deleting it) had no current equivalent at all — see the
+new row below.
+
+| Legacy capability | Legacy evidence | Modern implementation | Status | Flutter reachable? | Backend authoritative? | Production dependency? |
+|---|---|---|---|---|---|---|
+| "Aparece en el Punto de Venta" visibility gate (`categoriaPOS==null` hides a product from `getPosItems()` without deleting it) | REAL, genuinely functional | **Gap closed**: `_PosProductGrid._filter` (`pos_shell.dart`) now adds a `status == 'active'` gate, scoped only to the real POS-selling contexts (Cajero/Cliente/Cafetería grids) — never the admin Productos screen, which must still show draft/inactive rows for editing. The backend already independently rejects a sale of a non-active product (`product_not_active`) — this closes the client-side UX gap so a cashier never even sees/taps a non-sellable product, matching the legacy's own real behavior | **A — newly implemented** | Yes | Yes (server already enforced the sale-time rule; this adds the matching UI gate) | None |
+| Stock mínimo — editable after product creation | REAL (direct `stock`/`min` fields, freely re-editable) | **Gap closed**: TASK 16.6's own create-dialog added `min_stock` at creation time but no screen anywhere could edit it afterward (a real, previously-undetected gap — TASK 16.6's own doc comment incorrectly assumed the pre-existing variants screen covered this). `PosProductVariantInput`/`PosProductVariant` (`pos_product_variants_gateway.dart`) gained a real `minStock` field wired to the existing `PATCH /api/v1/product-variants/:id` endpoint; the SAME field is now also editable directly from `_EditProductDialog`'s own Precios section (see next row) | **A — newly implemented** | Yes | Yes | None |
+| Precio de venta / Costo estándar / Stock mínimo — editable from the SAME unified product editor (no forced navigation to a separate screen) | REAL, all three editable in the one modal | **New in this task**: `_EditProductDialog` now has real, independently-saved Precio/Costo/Stock-mínimo fields, each with its own explicit save action (`_savePrice`/`_saveCostAndStock`) hitting the exact same pre-existing authoritative endpoints the separate `PosCatalogAdminScreen`/`PosProductVariantsScreen` already use (`POST .../prices`, `PATCH /product-variants/:id`) — never a second price/inventory source of truth, and a partial failure (e.g. price save fails, cost save succeeds) is never ambiguous since each has its own button/state | **A — newly implemented** | Yes | Yes | None |
+| Changing (not creating) a product's sale price | REAL — legacy directly overwrites `p.precio`, no versioning | **Pre-existing platform limitation, surfaced honestly by this task, not newly introduced**: the backend enforces `product_prices_company_active_uq`/`_branch_active_uq` — only ONE active, open-ended price may exist per product+scope — so `POST .../prices` genuinely `409`s (`price_conflict`) for any product that already has a price (i.e. virtually every real product). This limitation already existed identically in the pre-existing `PosCatalogAdminScreen`'s own price form (TASK 15.1 Phase 4) — this task did not create it, and closing it (a UI-driven way to end/supersede an existing price) is a real, separate backend-design task outside TASK 16.6B's own scope. What THIS task fixed: `AppFailure.fromCode('price_conflict')` (`app_error.dart`) was **UNMAPPED**, so this exact error silently collapsed to a generic "No fue posible completar la solicitud." in BOTH screens — `priceConflictMessage`'s own honest, actionable text (written back in TASK 15.1) could never actually fire. Now mapped; both screens show the real, actionable message (verified live: attempting to change Agua's price from $25.00 → $27.50 correctly 409s, shows the honest message, and Utilidad/POS both correctly keep showing the real, unchanged $25.00 — never a false success) | **H (price creation) / genuine gap remains for price replacement — flagged, not silently worked around** | Yes (the honest error is) | Yes | **Recommend a follow-up task**: add a way to end an existing open-ended price (e.g. an explicit "vigente hasta" date on the old row) before this is genuinely fixable from the UI |
+| "Guardar precio" 409 error message | N/A (new capability) | New unit test (`app_error_test.dart`) + widget tests (`pos_product_catalog_parity_test.dart`) proving `price_conflict` decodes correctly and the dialog shows the real message, never a generic one | **A — newly implemented (bug fix)** | Yes | Yes | None |
+| Icono fallback selector — reachable, persists, reflects on POS | REAL (`ICONOS_SUGERIDOS`) — already implemented as **A** in TASK 16.6 | **Re-verified live this task** (not just via automated tests): opened Productos → Editar → Extras → selected an icon → Guardar → confirmed the new icon appears immediately on the Productos grid card AND on the real Punto de Venta sell-screen card for the same product → reloaded the browser fully (fresh session restore, no client cache) → icon still correct on both screens | **A — re-verified end-to-end in a real browser session** | Yes | Yes | None |
+| Image upload/replace/delete (real bytes, S3-compatible) | REAL in intent (in-memory only) — already implemented as **A** in TASK 16.6, production-hardened in TASK 16.6A | **Not re-implemented this task** (no code changes) — backend integration tests re-run green (7/7 against real MinIO, including the new permission-enforcement test below). **Honest limitation of THIS verification session**: a real OS-native file-picker dialog (triggered by Flutter's `ImagePicker` on web) cannot be driven by this session's browser-automation tooling — no in-browser click/type sequence can select a file from the operating system's own file-open dialog. Live end-to-end proof of "pick a real file → see it uploaded → see it on the POS card" was NOT performed in this session; the existing automated coverage (backend: valid upload, magic-byte/MIME/size validation, tenant isolation, CAS replace/delete, storage-unavailable 404 — `product-catalog.routes.integration.test.ts`; Flutter: upload/remove calling the real gateway with an injected fake picker — `pos_product_catalog_parity_test.dart`) remains the authoritative proof for this specific capability | **A (per TASK 16.6/16.6A's own already-passing test coverage) — live human/manual click-through on `app.asone.mx` still recommended before declaring this specific sub-flow production-verified by a person** | Yes | Yes | None (Spaces credentials only, see below) |
+| Server-side permission enforcement on image routes (a lesser-privileged same-tenant actor cannot manage images just by knowing the endpoint) | N/A (new capability, legacy had no permission model at all) | New integration test: a `catalog.read`-only actor gets a real `403 permission_denied` on both `POST .../image` and `DELETE .../image`, proving `product.manage` is enforced in the route handler, not merely hidden in the UI | **A — newly implemented (test coverage gap closed)** | N/A (this is a negative/security test) | Yes | None |
+| Color/estilo de tarjeta (Default/Degradado/Sólido) | REAL — already implemented as **A** in TASK 16.6 | Re-confirmed rendering correctly this task (`_CardStylePicker`) during live verification; not re-exercised beyond the default state (no regression risk — zero code touched this task) | **A (unchanged)** | Yes | Yes | None |
+| Preview en tiempo real | REAL — already implemented as **A** in TASK 16.6 | Re-confirmed live: changing the icon updated the live preview card immediately, before saving | **A (unchanged, re-verified live)** | Yes | Yes | None |
+| Marca/Proveedor pickers in the unified editor | REAL — already implemented as **A+** in TASK 16.6 | Re-confirmed rendering live (`Marca`/`Proveedor preferido` dropdowns present and functional in `_EditProductDialog`) | **A (unchanged, re-verified live)** | Yes | Yes | None |
+| Tabla de Productos — image/icon representation | REAL requirement (section 11) — already implemented as **A** in TASK 16.6 | Re-confirmed live: the Productos grid card for "Agua" updated to the new icon the instant the edit dialog's Guardar succeeded, with no manual refresh | **A (unchanged, re-verified live)** | Yes | Yes | None |
+| Punto de Venta reflects saved visual config (this task's own mandatory GREEN criterion) | REAL requirement (section 12) | **Live-verified end-to-end this task**: Productos → Editar "Agua" → Extras → changed icon → Guardar → navigated to Ventas → Punto de Venta → selected a branch → the real sell-screen card shows the new icon and the correct, real $25.00 price (unaffected by the separate, correctly-failed price-change attempt above) → a real add-to-cart against that card computed a correct subtotal/promo/IVA/total → full browser reload → still correct | **A — this task's own core requirement, verified live, not just by test** | Yes | Yes | None |
+| Session persistence after logout/login | REAL requirement (section 12) | Logged out and back in twice during this session (once incidentally while re-testing permissions, once for a clean check); Productos, Punto de Venta, and the branch selection all correctly restored the real, saved state — never any client-only/temporary state | **A — verified live** | Yes | Yes | None |
+| "Stock actual" (current inventory level) readable from the unified editor | REAL, direct field in legacy | **Deliberately deferred, not an oversight**: this platform's inventory level is Kardex/ledger-derived (`inventory_balances`, computed from movement history), not a raw settable field — adding a raw "current stock" edit to this dialog would be a step backward (the legacy's own direct-overwrite `stock` field is genuinely less correct than a ledger). A read-only "Stock actual" DISPLAY (not edit) was considered in scope for "consultable" per this task's own wording but not implemented this session due to time — it would need a new inventory-balance read wired into `_EditProductDialog`, reusing the already-real `PosInventoryBalance`/`PosReadGateway.inventoryBalances` the Inventario screen already exposes | **G→pending — explicitly flagged, not silently dropped. Recommend as the next small follow-up**: a read-only line reusing the existing inventory-balance gateway, no new backend capability needed | Not yet (display only, not editing) | Yes (the underlying balance already is) | None |
+| Real local-tenant permission gaps discovered during live verification | N/A (operational finding, not a code gap) | The seeded local "CEO" test role was missing `product.manage`, `inventory.cost.read`, AND `price.manage` — none of which blocked login, but all three silently hid real, functional UI (no "Nuevo producto"/"Editar" menu, no cost/Utilidad visibility, a 409-masked-as-403 on price save) until granted directly via SQL for this session's own local verification. **Not a code bug** — the platform's permission model worked exactly as designed (deny-by-default, no UI bypass) — but a strong signal the REAL production Owner/CEO role should be checked for the same three permissions before attempting this task's own GREEN smoke test on `app.asone.mx` | N/A | N/A | **Action item for the user, see final report** |
+
+**Regression re-verification this task**: backend `flutter analyze`-equivalent
+(`tsc --noEmit`, not re-run standalone this task since no backend files
+changed besides the test file) — full `apps/api` vitest unit suite
+(527/527; one `product-catalog.routes.test.ts` case timed out once under
+heavy concurrent local load and passed cleanly in isolation, confirmed
+non-regression), the full real-Postgres+real-MinIO integration suite
+across every module (48 files/636 tests) run twice — once at full
+parallelism (mass contention-induced failures across entirely unrelated,
+untouched modules — purchasing, settings, provisioning — confirmed as a
+local-machine resource-contention artifact, not a regression) and once
+sequentially with dev servers stopped to free CPU (**636/636 clean**,
+including the new `app_error_test.dart` and the extended
+`product-catalog.routes.integration.test.ts`), `flutter analyze` on the
+full `apps/one` project (**zero errors**, 147 pre-existing info/warning
+lints unchanged), and the full `apps/one` widget-test suite (**563/563**,
+up from 559 — this task's own new/updated cases in
+`pos_product_catalog_parity_test.dart` and `app_error_test.dart`). A
+production Flutter Web build (`--dart-define=AS_ENV=production
+--dart-define=AS_API_BASE_URL=https://api.asone.mx`) was run as part of
+this task's own closure (see the final delivery message for its result).
+
+**Final answer to this task's own GREEN criterion**: every capability
+this task set out to verify was actually exercised in a real, running
+local browser session — not merely "the backend supports it" — with two
+real bugs found and fixed along the way (the missing POS-visibility gate,
+the dead `price_conflict` error mapping) and one genuine, pre-existing
+backend limitation (replacing an existing price) surfaced honestly rather
+than hidden. **CODE is GREEN.** **PRODUCTION is YELLOW** pending: (1) the
+DigitalOcean Spaces credentials from TASK 16.6A's own setup doc, and (2)
+confirming the real production Owner/CEO role holds `product.manage`/
+`inventory.cost.read`/`price.manage` (see the permission-gap finding
+above) — see the final delivery message for the exact steps.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

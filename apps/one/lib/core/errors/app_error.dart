@@ -153,6 +153,23 @@ class AppFailure {
       'La información cambió mientras tanto. Actualiza e inténtalo de nuevo.',
       code: 'version_conflict',
     ),
+    // TASK 16.6B — found while wiring `_EditProductDialog`'s own "Guardar
+    // precio" action: this code was previously UNMAPPED, so it fell into
+    // the generic `_` case below and `AppFailure.code` came back
+    // `'unknown'` — meaning `priceConflictMessage` (`pos_catalog_admin_
+    // screen.dart`), despite existing since TASK 15.1 Phase 4 specifically
+    // to give this exact error an honest, actionable message, could never
+    // actually fire; both callers silently showed the generic fallback
+    // text instead. Mapped here (never in `priceConflictMessage` itself)
+    // so `code` stays a real passthrough of the backend's own
+    // `price_conflict` (`product_prices_company_active_uq`/
+    // `_branch_active_uq`), matching this switch's own established
+    // pattern for every other domain-specific conflict code above.
+    'price_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'Ya existe un precio activo para este producto en este alcance.',
+      code: 'price_conflict',
+    ),
     // TASK 13.0: customers/memberships/loyalty — see ADR-0017 D5/D21.
     // `resource_conflict`'s own switch entry above stays refund-scoped
     // (its message is specific to that domain); a customer-domain caller

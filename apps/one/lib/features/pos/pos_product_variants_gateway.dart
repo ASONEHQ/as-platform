@@ -77,6 +77,7 @@ class PosProductVariant {
     required this.tracksInventory,
     required this.standardCost,
     required this.currencyCode,
+    this.minStock,
     required this.isDefault,
     required this.status,
     required this.version,
@@ -96,6 +97,11 @@ class PosProductVariant {
     // `inventory.cost.read` — see this file's own header note.
     standardCost: json['standard_cost'] as String?,
     currencyCode: json['currency_code'] as String?,
+    // TASK 16.6B — legacy "Stock mínimo" parity (`min_stock` on
+    // `variantHttp()`; unlike `standard_cost`, always present in the
+    // response, `null` meaning "no threshold configured", never gated
+    // behind `inventory.cost.read`).
+    minStock: json['min_stock'] as String?,
     isDefault: json['is_default']! as bool,
     status: json['status']! as String,
     version: json['version']! as int,
@@ -116,6 +122,9 @@ class PosProductVariant {
   /// fetched with cost visibility yet — never fabricated either way.
   final String? standardCost;
   final String? currencyCode;
+
+  /// `null` = no reorder-point threshold configured for this variant.
+  final String? minStock;
   final bool isDefault;
 
   /// `active` | `inactive` | `retired`.
@@ -146,6 +155,8 @@ class PosProductVariantInput {
     this.tracksInventory,
     this.standardCost,
     this.currencyCode,
+    this.minStock,
+    this.clearMinStock = false,
     this.isDefault,
     this.status,
   });
@@ -157,6 +168,15 @@ class PosProductVariantInput {
   final bool? tracksInventory;
   final String? standardCost;
   final String? currencyCode;
+
+  /// TASK 16.6B — legacy "Stock mínimo" parity.
+  final String? minStock;
+
+  /// `true` explicitly clears `min_stock` back to "no threshold" — a
+  /// plain `T?` alone cannot distinguish "omit this field" from "set it
+  /// to JSON `null`" the way the backend's own optional-vs-nullable PATCH
+  /// field does.
+  final bool clearMinStock;
   final bool? isDefault;
   final String? status;
 
@@ -168,6 +188,10 @@ class PosProductVariantInput {
     if (tracksInventory != null) 'tracks_inventory': tracksInventory,
     if (standardCost != null) 'standard_cost': standardCost,
     if (currencyCode != null) 'currency_code': currencyCode,
+    if (clearMinStock)
+      'min_stock': null
+    else if (minStock != null)
+      'min_stock': minStock,
     if (isDefault != null) 'is_default': isDefault,
     if (status != null) 'status': status,
   };

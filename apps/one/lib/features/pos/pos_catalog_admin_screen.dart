@@ -64,7 +64,12 @@ enum _Phase { idle, loading, empty, failure, ready }
 /// open-ended price may exist per product+scope at a time, so replacing one
 /// requires giving the NEW price an explicit end date, never a silent
 /// failure.
-String? _priceConflictMessage(ApiException error) {
+///
+/// TASK 16.6B — public (not `_`-prefixed) so `_EditProductDialog`'s own
+/// "Guardar precio" action (`pos_shell.dart`) shows this same honest,
+/// actionable message instead of a second, divergent one for the exact
+/// same real backend error.
+String? priceConflictMessage(ApiException error) {
   if (error.failure.code != 'price_conflict') return null;
   return 'Ya existe un precio activo y sin fecha de fin para este producto en este alcance. '
       'Especifica una fecha de vigencia final para el nuevo precio, o retira el anterior desde la base de datos.';
@@ -480,7 +485,7 @@ class _PriceFormDialogState extends State<_PriceFormDialog> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = _priceConflictMessage(error) ?? error.failure.message;
+        _error = priceConflictMessage(error) ?? error.failure.message;
       });
     } on Object {
       if (!mounted) return;

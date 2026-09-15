@@ -3061,6 +3061,7 @@ class _Content extends StatelessWidget {
                     categoryAdminGateway: categoryAdminGateway,
                     brandAdminGateway: brandAdminGateway,
                     suppliersGateway: suppliersGateway,
+                    variantsGateway: productVariantsGateway,
                     pickProductImage: pickProductImage,
                     onRefresh: () => controller.loadProducts(refresh: true),
                   ),
@@ -4549,6 +4550,20 @@ class _PosSaleBody extends StatelessWidget {
     final normalized = query.trim().toLowerCase();
     return items
         .where((item) {
+          // TASK 16.6B — legacy "Aparece en el Punto de Venta" parity.
+          // The legacy's own real gate was `categoriaPOS != null` (a
+          // product with no POS-category assigned never appeared in
+          // `getPosItems()`, `AS POS V1.html:5006-5009`); this platform's
+          // real, authoritative equivalent is `status`, which the
+          // backend already enforces server-side for the sale itself
+          // (`POST /api/v1/sales` real-rejects a non-`active` product
+          // with `product_not_active` — see `PosNewProductInput`'s own
+          // doc comment). Filtering it here too means a draft/inactive/
+          // retired product is never even OFFERED on the real cashier
+          // grid, not merely rejected after a confusing tap — the admin
+          // Productos screen (`_ProductsState`, a separate widget) is
+          // deliberately UNAFFECTED and still shows every status.
+          final isSellable = item.status == 'active';
           final matchesCategory =
               categoryId == null || item.categoryId == categoryId;
           final matchesScope =
@@ -4558,7 +4573,7 @@ class _PosSaleBody extends StatelessWidget {
           final matchesQuery =
               normalized.isEmpty ||
               '${item.code} ${item.name}'.toLowerCase().contains(normalized);
-          return matchesCategory && matchesScope && matchesQuery;
+          return isSellable && matchesCategory && matchesScope && matchesQuery;
         })
         .toList(growable: false);
   }
@@ -9370,6 +9385,7 @@ class _Products extends StatefulWidget {
     this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
     this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.suppliersGateway = const EmptyPosSuppliersGateway(),
+    this.variantsGateway = const EmptyPosProductVariantsGateway(),
     this.pickProductImage,
   });
   final PosReadState<PosProduct> state;
@@ -9391,6 +9407,13 @@ class _Products extends StatefulWidget {
   final PosCategoryAdminGateway categoryAdminGateway;
   final PosBrandAdminGateway brandAdminGateway;
   final PosSuppliersGateway suppliersGateway;
+
+  /// TASK 16.6B — reuses `PosShell`'s own `productVariantsGateway` (the
+  /// SAME instance `PosProductVariantsScreen` uses) so `_EditProductDialog`
+  /// can set Costo/Stock mínimo directly through the exact real,
+  /// authoritative `PATCH /api/v1/product-variants/:id` endpoint — never a
+  /// second variant-mutation path.
+  final PosProductVariantsGateway variantsGateway;
 
   /// TASK 16.6 — see `ProductImagePicker`'s own doc comment; threaded
   /// through to `_EditProductDialog`'s own real photo-upload affordance.
@@ -9437,6 +9460,7 @@ class _ProductsState extends State<_Products> {
           categoryAdminGateway: widget.categoryAdminGateway,
           brandAdminGateway: widget.brandAdminGateway,
           suppliersGateway: widget.suppliersGateway,
+          variantsGateway: widget.variantsGateway,
           pickImage: widget.pickProductImage,
         ),
       );
@@ -10141,6 +10165,7 @@ class _EditProductDialog extends StatefulWidget {
     this.categoryAdminGateway = const EmptyPosCategoryAdminGateway(),
     this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.suppliersGateway = const EmptyPosSuppliersGateway(),
+    this.variantsGateway = const EmptyPosProductVariantsGateway(),
     this.pickImage,
   });
   final PosCatalogAdminGateway gateway;
@@ -10148,6 +10173,9 @@ class _EditProductDialog extends StatefulWidget {
   final PosCategoryAdminGateway categoryAdminGateway;
   final PosBrandAdminGateway brandAdminGateway;
   final PosSuppliersGateway suppliersGateway;
+
+  /// TASK 16.6B — see `_Products.variantsGateway`'s own doc comment.
+  final PosProductVariantsGateway variantsGateway;
 
   /// TASK 16.6 — see `ProductImagePicker`'s own doc comment; `null` falls
   /// back to a real `ImagePicker`.
@@ -10177,13 +10205,157 @@ class _EditProductDialogState extends State<_EditProductDialog> {
   late final ProductImagePicker _pickImageImpl =
       widget.pickImage ?? (() => ImagePicker().pickImage(source: ImageSource.gallery));
 
+  // TASK 16.6B — "Precio de venta"/"Costo estándar"/"Stock mínimo" are now
+  // genuinely CONFIGURABLE from this same unified editor (legacy modal
+  // parity — see the task's own instruction to not force the operator to
+  // jump between Productos/Variantes/Inventario for a basic edit), while
+  // staying on the exact same two REAL, already-authoritative endpoints
+  // this platform already uses elsewhere (`POST .../prices` — the same
+  // branch-price-override screen's own endpoint — and
+  // `PATCH /product-variants/:id` — the same endpoint
+  // `PosProductVariantsScreen` uses) — never a second price/inventory
+  // source of truth. Each has its own explicit save action (not folded
+  // into the single "Guardar" button below) so a partial failure is never
+  // ambiguous: the product-level PATCH, the price creation, and the
+  // variant cost/stock patch are three independent real HTTP operations,
+  // and only a successful one ever updates this dialog's own local
+  // "what's actually saved" state.
+  late final _priceController = TextEditingController(text: widget.product.effectivePrice?.amount ?? '');
+  late final _costController = TextEditingController(
+    text: widget.product.defaultVariant?.standardCost ?? '',
+  );
+  late final _minStockController = TextEditingController(
+    text: widget.product.defaultVariant?.minStock ?? '',
+  );
+  late PosCatalogEffectivePrice? _effectivePrice = widget.product.effectivePrice;
+  late PosCatalogDefaultVariant? _defaultVariant = widget.product.defaultVariant;
+  bool _savingPrice = false;
+  bool _savingCostAndStock = false;
+
   static const _statuses = ['draft', 'active', 'inactive', 'retired'];
 
   @override
   void dispose() {
     _nameController.dispose();
     _descriptionController.dispose();
+    _priceController.dispose();
+    _costController.dispose();
+    _minStockController.dispose();
     super.dispose();
+  }
+
+  Future<void> _savePrice() async {
+    if (_busy || _savingPrice) return;
+    final raw = _priceController.text.trim();
+    if (raw.isEmpty) {
+      setState(() => _error = 'Captura el precio de venta.');
+      return;
+    }
+    setState(() {
+      _savingPrice = true;
+      _error = null;
+    });
+    try {
+      // TASK 16.6B — this same platform already establishes 'MXN' as the
+      // no-explicit-currency-selector default elsewhere (e.g. `Money.parse
+      // (raw, 'MXN')` in `_DirectPurchaseForm`); a real currency selector
+      // already exists on the pre-existing branch-price-override screen
+      // (`pos_catalog_admin_screen.dart`) for anyone who genuinely needs a
+      // non-default currency — this editor deliberately doesn't duplicate
+      // that selector, matching this task's own "reuse, don't duplicate"
+      // instruction.
+      final created = await widget.gateway.createProductPrice(
+        widget.product.id,
+        PosProductPriceInput(amount: raw, currencyCode: 'MXN'),
+      );
+      if (!mounted) return;
+      setState(() {
+        _savingPrice = false;
+        _effectivePrice = PosCatalogEffectivePrice(
+          id: created.id,
+          branchId: created.branchId,
+          amount: created.amount,
+          currencyCode: created.currencyCode,
+          validFrom: created.validFrom,
+          validUntil: created.validUntil,
+          status: created.status,
+        );
+        _priceController.text = created.amount;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingPrice = false;
+        // TASK 16.6B — same honest `price_conflict` message
+        // `PosCatalogAdminScreen`'s own price form already shows for this
+        // exact real backend constraint; never a second, divergent one.
+        _error = priceConflictMessage(error) ?? error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _savingPrice = false;
+        _error = 'No fue posible guardar el precio.';
+      });
+    }
+  }
+
+  Future<void> _saveCostAndStock() async {
+    if (_busy || _savingCostAndStock) return;
+    final variant = _defaultVariant;
+    if (variant == null) {
+      setState(() => _error = 'Este producto no tiene una variante por defecto.');
+      return;
+    }
+    final rawCost = _costController.text.trim();
+    final rawMinStock = _minStockController.text.trim();
+    setState(() {
+      _savingCostAndStock = true;
+      _error = null;
+    });
+    try {
+      final updated = await widget.variantsGateway.updateVariant(
+        variant.id,
+        variant.version,
+        PosProductVariantInput(
+          standardCost: rawCost.isEmpty ? null : rawCost,
+          currencyCode: rawCost.isEmpty ? null : (variant.currencyCode ?? 'MXN'),
+          minStock: rawMinStock.isEmpty ? null : rawMinStock,
+          clearMinStock: rawMinStock.isEmpty,
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _savingCostAndStock = false;
+        _defaultVariant = PosCatalogDefaultVariant(
+          id: updated.id,
+          sku: updated.sku,
+          name: updated.name,
+          unitOfMeasureCode: updated.unitOfMeasureCode,
+          quantityScale: updated.quantityScale,
+          standardCost: updated.standardCost,
+          currencyCode: updated.currencyCode,
+          minStock: updated.minStock,
+          version: updated.version,
+        );
+        _costController.text = updated.standardCost ?? '';
+        _minStockController.text = updated.minStock ?? '';
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingCostAndStock = false;
+        _error = error.statusCode == 409
+            ? 'Otra sesión cambió esta variante. Cierra y vuelve a abrirlo.'
+            : error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _savingCostAndStock = false;
+        _error = 'No fue posible guardar el costo/stock mínimo.';
+      });
+    }
   }
 
   Future<void> _pickAndUploadImage() async {
@@ -10414,17 +10586,79 @@ class _EditProductDialogState extends State<_EditProductDialog> {
             ),
             const SizedBox(height: 6),
             const _DialogSectionLabel('Precios'),
-            // TASK 16.6A — legacy "Utilidad" parity (see `posUtilidadFrom`'s
-            // own doc comment for the full forensic finding and design
-            // rationale). Read-only: precio/costo editing stay on their own
-            // real, already-authoritative paths (the branch-price screen
-            // and `PosProductVariantsScreen`) — this never adds a second
-            // price-entry path, and nothing here is ever sent back to the
-            // backend.
-            _PosUtilidadRow(
-              effectivePrice: widget.product.effectivePrice,
-              variant: widget.product.defaultVariant,
+            // TASK 16.6B — real Precio de venta/Costo/Stock mínimo
+            // editing from this same unified editor, each through its own
+            // explicit save action against the exact real, already-
+            // authoritative endpoint (`POST .../prices`,
+            // `PATCH /product-variants/:id`) — never a second source of
+            // truth, and never folded into the single product-level
+            // "Guardar" button below, so a partial failure here is never
+            // ambiguous.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-product-edit-price'),
+                    controller: _priceController,
+                    enabled: !_busy && !_savingPrice,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Precio de venta', prefixText: r'$ '),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: TextButton(
+                    key: const Key('pos-product-edit-save-price'),
+                    onPressed: _busy || _savingPrice ? null : _savePrice,
+                    child: _savingPrice
+                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('Guardar precio'),
+                  ),
+                ),
+              ],
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-product-edit-cost'),
+                    controller: _costController,
+                    enabled: !_busy && !_savingCostAndStock,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Costo estándar', prefixText: r'$ '),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-product-edit-min-stock'),
+                    controller: _minStockController,
+                    enabled: !_busy && !_savingCostAndStock,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Stock mínimo'),
+                  ),
+                ),
+              ],
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: const Key('pos-product-edit-save-cost'),
+                onPressed: _busy || _savingCostAndStock || _defaultVariant == null ? null : _saveCostAndStock,
+                child: _savingCostAndStock
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Guardar costo y stock mínimo'),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Legacy "Utilidad" parity (see `posUtilidadFrom`'s own doc
+            // comment) — always read-only/derived, recomputed here from
+            // whatever was last actually saved above, never a fabricated
+            // value.
+            _PosUtilidadRow(effectivePrice: _effectivePrice, variant: _defaultVariant),
             const SizedBox(height: 6),
             const _DialogSectionLabel('Extras'),
             Row(
@@ -10595,9 +10829,13 @@ PosUtilidad? posUtilidadFrom(PosCatalogEffectivePrice? effectivePrice, PosCatalo
   }
 }
 
-/// The read-only "Precios" row in `_EditProductDialog` — real sale price/
-/// cost/utilidad, all sourced from the already-fetched authoritative
-/// product, never an input.
+/// The read-only "Utilidad" row in `_EditProductDialog` — TASK 16.6B:
+/// Precio de venta/Costo are now real, directly EDITABLE fields right
+/// above this widget (see `_EditProductDialogState._savePrice`/
+/// `._saveCostAndStock`), so this widget itself only shows the one value
+/// that must always stay derived/read-only per this task's own explicit
+/// instruction ("Utilidad es READ ONLY y derivada") — never re-displaying
+/// price/cost redundantly.
 class _PosUtilidadRow extends StatelessWidget {
   const _PosUtilidadRow({required this.effectivePrice, required this.variant});
   final PosCatalogEffectivePrice? effectivePrice;
@@ -10606,13 +10844,6 @@ class _PosUtilidadRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final priceText = effectivePrice == null
-        ? 'Sin precio configurado'
-        : Money.parse(effectivePrice!.amount, effectivePrice!.currencyCode).toDisplayString();
-    final costText = variant?.standardCost == null
-        ? 'Sin costo registrado'
-        : Money.parse(variant!.standardCost!, variant!.currencyCode ?? effectivePrice?.currencyCode ?? 'MXN')
-              .toDisplayString();
     final utilidad = posUtilidadFrom(effectivePrice, variant);
     return Container(
       key: const Key('pos-product-edit-utilidad'),
@@ -10621,43 +10852,22 @@ class _PosUtilidadRow extends StatelessWidget {
         color: palette.actionTint,
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Precio de venta', style: TextStyle(color: palette.textMuted, fontSize: 12)),
-              Text(priceText, style: TextStyle(color: palette.text, fontWeight: FontWeight.w600, fontSize: 12)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Costo', style: TextStyle(color: palette.textMuted, fontSize: 12)),
-              Text(costText, style: TextStyle(color: palette.text, fontWeight: FontWeight.w600, fontSize: 12)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Utilidad', style: TextStyle(color: palette.textMuted, fontSize: 12)),
-              Text(
-                utilidad == null
-                    ? 'No disponible'
-                    : '${utilidad.amount.toDisplayString()}'
-                          '${utilidad.marginPercent == null ? '' : ' (${utilidad.marginPercent}%)'}',
-                style: TextStyle(
-                  color: utilidad == null
-                      ? palette.textMuted
-                      : (utilidad.amount.isNegative ? palette.error : palette.success),
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
-                ),
-              ),
-            ],
+          Text('Utilidad', style: TextStyle(color: palette.textMuted, fontSize: 12)),
+          Text(
+            utilidad == null
+                ? 'No disponible'
+                : '${utilidad.amount.toDisplayString()}'
+                      '${utilidad.marginPercent == null ? '' : ' (${utilidad.marginPercent}%)'}',
+            style: TextStyle(
+              color: utilidad == null
+                  ? palette.textMuted
+                  : (utilidad.amount.isNegative ? palette.error : palette.success),
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
           ),
         ],
       ),

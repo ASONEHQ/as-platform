@@ -472,9 +472,7 @@ void main() {
       expect(utilidad, isNull);
     });
 
-    testWidgets('the edit dialog renders the real precio/costo/utilidad from the fetched product, read-only', (
-      tester,
-    ) async {
+    testWidgets('the edit dialog renders the real precio/costo/utilidad from the fetched product', (tester) async {
       final catalogGateway = _RecordingCatalogAdminGateway(products: [_pricedEditableProduct]);
       await _pump(
         tester,
@@ -489,14 +487,87 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('pos-product-edit-utilidad')), findsOneWidget);
-      expect(find.text('100.00'), findsOneWidget);
-      expect(find.text('60.00'), findsOneWidget);
       expect(find.text('40.00 (40%)'), findsOneWidget);
-      // Read-only: no editable price/cost TextField exists in the edit
-      // dialog anywhere (they stay on their own real, separate screens).
-      expect(find.byKey(const Key('pos-product-edit-price')), findsNothing);
-      expect(find.byKey(const Key('pos-product-edit-cost')), findsNothing);
+      // TASK 16.6B — Precio de venta/Costo estándar are now genuinely
+      // EDITABLE from this same unified editor (legacy modal parity), each
+      // prefilled from the real fetched product/variant — never a second
+      // price-entry path, since saving still goes through the same real
+      // `createProductPrice`/variant-patch endpoints (see the two tests
+      // below).
+      final priceField = tester.widget<TextField>(find.byKey(const Key('pos-product-edit-price')));
+      expect(priceField.controller?.text, '100.0000');
+      final costField = tester.widget<TextField>(find.byKey(const Key('pos-product-edit-cost')));
+      expect(costField.controller?.text, '60.0000');
     });
+
+    testWidgets('"Guardar precio" calls the real createProductPrice endpoint and recomputes Utilidad', (
+      tester,
+    ) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(products: [_pricedEditableProduct]);
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+      );
+      await _navigateToProducts(tester);
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '120.00');
+      await tester.tap(find.byKey(const Key('pos-product-edit-save-price')));
+      await tester.pumpAndSettle();
+
+      expect(catalogGateway.createPriceCalls, hasLength(1));
+      expect(catalogGateway.createPriceCalls.single.productId, _pricedEditableProduct.id);
+      expect(catalogGateway.createPriceCalls.single.input.amount, '120.00');
+      // Utilidad recomputes from the newly-saved price (120 - 60 = 60,
+      // 50%), never a stale value from before the save.
+      expect(find.text('60.00 (50%)'), findsOneWidget);
+    });
+
+    testWidgets(
+      '"Guardar precio" surfaces the real, honest price_conflict message on a 409 — never a false success',
+      (tester) async {
+        final catalogGateway = _RecordingCatalogAdminGateway(
+          products: [_pricedEditableProduct],
+          priceConflict: true,
+        );
+        await _pump(
+          tester,
+          catalogAdminGateway: catalogGateway,
+          readGateway: const _FixtureReadGateway([_plainProduct]),
+        );
+        await _navigateToProducts(tester);
+        await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Editar').last);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '120.00');
+        await tester.tap(find.byKey(const Key('pos-product-edit-save-price')));
+        await tester.pumpAndSettle();
+
+        // TASK 16.6B — found and fixed alongside this test: `price_conflict`
+        // was previously UNMAPPED in `AppFailure.fromCode` (app_error.dart),
+        // so it silently collapsed to a generic message; both this dialog
+        // and `PosCatalogAdminScreen`'s own price form now show the exact
+        // same real, actionable text from `priceConflictMessage` instead
+        // (which matches on `error.failure.code`, not the fixture's own
+        // message string — asserted here byte-for-byte so a future edit to
+        // either the helper or this test can't silently drift apart).
+        expect(
+          find.text(
+            'Ya existe un precio activo y sin fecha de fin para este producto en este alcance. '
+            'Especifica una fecha de vigencia final para el nuevo precio, o retira el anterior desde la base de datos.',
+          ),
+          findsOneWidget,
+        );
+        // Utilidad never updates on a genuine failure.
+        expect(find.text('40.00 (40%)'), findsOneWidget);
+      },
+    );
   });
 }
 
@@ -636,8 +707,11 @@ class _FixtureReadGateway implements PosReadGateway {
 }
 
 class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
-  _RecordingCatalogAdminGateway({List<PosCatalogProduct>? products, this.imageStorageConfigured = true})
-    : products = List.of(products ?? const []);
+  _RecordingCatalogAdminGateway({
+    List<PosCatalogProduct>? products,
+    this.imageStorageConfigured = true,
+    this.priceConflict = false,
+  }) : products = List.of(products ?? const []);
 
   final List<PosCatalogProduct> products;
 
@@ -649,12 +723,21 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   /// separate "storage unavailable" exception type the real gateway
   /// doesn't have.
   final bool imageStorageConfigured;
+
+  /// TASK 16.6B — `true` simulates the real backend's own
+  /// `product_prices_company_active_uq`/`_branch_active_uq` constraint
+  /// (`price_conflict`, 409): only one active, open-ended price may exist
+  /// per product+scope. Mirrors the exact `ApiException` shape
+  /// `ApiClient`'s real `AppFailure.fromCode('price_conflict')` now
+  /// produces (see `app_error.dart`), never a bespoke exception type.
+  final bool priceConflict;
   PosNewProductInput? lastCreateProductInput;
   PosProductPatchInput? lastUpdateProductInput;
   final List<String> productFetchCalls = [];
   final List<String> duplicateCalls = [];
   final List<({String id, String filename, String contentType})> uploadImageCalls = [];
   final List<({String id, int expectedVersion})> deleteImageCalls = [];
+  final List<({String productId, PosProductPriceInput input})> createPriceCalls = [];
   int _autoId = 0;
 
   @override
@@ -784,8 +867,31 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
       const PosCatalogVariantPage(items: [], nextCursor: null);
 
   @override
-  Future<PosProductPrice> createProductPrice(String productId, PosProductPriceInput input) =>
-      Future.error(StateError('not used in this fixture'));
+  Future<PosProductPrice> createProductPrice(String productId, PosProductPriceInput input) async {
+    if (priceConflict) {
+      throw const ApiException(
+        AppFailure(
+          AppErrorKind.validation,
+          'Ya existe un precio activo para este producto en este alcance.',
+          code: 'price_conflict',
+        ),
+        statusCode: 409,
+      );
+    }
+    createPriceCalls.add((productId: productId, input: input));
+    return PosProductPrice(
+      id: 'price-new',
+      branchId: null,
+      productId: productId,
+      priceType: 'standard',
+      amount: input.amount,
+      currencyCode: input.currencyCode,
+      validFrom: _fixedValidFrom,
+      validUntil: null,
+      status: 'active',
+      version: 1,
+    );
+  }
 
   @override
   Future<PosProductOptionPage> listOptions(String productId, {String? cursor, int limit = 50}) async =>
