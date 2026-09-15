@@ -1023,6 +1023,141 @@ export class ProductCatalogService {
     );
   }
 
+  /**
+   * TASK 16.6C — the real "cambiar precio" operation the unified product
+   * editor's own "Guardar precio" action needs. `product_prices` already
+   * supports real history (TASK 12.3C's own doc comment: multiple rows
+   * distinguished by `valid_from`/`valid_until`) — it just had no
+   * MUTATION that used it. `createProductPrice` only ever appends, and
+   * correctly 409s (`price_conflict`) on a second open-ended row for the
+   * same scope (verified, intentional, UNCHANGED by this method — see
+   * its own existing test) because blindly inserting a second open row
+   * would leave the invariant ambiguous. This is the missing "close the
+   * old one, open the new one, atomically" operation:
+   *
+   * - Locks the product row first (`lockProduct`, `SELECT ... FOR
+   *   UPDATE`) — the SAME lock every other product mutation already
+   *   takes — so two concurrent "change price" calls for the same
+   *   product genuinely serialize; the second one only proceeds once the
+   *   first has committed, and then sees the first's already-closed old
+   *   price and its already-open new one — never a race that could leave
+   *   zero or two prices active.
+   * - Locks (if present) only the ONE active row matching the exact same
+   *   (price type, currency, branch) scope the new price targets — a
+   *   product may have simultaneously active prices in different
+   *   currencies or at different branches; this never touches any of
+   *   those, so a company-wide price change can never destroy, or be
+   *   confused with, a branch-specific override (and vice versa).
+   * - No existing row in that scope: behaves exactly like
+   *   `createProductPrice` (the "first price ever" case) — nothing to
+   *   close.
+   * - An existing row with the IDENTICAL amount already: a genuine
+   *   no-op — returns it unchanged, no new row, no audit event. Changing
+   *   $250 to $250 is not a price change and must not pollute history.
+   * - Otherwise: closes the old row (`valid_until`/`status='expired'` —
+   *   never deleted, so it remains real, queryable financial history)
+   *   and inserts the new one, both inside the SAME database transaction
+   *   (`this.repository.transaction`), so there is never a moment with
+   *   zero or two active prices for this scope, and a failure anywhere
+   *   in the sequence rolls back BOTH writes together.
+   * - `price.manage` required (see routes), same as `createProductPrice`.
+   *   Idempotent, same request-hash-keyed replay pattern.
+   *
+   * Sales are structurally unaffected: `sale_items.unit_price` is an
+   * immutable commercial snapshot frozen at sale time (see its own doc
+   * comment in `packages/database/src/schema/sales.ts`) with no live
+   * reference back to `product_prices` — a historical sale's price
+   * cannot change no matter how many times this method is called
+   * afterward.
+   */
+  public changeProductPrice(
+    context: ProductMutationContext,
+    productId: string,
+    key: string,
+    input: CreateProductPriceInput,
+  ): Promise<{ value: ProductPriceRow; replayed: boolean }> {
+    const normalized = {
+      productId,
+      branchId: input.branchId ?? null,
+      priceType: 'standard',
+      amount: priceAmount(input.amount),
+      currencyCode: priceCurrency(input.currencyCode),
+    };
+    const requestHash = hash(normalized);
+    return this.repository.transaction(async (client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'product_price.change',
+        key,
+        requestHash,
+        'product_price',
+        decodePrice,
+        async () => {
+          const product = await this.repository.lockProduct(client, context.companyId, productId);
+          if (product === null)
+            throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+          if (normalized.branchId !== null)
+            await this.repository.validateBranch(client, context.companyId, normalized.branchId);
+          const active = await this.repository.lockActivePriceForScope(
+            client,
+            context.companyId,
+            productId,
+            normalized.priceType,
+            normalized.currencyCode,
+            normalized.branchId,
+          );
+          if (active !== null && active.amount === normalized.amount) {
+            // Same-price update — a defined, deliberate no-op (see this
+            // method's own doc comment). Never a fabricated history
+            // entry for a change that didn't actually change anything.
+            return active;
+          }
+          // TASK 16.6C — the new row's `validFrom` is taken from the
+          // CLOSED row's own real `validUntil` (a database-computed
+          // `clock_timestamp()`-based boundary — see `closeProductPrice`'s
+          // own doc comment), never from `context.timestamp` directly:
+          // two concurrent callers can genuinely execute in the OPPOSITE
+          // order their own `context.timestamp`s would suggest (found via
+          // a real, reproducible test failure), so only a boundary
+          // computed at the moment each write actually happens is
+          // guaranteed to stay strictly increasing under concurrency.
+          const closed = active === null ? null : await this.repository.closeProductPrice(client, {
+            ...context,
+            id: active.id,
+          });
+          const created = await this.repository.insertProductPrice(client, {
+            ...context,
+            id: randomUUID(),
+            ...normalized,
+            validFrom: closed?.validUntil ?? context.timestamp,
+            validUntil: null,
+          });
+          await this.repository.auditAndPublish(client, context, {
+            action: 'price.changed',
+            resourceType: 'product_price',
+            resourceId: created.id,
+            eventType: 'product.price_changed',
+            version: created.version,
+            payload: {
+              product_price_id: created.id,
+              previous_product_price_id: active?.id ?? null,
+              product_id: created.productId,
+              branch_id: created.branchId,
+              price_type: created.priceType,
+              previous_amount: active?.amount ?? null,
+              amount: created.amount,
+              currency_code: created.currencyCode,
+              status: created.status,
+              version: created.version.toString(),
+            },
+          });
+          return created;
+        },
+      ),
+    );
+  }
+
   private productPayload(value: ProductRow): Readonly<Record<string, unknown>> {
     return {
       product_id: value.id,

@@ -9,6 +9,8 @@ import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 import type { DatabaseClient as CashDatabaseClient } from '@asone/database';
 
 import { CashRepository } from '../cash/cash.repository.js';
+import { ProductCatalogRepository } from '../catalog/product-catalog.repository.js';
+import { ProductCatalogService } from '../catalog/product-catalog.service.js';
 import { PaymentRepository } from '../payments/payments.repository.js';
 import { PaymentService } from '../payments/payments.service.js';
 import { MercadoPagoClient } from '../payments/providers/mercado-pago.client.js';
@@ -1524,5 +1526,95 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
       ]);
       expect(audit.rows).toEqual([{ action: 'inventory_movement.posted' }]);
     });
+  });
+
+  // TASK 16.6C — the real financial-history regression this task
+  // explicitly requires: a `ProductCatalogService.changeProductPrice`
+  // call (TASK 16.6C's own new "cambiar precio" operation) must never
+  // alter a sale that was already recorded at the old price.
+  // `sale_items.unit_price` is an immutable commercial snapshot frozen at
+  // sale-creation time (see its own doc comment in
+  // `packages/database/src/schema/sales.ts`) with no live reference back
+  // to `product_prices` — this test proves that structural guarantee
+  // holds end-to-end through the real service, not just by reading the
+  // schema comment.
+  it('a later price change never alters an already-recorded sale — a new sale after the change uses the new price (TASK 16.6C)', async () => {
+    const products = new ProductCatalogService(new ProductCatalogRepository(database));
+    const created = await products.createProduct(context, 'price-history-sale-product', {
+      code: 'price-history-sale',
+      name: 'Price History Sale Product',
+      productType: 'simple',
+      tracksInventory: false,
+      status: 'active',
+      defaultVariant: {
+        sku: 'price-history-sale',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    const historyProductId = created.value.id;
+    await products.createProductPrice(context, historyProductId, 'price-history-initial-price', {
+      amount: '250.00',
+      currencyCode: 'MXN',
+    });
+
+    // A real sale, recorded at the real $250 price.
+    const oldSale = await sales.createSale(context, branchIds, 'price-history-old-sale', {
+      branchId,
+      items: [{ productId: historyProductId, quantity: '1' }],
+    });
+    expect(oldSale.value.items[0]).toMatchObject({ unitPrice: '250.0000' });
+
+    // Change the price — a genuinely later context, mirroring two
+    // separate real requests (this file's own shared `context.timestamp`
+    // is fixed, which would otherwise collide with
+    // `product_prices_valid_interval_ck` when closing a price whose own
+    // `valid_from` was set from that same fixed instant).
+    const laterContext = { ...context, timestamp: new Date(context.timestamp.getTime() + 60_000) };
+    await products.changeProductPrice(laterContext, historyProductId, 'price-history-change', {
+      amount: '260.00',
+      currencyCode: 'MXN',
+    });
+
+    // A new sale, created AFTER the change, uses the new $260 price.
+    const newSale = await sales.createSale(laterContext, branchIds, 'price-history-new-sale', {
+      branchId,
+      items: [{ productId: historyProductId, quantity: '1' }],
+    });
+    expect(newSale.value.items[0]).toMatchObject({ unitPrice: '260.0000' });
+
+    // The historical sale's own line is untouched — re-read fresh from
+    // the database, not from any in-memory value captured earlier.
+    const reread = await database.pool.query<{ unit_price: string }>(
+      'select unit_price from sale_items where company_id=$1 and sale_id=$2',
+      [companyId, oldSale.value.sale.id],
+    );
+    expect(reread.rows[0]?.unit_price).toBe('250.0000');
+
+    // Cleanup — this test creates its own product outside the shared
+    // beforeAll/afterAll fixtures.
+    await database.pool.query('delete from sale_items where company_id=$1 and sale_id=any($2::uuid[])', [
+      companyId,
+      [oldSale.value.sale.id, newSale.value.sale.id],
+    ]);
+    await database.pool.query('delete from sales where company_id=$1 and id=any($2::uuid[])', [
+      companyId,
+      [oldSale.value.sale.id, newSale.value.sale.id],
+    ]);
+    await database.pool.query('delete from product_prices where company_id=$1 and product_id=$2', [
+      companyId,
+      historyProductId,
+    ]);
+    await database.pool.query('delete from product_variants where company_id=$1 and product_id=$2', [
+      companyId,
+      historyProductId,
+    ]);
+    await database.pool.query('delete from idempotency_keys where company_id=$1 and key like $2', [
+      companyId,
+      'price-history-%',
+    ]);
+    await database.pool.query('delete from products where company_id=$1 and id=$2', [companyId, historyProductId]);
   });
 });

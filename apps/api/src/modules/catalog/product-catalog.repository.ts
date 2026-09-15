@@ -705,6 +705,92 @@ export class ProductCatalogRepository {
     return productPrice(row);
   }
 
+  /**
+   * TASK 16.6C — locks (if present) the currently active, open-ended
+   * price row for an EXACT (price type, currency, branch) scope — the
+   * same tuple `product_prices_company_active_uq`/`_branch_active_uq`
+   * enforce uniqueness over. Returns `null` when no such row exists (the
+   * product has never had a price in this exact scope/currency yet —
+   * `changeProductPrice`'s own "first price ever" case, identical to
+   * `createProductPrice`'s original behavior). Must be called inside the
+   * same transaction as `lockProduct`, after it — `lockProduct`'s own
+   * `FOR UPDATE` on the product row already serializes concurrent callers
+   * for the same product; this second, narrower lock additionally
+   * protects the specific price row itself for the duration of the
+   * close-then-insert sequence.
+   */
+  public async lockActivePriceForScope(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    productId: string,
+    priceType: string,
+    currencyCode: string,
+    branchId: string | null,
+  ): Promise<ProductPriceRow | null> {
+    const row = result<ProductPriceDb>(
+      await client.query(
+        `select ${PRICE_COLUMNS} from product_prices
+         where company_id=$1 and product_id=$2 and price_type=$3 and currency_code=$4
+           and branch_id is not distinct from $5
+           and status='active' and valid_until is null
+         for update`,
+        [companyId, productId, priceType, currencyCode, branchId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : productPrice(row);
+  }
+
+  /**
+   * TASK 16.6C — closes (supersedes) an existing active, open-ended price
+   * row by setting `valid_until`/`status='expired'` — NEVER deletes it,
+   * so it remains real, queryable price history (`effectivePrices`'s own
+   * query already excludes it once `valid_until` is in the past, via its
+   * `valid_until>now()` filter — no separate "is this expired" flag read
+   * anywhere else depends on `status`). Must run in the same transaction
+   * as the new price's own `insertProductPrice` call, both under
+   * `lockProduct`'s row lock, so the two writes form one atomic "change
+   * price" operation — see `ProductCatalogService.changeProductPrice`.
+   *
+   * Deliberately computes the closing boundary from the DATABASE's own
+   * `clock_timestamp()` (real, monotonically-advancing wall-clock time,
+   * evaluated fresh at the moment this statement actually runs) rather
+   * than trusting the caller-supplied `context.timestamp` — found via a
+   * real, reproducible test failure: two concurrent `changeProductPrice`
+   * calls serialize correctly (the product row lock guarantees that), but
+   * `Promise.all` gives no guarantee about WHICH one acquires the lock
+   * first, so the request whose HTTP handler happened to capture the
+   * EARLIER `context.timestamp` can still be the SECOND one to actually
+   * run — and if that caller-supplied timestamp were used here, it could
+   * land before the very row it's closing (`valid_from`), violating
+   * `product_prices_valid_interval_ck`. `GREATEST(clock_timestamp(),
+   * valid_from + 1 microsecond)` is instead always genuinely later than
+   * whatever `valid_from` this exact row already has, regardless of
+   * caller clock skew or execution order — correct for both a single
+   * caller and any number of serialized concurrent ones.
+   */
+  public async closeProductPrice(
+    client: ProductCatalogTransaction,
+    input: ProductMutationContext & { id: string },
+  ): Promise<ProductPriceRow> {
+    const row = result<ProductPriceDb>(
+      await client.query(
+        `with boundary as (
+           select greatest(clock_timestamp(), valid_from + interval '1 microsecond') as closed_at
+           from product_prices where id=$1 and company_id=$2
+         )
+         update product_prices
+         set valid_until=boundary.closed_at, status='expired', updated_by=$3,
+             updated_at=boundary.closed_at, version=version+1
+         from boundary
+         where product_prices.id=$1 and product_prices.company_id=$2
+         returning ${PRICE_COLUMNS}`,
+        [input.id, input.companyId, input.actorId],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Product price close did not return a row.');
+    return productPrice(row);
+  }
+
   public async insertVariant(
     client: ProductCatalogTransaction,
     input: ProductMutationContext & {

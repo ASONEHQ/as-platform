@@ -792,6 +792,18 @@ abstract interface class PosCatalogAdminGateway {
   /// on any rejection.
   Future<PosProductPrice> createProductPrice(String productId, PosProductPriceInput input);
 
+  /// TASK 16.6C — `POST /api/v1/products/{product_id}/prices/change`
+  /// (`price.manage`), requires `Idempotency-Key`. The real "cambiar
+  /// precio" operation: atomically closes whatever price is currently
+  /// active for the same scope and opens the new one, preserving the old
+  /// one as real history — deliberately NOT [createProductPrice], whose
+  /// own 409 (`price_conflict`) on an existing open price is correct,
+  /// intentional behavior for that different operation (appending an
+  /// effective-dated price). `branchId` left `null` on [input] changes
+  /// the company-wide base price; a caller intending to change a branch
+  /// override must pass that branch's id explicitly (never inferred).
+  Future<PosProductPrice> changeProductPrice(String productId, PosProductPriceInput input);
+
   /// `GET /api/v1/products/{product_id}/options` (`catalog.read`).
   Future<PosProductOptionPage> listOptions(String productId, {String? cursor, int limit = 50});
 
@@ -971,6 +983,20 @@ class ApiPosCatalogAdminGateway implements PosCatalogAdminGateway {
     final envelope = await _client.postJson(
       '/api/v1/products/$productId/prices',
       idempotencyKey: _idempotencyKey('price'),
+      body: input.toJson(),
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product price data.');
+    }
+    return PosProductPrice.fromJson(data);
+  }
+
+  @override
+  Future<PosProductPrice> changeProductPrice(String productId, PosProductPriceInput input) async {
+    final envelope = await _client.postJson(
+      '/api/v1/products/$productId/prices/change',
+      idempotencyKey: _idempotencyKey('price-change'),
       body: input.toJson(),
     );
     final data = envelope['data'];
@@ -1175,6 +1201,10 @@ class EmptyPosCatalogAdminGateway implements PosCatalogAdminGateway {
 
   @override
   Future<PosProductPrice> createProductPrice(String productId, PosProductPriceInput input) =>
+      Future.error(StateError('No catalog admin gateway is configured.'));
+
+  @override
+  Future<PosProductPrice> changeProductPrice(String productId, PosProductPriceInput input) =>
       Future.error(StateError('No catalog admin gateway is configured.'));
 
   @override

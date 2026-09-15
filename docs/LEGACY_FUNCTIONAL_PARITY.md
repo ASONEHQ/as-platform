@@ -1245,6 +1245,222 @@ confirming the real production Owner/CEO role holds `product.manage`/
 `inventory.cost.read`/`price.manage` (see the permission-gap finding
 above) — see the final delivery message for the exact steps.
 
+## TASK 16.6C — Real Product Price Editing + Price History Closure (2026-09-15, same day)
+
+TASK 16.6B's own live verification found that "Guardar precio" genuinely
+409-conflicted (`price_conflict`) for any product that already had an
+active price — i.e. every real product — because `product_prices` had a
+real, correct HISTORY-capable model (multiple rows, `valid_from`/
+`valid_until`) but no MUTATION that used it: `createProductPrice` only
+ever appended a new open-ended row, so a second one for the same scope
+correctly hit `product_prices_company_active_uq`/`_branch_active_uq`.
+This task closes that gap with a real "cambiar precio" operation.
+
+### Root cause of `price_conflict`
+
+Not a bug in the constraint itself — `product_prices_company_active_uq`/
+`_branch_active_uq` (partial unique indexes, `where status='active' and
+valid_until is null`) correctly enforce "at most one open-ended active
+price per (product, price type, currency, branch) scope," which is the
+right invariant. The actual gap: no code path ever CLOSED an existing
+price before opening a new one — `POST /products/:id/prices`
+(`createProductPrice`) is, correctly, an append-only operation (its own
+existing test explicitly proves a second call for the same scope must
+409 — e.g. scheduling a future price without disturbing today's). The
+unified product editor's "Guardar precio" button was wired to that same
+append-only endpoint, so it inherited a 409 for the single most common
+real action: changing a price that already exists.
+
+### Price model audited (not reinvented)
+
+`product_prices` (`packages/database/src/schema/catalog.ts`) already
+supports real temporal history: `valid_from`/`valid_until`/`status`
+(`active`/`expired`/`cancelled`), `branch_id` nullable (null = company-
+wide default, non-null = a branch-specific override), one row per
+(company, product, price_type, currency, branch) scope may be
+open-ended-active at a time. `effectivePrices` (`product-catalog.
+repository.ts`) resolves the current price per scope with `status=
+'active' and valid_from<=now() and (valid_until is null or valid_until>
+now())`, preferring a branch-specific row over the company-wide default
+when both exist. None of this needed to change — TASK 16.6C added
+exactly one new capability on top of it: a way to atomically retire the
+current row and open a new one.
+
+### Solution: `ProductCatalogService.changeProductPrice`
+
+A new service method + a new route, `POST /api/v1/products/:product_id
+/prices/change` (`price.manage`, same permission as `createProductPrice`
+— deliberately a SEPARATE endpoint, not a behavior change to the
+existing one, so its own correct 409-on-append-conflict stays intact for
+callers that genuinely want it, e.g. scheduling a future price):
+
+1. Locks the product row (`lockProduct`, `SELECT ... FOR UPDATE` — the
+   same lock every other product mutation already takes).
+2. Locks (if present) the ONE active row matching the exact same (price
+   type, currency, branch) scope — never touches a different currency or
+   a different branch's own price.
+3. No existing row: behaves exactly like `createProductPrice` (first
+   price ever).
+4. An existing row with the IDENTICAL amount: a genuine no-op — returns
+   it unchanged, no new history row (changing $250 to $250 isn't a
+   change).
+5. Otherwise: closes the old row (`valid_until` set, `status='expired'`
+   — never deleted) and inserts the new one, in the SAME database
+   transaction, so there is never a moment with zero or two active
+   prices for this scope.
+
+### Atomicity and concurrency
+
+Both writes run inside `this.repository.transaction()` (real
+`BEGIN`/`COMMIT`/`ROLLBACK`), so a failure anywhere in the sequence
+rolls back both — proven directly (see Tests below) by forcing a real
+`product_prices_amount_ck` violation between the close and the insert
+and confirming the original price is still active afterward, unchanged.
+
+**A real, reproducible concurrency bug was found and fixed during this
+task**: the product row lock genuinely serializes two concurrent
+`changeProductPrice` calls (the second only proceeds once the first has
+committed) — but `Promise.all` gives no guarantee about WHICH of two
+concurrent callers acquires that lock first. The initial implementation
+used each caller's own `context.timestamp` (captured before lock
+acquisition, at HTTP-request time) as the closing/opening boundary; a
+full regression run caught a genuine `product_prices_valid_interval_ck`
+violation when the second-to-execute transaction happened to carry an
+EARLIER timestamp than the row it was closing (which the first
+transaction had just opened with a LATER one). Fixed by computing the
+boundary from the database's own `clock_timestamp()`
+(`GREATEST(clock_timestamp(), valid_from + 1 microsecond)`), evaluated
+fresh at the moment each write actually runs — always genuinely later
+than whatever `valid_from` that specific row already has, regardless of
+caller clock skew or which of several concurrent callers executes first.
+Re-verified: the dedicated concurrency test, plus two full sequential
+integration-suite runs, both clean afterward.
+
+### Financial history — sales are structurally unaffected
+
+Audited `sale_items` (`packages/database/src/schema/sales.ts`):
+`unit_price` is documented and implemented as an immutable commercial
+snapshot frozen at sale-creation time, with NO foreign key or live query
+back to `product_prices` anywhere in the codebase — a historical sale's
+price cannot change no matter how many times a product's current price
+changes afterward. This was already true structurally before this task
+(no schema change was needed); TASK 16.6C adds an explicit, real
+end-to-end test proving it through the actual services (not just reading
+the schema comment): a real sale created at $250 (`SalesService.
+createSale`), a real price change to $260
+(`ProductCatalogService.changeProductPrice`), a second real sale created
+afterward at $260, and a fresh re-read of the FIRST sale's own
+`sale_items.unit_price` from the database confirming it still reads
+exactly `250.0000`.
+
+### Branch overrides — audited, preserved
+
+The base (company-wide, `branch_id is null`) price and a branch-specific
+override are two DIFFERENT rows, each independently subject to the same
+"at most one open-ended active row" constraint in its own scope.
+`changeProductPrice` only ever locks/closes the row matching the SAME
+`branchId` the caller passed (`null` unless explicitly given) — a base
+price change can structurally never touch a branch override's own row,
+and vice versa. Verified with a real test: base $250 + a branch override
+of $230, base changed to $260 — the override branch still resolves
+$230, every OTHER branch resolves the new $260 base, and the override
+row itself is confirmed untouched (`status='active'`, unchanged amount)
+by a direct database re-read. The unified product editor's own price
+field is hardcoded to `branchId: null` — it edits ONLY the base price,
+never creates or touches a branch override (that stays on
+`PosCatalogAdminScreen`'s own dedicated screen, unchanged).
+
+### Permissions
+
+Unchanged: `price.manage`, identical to `createProductPrice`. Verified
+server-side (never merely a hidden Flutter button) with a real, mocked-
+service HTTP test: a same-tenant actor with only `catalog.read` gets a
+genuine 403 `permission_denied` and the service method is never even
+invoked. A matching Flutter widget test proves the dialog surfaces that
+403 honestly (the real `AppFailure.fromCode('permission_denied')`
+message) rather than assuming success.
+
+### Flutter UX
+
+`_EditProductDialog`'s "Guardar precio" now calls the real
+`changeProductPrice` (never `createProductPrice`, whose own append-only
+409 is correct, unchanged behavior for that different operation). New,
+genuinely honest success feedback — "Precio actualizado correctamente."
+— shown in green under the field (previously a successful save had NO
+confirmation of any kind), cleared automatically the moment the field is
+edited again so it can never linger as a stale claim about a different
+value. Utilidad recomputes immediately from the newly-saved price. The
+`price_conflict` message (already fixed in TASK 16.6B) is preserved for
+the now genuinely rare case of a real backend-level race, never shown in
+the normal "change an existing price" flow anymore.
+
+**Live-verified end-to-end in a real running session** (not just by
+test): Productos → Editar "Agua" → Precios → changed $25.00 → $260.00 →
+"Guardar precio" → real 200 OK on `POST .../prices/change` → "Precio
+actualizado correctamente." shown, Utilidad recomputed to 250.00 (96%) →
+closed and reopened the dialog → still $260.0000 → navigated to Ventas →
+Punto de Venta → the real sell-screen card shows $260.00 → full browser
+reload → still $260.00. A direct database re-read at the same moment
+confirmed exactly two rows for that product: the original $25.0000 row
+now `status='expired'` with a real `valid_until`, and the new $260.0000
+row `status='active'` with `valid_until` null — real preserved history,
+never an overwrite.
+
+### Tests added
+
+Backend (`product-catalog.integration.test.ts`, real Postgres, a new
+`TASK 16.6C` describe block, 8 cases): basic change (exactly one active
+price after, old row preserved as real closed history, idempotent
+replay), first-price-ever behaves like `createProductPrice`, same-amount
+no-op, invalid (negative) price rejected with the active price
+genuinely untouched, cross-company rejected (`resource_not_found`, never
+leaks), concurrent requests serialize with no lost/duplicate price,
+transaction rollback (a forced mid-sequence failure leaves the original
+price active, never a partial write), branch-override preservation.
+`sales.integration.test.ts`: the real financial-history regression
+described above. `product-catalog.routes.test.ts` (mocked service, no
+real DB needed for a route-contract test): 200 happy path wired to the
+real service call, 403 permission-denied with the service never called.
+`pos_product_catalog_parity_test.dart` (Flutter): success feedback shown
+and cleared on edit, Utilidad recompute, the same honest `price_conflict`
+message for a genuine conflict, and the new honest permission-denied
+case.
+
+### Regression
+
+Backend unit: 528/528 (2 confirmed-flaky timeouts under heavy local
+concurrent load, both clean in isolation — unrelated files, untouched by
+this task). Backend integration (real Postgres): run TWICE sequentially
+end-to-end — the first run caught the real concurrency bug described
+above (in this task's OWN new code, fixed immediately); the second run,
+after the fix, **645/645 clean**, including a dedicated 8-run stress
+test of the concurrency case specifically. `flutter analyze`: zero
+errors (same 147 pre-existing info/warning lints, unchanged).
+`flutter test`: **565/565** (up from 563 — this task's own new/updated
+cases). Production Flutter Web build succeeded; bundle audited clean
+(no `localhost`/`127.0.0.1`/credentials). No schema changes, no new
+migrations — every change is new application code over the EXISTING
+`product_prices` table and its existing constraints.
+
+### Files modified
+
+`apps/api/src/modules/catalog/product-catalog.repository.ts`
+(`lockActivePriceForScope`/`closeProductPrice`), `.service.ts`
+(`changeProductPrice`), `.routes.ts` (`POST .../prices/change`),
+`.integration.test.ts`, `.routes.test.ts`; `apps/api/src/modules/sales/
+sales.integration.test.ts`; `apps/one/lib/features/pos/pos_shell.dart`
+(`_savePrice`, success-message UI), `pos_catalog_admin_gateway.dart`
+(`changeProductPrice` on the interface/real/empty gateways);
+`apps/one/test/pos_catalog_admin_test.dart`, `pos_product_catalog_parity
+_test.dart`.
+
+**GREEN criterion met**: $250→$260 changes normally from the unified
+editor, succeeds honestly, persists across close/reopen/POS/reload, and
+a historical sale recorded at the old price is provably unaffected —
+verified both by a real end-to-end automated test and live in a running
+session, with real database history preserved and never two incompatible
+active prices at once, including under real concurrency.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

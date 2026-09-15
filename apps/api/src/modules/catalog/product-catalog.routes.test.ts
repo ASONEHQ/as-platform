@@ -47,6 +47,21 @@ const product = {
   updatedAt: now,
   defaultVariant: variant,
 };
+const price = {
+  id: '00000000-0000-4000-8000-000000000005',
+  companyId,
+  branchId: null,
+  productId,
+  priceType: 'standard',
+  amount: '260.0000',
+  currencyCode: 'MXN',
+  validFrom: now,
+  validUntil: null,
+  status: 'active' as const,
+  version: 2n,
+  createdAt: now,
+  updatedAt: now,
+};
 const apps: FastifyInstance[] = [];
 
 interface Fixture {
@@ -57,6 +72,7 @@ interface Fixture {
   exportCsv: Mock;
   patchProduct: Mock;
   duplicateProduct: Mock;
+  changeProductPrice: Mock;
 }
 
 async function fixture(
@@ -113,6 +129,7 @@ async function fixture(
       replayed: false,
     }),
   );
+  const changeProductPrice = vi.fn(() => Promise.resolve({ value: price, replayed: false }));
   const service = {
     listProducts,
     product: vi.fn(() => Promise.resolve(product)),
@@ -124,6 +141,7 @@ async function fixture(
     createVariant: vi.fn(() => Promise.resolve({ value: variant, replayed: false })),
     patchVariant: vi.fn(() => Promise.resolve({ ...variant, version: 2n })),
     exportCsv,
+    changeProductPrice,
   } as unknown as ProductCatalogService;
   registerProductCatalogRoutes(app, authentication, service);
   await app.ready();
@@ -135,6 +153,7 @@ async function fixture(
     exportCsv,
     patchProduct,
     duplicateProduct,
+    changeProductPrice,
   };
 }
 
@@ -427,5 +446,45 @@ describe('product catalog HTTP routes', () => {
       headers: { authorization: 'Bearer x' },
     });
     expect(deniedResponse.statusCode).toBe(403);
+  });
+
+  // TASK 16.6C — the real "cambiar precio" route: distinct from
+  // `POST .../prices` (unchanged, still 409s on a genuine append conflict
+  // — see the service-level integration tests for that operation's own
+  // real-Postgres coverage), this one is exercised here against a mocked
+  // service since its route-level contract (schema, permission gate,
+  // response shape) needs no real database to verify.
+  it('changes a product price, gated by price.manage, returning the new current price with a 200', async () => {
+    const { app, changeProductPrice } = await fixture(['price.manage']);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${productId}/prices/change`,
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'price-change-key-1' },
+      payload: { amount: '260.00', currency_code: 'MXN' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(changeProductPrice).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId, actorId: userId }),
+      productId,
+      expect.any(String),
+      { amount: '260.00', currencyCode: 'MXN' },
+    );
+    expect(response.json<{ data: { amount: string; status: string } }>().data).toMatchObject({
+      amount: '260.0000',
+      status: 'active',
+    });
+
+    // A same-tenant actor with a valid session but no `price.manage`
+    // (e.g. a cashier who knows the endpoint) gets a real 403 — never a
+    // UI-only gate — and the service is never even called.
+    const denied = await fixture(['catalog.read']);
+    const deniedResponse = await denied.app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${productId}/prices/change`,
+      headers: { authorization: 'Bearer x', 'idempotency-key': 'price-change-key-2' },
+      payload: { amount: '260.00', currency_code: 'MXN' },
+    });
+    expect(deniedResponse.statusCode).toBe(403);
+    expect(denied.changeProductPrice).not.toHaveBeenCalled();
   });
 });

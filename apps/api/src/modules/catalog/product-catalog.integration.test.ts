@@ -993,4 +993,297 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       code: 'resource_not_found',
     });
   });
+
+  // TASK 16.6C — the real "cambiar precio" operation: closes whatever
+  // price is currently active for a scope and opens the new one,
+  // atomically, preserving the old row as real history. `context.timestamp`
+  // is a single fixed value shared by every test in this file — a real
+  // second, strictly-later context is used for the "change" step in each
+  // test below (mirroring two genuinely separate HTTP requests, which
+  // always have advancing wall-clock timestamps in production; this file's
+  // own shared, fixed `context.timestamp` is a testing convenience that
+  // would otherwise collide with `product_prices_valid_interval_ck`, since
+  // a price's own `valid_from` is set from that same fixed instant).
+  describe('TASK 16.6C — changing an existing product price atomically', () => {
+    const laterContext = { ...context, timestamp: new Date(context.timestamp.getTime() + 60_000) };
+    const evenLaterContext = {
+      ...context,
+      timestamp: new Date(context.timestamp.getTime() + 120_000),
+    };
+
+    async function priceChangeProduct(code: string) {
+      return products.createProduct(context, code, {
+        code,
+        name: code,
+        productType: 'simple',
+        tracksInventory: false,
+        status: 'active',
+        defaultVariant: {
+          sku: code,
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      });
+    }
+
+    it('changes $250 to $260 atomically: exactly one active price after, the $250 row preserved as real history', async () => {
+      const product = await priceChangeProduct('price-change-basic');
+      const initial = await products.createProductPrice(context, product.value.id, 'price-change-basic-initial', {
+        amount: '250.00',
+        currencyCode: 'MXN',
+      });
+      const changed = await products.changeProductPrice(
+        laterContext,
+        product.value.id,
+        'price-change-basic-change',
+        { amount: '260.00', currencyCode: 'MXN' },
+      );
+      expect(changed.replayed).toBe(false);
+      expect(changed.value).toMatchObject({ amount: '260.0000', status: 'active', validUntil: null });
+      expect(changed.value.id).not.toBe(initial.value.id);
+
+      // Exactly one currently-effective price.
+      const read = await products.product(companyId, product.value.id);
+      expect(read.effectivePrice).toMatchObject({ amount: '260.0000' });
+
+      // Real history: the $250 row still exists, now closed, never deleted.
+      const rows = await database.pool.query<{ id: string; amount: string; status: string; valid_until: Date | null }>(
+        `select id,amount,status,valid_until from product_prices
+         where company_id=$1 and product_id=$2 order by valid_from asc`,
+        [companyId, product.value.id],
+      );
+      expect(rows.rows).toHaveLength(2);
+      expect(rows.rows[0]).toMatchObject({ id: initial.value.id, amount: '250.0000', status: 'expired' });
+      expect(rows.rows[0]?.valid_until).not.toBeNull();
+      expect(rows.rows[1]).toMatchObject({ id: changed.value.id, amount: '260.0000', status: 'active' });
+      expect(rows.rows[1]?.valid_until).toBeNull();
+
+      // Idempotent replay of the SAME change request returns the same result.
+      const replay = await products.changeProductPrice(
+        laterContext,
+        product.value.id,
+        'price-change-basic-change',
+        { amount: '260.00', currencyCode: 'MXN' },
+      );
+      expect(replay).toMatchObject({ replayed: true });
+      expect(replay.value.id).toBe(changed.value.id);
+    });
+
+    it('the first price for a product (no active price yet) behaves exactly like createProductPrice', async () => {
+      const product = await priceChangeProduct('price-change-first-ever');
+      const changed = await products.changeProductPrice(context, product.value.id, 'price-change-first-key', {
+        amount: '99.00',
+        currencyCode: 'MXN',
+      });
+      expect(changed.value).toMatchObject({ amount: '99.0000', status: 'active' });
+      const read = await products.product(companyId, product.value.id);
+      expect(read.effectivePrice).toMatchObject({ amount: '99.0000' });
+    });
+
+    it('a same-amount "change" is a genuine no-op — no new history row, same price id returned', async () => {
+      const product = await priceChangeProduct('price-change-same-amount');
+      const initial = await products.createProductPrice(context, product.value.id, 'price-change-same-initial', {
+        amount: '150.00',
+        currencyCode: 'MXN',
+      });
+      const sameAgain = await products.changeProductPrice(
+        laterContext,
+        product.value.id,
+        'price-change-same-again',
+        { amount: '150.00', currencyCode: 'MXN' },
+      );
+      expect(sameAgain.value.id).toBe(initial.value.id);
+      const rows = await database.pool.query<{ id: string }>(
+        `select id from product_prices where company_id=$1 and product_id=$2`,
+        [companyId, product.value.id],
+      );
+      expect(rows.rows).toHaveLength(1);
+    });
+
+    it('rejects an invalid (negative) price and leaves the currently active price genuinely untouched', async () => {
+      const product = await priceChangeProduct('price-change-invalid');
+      await products.createProductPrice(context, product.value.id, 'price-change-invalid-initial', {
+        amount: '80.00',
+        currencyCode: 'MXN',
+      });
+      // `priceAmount()` normalizes/validates BEFORE the transaction opens
+      // (matching `createProductPrice`'s own established, pre-existing
+      // pattern), so an invalid amount throws synchronously rather than as
+      // a promise rejection — caught explicitly here rather than via
+      // `.rejects`, which only wraps an already-pending promise.
+      let caught: unknown;
+      try {
+        await products.changeProductPrice(laterContext, product.value.id, 'price-change-invalid-attempt', {
+          amount: '-5.00',
+          currencyCode: 'MXN',
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: 'validation_error' });
+      const read = await products.product(companyId, product.value.id);
+      expect(read.effectivePrice).toMatchObject({ amount: '80.0000' });
+      const rows = await database.pool.query<{ id: string }>(
+        `select id from product_prices where company_id=$1 and product_id=$2`,
+        [companyId, product.value.id],
+      );
+      expect(rows.rows).toHaveLength(1);
+    });
+
+    it('rejects changing the price of a product that belongs to another company (never leaks cross-tenant)', async () => {
+      const product = await priceChangeProduct('price-change-cross-tenant');
+      await products.createProductPrice(context, product.value.id, 'price-change-cross-tenant-initial', {
+        amount: '75.00',
+        currencyCode: 'MXN',
+      });
+      await expect(
+        products.changeProductPrice(otherContext, product.value.id, 'price-change-cross-tenant-attempt', {
+          amount: '90.00',
+          currencyCode: 'MXN',
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+      const read = await products.product(companyId, product.value.id);
+      expect(read.effectivePrice).toMatchObject({ amount: '75.0000' });
+    });
+
+    it('concurrent price-change requests for the same product serialize — never leaves zero or two active prices', async () => {
+      const product = await priceChangeProduct('price-change-concurrent');
+      await products.createProductPrice(context, product.value.id, 'price-change-concurrent-initial', {
+        amount: '100.00',
+        currencyCode: 'MXN',
+      });
+      const [first, second] = await Promise.all([
+        products.changeProductPrice(laterContext, product.value.id, 'price-change-concurrent-a', {
+          amount: '110.00',
+          currencyCode: 'MXN',
+        }),
+        products.changeProductPrice(evenLaterContext, product.value.id, 'price-change-concurrent-b', {
+          amount: '120.00',
+          currencyCode: 'MXN',
+        }),
+      ]);
+      // Both requests genuinely succeeded (the product row lock serializes
+      // them — the second one only proceeds once the first has committed —
+      // never a `price_conflict`, never a corrupted state).
+      expect(['110.0000', '120.0000']).toContain(first.value.amount);
+      expect(['110.0000', '120.0000']).toContain(second.value.amount);
+      const activeRows = await database.pool.query<{ id: string; amount: string }>(
+        `select id,amount from product_prices
+         where company_id=$1 and product_id=$2 and status='active' and valid_until is null`,
+        [companyId, product.value.id],
+      );
+      expect(activeRows.rows).toHaveLength(1);
+      const allRows = await database.pool.query<{ id: string }>(
+        `select id from product_prices where company_id=$1 and product_id=$2`,
+        [companyId, product.value.id],
+      );
+      // The original $100 plus both of the two changes = 3 real rows,
+      // exactly one of them active — a genuine serialized chain, never a
+      // lost update and never a duplicate.
+      expect(allRows.rows).toHaveLength(3);
+    });
+
+    it('a failure between closing the old price and inserting the new one rolls back both — never leaves zero active prices', async () => {
+      const product = await priceChangeProduct('price-change-rollback');
+      const initial = await products.createProductPrice(
+        context,
+        product.value.id,
+        'price-change-rollback-initial',
+        { amount: '250.00', currencyCode: 'MXN' },
+      );
+      const repository = new ProductCatalogRepository(database);
+      await expect(
+        repository.transaction(async (client) => {
+          await repository.lockProduct(client, companyId, product.value.id);
+          const active = await repository.lockActivePriceForScope(
+            client,
+            companyId,
+            product.value.id,
+            'standard',
+            'MXN',
+            null,
+          );
+          await repository.closeProductPrice(client, {
+            ...laterContext,
+            id: required(active, 'active price to close').id,
+          });
+          // Deliberately violates `product_prices_amount_ck` (amount >= 0)
+          // — a genuine database-level failure occurring AFTER the close
+          // already ran inside this same transaction.
+          await repository.insertProductPrice(client, {
+            ...laterContext,
+            id: randomUUID(),
+            productId: product.value.id,
+            branchId: null,
+            priceType: 'standard',
+            amount: '-1.0000',
+            currencyCode: 'MXN',
+            validFrom: laterContext.timestamp,
+            validUntil: null,
+          });
+        }),
+      ).rejects.toThrow();
+      // The whole transaction rolled back — the original $250 price is
+      // still active, exactly as if the failed attempt never happened.
+      const read = await products.product(companyId, product.value.id);
+      expect(read.effectivePrice).toMatchObject({ amount: '250.0000' });
+      const rows = await database.pool.query<{ id: string; status: string }>(
+        `select id,status from product_prices where company_id=$1 and product_id=$2`,
+        [companyId, product.value.id],
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0]).toMatchObject({ id: initial.value.id, status: 'active' });
+    });
+
+    // Legacy "Precios especiales" / this platform's own real branch price
+    // overrides — TASK 16.6C's own explicit requirement: changing the
+    // BASE (company-wide) price must never destroy or be confused with an
+    // existing branch-specific override.
+    it('changing the base (company-wide) price never destroys an existing branch override — the override keeps its own price, other branches see the new base', async () => {
+      const overrideBranchId = randomUUID();
+      const otherBranchId = randomUUID();
+      await database.pool.query(
+        `insert into branches(id,company_id,name,code,status,timezone)
+         values($1,$2,'Override Branch','price-change-override-branch','active','UTC'),
+               ($3,$2,'Other Branch','price-change-other-branch','active','UTC')`,
+        [overrideBranchId, companyId, otherBranchId],
+      );
+      const product = await priceChangeProduct('price-change-branch-override');
+      await products.createProductPrice(context, product.value.id, 'price-change-branch-base', {
+        amount: '250.00',
+        currencyCode: 'MXN',
+      });
+      await products.createProductPrice(context, product.value.id, 'price-change-branch-override', {
+        branchId: overrideBranchId,
+        amount: '230.00',
+        currencyCode: 'MXN',
+      });
+      const changed = await products.changeProductPrice(
+        laterContext,
+        product.value.id,
+        'price-change-branch-base-change',
+        { amount: '260.00', currencyCode: 'MXN' },
+      );
+      expect(changed.value).toMatchObject({ branchId: null, amount: '260.0000' });
+
+      const withOverride = await products.product(companyId, product.value.id, overrideBranchId);
+      expect(withOverride.effectivePrice).toMatchObject({ amount: '230.0000', branchId: overrideBranchId });
+
+      const withOtherBranch = await products.product(companyId, product.value.id, otherBranchId);
+      expect(withOtherBranch.effectivePrice).toMatchObject({ amount: '260.0000', branchId: null });
+
+      const withoutBranch = await products.product(companyId, product.value.id);
+      expect(withoutBranch.effectivePrice).toMatchObject({ amount: '260.0000', branchId: null });
+
+      // The override row itself was never touched by the base price change.
+      const overrideRows = await database.pool.query<{ status: string; amount: string }>(
+        `select status,amount from product_prices where company_id=$1 and product_id=$2 and branch_id=$3`,
+        [companyId, product.value.id, overrideBranchId],
+      );
+      expect(overrideRows.rows).toHaveLength(1);
+      expect(overrideRows.rows[0]).toMatchObject({ status: 'active', amount: '230.0000' });
+    });
+  });
 });

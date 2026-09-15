@@ -1020,6 +1020,54 @@ export function registerProductCatalogRoutes(
       }),
   );
 
+  // TASK 16.6C — the real "cambiar precio" operation: atomically closes
+  // whatever price is currently active for the exact same (currency,
+  // branch) scope and opens the new one, preserving the old row as real
+  // history (see `ProductCatalogService.changeProductPrice`'s own doc
+  // comment for the full invariant). Deliberately a SEPARATE route from
+  // `POST .../prices` above — that one's own 409-on-conflict behavior is
+  // correct and unchanged (a caller explicitly APPENDING an effective-
+  // dated price, e.g. scheduling one for the future, must never silently
+  // supersede today's price); this one is for the common "just change
+  // the current sale price" action a unified product editor needs. Same
+  // `price.manage` permission, same idempotency-key pattern.
+  app.post<{ Params: ProductParams; Body: ProductPriceBody }>(
+    '/api/v1/products/:product_id/prices/change',
+    {
+      schema: {
+        tags: ['catalog'],
+        params: productParamsSchema,
+        headers: idempotencyHeaders,
+        body: productPriceBodySchema,
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withProductCatalogErrors(async () => {
+        const context = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, context, 'price.manage');
+        const body = request.body;
+        if (body.branch_id !== undefined)
+          requireBranchAccess(authentication, context, body.branch_id);
+        const input: CreateProductPriceInput = {
+          amount: body.amount,
+          currencyCode: body.currency_code,
+          ...(body.branch_id === undefined ? {} : { branchId: body.branch_id }),
+        };
+        const changed = await service.changeProductPrice(
+          mutationContext(request, context.companyId, context.userId),
+          request.params.product_id,
+          idempotencyKey(request.headers['idempotency-key']),
+          input,
+        );
+        if (changed.replayed) reply.header('idempotency-replayed', 'true');
+        return reply
+          .code(200)
+          .header('etag', `"${changed.value.version.toString()}"`)
+          .send(successResponse(priceHttp(changed.value), request.requestContext));
+      }),
+  );
+
   app.get<{ Params: Params }>(
     '/api/v1/product-variants/:id',
     {

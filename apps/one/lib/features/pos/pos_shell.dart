@@ -10232,6 +10232,13 @@ class _EditProductDialogState extends State<_EditProductDialog> {
   bool _savingPrice = false;
   bool _savingCostAndStock = false;
 
+  /// TASK 16.6C — real, honest success feedback for "Guardar precio"
+  /// (previously the ONLY feedback on success was the field silently
+  /// updating — no confirmation at all). Cleared whenever the price
+  /// field is edited again or another save starts, so it never lingers
+  /// as a stale claim about a DIFFERENT value than what's now on screen.
+  String? _priceSuccessMessage;
+
   static const _statuses = ['draft', 'active', 'inactive', 'retired'];
 
   @override
@@ -10248,12 +10255,16 @@ class _EditProductDialogState extends State<_EditProductDialog> {
     if (_busy || _savingPrice) return;
     final raw = _priceController.text.trim();
     if (raw.isEmpty) {
-      setState(() => _error = 'Captura el precio de venta.');
+      setState(() {
+        _error = 'Captura el precio de venta.';
+        _priceSuccessMessage = null;
+      });
       return;
     }
     setState(() {
       _savingPrice = true;
       _error = null;
+      _priceSuccessMessage = null;
     });
     try {
       // TASK 16.6B — this same platform already establishes 'MXN' as the
@@ -10264,7 +10275,18 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       // non-default currency — this editor deliberately doesn't duplicate
       // that selector, matching this task's own "reuse, don't duplicate"
       // instruction.
-      final created = await widget.gateway.createProductPrice(
+      //
+      // TASK 16.6C — `changeProductPrice` (never `createProductPrice`,
+      // whose own 409-on-existing-price is correct, unchanged behavior
+      // for THAT different operation): the real "cambiar precio" action
+      // an Owner expects from this exact button — atomically closes
+      // whatever price is currently active and opens the new one,
+      // preserving the old one as real history server-side. `branchId`
+      // stays unset here on purpose: this field always edits the
+      // company-wide base price, never a branch override (that stays on
+      // `PosCatalogAdminScreen`'s own dedicated screen, so this action
+      // can never accidentally create one).
+      final changed = await widget.gateway.changeProductPrice(
         widget.product.id,
         PosProductPriceInput(amount: raw, currencyCode: 'MXN'),
       );
@@ -10272,15 +10294,16 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       setState(() {
         _savingPrice = false;
         _effectivePrice = PosCatalogEffectivePrice(
-          id: created.id,
-          branchId: created.branchId,
-          amount: created.amount,
-          currencyCode: created.currencyCode,
-          validFrom: created.validFrom,
-          validUntil: created.validUntil,
-          status: created.status,
+          id: changed.id,
+          branchId: changed.branchId,
+          amount: changed.amount,
+          currencyCode: changed.currencyCode,
+          validFrom: changed.validFrom,
+          validUntil: changed.validUntil,
+          status: changed.status,
         );
-        _priceController.text = created.amount;
+        _priceController.text = changed.amount;
+        _priceSuccessMessage = 'Precio actualizado correctamente.';
       });
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -10289,6 +10312,10 @@ class _EditProductDialogState extends State<_EditProductDialog> {
         // TASK 16.6B — same honest `price_conflict` message
         // `PosCatalogAdminScreen`'s own price form already shows for this
         // exact real backend constraint; never a second, divergent one.
+        // TASK 16.6C — `changeProductPrice` only ever surfaces this for a
+        // GENUINE conflict now (e.g. a concurrent write racing this same
+        // change) — the everyday "the product already has a price" case
+        // this message used to describe no longer happens on this path.
         _error = priceConflictMessage(error) ?? error.failure.message;
       });
     } on Object {
@@ -10604,6 +10631,9 @@ class _EditProductDialogState extends State<_EditProductDialog> {
                     enabled: !_busy && !_savingPrice,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Precio de venta', prefixText: r'$ '),
+                    onChanged: (_) {
+                      if (_priceSuccessMessage != null) setState(() => _priceSuccessMessage = null);
+                    },
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -10619,6 +10649,14 @@ class _EditProductDialogState extends State<_EditProductDialog> {
                 ),
               ],
             ),
+            if (_priceSuccessMessage != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                _priceSuccessMessage!,
+                key: const Key('pos-product-edit-price-success'),
+                style: const TextStyle(color: Colors.green, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 10),
             Row(
               children: [

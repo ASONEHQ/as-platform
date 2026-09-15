@@ -492,17 +492,53 @@ void main() {
       // EDITABLE from this same unified editor (legacy modal parity), each
       // prefilled from the real fetched product/variant — never a second
       // price-entry path, since saving still goes through the same real
-      // `createProductPrice`/variant-patch endpoints (see the two tests
-      // below).
+      // `changeProductPrice` (TASK 16.6C)/variant-patch endpoints (see the
+      // tests below).
       final priceField = tester.widget<TextField>(find.byKey(const Key('pos-product-edit-price')));
       expect(priceField.controller?.text, '100.0000');
       final costField = tester.widget<TextField>(find.byKey(const Key('pos-product-edit-cost')));
       expect(costField.controller?.text, '60.0000');
     });
 
-    testWidgets('"Guardar precio" calls the real createProductPrice endpoint and recomputes Utilidad', (
-      tester,
-    ) async {
+    testWidgets(
+      '"Guardar precio" calls the real changeProductPrice endpoint (TASK 16.6C), shows success, and recomputes Utilidad',
+      (tester) async {
+        final catalogGateway = _RecordingCatalogAdminGateway(products: [_pricedEditableProduct]);
+        await _pump(
+          tester,
+          catalogAdminGateway: catalogGateway,
+          readGateway: const _FixtureReadGateway([_plainProduct]),
+        );
+        await _navigateToProducts(tester);
+        await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Editar').last);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '120.00');
+        await tester.tap(find.byKey(const Key('pos-product-edit-save-price')));
+        await tester.pumpAndSettle();
+
+        // TASK 16.6C — the unified editor's own price field now calls the
+        // real "cambiar precio" operation, never `createProductPrice`
+        // (whose own 409-on-existing-price is correct, unchanged behavior
+        // for that other, append-only operation).
+        expect(catalogGateway.changePriceCalls, hasLength(1));
+        expect(catalogGateway.changePriceCalls.single.productId, _pricedEditableProduct.id);
+        expect(catalogGateway.changePriceCalls.single.input.amount, '120.00');
+        expect(catalogGateway.createPriceCalls, isEmpty);
+        // Real, honest success feedback — TASK 16.6C's own explicit
+        // requirement ("Precio actualizado correctamente."), previously
+        // absent entirely (a successful save had no confirmation at all).
+        expect(find.byKey(const Key('pos-product-edit-price-success')), findsOneWidget);
+        expect(find.text('Precio actualizado correctamente.'), findsOneWidget);
+        // Utilidad recomputes from the newly-saved price (120 - 60 = 60,
+        // 50%), never a stale value from before the save.
+        expect(find.text('60.00 (50%)'), findsOneWidget);
+      },
+    );
+
+    testWidgets('editing the price field again clears the stale success message', (tester) async {
       final catalogGateway = _RecordingCatalogAdminGateway(products: [_pricedEditableProduct]);
       await _pump(
         tester,
@@ -518,18 +554,23 @@ void main() {
       await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '120.00');
       await tester.tap(find.byKey(const Key('pos-product-edit-save-price')));
       await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-product-edit-price-success')), findsOneWidget);
 
-      expect(catalogGateway.createPriceCalls, hasLength(1));
-      expect(catalogGateway.createPriceCalls.single.productId, _pricedEditableProduct.id);
-      expect(catalogGateway.createPriceCalls.single.input.amount, '120.00');
-      // Utilidad recomputes from the newly-saved price (120 - 60 = 60,
-      // 50%), never a stale value from before the save.
-      expect(find.text('60.00 (50%)'), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '130.00');
+      await tester.pump();
+      expect(find.byKey(const Key('pos-product-edit-price-success')), findsNothing);
     });
 
     testWidgets(
-      '"Guardar precio" surfaces the real, honest price_conflict message on a 409 — never a false success',
+      '"Guardar precio" surfaces the real, honest price_conflict message on a genuine 409 — never a false success',
       (tester) async {
+        // TASK 16.6C — `changeProductPrice` no longer 409s for the
+        // everyday "this product already has a price" case (that's the
+        // whole point of the new operation); a `price_conflict` here now
+        // represents a genuinely rare backend-level race (e.g. a
+        // concurrent write from a different actor/endpoint). The fixture
+        // still simulates that raw 409 shape to prove the dialog handles
+        // it honestly if it ever happens, never silently.
         final catalogGateway = _RecordingCatalogAdminGateway(
           products: [_pricedEditableProduct],
           priceConflict: true,
@@ -564,8 +605,39 @@ void main() {
           ),
           findsOneWidget,
         );
-        // Utilidad never updates on a genuine failure.
+        // Utilidad never updates on a genuine failure, and no success
+        // message is ever shown alongside an error.
         expect(find.text('40.00 (40%)'), findsOneWidget);
+        expect(find.byKey(const Key('pos-product-edit-price-success')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      '"Guardar precio" surfaces a real, honest permission-denied error — never a false success (TASK 16.6C)',
+      (tester) async {
+        final catalogGateway = _RecordingCatalogAdminGateway(
+          products: [_pricedEditableProduct],
+          pricePermissionDenied: true,
+        );
+        await _pump(
+          tester,
+          catalogAdminGateway: catalogGateway,
+          readGateway: const _FixtureReadGateway([_plainProduct]),
+        );
+        await _navigateToProducts(tester);
+        await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Editar').last);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-product-edit-price')), '120.00');
+        await tester.tap(find.byKey(const Key('pos-product-edit-save-price')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('No tienes permiso para realizar esta acción.'), findsOneWidget);
+        expect(catalogGateway.changePriceCalls, isEmpty);
+        expect(find.text('40.00 (40%)'), findsOneWidget);
+        expect(find.byKey(const Key('pos-product-edit-price-success')), findsNothing);
       },
     );
   });
@@ -711,6 +783,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     List<PosCatalogProduct>? products,
     this.imageStorageConfigured = true,
     this.priceConflict = false,
+    this.pricePermissionDenied = false,
   }) : products = List.of(products ?? const []);
 
   final List<PosCatalogProduct> products;
@@ -731,6 +804,15 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   /// `ApiClient`'s real `AppFailure.fromCode('price_conflict')` now
   /// produces (see `app_error.dart`), never a bespoke exception type.
   final bool priceConflict;
+
+  /// TASK 16.6C — `true` simulates the real server-side `price.manage`
+  /// gate on `changeProductPrice` (a same-tenant actor with only
+  /// `catalog.read`, e.g. a cashier who knows the endpoint, must never be
+  /// able to change a price just because the Flutter button happens to
+  /// be enabled — see `product-catalog.routes.test.ts`'s own real,
+  /// mocked-service proof that the ROUTE itself returns 403; this proves
+  /// the dialog surfaces that honestly rather than assuming success).
+  final bool pricePermissionDenied;
   PosNewProductInput? lastCreateProductInput;
   PosProductPatchInput? lastUpdateProductInput;
   final List<String> productFetchCalls = [];
@@ -738,6 +820,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   final List<({String id, String filename, String contentType})> uploadImageCalls = [];
   final List<({String id, int expectedVersion})> deleteImageCalls = [];
   final List<({String productId, PosProductPriceInput input})> createPriceCalls = [];
+  final List<({String productId, PosProductPriceInput input})> changePriceCalls = [];
   int _autoId = 0;
 
   @override
@@ -881,6 +964,43 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     createPriceCalls.add((productId: productId, input: input));
     return PosProductPrice(
       id: 'price-new',
+      branchId: null,
+      productId: productId,
+      priceType: 'standard',
+      amount: input.amount,
+      currencyCode: input.currencyCode,
+      validFrom: _fixedValidFrom,
+      validUntil: null,
+      status: 'active',
+      version: 1,
+    );
+  }
+
+  @override
+  Future<PosProductPrice> changeProductPrice(String productId, PosProductPriceInput input) async {
+    if (priceConflict) {
+      throw const ApiException(
+        AppFailure(
+          AppErrorKind.validation,
+          'Ya existe un precio activo para este producto en este alcance.',
+          code: 'price_conflict',
+        ),
+        statusCode: 409,
+      );
+    }
+    if (pricePermissionDenied) {
+      throw const ApiException(
+        AppFailure(
+          AppErrorKind.authorization,
+          'No tienes permiso para realizar esta acción.',
+          code: 'permission_denied',
+        ),
+        statusCode: 403,
+      );
+    }
+    changePriceCalls.add((productId: productId, input: input));
+    return PosProductPrice(
+      id: 'price-changed',
       branchId: null,
       productId: productId,
       priceType: 'standard',

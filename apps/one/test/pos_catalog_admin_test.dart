@@ -335,6 +335,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   final String csv;
 
   final List<({String productId, PosProductPriceInput input})> createPriceCalls = [];
+  final List<({String productId, PosProductPriceInput input})> changePriceCalls = [];
   final List<({String productId, PosNamedCreateInput input})> createOptionCalls = [];
   final List<({String optionId, PosNamedCreateInput input})> createValueCalls = [];
   final List<({String variantId, PosProductBarcodeInput input})> createBarcodeCalls = [];
@@ -506,6 +507,23 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   @override
   Future<PosProductPrice> createProductPrice(String productId, PosProductPriceInput input) async {
     createPriceCalls.add((productId: productId, input: input));
+    return PosProductPrice(
+      id: 'price-${_autoId++}',
+      branchId: input.branchId,
+      productId: productId,
+      priceType: 'standard',
+      amount: input.amount,
+      currencyCode: input.currencyCode,
+      validFrom: DateTime.utc(2026, 9, 1),
+      validUntil: input.validUntil,
+      status: 'active',
+      version: 1,
+    );
+  }
+
+  @override
+  Future<PosProductPrice> changeProductPrice(String productId, PosProductPriceInput input) async {
+    changePriceCalls.add((productId: productId, input: input));
     return PosProductPrice(
       id: 'price-${_autoId++}',
       branchId: input.branchId,
