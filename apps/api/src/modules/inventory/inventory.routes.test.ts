@@ -43,6 +43,7 @@ interface Fixture {
   createLocation: Mock;
   patchLocation: Mock;
   listBalances: Mock;
+  exportBalances: Mock;
   listMovements: Mock;
 }
 
@@ -112,6 +113,25 @@ async function fixture(
       nextCursor: null,
     }),
   );
+  const exportBalances = vi.fn(() =>
+    Promise.resolve([
+      {
+        branch_id: branchId,
+        product_name: 'Agua',
+        variant_name: null,
+        sku: 'AGUA-1',
+        category_name: null,
+        brand_name: null,
+        location_name: 'Main',
+        quantity_on_hand: '10.000000',
+        quantity_reserved: '2.000000',
+        quantity_available: '8.000000',
+        min_stock: '5.000000',
+        stock_status: 'available',
+        unit_of_measure_code: 'unit',
+      },
+    ]),
+  );
   const listMovements = vi.fn(() =>
     Promise.resolve({
       items: [{ id: locationId, status: 'posted', movement_type: 'adjustment' }],
@@ -126,7 +146,7 @@ async function fixture(
       create: createLocation,
       patch: patchLocation,
     } as unknown as InventoryLocationService,
-    { list: listBalances } as unknown as InventoryBalanceReadService,
+    { list: listBalances, exportRows: exportBalances } as unknown as InventoryBalanceReadService,
     { list: listMovements } as unknown as InventoryMovementReadService,
   );
   await app.ready();
@@ -136,6 +156,7 @@ async function fixture(
     createLocation,
     patchLocation,
     listBalances,
+    exportBalances,
     listMovements,
   };
 }
@@ -304,5 +325,89 @@ describe('inventory E064-E068 HTTP routes', () => {
       headers: { authorization: 'Bearer token' },
     });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  // TASK 16.7 — regression for the real production bug found during the
+  // Inventario forensic audit: `sale_consumption` (a real, posted movement
+  // type since TASK 12.6) was missing from this route's own `type` filter
+  // enum, so a genuine Kardex filter for "what did sales consume" was
+  // rejected by Fastify's own schema validation with a 400, even though
+  // such movements exist and are returned unfiltered.
+  it('accepts sale_consumption as a real movement-type filter', async () => {
+    const { app, listMovements } = await fixture();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/movements?branch_id=${branchId}&type=sale_consumption`,
+      headers: { authorization: 'Bearer token' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(listMovements).toHaveBeenCalledWith(companyId, [branchId], {
+      limit: 50,
+      branchId,
+      movementType: 'sale_consumption',
+    });
+  });
+
+  // TASK 16.7 §3/§7 — Existencias: search/category/stock-status filters
+  // reach the read service unchanged, and the response is never
+  // recomputed/re-derived client-side (the route just forwards the
+  // service's own rows).
+  it('passes Existencias filters (search, category, stock status) to the read service', async () => {
+    const { app, listBalances } = await fixture();
+    const categoryId = '00000000-0000-4000-8000-000000000009';
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/balances?branch_id=${branchId}&search=agua&stock_status=low_stock&category_id=${categoryId}`,
+      headers: { authorization: 'Bearer token' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(listBalances).toHaveBeenCalledWith(companyId, [branchId], false, {
+      limit: 50,
+      branchId,
+      search: 'agua',
+      stockStatus: 'low_stock',
+      categoryId,
+    });
+    const invalid = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/balances?stock_status=nearly_out',
+      headers: { authorization: 'Bearer token' },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+
+  // TASK 16.7 §9 — the real Existencias CSV export: same tenant/branch/
+  // permission/filter contract as the list route, a real attachment
+  // header, and honest CSV content built from the exact rows the service
+  // returned (never fabricated).
+  it('exports Existencias as a real CSV honoring the same filters and permission', async () => {
+    const denied = await fixture([]);
+    expect(
+      (
+        await denied.app.inject({
+          method: 'GET',
+          url: '/api/v1/inventory/balances/export.csv',
+          headers: { authorization: 'Bearer token' },
+        })
+      ).statusCode,
+    ).toBe(403);
+
+    const { app, exportBalances } = await fixture();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/balances/export.csv?branch_id=${branchId}&stock_status=available`,
+      headers: { authorization: 'Bearer token' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['content-disposition']).toContain('attachment; filename="existencias-');
+    expect(exportBalances).toHaveBeenCalledWith(companyId, [branchId], {
+      limit: 5000,
+      branchId,
+      stockStatus: 'available',
+    });
+    expect(response.body).toContain('product_name');
+    expect(response.body).toContain('Agua');
+    expect(response.body).toContain('AGUA-1');
   });
 });

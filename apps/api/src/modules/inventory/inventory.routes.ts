@@ -44,7 +44,17 @@ const movementTypes = [
   'transfer_shipment',
   'transfer_receipt',
   'reversal',
+  // TASK 16.7 — `sale_consumption` (TASK 12.6, `sale-consumption.ts`) was
+  // missing from this filter enum: a real, posted movement type since the
+  // database's own check constraint (`inventoryMovementTypes`, TASK 12.6)
+  // was extended, but this route-level query-param allowlist was never
+  // updated to match. Without it, `GET .../movements?type=sale_consumption`
+  // — the exact filter a real Kardex view needs to show "what did sales
+  // actually consume" — was rejected with a 400 by Fastify's own schema
+  // validation, even though such rows exist and are returned unfiltered.
+  'sale_consumption',
 ] as const;
+const stockStatuses = ['available', 'low_stock', 'out_of_stock'] as const;
 const movementStatuses = ['draft', 'pending', 'posted', 'cancelled', 'reversed'] as const;
 const errorSchema = { type: 'object', additionalProperties: true } as const;
 const errors = {
@@ -108,7 +118,17 @@ interface BalanceQuery {
   branch_id?: string;
   location_id?: string;
   product_variant_id?: string;
+  category_id?: string;
+  search?: string;
+  stock_status?: (typeof stockStatuses)[number];
   changed_after?: string;
+}
+interface BalanceExportQuery {
+  branch_id?: string;
+  location_id?: string;
+  category_id?: string;
+  search?: string;
+  stock_status?: (typeof stockStatuses)[number];
 }
 interface MovementQuery {
   cursor?: string;
@@ -173,6 +193,39 @@ function key(value: string | string[] | undefined): string {
       statusCode: 400,
     });
   return value;
+}
+function csvEscape(value: string): string {
+  if (!/[",\n\r]/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+function csvRow(values: readonly string[]): string {
+  return values.map(csvEscape).join(',') + '\r\n';
+}
+const BALANCE_CSV_COLUMNS = [
+  'branch_id',
+  'product_name',
+  'variant_name',
+  'sku',
+  'category_name',
+  'brand_name',
+  'location_name',
+  'quantity_on_hand',
+  'quantity_reserved',
+  'quantity_available',
+  'min_stock',
+  'stock_status',
+  'unit_of_measure_code',
+] as const;
+function balancesCsv(rows: readonly Readonly<Record<string, unknown>>[]): string {
+  let csv = csvRow(BALANCE_CSV_COLUMNS);
+  for (const row of rows)
+    csv += csvRow(
+      BALANCE_CSV_COLUMNS.map((field) => {
+        const value = row[field];
+        return value === null || value === undefined ? '' : String(value);
+      }),
+    );
+  return csv;
 }
 async function inventoryErrors<T>(callback: () => Promise<T>): Promise<T> {
   try {
@@ -377,6 +430,9 @@ export function registerInventoryRoutes(
             branch_id: { type: 'string', format: 'uuid' },
             location_id: { type: 'string', format: 'uuid' },
             product_variant_id: { type: 'string', format: 'uuid' },
+            category_id: { type: 'string', format: 'uuid' },
+            search: { type: 'string', minLength: 1, maxLength: 200 },
+            stock_status: { type: 'string', enum: stockStatuses },
             changed_after: { type: 'string', format: 'date-time' },
           },
         },
@@ -402,6 +458,13 @@ export function registerInventoryRoutes(
           ...(request.query.product_variant_id === undefined
             ? {}
             : { productVariantId: request.query.product_variant_id }),
+          ...(request.query.category_id === undefined
+            ? {}
+            : { categoryId: request.query.category_id }),
+          ...(request.query.search === undefined ? {} : { search: request.query.search }),
+          ...(request.query.stock_status === undefined
+            ? {}
+            : { stockStatus: request.query.stock_status }),
           ...(request.query.changed_after === undefined
             ? {}
             : { changedAfter: new Date(request.query.changed_after) }),
@@ -414,6 +477,58 @@ export function registerInventoryRoutes(
           page: { next_cursor: page.nextCursor, has_more: page.nextCursor !== null },
         },
       });
+    },
+  );
+
+  // GET /api/v1/inventory/balances/export.csv — TASK 16.7 §9: the real
+  // Existencias-equivalent of `reports.routes.ts`'s Kardex CSV export.
+  // Registered ahead of nothing parametric under `/balances` (no
+  // route-shadowing risk, mirrors `.../kardex.csv`'s own reasoning). Reuses
+  // the exact same tenant/branch/permission/filter contract as the list
+  // route above — never a second, divergent query path — bounded to 5000
+  // rows so one export can never become an unbounded full-table dump.
+  app.get<{ Querystring: BalanceExportQuery }>(
+    '/api/v1/inventory/balances/export.csv',
+    {
+      schema: {
+        tags: ['inventory'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            branch_id: { type: 'string', format: 'uuid' },
+            location_id: { type: 'string', format: 'uuid' },
+            category_id: { type: 'string', format: 'uuid' },
+            search: { type: 'string', minLength: 1, maxLength: 200 },
+            stock_status: { type: 'string', enum: stockStatuses },
+          },
+        },
+        response: { ...errors },
+      },
+    },
+    async (request, reply) => {
+      const auth = await requireAuthenticatedUser(request, authentication);
+      requirePermission(authentication, auth, 'inventory.read');
+      if (request.query.branch_id !== undefined)
+        requireBranchAccess(authentication, auth, request.query.branch_id);
+      const rows = await balances.exportRows(auth.companyId, auth.permittedBranchIds, {
+        limit: 5000,
+        ...(request.query.branch_id === undefined ? {} : { branchId: request.query.branch_id }),
+        ...(request.query.location_id === undefined
+          ? {}
+          : { locationId: request.query.location_id }),
+        ...(request.query.category_id === undefined
+          ? {}
+          : { categoryId: request.query.category_id }),
+        ...(request.query.search === undefined ? {} : { search: request.query.search }),
+        ...(request.query.stock_status === undefined
+          ? {}
+          : { stockStatus: request.query.stock_status }),
+      });
+      return reply
+        .header('content-type', 'text/csv; charset=utf-8')
+        .header('content-disposition', `attachment; filename="existencias-${new Date().toISOString().slice(0, 10)}.csv"`)
+        .send(balancesCsv(rows));
     },
   );
 

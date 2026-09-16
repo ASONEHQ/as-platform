@@ -146,6 +146,7 @@ integration('PostgreSQL inventory E064-E068', () => {
     ]);
     await database.pool.query('delete from product_variants where company_id=$1', [companyId]);
     await database.pool.query('delete from products where company_id=$1', [companyId]);
+    await database.pool.query('delete from product_categories where company_id=$1', [companyId]);
     await database.pool.query('delete from company_memberships where company_id in ($1,$2)', [
       companyId,
       otherCompanyId,
@@ -316,6 +317,87 @@ integration('PostgreSQL inventory E064-E068', () => {
     expect(
       (await balances.list(otherCompanyId, [otherBranchId], true, { limit: 10 })).items,
     ).toEqual([]);
+  });
+
+  // TASK 16.7 §3/§7 — Existencias: a real, server-derived `stock_status`
+  // from the variant's own `min_stock` (never a hardcoded threshold), plus
+  // real search/category/stock-status filters and the CSV export — all
+  // reusing the exact same authoritative balances query, never a
+  // client-recomputed or divergent one.
+  it('derives stock_status from the real min_stock and filters/exports Existencias by search, category, and status', async () => {
+    const categoryId = randomUUID();
+    await database.pool.query(
+      `insert into product_categories(id,company_id,code,normalized_code,name,status)
+       values($1,$2,'BEVERAGES','beverages','Bebidas','active')`,
+      [categoryId, companyId],
+    );
+    const lowProductId = randomUUID();
+    const lowVariantId = randomUUID();
+    const outProductId = randomUUID();
+    const outVariantId = randomUUID();
+    await database.pool.query(
+      `insert into products
+       (id,company_id,category_id,code,normalized_code,name,product_type,tracks_inventory,status,created_by,updated_by)
+       values($1,$2,$3,'AGUA','agua','Agua',$5,true,'active',$4,$4),
+             ($6,$2,null,'REFRESCO','refresco','Refresco',$5,true,'active',$4,$4)`,
+      [lowProductId, companyId, categoryId, actorId, 'simple', outProductId],
+    );
+    await database.pool.query(
+      `insert into product_variants
+       (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
+        min_stock,tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+       values($1,$3,$4,'AGUA-1','agua-1','Agua',$8,0,5.000000,true,3.0000,'MXN',true,$5,'active',$6,$6),
+             ($2,$3,$7,'REFRESCO-1','refresco-1','Refresco',$8,0,null,true,3.0000,'MXN',true,$9,'active',$6,$6)`,
+      [lowVariantId, outVariantId, companyId, lowProductId, '1'.repeat(64), actorId, outProductId, 'unit', '2'.repeat(64)],
+    );
+    const main = defined(
+      (await locations.list(companyId, [branchId], { limit: 10 })).items.find(
+        (item) => item.normalizedCode === 'main',
+      ),
+      'Expected the main location.',
+    );
+    await database.pool.query(
+      `insert into inventory_balances
+       (id,company_id,branch_id,inventory_location_id,product_variant_id,quantity_on_hand,
+        quantity_reserved,quantity_in_transit,average_unit_cost,currency_code)
+       values($1,$2,$3,$4,$5,3.000000,0.000000,0.000000,3.0000,'MXN'),
+             ($6,$2,$3,$4,$7,0.000000,0.000000,0.000000,3.0000,'MXN')`,
+      [randomUUID(), companyId, branchId, main.id, lowVariantId, randomUUID(), outVariantId],
+    );
+
+    const all = await balances.list(companyId, [branchId], false, { limit: 50 });
+    const low = defined(
+      all.items.find((item) => item.product_variant_id === lowVariantId),
+      'Expected the low-stock balance.',
+    );
+    expect(low).toMatchObject({ stock_status: 'low_stock', min_stock: '5.000000', category_name: 'Bebidas' });
+    const out = defined(
+      all.items.find((item) => item.product_variant_id === outVariantId),
+      'Expected the out-of-stock balance.',
+    );
+    expect(out).toMatchObject({ stock_status: 'out_of_stock', min_stock: null, category_name: null });
+
+    expect(
+      (await balances.list(companyId, [branchId], false, { limit: 50, search: 'agua' })).items.map(
+        (item) => item.product_variant_id,
+      ),
+    ).toEqual([lowVariantId]);
+    expect(
+      (
+        await balances.list(companyId, [branchId], false, { limit: 50, categoryId })
+      ).items.map((item) => item.product_variant_id),
+    ).toEqual([lowVariantId]);
+    expect(
+      (
+        await balances.list(companyId, [branchId], false, { limit: 50, stockStatus: 'out_of_stock' })
+      ).items.map((item) => item.product_variant_id),
+    ).toEqual([outVariantId]);
+
+    const exported = await balances.exportRows(companyId, [branchId], { limit: 100, stockStatus: 'low_stock' });
+    expect(exported).toEqual([
+      expect.objectContaining({ product_name: 'Agua', sku: 'AGUA-1', stock_status: 'low_stock', min_stock: '5.000000' }),
+    ]);
+    expect(await balances.exportRows(otherCompanyId, [otherBranchId], { limit: 100 })).toEqual([]);
   });
 
   it('filters movement headers without posting effects, mutations, audit, outbox, or stock events', async () => {

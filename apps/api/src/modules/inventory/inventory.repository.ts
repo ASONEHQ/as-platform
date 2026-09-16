@@ -414,6 +414,17 @@ export class InventoryLocationRepository {
   }
 }
 
+// The stock-status boundary is always derived from the row's own real
+// `product_variants.min_stock` (or the absence of one) — TASK 16.7 §7's
+// "No hardcodear umbrales" — never a fixed constant. `low_stock` only
+// applies when a minimum is actually configured; a variant with no
+// `min_stock` is either `available` or `out_of_stock`, never `low_stock`.
+const STOCK_STATUS_EXPR = `case
+    when (b.quantity_on_hand-b.quantity_reserved)<=0 then 'out_of_stock'
+    when v.min_stock is not null and (b.quantity_on_hand-b.quantity_reserved)<=v.min_stock then 'low_stock'
+    else 'available'
+  end`;
+
 export class InventoryBalanceReadRepository {
   public constructor(private readonly database: DatabaseClient) {}
 
@@ -426,6 +437,9 @@ export class InventoryBalanceReadRepository {
       branchId?: string;
       locationId?: string;
       productVariantId?: string;
+      categoryId?: string;
+      search?: string;
+      stockStatus?: 'available' | 'low_stock' | 'out_of_stock';
       changedAfter?: Date;
     },
   ): Promise<InventoryPage<Readonly<Record<string, unknown>>>> {
@@ -435,12 +449,22 @@ export class InventoryBalanceReadRepository {
       ['b.branch_id', input.branchId],
       ['b.inventory_location_id', input.locationId],
       ['b.product_variant_id', input.productVariantId],
+      ['c.id', input.categoryId],
       ['b.id', input.cursor],
     ] as const)
       if (value !== undefined) {
         values.push(value);
         where.push(`${column}${column === 'b.id' ? '>' : '='}$${String(values.length)}`);
       }
+    if (input.search !== undefined) {
+      values.push(`%${input.search}%`);
+      const idx = String(values.length);
+      where.push(`(p.name ilike $${idx} or v.name ilike $${idx} or v.sku ilike $${idx})`);
+    }
+    if (input.stockStatus !== undefined) {
+      values.push(input.stockStatus);
+      where.push(`${STOCK_STATUS_EXPR}=$${String(values.length)}`);
+    }
     if (input.changedAfter !== undefined) {
       values.push(input.changedAfter);
       where.push(`b.updated_at>$${String(values.length)}`);
@@ -453,7 +477,8 @@ export class InventoryBalanceReadRepository {
           (b.quantity_on_hand-b.quantity_reserved)::text quantity_available,
           b.average_unit_cost::text,b.currency_code,b.version::text,b.updated_at,
           l.code location_code,l.name location_name,v.sku,v.name variant_name,
-          v.unit_of_measure_code,p.id product_id,p.name product_name,
+          v.unit_of_measure_code,v.min_stock::text min_stock,${STOCK_STATUS_EXPR} stock_status,
+          p.id product_id,p.name product_name,
           c.id category_id,c.name category_name,br.id brand_id,br.name brand_name,
           (select pb.barcode from product_barcodes pb where pb.company_id=b.company_id
             and pb.product_variant_id=b.product_variant_id and pb.status='active'
@@ -474,6 +499,64 @@ export class InventoryBalanceReadRepository {
       items,
       nextCursor: rows.length > input.limit && typeof lastId === 'string' ? lastId : null,
     };
+  }
+
+  /** TASK 16.7 §9 — the Existencias-equivalent of `kardexExportRows`: every
+   * balance matching the same filters as `list()` above, unpaginated
+   * (bounded by `limit`), for a real CSV export. Never a second, divergent
+   * query — reuses the exact same SELECT/JOIN/WHERE shape as `list()` so
+   * the exported rows are always consistent with what the screen shows. */
+  public async exportRows(
+    companyId: string,
+    branchIds: readonly string[],
+    input: {
+      branchId?: string;
+      locationId?: string;
+      categoryId?: string;
+      search?: string;
+      stockStatus?: 'available' | 'low_stock' | 'out_of_stock';
+      limit: number;
+    },
+  ): Promise<readonly Record<string, unknown>[]> {
+    const values: unknown[] = [companyId, branchIds];
+    const where = ['b.company_id=$1', 'b.branch_id=any($2::uuid[])'];
+    for (const [column, value] of [
+      ['b.branch_id', input.branchId],
+      ['b.inventory_location_id', input.locationId],
+      ['c.id', input.categoryId],
+    ] as const)
+      if (value !== undefined) {
+        values.push(value);
+        where.push(`${column}=$${String(values.length)}`);
+      }
+    if (input.search !== undefined) {
+      values.push(`%${input.search}%`);
+      const idx = String(values.length);
+      where.push(`(p.name ilike $${idx} or v.name ilike $${idx} or v.sku ilike $${idx})`);
+    }
+    if (input.stockStatus !== undefined) {
+      values.push(input.stockStatus);
+      where.push(`${STOCK_STATUS_EXPR}=$${String(values.length)}`);
+    }
+    values.push(input.limit);
+    return result<Record<string, unknown>>(
+      await this.database.pool.query(
+        `select b.branch_id,b.product_variant_id,
+          b.quantity_on_hand::text,b.quantity_reserved::text,b.quantity_in_transit::text,
+          (b.quantity_on_hand-b.quantity_reserved)::text quantity_available,
+          l.code location_code,l.name location_name,v.sku,v.name variant_name,
+          v.unit_of_measure_code,v.min_stock::text min_stock,${STOCK_STATUS_EXPR} stock_status,
+          p.name product_name,c.name category_name,br.name brand_name
+         from inventory_balances b
+         join inventory_locations l on l.company_id=b.company_id and l.id=b.inventory_location_id
+         join product_variants v on v.company_id=b.company_id and v.id=b.product_variant_id
+         join products p on p.company_id=v.company_id and p.id=v.product_id
+         left join product_categories c on c.company_id=p.company_id and c.id=p.category_id
+         left join brands br on br.company_id=p.company_id and br.id=p.brand_id
+         where ${where.join(' and ')} order by p.name,v.name,l.name limit $${String(values.length)}`,
+        values,
+      ),
+    ).rows;
   }
 }
 

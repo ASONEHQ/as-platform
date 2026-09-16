@@ -194,6 +194,17 @@ export class InventoryBalanceReadService {
       ),
     };
   }
+
+  /** TASK 16.7 §9 — Existencias CSV export; the cost fields never appear in
+   * `exportRows()`'s own SELECT at all (see the repository), so no
+   * `includeCost` gate is needed here the way `list()` needs one. */
+  public exportRows(
+    companyId: string,
+    branchIds: readonly string[],
+    input: Parameters<InventoryBalanceReadRepository['exportRows']>[2],
+  ): Promise<readonly Readonly<Record<string, unknown>>[]> {
+    return this.repository.exportRows(companyId, branchIds, input);
+  }
 }
 
 export class InventoryMovementReadService {

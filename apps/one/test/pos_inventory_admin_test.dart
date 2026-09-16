@@ -10,11 +10,97 @@ library;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_inventory_admin_gateway.dart';
 import 'package:as_one/features/pos/pos_inventory_admin_screen.dart';
+import 'package:as_one/features/pos/pos_models.dart' show PosCategory;
 import 'package:as_one/features/pos/pos_tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('Existencias', () {
+    testWidgets('renders resolved product/variant/SKU/branch names and a real stock-status pill, never raw ids', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true);
+
+      expect(find.textContaining('Agua'), findsWidgets);
+      expect(find.textContaining('AGUA-1'), findsWidgets);
+      expect(find.textContaining('Almacén Origen'), findsWidgets);
+      expect(find.text('Stock bajo'), findsOneWidget);
+      expect(find.text('variant-2'), findsNothing);
+      expect(find.text('location-src'), findsNothing);
+    });
+
+    testWidgets('labels out-of-stock and available balances distinctly', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance, _outOfStockBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true);
+
+      expect(find.text('Disponible'), findsOneWidget);
+      expect(find.text('Agotado'), findsOneWidget);
+    });
+
+    testWidgets('typing a search term calls the real endpoint with that filter', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true);
+      gateway.listBalancesCalls.clear();
+
+      await tester.enterText(find.byKey(const Key('pos-existencias-search')), 'agua');
+      await tester.pumpAndSettle();
+
+      expect(gateway.listBalancesCalls.last['search'], 'agua');
+    });
+
+    testWidgets('selecting a category filter calls the real endpoint with that category', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance, _sourceBalance]);
+      await _pump(
+        tester,
+        gateway: gateway,
+        startOnExistencias: true,
+        categories: const [PosCategory(id: 'category-beverages', name: 'Bebidas', status: 'active')],
+      );
+      gateway.listBalancesCalls.clear();
+
+      await tester.tap(find.byKey(const Key('pos-existencias-category')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Bebidas').last);
+      await tester.pumpAndSettle();
+
+      expect(gateway.listBalancesCalls.last['category_id'], 'category-beverages');
+    });
+
+    testWidgets('selecting a stock-status filter calls the real endpoint with that status, never a hardcoded threshold client-side', (tester) async {
+      // Seeded with an "available" balance (never a status pill reading
+      // "Agotado") so the dropdown's own "Agotado" menu item is the only
+      // matching text on screen once opened.
+      final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true);
+      gateway.listBalancesCalls.clear();
+
+      await tester.tap(find.byKey(const Key('pos-existencias-stock-status')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Agotado').last);
+      await tester.pumpAndSettle();
+
+      expect(gateway.listBalancesCalls.last['stock_status'], 'out_of_stock');
+    });
+
+    testWidgets('exporting calls the real CSV endpoint honoring the same filters', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true);
+
+      await tester.tap(find.byKey(const Key('pos-existencias-export-csv')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.exportBalancesCsvCalls, hasLength(1));
+    });
+
+    testWidgets('an actor lacking inventory.read is read-only-denied on Existencias', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance]);
+      await _pump(tester, gateway: gateway, permissions: const [], startOnExistencias: true);
+
+      expect(find.text('Acceso no autorizado'), findsOneWidget);
+      expect(find.byKey(const Key('pos-existencias-search')), findsNothing);
+    });
+  });
+
   group('Movimientos', () {
     testWidgets('renders the real seeded movement list with folio and status', (tester) async {
       final gateway = _RecordingInventoryAdminGateway(movements: [_draftMovement]);
@@ -330,9 +416,49 @@ final _sourceBalance = PosInventoryBalance(
   sku: 'SKU-1',
   variantName: null,
   productName: 'Playera azul',
+  categoryName: null,
   unitOfMeasureCode: 'unit',
   quantityOnHand: '10',
+  quantityReserved: '0',
   quantityAvailable: '10',
+  minStock: null,
+  stockStatus: 'available',
+);
+
+final _lowStockBalance = PosInventoryBalance(
+  branchId: 'branch-1',
+  locationId: 'location-src',
+  locationCode: 'SRC',
+  locationName: 'Almacén Origen',
+  productVariantId: 'variant-2',
+  sku: 'AGUA-1',
+  variantName: null,
+  productName: 'Agua',
+  categoryName: 'Bebidas',
+  unitOfMeasureCode: 'unit',
+  quantityOnHand: '3',
+  quantityReserved: '0',
+  quantityAvailable: '3',
+  minStock: '5',
+  stockStatus: 'low_stock',
+);
+
+final _outOfStockBalance = PosInventoryBalance(
+  branchId: 'branch-1',
+  locationId: 'location-src',
+  locationCode: 'SRC',
+  locationName: 'Almacén Origen',
+  productVariantId: 'variant-3',
+  sku: 'REFRESCO-1',
+  variantName: null,
+  productName: 'Refresco',
+  categoryName: null,
+  unitOfMeasureCode: 'unit',
+  quantityOnHand: '0',
+  quantityReserved: '0',
+  quantityAvailable: '0',
+  minStock: null,
+  stockStatus: 'out_of_stock',
 );
 
 final _draftMovement = PosInventoryMovement(
@@ -547,12 +673,56 @@ class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
 
   // -- Balances -------------------------------------------------------------
 
+  final List<Map<String, String?>> listBalancesCalls = [];
+
   @override
-  Future<PosInventoryBalancePage> listBalances({String? branchId, String? locationId, String? cursor, int limit = 50}) async =>
-      PosInventoryBalancePage(
-        items: _balances.where((balance) => branchId == null || balance.branchId == branchId).toList(growable: false),
-        nextCursor: null,
-      );
+  Future<PosInventoryBalancePage> listBalances({
+    String? branchId,
+    String? locationId,
+    String? categoryId,
+    String? search,
+    String? stockStatus,
+    String? cursor,
+    int limit = 50,
+  }) async {
+    listBalancesCalls.add({
+      'branch_id': branchId,
+      'location_id': locationId,
+      'category_id': categoryId,
+      'search': search,
+      'stock_status': stockStatus,
+    });
+    final query = search?.trim().toLowerCase();
+    return PosInventoryBalancePage(
+      items: _balances
+          .where((balance) => branchId == null || balance.branchId == branchId)
+          .where((balance) => categoryId == null || balance.categoryName == categoryId)
+          .where((balance) => stockStatus == null || balance.stockStatus == stockStatus)
+          .where(
+            (balance) =>
+                query == null ||
+                query.isEmpty ||
+                balance.productName.toLowerCase().contains(query) ||
+                balance.sku.toLowerCase().contains(query),
+          )
+          .toList(growable: false),
+      nextCursor: null,
+    );
+  }
+
+  final List<Map<String, String?>> exportBalancesCsvCalls = [];
+
+  @override
+  Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus}) async {
+    exportBalancesCsvCalls.add({
+      'branch_id': branchId,
+      'location_id': locationId,
+      'category_id': categoryId,
+      'search': search,
+      'stock_status': stockStatus,
+    });
+    return 'branch_id,product_name\n';
+  }
 
   // -- Movimientos ----------------------------------------------------------
 
@@ -1158,7 +1328,13 @@ class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
 
 // --- Pump helper --------------------------------------------------------
 
-Future<void> _pump(WidgetTester tester, {required PosInventoryAdminGateway gateway, List<String>? permissions}) async {
+Future<void> _pump(
+  WidgetTester tester, {
+  required PosInventoryAdminGateway gateway,
+  List<String>? permissions,
+  List<PosCategory> categories = const [],
+  bool startOnExistencias = false,
+}) async {
   tester.view.physicalSize = const Size(1440, 1000);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
@@ -1177,7 +1353,12 @@ Future<void> _pump(WidgetTester tester, {required PosInventoryAdminGateway gatew
       theme: PosTheme.light(),
       home: Scaffold(
         body: SingleChildScrollView(
-          child: PosInventoryAdminScreen(context: effectiveContext, gateway: gateway),
+          child: PosInventoryAdminScreen(
+            context: effectiveContext,
+            gateway: gateway,
+            categories: categories,
+            startOnExistencias: startOnExistencias,
+          ),
         ),
       ),
     ),

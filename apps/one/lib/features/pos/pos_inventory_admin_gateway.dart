@@ -252,9 +252,13 @@ class PosInventoryBalance {
     required this.sku,
     required this.variantName,
     required this.productName,
+    required this.categoryName,
     required this.unitOfMeasureCode,
     required this.quantityOnHand,
+    required this.quantityReserved,
     required this.quantityAvailable,
+    required this.minStock,
+    required this.stockStatus,
   });
 
   factory PosInventoryBalance.fromJson(Map<String, Object?> json) => PosInventoryBalance(
@@ -266,9 +270,17 @@ class PosInventoryBalance {
     sku: json['sku']! as String,
     variantName: json['variant_name'] as String?,
     productName: json['product_name']! as String,
+    categoryName: json['category_name'] as String?,
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
     quantityOnHand: json['quantity_on_hand']! as String,
+    quantityReserved: json['quantity_reserved']! as String,
     quantityAvailable: json['quantity_available']! as String,
+    minStock: json['min_stock'] as String?,
+    // TASK 16.7 §7: the backend derives this from the row's own real
+    // `min_stock` (never a hardcoded threshold — see `inventory.repository
+    // .ts`'s `STOCK_STATUS_EXPR`); a response predating that field falls
+    // back to a bare zero-availability check, never a fabricated status.
+    stockStatus: json['stock_status'] as String? ?? (json['quantity_available'] == '0.000000' ? 'out_of_stock' : 'available'),
   );
 
   final String branchId;
@@ -279,9 +291,13 @@ class PosInventoryBalance {
   final String sku;
   final String? variantName;
   final String productName;
+  final String? categoryName;
   final String unitOfMeasureCode;
   final String quantityOnHand;
+  final String quantityReserved;
   final String quantityAvailable;
+  final String? minStock;
+  final String stockStatus;
 
   String get displayName => variantName == null ? '$productName ($sku)' : '$productName — $variantName ($sku)';
 }
@@ -1218,12 +1234,28 @@ abstract interface class PosInventoryAdminGateway {
   /// `PATCH /api/v1/inventory/locations/{id}` (`inventory_location.manage`).
   Future<PosInventoryLocation> updateLocation(String id, PosInventoryLocationPatchInput input, {required int version});
 
-  // -- Balances (picker helper) ------------------------------------------
+  // -- Balances / Existencias ---------------------------------------------
 
-  /// `GET /api/v1/inventory/balances` (`inventory.read`) — reused ONLY to
-  /// source a real variant/location picker for Movimientos/Traspasos/
-  /// Conteos.
-  Future<PosInventoryBalancePage> listBalances({String? branchId, String? locationId, String? cursor, int limit = 50});
+  /// `GET /api/v1/inventory/balances` (`inventory.read`) — sources both the
+  /// real variant/location picker for Movimientos/Traspasos/Conteos AND
+  /// (TASK 16.7) the real Existencias screen: resolved product/variant/SKU/
+  /// category/branch names, `min_stock` and the server-derived
+  /// `stock_status` all come from this same authoritative query — never
+  /// recomputed client-side.
+  Future<PosInventoryBalancePage> listBalances({
+    String? branchId,
+    String? locationId,
+    String? categoryId,
+    String? search,
+    String? stockStatus,
+    String? cursor,
+    int limit = 50,
+  });
+
+  /// `GET /api/v1/inventory/balances/export.csv` (`inventory.read`) — the
+  /// real Existencias CSV export (TASK 16.7 §9), honoring the exact same
+  /// tenant/branch/permission/filter contract as [listBalances].
+  Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus});
 
   // -- Movimientos --------------------------------------------------------
 
@@ -1454,12 +1486,23 @@ class ApiPosInventoryAdminGateway implements PosInventoryAdminGateway {
   // -- Balances -------------------------------------------------------------
 
   @override
-  Future<PosInventoryBalancePage> listBalances({String? branchId, String? locationId, String? cursor, int limit = 50}) async {
+  Future<PosInventoryBalancePage> listBalances({
+    String? branchId,
+    String? locationId,
+    String? categoryId,
+    String? search,
+    String? stockStatus,
+    String? cursor,
+    int limit = 50,
+  }) async {
     final query = <String, String>{
       'limit': '$limit',
       if (cursor != null) 'cursor': cursor,
       if (branchId != null) 'branch_id': branchId,
       if (locationId != null) 'location_id': locationId,
+      if (categoryId != null) 'category_id': categoryId,
+      if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+      if (stockStatus != null) 'stock_status': stockStatus,
     };
     final envelope = await _client.getJson(Uri(path: '/api/v1/inventory/balances', queryParameters: query).toString());
     final page = _page(envelope, 'balances');
@@ -1467,6 +1510,18 @@ class ApiPosInventoryAdminGateway implements PosInventoryAdminGateway {
       items: page.items.map(PosInventoryBalance.fromJson).toList(growable: false),
       nextCursor: page.nextCursor,
     );
+  }
+
+  @override
+  Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus}) {
+    final query = <String, String>{
+      if (branchId != null) 'branch_id': branchId,
+      if (locationId != null) 'location_id': locationId,
+      if (categoryId != null) 'category_id': categoryId,
+      if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+      if (stockStatus != null) 'stock_status': stockStatus,
+    };
+    return _client.getText(Uri(path: '/api/v1/inventory/balances/export.csv', queryParameters: query).toString());
   }
 
   // -- Movimientos ----------------------------------------------------------
@@ -1956,8 +2011,18 @@ class EmptyPosInventoryAdminGateway implements PosInventoryAdminGateway {
       Future.error(StateError('No inventory admin gateway is configured.'));
 
   @override
-  Future<PosInventoryBalancePage> listBalances({String? branchId, String? locationId, String? cursor, int limit = 50}) async =>
-      const PosInventoryBalancePage(items: [], nextCursor: null);
+  Future<PosInventoryBalancePage> listBalances({
+    String? branchId,
+    String? locationId,
+    String? categoryId,
+    String? search,
+    String? stockStatus,
+    String? cursor,
+    int limit = 50,
+  }) async => const PosInventoryBalancePage(items: [], nextCursor: null);
+
+  @override
+  Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus}) async => '';
 
   @override
   Future<PosInventoryMovementPage> listMovements({String? branchId, String? status, String? type, String? cursor, int limit = 50}) async =>

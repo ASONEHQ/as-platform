@@ -50,25 +50,44 @@ import 'package:flutter/material.dart';
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'pos_inventory_admin_gateway.dart';
+import 'pos_models.dart' show PosCategory;
+import 'pos_reports_csv_download.dart';
 import 'pos_tokens.dart';
 
 /// The public entry point — importable from `pos_shell.dart`'s eventual
 /// `PosModule` switch case (wired in separately afterward per this task's
 /// own constraints).
 class PosInventoryAdminScreen extends StatefulWidget {
-  const PosInventoryAdminScreen({required this.context, required this.gateway, super.key});
+  const PosInventoryAdminScreen({
+    required this.context,
+    required this.gateway,
+    // TASK 16.7: `PosModule.inventory` (the sidebar's plain "Inventario"
+    // entry) and `PosModule.inventoryAdmin` ("Admin. Inventario") both
+    // render this same screen rather than maintaining two divergent
+    // Existencias implementations — the only difference is which tab is
+    // active on open. Defaults `false` so every pre-existing construction
+    // of this widget (its own tests included) keeps landing on Movimientos
+    // exactly as before.
+    this.startOnExistencias = false,
+    this.categories = const [],
+    this.onOpenDirectPurchase,
+    super.key,
+  });
 
   final AuthenticatedContext context;
   final PosInventoryAdminGateway gateway;
+  final bool startOnExistencias;
+  final List<PosCategory> categories;
+  final VoidCallback? onOpenDirectPurchase;
 
   @override
   State<PosInventoryAdminScreen> createState() => _PosInventoryAdminScreenState();
 }
 
-enum _InventoryTab { movimientos, traspasos, conteos, reservas, ajustes, ubicaciones }
+enum _InventoryTab { existencias, movimientos, traspasos, conteos, reservas, ajustes, ubicaciones }
 
 class _PosInventoryAdminScreenState extends State<PosInventoryAdminScreen> {
-  _InventoryTab _tab = _InventoryTab.movimientos;
+  late _InventoryTab _tab = widget.startOnExistencias ? _InventoryTab.existencias : _InventoryTab.movimientos;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -76,6 +95,12 @@ class _PosInventoryAdminScreenState extends State<PosInventoryAdminScreen> {
     children: [
       _InventoryHeader(tab: _tab, onTabChanged: (value) => setState(() => _tab = value)),
       switch (_tab) {
+        _InventoryTab.existencias => _ExistenciasTab(
+          context: widget.context,
+          gateway: widget.gateway,
+          categories: widget.categories,
+          onOpenDirectPurchase: widget.onOpenDirectPurchase,
+        ),
         _InventoryTab.movimientos => _MovimientosTab(context: widget.context, gateway: widget.gateway),
         _InventoryTab.traspasos => _TraspasosTab(context: widget.context, gateway: widget.gateway),
         _InventoryTab.conteos => _ConteosTab(context: widget.context, gateway: widget.gateway),
@@ -121,6 +146,7 @@ class _InventoryHeader extends StatelessWidget {
           SegmentedButton<_InventoryTab>(
             key: const Key('pos-inventory-admin-tabs'),
             segments: const [
+              ButtonSegment(value: _InventoryTab.existencias, label: Text('Existencias')),
               ButtonSegment(value: _InventoryTab.movimientos, label: Text('Movimientos')),
               ButtonSegment(value: _InventoryTab.traspasos, label: Text('Traspasos')),
               ButtonSegment(value: _InventoryTab.conteos, label: Text('Conteos')),
@@ -328,6 +354,305 @@ class _DialogButtons extends StatelessWidget {
       ],
     );
   }
+}
+
+// ---------------------------------------------------------------------
+// Existencias — TASK 16.7: the real, named, filterable stock-on-hand view
+// (legacy's "Existencias" tab — `AS POS V1.html`'s `renderInventario`,
+// which read `p.stock`/`p.min`/`p.costo` off one single global-per-product
+// number with no real branch dimension). Strictly read-only, matching this
+// file's own non-negotiable "ledger is the single source of truth"
+// principle at the top of this file: nothing here ever lets an operator
+// set a stock number directly. `GET /api/v1/inventory/balances` is already
+// authoritative (a materialized, transactionally-maintained running total
+// — see `inventory.repository.ts`), resolved server-side to real product/
+// variant/SKU/category/branch names and a real `stock_status` derived from
+// the variant's own `min_stock` — never a hardcoded threshold (TASK 16.7
+// §3/§7's "No hardcodear umbrales").
+// ---------------------------------------------------------------------
+
+class _ExistenciasTab extends StatefulWidget {
+  const _ExistenciasTab({
+    required this.context,
+    required this.gateway,
+    required this.categories,
+    this.onOpenDirectPurchase,
+  });
+  final AuthenticatedContext context;
+  final PosInventoryAdminGateway gateway;
+  final List<PosCategory> categories;
+  final VoidCallback? onOpenDirectPurchase;
+
+  @override
+  State<_ExistenciasTab> createState() => _ExistenciasTabState();
+}
+
+class _ExistenciasTabState extends State<_ExistenciasTab> {
+  _ListPhase _phase = _ListPhase.loading;
+  List<PosInventoryBalance> _items = const [];
+  String? _errorMessage;
+  String _query = '';
+  String? _categoryId;
+  String? _stockStatus;
+  bool _exporting = false;
+
+  bool get _canRead => widget.context.permissions.contains('inventory.read');
+  String? get _branchId => widget.context.session.branchId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _ListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.gateway.listBalances(
+        branchId: _branchId,
+        categoryId: _categoryId,
+        search: _query.trim().isEmpty ? null : _query.trim(),
+        stockStatus: _stockStatus,
+        limit: 100,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _phase = _items.isEmpty ? _ListPhase.empty : _ListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ListPhase.failure;
+        _errorMessage = 'No fue posible cargar las existencias.';
+      });
+    }
+  }
+
+  Future<void> _export() async {
+    if (!_canRead || _exporting) return;
+    setState(() => _exporting = true);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      final csv = await widget.gateway.exportBalancesCsv(
+        branchId: _branchId,
+        categoryId: _categoryId,
+        search: _query.trim().isEmpty ? null : _query.trim(),
+        stockStatus: _stockStatus,
+      );
+      final filename = 'existencias-${DateTime.now().toIso8601String().substring(0, 10)}.csv';
+      final downloaded = downloadCsvFile(filename: filename, csvContent: csv);
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            downloaded
+                ? 'Se descargó $filename.'
+                : 'El CSV se generó, pero este entorno no puede iniciar la descarga del navegador.',
+          ),
+        ),
+      );
+    } on ApiException catch (error) {
+      messenger?.showSnackBar(SnackBar(content: Text(error.failure.message)));
+    } on Object {
+      messenger?.showSnackBar(const SnackBar(content: Text('No fue posible exportar las existencias.')));
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    if (!_canRead) return const _PermissionDenied(permission: 'inventory.read');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            SizedBox(
+              width: 260,
+              child: TextField(
+                key: const Key('pos-existencias-search'),
+                onChanged: (value) {
+                  setState(() => _query = value);
+                  unawaited(_load());
+                },
+                decoration: const InputDecoration(isDense: true, hintText: 'Buscar por producto, variante o SKU', prefixIcon: Icon(Icons.search)),
+              ),
+            ),
+            SizedBox(
+              width: 190,
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-existencias-category'),
+                initialValue: _categoryId,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Categoría'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todas las categorías')),
+                  for (final category in widget.categories) DropdownMenuItem(value: category.id, child: Text(category.name)),
+                ],
+                onChanged: (value) {
+                  setState(() => _categoryId = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+            SizedBox(
+              width: 190,
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-existencias-stock-status'),
+                initialValue: _stockStatus,
+                isExpanded: true,
+                decoration: const InputDecoration(isDense: true, labelText: 'Estado de stock'),
+                items: const [
+                  DropdownMenuItem(value: null, child: Text('Todos los estados')),
+                  DropdownMenuItem(value: 'available', child: Text('Disponible')),
+                  DropdownMenuItem(value: 'low_stock', child: Text('Stock bajo')),
+                  DropdownMenuItem(value: 'out_of_stock', child: Text('Agotado')),
+                ],
+                onChanged: (value) {
+                  setState(() => _stockStatus = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+            OutlinedButton.icon(
+              key: const Key('pos-existencias-export-csv'),
+              onPressed: _exporting ? null : () => unawaited(_export()),
+              icon: _exporting
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.download_outlined, size: 16),
+              label: const Text('Exportar CSV'),
+              style: OutlinedButton.styleFrom(foregroundColor: palette.blueDeep, side: BorderSide(color: palette.border)),
+            ),
+            if (widget.onOpenDirectPurchase != null)
+              OutlinedButton.icon(
+                key: const Key('pos-existencias-direct-purchase'),
+                onPressed: widget.onOpenDirectPurchase,
+                icon: const Icon(Icons.add_shopping_cart_outlined, size: 16),
+                label: const Text('Compra Directa'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        switch (_phase) {
+          _ListPhase.loading => const _Loading(),
+          _ListPhase.empty => const _Empty(message: 'No hay existencias que coincidan con este filtro.'),
+          _ListPhase.failure => _Failure(message: _errorMessage ?? 'No fue posible cargar las existencias.', onRetry: () => unawaited(_load())),
+          _ListPhase.ready => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [for (final balance in _items) _ExistenciaRow(key: Key('pos-existencia-row-${balance.locationId}-${balance.productVariantId}'), balance: balance)],
+          ),
+        },
+      ],
+    );
+  }
+}
+
+class _StockStatusPill extends StatelessWidget {
+  const _StockStatusPill({required this.status});
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final (color, label) = switch (status) {
+      'out_of_stock' => (palette.error, 'Agotado'),
+      'low_stock' => (palette.warning, 'Stock bajo'),
+      _ => (palette.success, 'Disponible'),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+class _ExistenciaRow extends StatelessWidget {
+  const _ExistenciaRow({required this.balance, super.key});
+  final PosInventoryBalance balance;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _Card(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(balance.displayName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 2),
+                Text(
+                  [balance.categoryName, balance.locationName].whereType<String>().join(' · '),
+                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                _Quantity(label: 'Actual', value: balance.quantityOnHand),
+                const SizedBox(width: 14),
+                _Quantity(label: 'Reservado', value: balance.quantityReserved),
+                const SizedBox(width: 14),
+                _Quantity(label: 'Mínimo', value: balance.minStock ?? '—'),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          _StockStatusPill(status: balance.stockStatus),
+        ],
+      ),
+    );
+  }
+}
+
+class _Quantity extends StatelessWidget {
+  const _Quantity({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Text(label, style: TextStyle(color: palette.textMuted, fontSize: 9)),
+        Text(_compactQuantity(value), style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+}
+
+/// Decimal balances are stored/returned to 6 places (`numeric(19,6)`) —
+/// trims trailing zeros for display only, never re-parses/re-rounds the
+/// authoritative value itself.
+String _compactQuantity(String raw) {
+  final value = double.tryParse(raw);
+  if (value == null) return raw;
+  return value == value.truncateToDouble() ? value.truncate().toString() : value.toString();
 }
 
 /// A small reusable "action button that requires a free-text reason" —

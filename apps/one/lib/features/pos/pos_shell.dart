@@ -3071,15 +3071,19 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     gateway: productVariantsGateway,
                   ),
-                  PosModule.inventory => _Inventory(
-                    state: controller.balances,
-                    allowed: this.context.permissions.contains(
-                      'inventory.read',
-                    ),
-                    onRefresh: () => controller.loadBalances(
-                      branchId: this.context.session.branchId,
-                      refresh: true,
-                    ),
+                  // TASK 16.7: the sidebar's plain "Inventario" entry now
+                  // opens the real, named, filterable Existencias tab of
+                  // `PosInventoryAdminScreen` — replacing the old
+                  // compact-ID-only, unfiltered glance table (see that
+                  // screen's own `_ExistenciasTab` doc comment). Never a
+                  // second, divergent balances implementation: this and
+                  // `PosModule.inventoryAdmin` below render the exact same
+                  // screen, differing only in which tab opens first.
+                  PosModule.inventory => PosInventoryAdminScreen(
+                    context: this.context,
+                    gateway: inventoryAdminGateway,
+                    startOnExistencias: true,
+                    categories: controller.categories.items,
                     onOpenDirectPurchase: () => onNavigateToModule(PosModule.purchases),
                   ),
                   // TASK 15.1 Phase 2: closes the "role/user/permission
@@ -11114,97 +11118,6 @@ class _ProductCard extends StatelessWidget {
               ),
             ),
         ],
-      ),
-    );
-  }
-}
-
-class _Inventory extends StatelessWidget {
-  const _Inventory({
-    required this.state,
-    required this.allowed,
-    required this.onRefresh,
-    required this.onOpenDirectPurchase,
-  });
-  final PosReadState<PosInventoryBalance> state;
-  final bool allowed;
-  final VoidCallback onRefresh;
-  // TASK 14.3 (Wave 1, Part C): "Compra Directa" (direct purchase / quick
-  // restock) — navigates to the real `PosModule.purchases` screen.
-  final VoidCallback onOpenDirectPurchase;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      _SectionHeader(
-        title: 'Inventario',
-        description:
-            'Balances autorizados. Ningún control modifica existencias.',
-        action: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            OutlinedButton.icon(
-              key: const Key('pos-inventory-direct-purchase'),
-              onPressed: onOpenDirectPurchase,
-              icon: const Icon(Icons.add_shopping_cart_outlined, size: 17),
-              label: const Text('Compra Directa'),
-            ),
-            const SizedBox(width: 8),
-            _ReadOnlyButton(onPressed: onRefresh),
-          ],
-        ),
-      ),
-      if (!allowed)
-        const _PermissionState()
-      else
-        _ReadState<PosInventoryBalance>(
-          state: state,
-          emptyMessage: 'No hay balances de inventario.',
-          onRetry: onRefresh,
-          ready: (items) => _InventoryTable(items: items),
-        ),
-    ],
-  );
-}
-
-class _InventoryTable extends StatelessWidget {
-  const _InventoryTable({required this.items});
-  final List<PosInventoryBalance> items;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return _PosCard(
-      padding: EdgeInsets.zero,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          headingTextStyle: TextStyle(
-            color: palette.textSecondary,
-            fontWeight: FontWeight.w800,
-          ),
-          columns: const [
-            DataColumn(label: Text('Variante')),
-            DataColumn(label: Text('Ubicación')),
-            DataColumn(label: Text('Existencia'), numeric: true),
-            DataColumn(label: Text('Reservado'), numeric: true),
-            DataColumn(label: Text('En tránsito'), numeric: true),
-          ],
-          rows: items
-              .map(
-                (item) => DataRow(
-                  cells: [
-                    DataCell(Text(_compactId(item.variantId))),
-                    DataCell(Text(_compactId(item.locationId))),
-                    DataCell(Text(item.onHand)),
-                    DataCell(Text(item.reserved)),
-                    DataCell(Text(item.inTransit)),
-                  ],
-                ),
-              )
-              .toList(),
-        ),
       ),
     );
   }
