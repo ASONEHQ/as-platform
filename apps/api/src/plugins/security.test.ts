@@ -39,6 +39,7 @@ async function buildTestApp(): Promise<FastifyInstance> {
   await app.register(fastifyMultipart, { attachFieldsToBody: false });
   app.post('/__test/echo', () => ({ ok: true }));
   app.post('/api/v1/companies/:company_id/branding/logo', () => ({ ok: true }));
+  app.post('/api/v1/products/:id/image', () => ({ ok: true }));
   await app.ready();
   return app;
 }
@@ -102,6 +103,54 @@ describe('registerSecurity — content-type gate', () => {
     // point closest to the hook itself, not the full response pipeline.
     expect(response.statusCode).toBe(415);
     expect(response.json()).toMatchObject({ code: 'unsupported_media_type' });
+    await app.close();
+  });
+
+  // TASK 16.6D — the EXACT SAME class of bug this file's own header
+  // comment describes for the branding logo route recurred for the
+  // product-image upload route (`POST /api/v1/products/:id/image`,
+  // TASK 16.6): added to `product-catalog.routes.ts` with a correct
+  // `consumes: ['multipart/form-data']` schema, but never added to this
+  // hook's own allowlist, so every real production upload was rejected
+  // with a 415 before that route's own MIME/magic-byte validation ever
+  // ran — invisible to `product-catalog.routes.integration.test.ts`'s
+  // own minimal Fastify instance for the identical reason the branding
+  // route's bug was invisible to its own integration test (neither
+  // builds the fully wired app, so neither registers this hook).
+  it('allows a real multipart/form-data body specifically on the product-image upload route (TASK 16.6D — the real production bug)', async () => {
+    const app = await buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/products/11111111-1111-4111-8111-111111111111/image',
+      headers: { 'content-type': 'multipart/form-data; boundary=----x' },
+      payload: '------x--',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true });
+    await app.close();
+  });
+
+  // TASK 16.6D — the second half of the real production bug: this hook
+  // used to be registered BEFORE `cors`, so when it rejected a request
+  // with a 415, that response never carried an `Access-Control-Allow-
+  // Origin` header at all. A browser can't read the body/status of a
+  // CORS-blocked response, so a genuine `415` from THIS hook surfaced to
+  // Flutter's `http` client as an opaque network failure instead —
+  // exactly how the real bug above manifested in the UI as a misleading
+  // "El servicio no está disponible" rather than an honest, mappable
+  // status. `registerSecurity` now registers `cors` BEFORE this hook, so
+  // its headers are already attached before this hook ever gets a chance
+  // to reject anything.
+  it('still carries CORS headers on a request THIS HOOK rejects — the browser must be able to read the real status code', async () => {
+    const app = await buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/__test/echo',
+      headers: { 'content-type': 'text/plain', origin: 'http://127.0.0.1:3000' },
+      payload: 'value',
+    });
+    expect(response.statusCode).toBe(415);
+    expect(response.headers['access-control-allow-origin']).toBe('http://127.0.0.1:3000');
     await app.close();
   });
 

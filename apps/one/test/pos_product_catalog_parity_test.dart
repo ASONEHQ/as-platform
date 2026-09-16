@@ -283,6 +283,104 @@ void main() {
       expect(catalogGateway.deleteImageCalls, hasLength(1));
       expect(catalogGateway.deleteImageCalls.single.id, _imageEditableProduct.id);
     });
+
+    // TASK 16.6D — the real production bug (every upload rejected with a
+    // 415 by a global security hook that had never allowlisted this
+    // route) masked ALL of this honest error-mapping code behind a
+    // generic "El servicio no está disponible.", since the browser could
+    // never even read the real status code (see `security.test.ts`'s own
+    // new CORS-ordering test). These three prove the mapping itself was
+    // already correct and stays correct now that real responses reach
+    // Flutter: each real status the server can genuinely produce shows
+    // its own specific, honest Spanish message.
+    testWidgets('an unsupported image format (real 415) shows the honest format message, never a generic one', (
+      tester,
+    ) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(
+        products: [_editableProduct],
+        uploadImageError: const ApiException(
+          AppFailure(AppErrorKind.validation, 'Unsupported.', code: 'unsupported_media_type'),
+          statusCode: 415,
+        ),
+      );
+      final bytes = Uint8List.fromList([0x25, 0x50, 0x44, 0x46]);
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+        pickProductImage: () async => XFile.fromData(bytes, path: 'doc.pdf', mimeType: 'application/pdf'),
+      );
+      await _navigateToProducts(tester);
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ese archivo no es una imagen válida (PNG, JPEG o WEBP).'), findsOneWidget);
+      expect(find.text('Imagen configurada'), findsNothing);
+    });
+
+    testWidgets('an oversized image (real 413) shows the honest size-limit message', (tester) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(
+        products: [_editableProduct],
+        uploadImageError: const ApiException(
+          AppFailure(AppErrorKind.validation, 'Too large.', code: 'payload_too_large'),
+          statusCode: 413,
+        ),
+      );
+      final bytes = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+        pickProductImage: () async => XFile.fromData(bytes, path: 'foto.png', mimeType: 'image/png'),
+      );
+      await _navigateToProducts(tester);
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('La imagen supera el tamaño máximo permitido.'), findsOneWidget);
+    });
+
+    testWidgets('a same-tenant actor without product.manage (real 403) shows the honest permission message', (
+      tester,
+    ) async {
+      final catalogGateway = _RecordingCatalogAdminGateway(
+        products: [_editableProduct],
+        uploadImageError: const ApiException(
+          AppFailure(AppErrorKind.authorization, 'No tienes permiso para realizar esta acción.', code: 'permission_denied'),
+          statusCode: 403,
+        ),
+      );
+      final bytes = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+      await _pump(
+        tester,
+        catalogAdminGateway: catalogGateway,
+        readGateway: const _FixtureReadGateway([_plainProduct]),
+        pickProductImage: () async => XFile.fromData(bytes, path: 'foto.png', mimeType: 'image/png'),
+      );
+      await _navigateToProducts(tester);
+      await tester.tap(find.byKey(Key('pos-product-menu-${_plainProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar').last);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-edit-upload-image')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No tienes permiso para realizar esta acción.'), findsOneWidget);
+    });
   });
 
   group('TASK 16.6A — production readiness: honest UI when object storage is not configured', () {
@@ -784,6 +882,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     this.imageStorageConfigured = true,
     this.priceConflict = false,
     this.pricePermissionDenied = false,
+    this.uploadImageError,
   }) : products = List.of(products ?? const []);
 
   final List<PosCatalogProduct> products;
@@ -813,6 +912,14 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
   /// mocked-service proof that the ROUTE itself returns 403; this proves
   /// the dialog surfaces that honestly rather than assuming success).
   final bool pricePermissionDenied;
+
+  /// TASK 16.6D — when set, `uploadProductImage` throws this exact
+  /// `ApiException` instead of succeeding — lets a test inject any real
+  /// upload-failure shape (415 unsupported format, 413 too large, 403
+  /// permission denied) the real server can genuinely produce, proving
+  /// `_productImageErrorMessage` (`pos_shell.dart`) maps each one to its
+  /// own honest, specific Spanish message rather than a generic one.
+  final ApiException? uploadImageError;
   PosNewProductInput? lastCreateProductInput;
   PosProductPatchInput? lastUpdateProductInput;
   final List<String> productFetchCalls = [];
@@ -911,6 +1018,7 @@ class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
     required int expectedVersion,
   }) async {
     if (!imageStorageConfigured) throw _notFoundApiException;
+    if (uploadImageError != null) throw uploadImageError!;
     uploadImageCalls.add((id: id, filename: filename, contentType: contentType));
     final current = await product(id);
     final updated = PosCatalogProduct(

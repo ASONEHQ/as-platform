@@ -1461,6 +1461,201 @@ verified both by a real end-to-end automated test and live in a running
 session, with real database history preserved and never two incompatible
 active prices at once, including under real concurrency.
 
+## TASK 16.6D — Fix Real Product Image Upload in Production (HTTP 415) (2026-09-16)
+
+Production (`app.asone.mx`, deployed from `release/as-pos-v1`) had real
+DigitalOcean Spaces credentials configured and `GET /health` returning
+`ok`, but every real image upload (Catálogo → Productos → Editar →
+Extras → Subir imagen) failed with a genuine server-side `415
+Unsupported Media Type` on `POST /api/v1/products/:id/image`, surfaced
+to the Owner as a misleading "El servicio no está disponible." This task
+found and fixed the real, exact cause — not by relaxing validation, but
+by closing a genuine allowlist gap that never let a real upload reach
+the route's own (correct, already-hardened) MIME/magic-byte checks at
+all.
+
+### Root cause (exact)
+
+`registerSecurity` (`apps/api/src/plugins/security.ts`) has a global
+`onRequest` hook that rejects any POST/PUT/PATCH body that isn't
+`application/json`, UNLESS the route is on a narrow, explicit
+`MULTIPART_ROUTE_ALLOWLIST` — added in TASK 14.5A specifically so the
+branding-logo upload route could accept `multipart/form-data`. TASK
+16.6's own product-image upload route
+(`POST /api/v1/products/:id/image`) was built with a correct
+`consumes: ['multipart/form-data']` schema but was NEVER added to this
+allowlist. Every real upload was rejected by this hook — a real,
+application-level 415 (`unsupported_media_type`) — before the route
+handler, and therefore before `readProductImageFile`'s own MIME/magic-
+byte validation, ever ran. This was invisible to every existing
+automated test because both `product-catalog.routes.integration.test.ts`
+(TASK 16.6/16.6B) and `product-catalog.routes.test.ts` build their own
+minimal `Fastify()` instance and never register `registerSecurity` at
+all — the exact same blind spot the TASK 14.5A comment already warned
+about for the branding route, which recurred here undetected.
+
+**A second, compounding bug** made the real 415 invisible in the UI:
+this hook was registered BEFORE `@fastify/cors`, so when it rejected a
+request, the response never carried an `Access-Control-Allow-Origin`
+header. A browser cannot read the status/body of a CORS-blocked
+response, so Flutter's `fetch`-backed `http` client saw an opaque
+network failure (`TypeError: Failed to fetch`) instead of a readable
+`415` — `postMultipart`'s own generic fallback then showed "El servicio
+no está disponible.", masking the real, already-correctly-mapped 415
+message (`_productImageErrorMessage`, `pos_shell.dart`, written in TASK
+16.6/16.6A) entirely. Reproduced directly: a real cross-origin `fetch()`
+multipart upload from the running app's own origin failed with
+`TypeError: Failed to fetch` and a console line reading "blocked by CORS
+policy: No 'Access-Control-Allow-Origin' header is present" — before the
+fix. After the fix, the identical request reaches the route and returns
+a real, readable JSON response.
+
+### Fix
+
+1. Added `/api/v1/products/:id/image` to `MULTIPART_ROUTE_ALLOWLIST` —
+   the actual root-cause fix. No validation was relaxed: the route's own
+   MIME allowlist (`image/png`, `image/jpeg`, `image/webp`,
+   `image/svg+xml` — unchanged), magic-byte signature check, and 2MB
+   size cap all run exactly as before, now for the first time actually
+   reachable.
+2. Reordered `registerSecurity` so `cors` registers before the
+   JSON-only hook, so CORS headers are attached to EVERY response this
+   hook can produce — not just this one bug, but any future route this
+   hook ever rejects.
+
+### Accepted MIME types (unchanged, confirmed correct)
+
+`image/png`, `image/jpeg`, `image/webp` (the three this task's own
+GREEN criterion requires) plus `image/svg+xml` (pre-existing, TASK 16.6;
+validated structurally — must contain a real `<svg` tag — since SVG has
+no binary magic-byte signature). No format was added or removed by this
+task.
+
+### Size limit (unchanged, confirmed correct)
+
+2MB (`MAX_IMAGE_BYTES`, `image-upload-validation.ts`), enforced both by
+`@fastify/multipart`'s own `fileSize` limit (rejects mid-stream) and a
+second explicit check after buffering — real 413, tested.
+
+### Security validation (audited, unchanged, confirmed still correct)
+
+The declared multipart `Content-Type` is never trusted alone — every
+upload's real bytes are checked against the declared type's actual
+magic-byte signature (`matchesImageFileSignature`); a mismatch (e.g. a
+renamed non-image file) is rejected with the same honest 415. `product
+.manage` is required server-side (re-confirmed: a same-tenant
+`catalog.read`-only actor still gets a real 403, and the service is
+never invoked). Tenant isolation is unaffected — object keys stay
+`products/{companyId}/{uuid}.{ext}` — and cross-company access is still
+rejected.
+
+### DigitalOcean Spaces compatibility (audited, no code changes needed)
+
+`S3ObjectStorage` (`apps/api/src/infrastructure/object-storage.ts`,
+built in TASK 16.6A) was already deliberately built for DigitalOcean
+Spaces: `forcePathStyle: true` (matches Spaces' documented path-style
+URL support), a placeholder `region: 'us-east-1'` (AWS SDK requires
+some value; Spaces derives real routing from the endpoint hostname, not
+this field), `MINIO_ENDPOINT` support for a full remote base URL
+(`https://nyc3.digitaloceanspaces.com`, exactly production's current
+value), and a per-object `ACL: 'public-read'` on every upload
+specifically because Spaces documents ACLs as its own primary public-
+read mechanism (independent of the bucket-level policy, which a managed
+provider may not support identically to MinIO). No code or config
+change was needed here — this task's own root cause was entirely
+upstream of ever reaching Spaces at all.
+
+**Honest limitation**: this could only be verified against local MinIO,
+per this task's own explicit "no deploy" constraint — genuine production
+verification against real DigitalOcean Spaces credentials was NOT
+performed and must be done by the user after their own deploy. If
+Spaces returns some other, new error post-deploy, that would be a
+separate finding, not something this task could have caught locally.
+
+### Object / public-read behavior
+
+Verified directly: a locally-uploaded object's real URL
+(`http://127.0.0.1:9000/asone-product-images/products/{companyId}/
+{uuid}.jpg`) returns a real `200 OK` with the correct `Content-Type`
+and exact byte count via a fresh, unauthenticated `fetch` — proving an
+uploaded image is genuinely publicly readable without needing bucket
+LISTING to be public (File Listing stays Restricted; only the
+individual object's own ACL controls its own readability, which is
+exactly the distinction this task asked to preserve).
+
+### Error UX mapping (audited — already correct, no Flutter changes needed)
+
+`_productImageErrorMessage` (`pos_shell.dart`, written in TASK 16.6/
+16.6A) already maps 404 ("El almacenamiento... no está disponible..."),
+415 ("Ese archivo no es una imagen válida (PNG, JPEG o WEBP)."), 413
+("La imagen supera el tamaño máximo permitido."), and 409 ("Otra sesión
+cambió este producto...") honestly; 403 falls through to
+`AppFailure.fromCode('permission_denied')`'s own existing "No tienes
+permiso para realizar esta acción." None of this needed to change — the
+ENTIRE bug was that real responses never reached this code at all. Three
+new widget tests prove each of 415/413/403 now genuinely renders its own
+specific message end-to-end from an injected `ApiException`.
+
+### Tests added
+
+Backend: `security.test.ts` — the product-image route allowed through
+the hook (the exact TASK 16.6D bug, reproduced and fixed at the unit
+level), and CORS headers confirmed present on a request this hook
+itself rejects (the second, compounding bug). `product-catalog.routes
+.integration.test.ts` (real Postgres + MinIO) — real JPEG and real WebP
+uploads now exercised end-to-end (previously only PNG was), each
+confirmed via a fresh, independent re-fetch of the stored object's own
+bytes/content-type; existing MIME-mismatch/oversized/tenant-isolation/
+permission tests re-confirmed unchanged. Flutter: `api_client_test.dart`
+— a new, first-ever direct test of `postMultipart` proving the actual
+finalized `http.MultipartRequest` wire body Flutter sends (boundary,
+field name, filename, content-type, `If-Match`) is exactly what Fastify
+real `@fastify/multipart` expects (along the way, confirmed a real
+`package:http` behavior: `MultipartRequest` only sets its own
+`content-type` header as a side effect of `finalize()`, never before).
+`pos_product_catalog_parity_test.dart` — three new cases proving 415/
+413/403 each show their own honest, specific message.
+
+### Regression
+
+Backend unit: **530/530**. Backend integration (real Postgres + MinIO,
+run sequentially, twice): **647/647** clean on both runs (up from 645 —
+the two new JPEG/WebP cases). `flutter analyze`: zero errors (same 147
+pre-existing info/warning lints). `flutter test`: **569/569** (up from
+565 — this task's own four new cases). Production Flutter Web build
+succeeded; bundle audited clean.
+
+### Live verification (local only, real end-to-end)
+
+A real JPEG (genuine `ffd8ff` magic bytes) was uploaded via the exact
+same HTTP contract Flutter's `postMultipart` produces, against the
+fully-wired local server (same `registerSecurity`/route/storage stack
+production runs) — real `200 OK`, a real `image_url` pointing at local
+MinIO, and the object independently re-fetched and confirmed byte-for-
+byte. In the running Flutter Web app: the Productos catalog grid and
+the real Punto de Venta sell-screen card both rendered the real
+uploaded image; the Extras tab correctly showed "Imagen configurada"
+with a live thumbnail preview matching the real image; a full browser
+reload (fresh session restore, no client cache) still showed the image
+on both the catalog and POS cards; "Quitar" (remove) was exercised live
+and correctly cleared `image_url` back to `null`.
+
+**Honest limitation, unchanged from TASK 16.6B**: `image_picker_for_web`
+3.x uses the browser's native File System Access API rather than a DOM
+`<input type=file>` element, so the initial file-SELECTION step itself
+could not be driven by any tool available in this session (confirmed:
+no `<input type=file>` element ever appears in the DOM at any point in
+the flow). Every step AFTER selection — the real multipart request
+Flutter's own gateway code builds, the server's handling of it, and the
+resulting image rendering everywhere it needs to — was verified for
+real, live, and end-to-end; only the OS-level file-picker click itself
+was not literally automated. A genuine, currently-unrelated dev-tooling
+hiccup was also found and cleanly resolved along the way: a rapid
+`tsx watch` hot-reload after this session's own edits left a zombie
+process holding port 3000, producing spurious `500`s on an unrelated
+request — confirmed NOT a code defect by restarting cleanly and
+re-verifying instantly green.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

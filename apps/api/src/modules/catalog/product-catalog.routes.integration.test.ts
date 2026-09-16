@@ -49,10 +49,32 @@ function required<T>(value: T | undefined | null, what: string): T {
 }
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// TASK 16.6D — real magic bytes for the other two formats
+// `ALLOWED_IMAGE_CONTENT_TYPES`/`matchesImageFileSignature`
+// (`image-upload-validation.ts`) accept, mirroring `pngBytes`'s own
+// shape so all three formats get symmetrical "really accepted" coverage
+// (previously only PNG was exercised here).
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const WEBP_HEADER = Buffer.from('RIFF', 'ascii');
+const WEBP_FORMAT = Buffer.from('WEBP', 'ascii');
 
 function pngBytes(size: number): Buffer {
   const body = Buffer.alloc(Math.max(size - PNG_MAGIC.length, 0), 0x42);
   return Buffer.concat([PNG_MAGIC, body]);
+}
+
+function jpegBytes(size: number): Buffer {
+  const body = Buffer.alloc(Math.max(size - JPEG_MAGIC.length, 0), 0x42);
+  return Buffer.concat([JPEG_MAGIC, body]);
+}
+
+// A real, well-formed RIFF/WEBP container: `matchesImageFileSignature`
+// checks bytes 0-4 (`RIFF`) and 8-12 (`WEBP`), matching the real libwebp
+// container layout (bytes 4-8 are the RIFF chunk size, unchecked here).
+function webpBytes(size: number): Buffer {
+  const target = Math.max(size, 12);
+  const body = Buffer.alloc(target - 12, 0x42);
+  return Buffer.concat([WEBP_HEADER, Buffer.alloc(4, 0), WEBP_FORMAT, body]);
 }
 
 function multipartImage(
@@ -75,6 +97,13 @@ function multipartImage(
 integration('real Postgres + real MinIO product image routes', () => {
   let app: FastifyInstance;
   let database: DatabaseClient;
+  // TASK 16.6D — hoisted (was a `beforeAll`-local `const`) so new,
+  // independent per-test fixtures (JPEG/WebP acceptance, cross-company
+  // rejection) can create their OWN product via the real service without
+  // touching the shared `productId` fixture's own version sequence,
+  // which several existing tests below depend on staying exactly as it
+  // was.
+  let service: ProductCatalogService;
   const companyId = randomUUID();
   const otherCompanyId = randomUUID();
   const userId = randomUUID();
@@ -167,7 +196,7 @@ integration('real Postgres + real MinIO product image routes', () => {
       }),
     } as unknown as AuthService;
 
-    const service = new ProductCatalogService(
+    service = new ProductCatalogService(
       new ProductCatalogRepository(database),
       new ProductImageStorage(requireStorageConfig()),
     );
@@ -292,6 +321,87 @@ integration('real Postgres + real MinIO product image routes', () => {
       headers: { authorization: 'Bearer x' },
     });
     expect(reloaded.json<{ data: { image_url: string } }>().data.image_url).toBe(data.image_url);
+  });
+
+  // TASK 16.6D — the existing test above only ever exercised PNG; a real
+  // production bug (every upload rejected with a 415 by a global
+  // security hook that had never allowlisted this route — see
+  // `security.test.ts`) went uncaught partly because no test here
+  // asserted JPEG/WebP specifically end-to-end through the real route +
+  // real MinIO. Each creates its own independent product so it never
+  // touches the shared `productId` fixture's own If-Match/version
+  // sequence the other tests here depend on.
+  it('accepts a real JPEG upload end-to-end (real MinIO, real magic-byte match)', async () => {
+    const created = await service.createProduct(
+      { companyId, actorId: userId, requestId: 'jpeg-setup', correlationId: 'jpeg-setup', timestamp: new Date() },
+      'product-image-jpeg',
+      {
+        code: 'product-image-jpeg',
+        name: 'Product image JPEG fixture',
+        productType: 'simple',
+        tracksInventory: false,
+        status: 'active',
+        defaultVariant: {
+          sku: 'product-image-jpeg',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      },
+    );
+    const { body, contentType } = multipartImage(jpegBytes(1024), 'image/jpeg', 'product.jpg');
+    const uploaded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${created.value.id}/image`,
+      headers: { authorization: 'Bearer x', 'content-type': contentType, 'if-match': '"1"' },
+      payload: body,
+    });
+    expect(uploaded.statusCode).toBe(200);
+    const data = uploaded.json<{ data: { image_url: string | null } }>().data;
+    expect(data.image_url).toContain('/asone-product-images/products/');
+    const objectResponse = await fetch(required(data.image_url, 'uploaded image_url'));
+    expect(objectResponse.status).toBe(200);
+    expect(objectResponse.headers.get('content-type')).toBe('image/jpeg');
+    const objectBytes = Buffer.from(await objectResponse.arrayBuffer());
+    expect(objectBytes.subarray(0, 3)).toEqual(JPEG_MAGIC);
+  });
+
+  it('accepts a real WebP upload end-to-end (real MinIO, real magic-byte match)', async () => {
+    const created = await service.createProduct(
+      { companyId, actorId: userId, requestId: 'webp-setup', correlationId: 'webp-setup', timestamp: new Date() },
+      'product-image-webp',
+      {
+        code: 'product-image-webp',
+        name: 'Product image WebP fixture',
+        productType: 'simple',
+        tracksInventory: false,
+        status: 'active',
+        defaultVariant: {
+          sku: 'product-image-webp',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      },
+    );
+    const { body, contentType } = multipartImage(webpBytes(1024), 'image/webp', 'product.webp');
+    const uploaded = await app.inject({
+      method: 'POST',
+      url: `/api/v1/products/${created.value.id}/image`,
+      headers: { authorization: 'Bearer x', 'content-type': contentType, 'if-match': '"1"' },
+      payload: body,
+    });
+    expect(uploaded.statusCode).toBe(200);
+    const data = uploaded.json<{ data: { image_url: string | null } }>().data;
+    expect(data.image_url).toContain('/asone-product-images/products/');
+    const objectResponse = await fetch(required(data.image_url, 'uploaded image_url'));
+    expect(objectResponse.status).toBe(200);
+    expect(objectResponse.headers.get('content-type')).toBe('image/webp');
+    const objectBytes = Buffer.from(await objectResponse.arrayBuffer());
+    expect(objectBytes.subarray(0, 4)).toEqual(WEBP_HEADER);
+    expect(objectBytes.subarray(8, 12)).toEqual(WEBP_FORMAT);
   });
 
   it('rejects a non-image content type with a real 415', async () => {
