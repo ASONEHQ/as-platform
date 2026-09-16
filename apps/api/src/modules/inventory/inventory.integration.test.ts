@@ -327,9 +327,9 @@ integration('PostgreSQL inventory E064-E068', () => {
   it('derives stock_status from the real min_stock and filters/exports Existencias by search, category, and status', async () => {
     const categoryId = randomUUID();
     await database.pool.query(
-      `insert into product_categories(id,company_id,code,normalized_code,name,status)
-       values($1,$2,'BEVERAGES','beverages','Bebidas','active')`,
-      [categoryId, companyId],
+      `insert into product_categories(id,company_id,code,normalized_code,name,status,created_by,updated_by)
+       values($1,$2,'BEVERAGES','beverages','Bebidas','active',$3,$3)`,
+      [categoryId, companyId, actorId],
     );
     const lowProductId = randomUUID();
     const lowVariantId = randomUUID();
