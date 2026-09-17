@@ -42,6 +42,7 @@ Every effective value identifies its source as `default`, `company`, or `branch`
 | `receipts.header_text` | string | Empty string | Yes | Maximum 500 characters |
 | `receipts.footer_text` | string | Empty string | Yes | Maximum 500 characters |
 | `receipts.show_company_tax_id` | boolean | `false` | Yes | Boolean |
+| `receipts.paper_width_mm` | string | `80` | Yes | One of `58`, `80` |
 | `security.session_idle_minutes` | integer | `30` | No | Integer from 5 through 1440 |
 | `security.require_manager_for_voids` | boolean | `true` | Yes | Boolean |
 | `ui.date_format` | string | `DD/MM/YYYY` | Yes | `DD/MM/YYYY`, `MM/DD/YYYY`, or `YYYY-MM-DD` |

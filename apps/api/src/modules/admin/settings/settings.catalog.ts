@@ -149,6 +149,27 @@ export const settingsCatalog = [
     normalize: (value: unknown) => booleanValue('receipts.show_company_tax_id', value),
   },
   {
+    // TASK 16.7B: real thermal-printer paper width, so a tenant's own
+    // physical ticketera (58mm or 80mm) drives the receipt HTML's already
+    // paper-width-parametrized `@page`/content CSS
+    // (`buildReceiptHtml(paperWidthMm: ...)` in the Flutter app's
+    // `receipt_html.dart`) instead of the previous hardcoded 80mm default
+    // — genuinely different receipt printers ship in one or the other
+    // width; this is not a cosmetic preference. `branchOverride: true`
+    // because different branches of the same company can (and, selling
+    // this platform to multiple "parques", commonly will) run different
+    // physical printer hardware. A closed 2-value allowlist, not a free
+    // integer range: there is no real in-between width to support, and an
+    // arbitrary value would silently misprint on real hardware.
+    key: 'receipts.paper_width_mm',
+    type: 'string',
+    technicalDefault: '80',
+    branchOverride: true,
+    public: true,
+    resolveDefault: constantDefault('80'),
+    normalize: (value: unknown) => allowedString(['58', '80'])('receipts.paper_width_mm', value),
+  },
+  {
     key: 'security.session_idle_minutes',
     type: 'integer',
     technicalDefault: 30,

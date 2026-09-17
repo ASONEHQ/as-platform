@@ -28,27 +28,30 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('keeps all 32 canonical modules in their inspected order', () {
+  test('keeps all 33 canonical modules in their inspected order', () {
     // TASK 14.5 (Wave 3): 3 new, real capabilities with no legacy sidebar
     // counterpart (Variantes/Marca del Ticket/Asistente) were appended
     // within their natural groups — 25 (Wave 2 baseline) + 3 = 28.
     // TASK 15.1 (Phases 2-4): 4 more real, backend-wired commercial admin
     // capabilities were inserted within their natural groups — Marcas/
     // Catálogo Avanzado (Catálogo), Admin. Inventario (Inventario),
-    // Sucursales (Administración) — 28 + 4 = 32. Each was inserted
-    // alongside its sibling modules, not appended at the very end, so
-    // the first/last module and the last module's group are unchanged.
-    expect(PosModule.values, hasLength(32));
+    // Sucursales (Administración) — 28 + 4 = 32.
+    // TASK 16.7B added Impresora de Tickets (Sistema), inserted between
+    // Marca del Ticket and Asistente, not appended at the very end — 32 +
+    // 1 = 33. The first/last module and the last module's group are
+    // unchanged.
+    expect(PosModule.values, hasLength(33));
     // Matches the canonical `.sb-item[data-nav]` order: Ventas first
     // (Punto de Venta) — not an app-specific "Inicio first" ordering.
-    // Sistema no longer ends on Configuración specifically now that two
-    // genuinely new, non-legacy capabilities (Marca del Ticket,
-    // Asistente) are appended after it within the same group — the
-    // group itself is still last, only its own trailing member changed.
+    // Sistema no longer ends on Configuración specifically now that
+    // genuinely new, non-legacy capabilities (Marca del Ticket, Impresora
+    // de Tickets, Asistente) are appended after it within the same group
+    // — the group itself is still last, only its own trailing member
+    // changed.
     expect(PosModule.values.first.label, 'Punto de Venta');
     expect(PosModule.values.last.label, 'Asistente');
     expect(PosModule.values.last.group, 'Sistema');
-    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(32));
+    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(33));
   });
 
   testWidgets('renders the canonical desktop shell without fake KPIs', (
@@ -320,7 +323,10 @@ void main() {
       expect(find.text('Unidades'), findsOneWidget);
 
       expect(find.text('Subtotal'), findsOneWidget);
-      expect(find.text('IVA incluido'), findsOneWidget);
+      // TASK 16.7B: was 'IVA incluido' — false (tax is additive/exclusive
+      // here, never included in the displayed unit price); now matches the
+      // persisted-sale receipt's own real label.
+      expect(find.text('IVA'), findsOneWidget);
       // No product was tapped — the ticket is genuinely empty here.
       expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
       expect(find.text('Efectivo'), findsOneWidget);

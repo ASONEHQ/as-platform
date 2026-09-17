@@ -52,6 +52,7 @@ import 'pos_promotions_gateway.dart';
 import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
+import 'pos_printer_settings_screen.dart';
 import 'pos_receipt_branding_screen.dart';
 import 'pos_refunds_gateway.dart';
 import 'pos_reports_gateway.dart';
@@ -1960,22 +1961,33 @@ const _receiptFooterSettingKey = 'receipts.footer_text';
 // renders.
 const _brandingLogoSettingKey = 'branding.logo_url';
 
+// TASK 16.7B: the real thermal-printer paper width (`settings.catalog.ts`'s
+// `receipts.paper_width_mm`, a closed `58`/`80` allowlist) — read the same
+// way as the header/footer/logo keys above, threaded through to
+// `buildReceiptHtml(paperWidthMm: ...)` at every real print call site so a
+// tenant's own configured printer width is honored instead of the
+// function's own 80mm default.
+const _receiptPaperWidthSettingKey = 'receipts.paper_width_mm';
+
 /// TASK 14.5A: the one real read path every real print call site below
 /// uses to fetch the current company's configured receipt header/footer
-/// text and logo — mirrors `pos_receipt_branding_screen.dart`'s own
-/// `_load()` read pattern (`effectiveCompanySettings` with the keys
-/// above, picked by `.key`, `.stringValue`) rather than inventing a
-/// second one. Never blocks/aborts printing: a `null`/missing
-/// `companyId`, or any failure fetching the settings, resolves to
-/// `(null, null, null)` — the receipt then renders exactly as it did
-/// before this task (falling back to the bundled logo, no header/footer),
-/// as `buildReceiptHtml`/`buildRefundReceiptHtml` already handle safely.
-Future<({String? header, String? footer, String? logoUrl})>
+/// text, logo, and (TASK 16.7B) paper width — mirrors
+/// `pos_receipt_branding_screen.dart`'s own `_load()` read pattern
+/// (`effectiveCompanySettings` with the keys above, picked by `.key`,
+/// `.stringValue`) rather than inventing a second one. Never blocks/aborts
+/// printing: a `null`/missing `companyId`, or any failure fetching the
+/// settings, resolves to every field `null` — the receipt then renders
+/// exactly as it did before this task (falling back to the bundled logo,
+/// no header/footer, 80mm), as `buildReceiptHtml`/`buildRefundReceiptHtml`
+/// already handle safely.
+Future<({String? header, String? footer, String? logoUrl, double? paperWidthMm})>
 _loadReceiptBranding({
   required PosSettingsGateway settingsGateway,
   required String? companyId,
 }) async {
-  if (companyId == null) return (header: null, footer: null, logoUrl: null);
+  if (companyId == null) {
+    return (header: null, footer: null, logoUrl: null, paperWidthMm: null);
+  }
   try {
     final settings = await settingsGateway.effectiveCompanySettings(
       companyId: companyId,
@@ -1983,6 +1995,7 @@ _loadReceiptBranding({
         _receiptHeaderSettingKey,
         _receiptFooterSettingKey,
         _brandingLogoSettingKey,
+        _receiptPaperWidthSettingKey,
       ],
     );
     String? pick(String key) =>
@@ -1994,9 +2007,10 @@ _loadReceiptBranding({
       // An empty string means "configured then cleared" — treat exactly
       // like unset, never render a broken `<img src="">`.
       logoUrl: (logoUrl == null || logoUrl.isEmpty) ? null : logoUrl,
+      paperWidthMm: double.tryParse(pick(_receiptPaperWidthSettingKey) ?? ''),
     );
   } on Object {
-    return (header: null, footer: null, logoUrl: null);
+    return (header: null, footer: null, logoUrl: null, paperWidthMm: null);
   }
 }
 
@@ -2056,6 +2070,7 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
   String? _headerText;
   String? _footerText;
   String? _logoUrl;
+  double? _paperWidthMm;
 
   @override
   void initState() {
@@ -2074,6 +2089,7 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
       _headerText = branding.header;
       _footerText = branding.footer;
       _logoUrl = branding.logoUrl;
+      _paperWidthMm = branding.paperWidthMm;
     });
   }
 
@@ -2119,6 +2135,7 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
     final html = buildReceiptHtml(
       receipt: receipt,
       logoDataUri: logoDataUri,
+      paperWidthMm: _paperWidthMm ?? 80,
       customerDisplayName: widget.customerDisplayName,
       note: widget.note,
       headerText: _headerText,
@@ -3225,6 +3242,14 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     settingsGateway: settingsGateway,
                   ),
+                  // TASK 16.7B: real thermal-printer paper-width config +
+                  // zero-side-effect print test — see
+                  // `pos_printer_settings_screen.dart`'s own doc comment
+                  // for the V1 browser-print architecture decision.
+                  PosModule.printerSettings => PosPrinterSettingsScreen(
+                    context: this.context,
+                    settingsGateway: settingsGateway,
+                  ),
                   // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real
                   // deterministic FAQ bot over live data.
                   PosModule.assistant => PosAssistantScreen(
@@ -3911,10 +3936,18 @@ class _DashboardCashSessionRow extends StatelessWidget {
   }
 }
 
-/// Read-only "Punto de Venta" foundation: category strip, search, a product
-/// grid reusing the same load/empty/error states as the other modules, and a
-/// persistent ticket panel frame. No cart, pricing, or checkout behavior is
-/// implemented — see docs/AS_POS_READ_ONLY_SHELL.md.
+/// "Punto de Venta" — category strip, search, product grid, and the real,
+/// permission-gated interactive ticket panel (cart, pricing, discounts,
+/// checkout). TASK 16.7B removed the stale `_PosReadOnlyBar` "Punto de
+/// Venta · solo lectura" strip this class used to render unconditionally
+/// above `_PosSaleBody`: it was a leftover from this screen's earliest
+/// (genuinely read-only) scaffold and was never gated on anything —
+/// permission denial is already handled correctly below by
+/// `_PermissionState`, and real, specific readiness messaging (missing
+/// branch, no open cash session for a cash sale, etc.) is already surfaced
+/// at the exact moment it matters inside `_PosSaleBody`/`_PosCobrarButton`
+/// — so the bar was actively misleading (always visible regardless of
+/// real state) rather than informative.
 class _PosSale extends StatefulWidget {
   const _PosSale({
     required this.context,
@@ -4239,10 +4272,6 @@ class _PosSaleState extends State<_PosSale> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.only(bottom: 10),
-            child: _PosReadOnlyBar(),
-          ),
           Expanded(
             child: !allowed
                 ? const _PermissionState()
@@ -4297,35 +4326,6 @@ class _PosSaleState extends State<_PosSale> {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Compact read-only status strip. The canonical `#p-pos` screen carries no
-/// page title or description — replicating that density means the shell's
-/// own read-only disclosure has to fit in a single slim row instead of the
-/// admin-page `_SectionHeader` treatment used by Dashboard/Products/etc.
-class _PosReadOnlyBar extends StatelessWidget {
-  const _PosReadOnlyBar();
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return Row(
-      children: [
-        Icon(Icons.visibility_outlined, size: 15, color: palette.textMuted),
-        const SizedBox(width: 6),
-        Text(
-          'Punto de Venta · solo lectura',
-          style: TextStyle(
-            color: palette.textSecondary,
-            fontWeight: FontWeight.w700,
-            fontSize: 12,
-          ),
-        ),
-        const Spacer(),
-        const _VisualDialogButton(),
-      ],
     );
   }
 }
@@ -6231,8 +6231,22 @@ class _ClienteTicketFooter extends StatelessWidget {
               label: 'Descuento',
               value: '-${_money(saleSession.displayDiscountTotal)}',
             ),
+          // TASK 16.7B: this used to read "IVA incluido" ("tax included"),
+          // carried over verbatim from the legacy's own `#t-iva` markup for
+          // visual fidelity — but that legacy element was permanently
+          // frozen at `$0.00` (never wired to any real computation). This
+          // platform's real, server-authoritative tax engine
+          // (`pricing.service.ts`'s `applyBasisPoints`) computes IVA
+          // ADDITIVELY on top of `product_prices.amount`, and the database
+          // enforces `total = subtotal - discount + tax` as a CHECK
+          // constraint — i.e. prices are genuinely tax-EXCLUSIVE, not
+          // tax-inclusive. "Incluido" was therefore false. Label now
+          // matches the persisted-sale receipt and refund receipt, which
+          // already correctly said plain "IVA" (`receipt_html.dart`,
+          // `refund_receipt_html.dart`) — one consistent fiscal truth
+          // end-to-end, not a silent change to the actual tax model.
           _TicketTotalRow(
-            label: 'IVA incluido',
+            label: 'IVA',
             value: _money(saleSession.displayTaxTotal),
             muted: true,
           ),
@@ -8059,8 +8073,22 @@ class _TicketFooterState extends State<_TicketFooter> {
               label: 'Descuento',
               value: '-${_money(saleSession.displayDiscountTotal)}',
             ),
+          // TASK 16.7B: this used to read "IVA incluido" ("tax included"),
+          // carried over verbatim from the legacy's own `#t-iva` markup for
+          // visual fidelity — but that legacy element was permanently
+          // frozen at `$0.00` (never wired to any real computation). This
+          // platform's real, server-authoritative tax engine
+          // (`pricing.service.ts`'s `applyBasisPoints`) computes IVA
+          // ADDITIVELY on top of `product_prices.amount`, and the database
+          // enforces `total = subtotal - discount + tax` as a CHECK
+          // constraint — i.e. prices are genuinely tax-EXCLUSIVE, not
+          // tax-inclusive. "Incluido" was therefore false. Label now
+          // matches the persisted-sale receipt and refund receipt, which
+          // already correctly said plain "IVA" (`receipt_html.dart`,
+          // `refund_receipt_html.dart`) — one consistent fiscal truth
+          // end-to-end, not a silent change to the actual tax model.
           _TicketTotalRow(
-            label: 'IVA incluido',
+            label: 'IVA',
             value: _money(saleSession.displayTaxTotal),
             muted: true,
           ),
@@ -9237,9 +9265,8 @@ class _TicketEmptyState extends StatelessWidget {
     final palette = PosPalette.of(context);
     // Matches the canonical `#t-body` default markup exactly: an 84px
     // `--purple3` circle with a shopping-bag glyph and two sparkle
-    // accents, then "Selecciona productos para comenzar". The separate
-    // read-only disclosure lives in `_PosReadOnlyBar`/the info dialog, not
-    // here, so this can mirror V1's copy verbatim.
+    // accents, then "Selecciona productos para comenzar". Mirrors V1's
+    // copy verbatim.
     //
     // `.t-body{flex:1;overflow-y:auto}` in the canonical CSS — the body
     // scrolls rather than overflowing when the ticket panel is short (a
@@ -12733,6 +12760,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
   String? _headerText;
   String? _footerText;
   String? _logoUrl;
+  double? _paperWidthMm;
 
   // TASK 12.8: E081's own eligibility answer — `null` while unresolved
   // (still loading, not attempted, or the actor lacks `refund.read`), in
@@ -12758,6 +12786,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
       _headerText = branding.header;
       _footerText = branding.footer;
       _logoUrl = branding.logoUrl;
+      _paperWidthMm = branding.paperWidthMm;
     });
   }
 
@@ -12857,6 +12886,7 @@ class _SaleDetailDialogState extends State<_SaleDetailDialog> {
     final html = buildReceiptHtml(
       receipt: receipt,
       logoDataUri: logoDataUri,
+      paperWidthMm: _paperWidthMm ?? 80,
       customerDisplayName: widget.customerDisplayName,
       headerText: _headerText,
       footerText: _footerText,
@@ -13440,6 +13470,7 @@ class _RefundFlowDialogState extends State<_RefundFlowDialog> {
       cashier: widget.cashier,
       lineInfoBySaleItemId: lineInfo,
       logoDataUri: logoDataUri,
+      paperWidthMm: branding.paperWidthMm ?? 80,
       headerText: branding.header,
       footerText: branding.footer,
     );
@@ -14232,6 +14263,7 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
   String? _headerText;
   String? _footerText;
   String? _logoUrl;
+  double? _paperWidthMm;
 
   @override
   void initState() {
@@ -14250,6 +14282,7 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
       _headerText = branding.header;
       _footerText = branding.footer;
       _logoUrl = branding.logoUrl;
+      _paperWidthMm = branding.paperWidthMm;
     });
   }
 
@@ -14315,6 +14348,7 @@ class _RefundDetailDialogState extends State<_RefundDetailDialog> {
       cashier: saleReceipt.cashier,
       lineInfoBySaleItemId: _lineInfo,
       logoDataUri: logoDataUri,
+      paperWidthMm: _paperWidthMm ?? 80,
       headerText: _headerText,
       footerText: _footerText,
     );

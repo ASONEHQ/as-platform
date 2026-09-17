@@ -53,6 +53,10 @@ enum PosModule {
   // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer text —
   // see `pos_receipt_branding_screen.dart`.
   receiptBranding('Marca del Ticket', Icons.receipt_long_outlined, 'Sistema'),
+  // TASK 16.7B: real thermal-printer paper-width configuration + a
+  // zero-side-effect "Imprimir ticket de prueba" — see
+  // `pos_printer_settings_screen.dart`.
+  printerSettings('Impresora de Tickets', Icons.print_outlined, 'Sistema'),
   // TASK 14.5 (Wave 3, Phase 7, Item 6): a faithful, real port of the
   // legacy's local keyword/regex FAQ bot — see `pos_assistant_screen.dart`.
   assistant('Asistente', Icons.smart_toy_outlined, 'Sistema');

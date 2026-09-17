@@ -1716,6 +1716,219 @@ process holding port 3000, producing spurious `500`s on an unrelated
 request — confirmed NOT a code defect by restarting cleanly and
 re-verifying instantly green.
 
+## TASK 16.7B — POS Fiscal Correction + Cashier/Printer Readiness (2026-09-17)
+
+Real production testing (AGUA/AGUA-1, $50.00, `IVA_GENERAL`) surfaced two
+concrete issues: the POS ticket showed "IVA incluido $8.00" next to a
+$58.00 total (a semantic contradiction — "included" tax next to an
+additively-computed total), and a "Punto de Venta · solo lectura" label
+sat above a fully-functional, real checkout screen. This task forensically
+audited both, plus cash-register and receipt-printer readiness ahead of a
+physical thermal-printer test.
+
+### A/B/C — Fiscal audit, root cause, and the one real fiscal truth
+
+**Root cause: a mislabeled string, not a computation bug.** The tax
+arithmetic is correct and consistent end to end — backend
+(`pricing.service.ts`'s `applyBasisPoints`), Flutter (`sale_session.dart`,
+mirroring the backend's own quote, never computing independently once one
+arrives), refunds (`refunds.service.ts`, replaying the frozen snapshot),
+the persisted-sale receipt, and the refund receipt all agree: for a
+$50.00, `IVA_GENERAL` (16%) product, `tax = $50.00 × 16% = $8.00`,
+`total = $50.00 + $8.00 = $58.00`. The database itself enforces this
+relationship as a `CHECK` constraint (`sales_arithmetic_ck`:
+`total = subtotal - discount + tax`, mirrored line-by-line by
+`sale_items_line_arithmetic_ck`) — this platform's prices are genuinely
+**tax-EXCLUSIVE** (added on top), not tax-inclusive. The persisted-sale
+receipt and refund receipt already correctly labeled this row plain
+"IVA" (`receipt_html.dart`, `refund_receipt_html.dart`); only the live
+POS ticket footer (`pos_shell.dart`, both CAJERO and CLIENTE) said
+"IVA incluido" — copied verbatim from the legacy's own `.t-foot` markup
+(`AS POS V1.html:1143`, `#t-iva`) for "visual fidelity" when the real tax
+engine was first wired in (TASK 12.3/12.3C). That legacy element was
+itself always a dead `$0.00` placeholder — grep-confirmed exactly one
+reference to `#t-iva` in the entire 14,712-line legacy file, and no
+JavaScript anywhere ever wrote to it. The legacy's real cart total
+function, `updateTot()` (`AS POS V1.html:5491-5506`), had no tax term at
+all: `total = Σ(precio×qty) − discounts`. The legacy's only genuine
+tax-INCLUSIVE extraction (`monto×16/116`) lived in the separate,
+unrelated CFDI-invoice simulation modal, never the real POS cart.
+
+**Decision, per this task's own explicit instruction not to silently
+convert a genuinely tax-exclusive system to tax-inclusive**: the
+computation was left unchanged (correct, and structurally locked in by
+the DB check constraint); the label was fixed to say plain "IVA" —
+matching the persisted-sale and refund receipts exactly, so there is now
+one single fiscal truth end to end, not three divergent labels for the
+same additive computation ("IVA incluido" on the live ticket vs. "IVA" on
+the receipt vs. "IVA" on the refund receipt, before this fix).
+
+**Formula** (unchanged, now honestly labeled):
+`tax = round_half_up(net_subtotal × basis_points / 10000)`,
+`total = subtotal − discount + tax`. `basis_points` is resolved per line
+from the product's own `tax_code` (`IVA_GENERAL` → 1600, `IVA_EXEMPT` →
+0) via `ivaBasisPointsForTaxCode()` — never a bare `0.16` literal
+scattered through calculation code; both real, distinct rates (16% and
+0%) are exercised by this session's fiscal tests.
+
+**Financial truth chain, verified end to end**: `product_prices.amount`
+(catalog) → `sales.service.ts` resolves it as `unitPriceUnits`, never
+trusting anything from the client (`SaleBody`, `sales.routes.ts`, has no
+`subtotal`/`tax_total`/`total` field at all — it is structurally
+impossible for a client to send one) → `pricing.service.ts` computes
+subtotal/discount/tax/total server-side → persisted onto `sales`/
+`sale_items`, including a frozen `unit_price` and `tax_snapshot`
+(`{tax_code, basis_points}`) per line → the receipt renders exactly those
+persisted values → a refund re-derives its own totals from the frozen
+`unit_price`/`tax_snapshot`, never today's live catalog price/rate → cash
+close and reports read the same persisted `sales.subtotal/tax_total/
+total` columns directly, with no independent recomputation anywhere.
+**Historical snapshot behavior, proven by real tests (not just code
+reading)**: a later product price change never alters an
+already-recorded sale (pre-existing test, TASK 16.6C); a later `tax_code`
+reclassification (e.g. `IVA_GENERAL` → `IVA_EXEMPT`) likewise never
+alters an already-recorded sale's frozen `tax_total`/`tax_snapshot` — new
+test added this task (`sales.integration.test.ts`, "a later tax_code
+change never alters an already-recorded sale").
+
+### E — "Punto de Venta · solo lectura": real root cause
+
+Not a permission, register, cash-session, branch-access,
+device-registration, configuration, backend-readiness, or feature-flag
+gate of any kind. It was `_PosReadOnlyBar`, a small widget unconditionally
+rendered above the real ticket screen (`_PosSaleBody`) regardless of any
+state — a leftover from this screen's earliest, genuinely-read-only
+scaffold (TASK 12.2C), never removed once the screen became fully
+interactive. Its own companion dialog even asserted, in its static text,
+"Esta base visual no permite ventas, pagos, cambios de inventario ni
+otras transacciones" — false for years by the time this task found it.
+The REAL gating that already existed and was already correct sits right
+below where the stale bar was: `_PermissionState` for a missing
+`sale.read`-family permission, and specific, accurate messages surfaced
+at the exact moment they matter inside the checkout flow itself — e.g.
+"Abre la caja para comenzar a cobrar en efectivo." when a cash payment is
+attempted with no open cash-register session (checked client-side for a
+fast, honest message, and independently enforced server-side via a real
+409 `cash_session_required` regardless — defense in depth, never the only
+guard). **Fix**: removed the stale bar and its always-wrong dialog copy
+entirely (the reusable `_VisualDialogButton` itself is left intact — a
+separate, still-accurate copy of it remains on the Dashboard's own
+header). No gate was removed; a fake, unconditional one was.
+
+### F — Cash-register readiness for a real sale
+
+Audited and confirmed already correctly built: opening a session
+requires picking a real register at the current branch and entering a
+real opening float; a cash payment cannot be confirmed without an open
+session (client pre-check + authoritative server-side 409); a card
+payment has no such requirement (no drawer involved, correctly not
+gated); a cash refund has the identical gate. No dangerous auto-creation
+of any financial state exists anywhere in this path. This task did not
+need to build new onboarding — the existing "Abre la caja..."/"No hay
+una caja abierta..." messages already name the exact missing
+precondition, satisfying the task's "no genérico 'solo lectura'"
+requirement once the unrelated stale bar (item E) was out of the way.
+
+### G/H/I — Receipt/printer readiness
+
+**What already existed and is real** (confirmed, not assumed): the
+printing MECHANISM — `buildReceiptHtml`/`buildRefundReceiptHtml`
+(`receipt_html.dart`/`refund_receipt_html.dart`) build a complete,
+self-contained HTML document (business/branch, folio, date/time, cashier,
+customer, items, subtotal/discounts/IVA/TOTAL, payment method/cash
+received/change, tenant header/footer text, tenant logo, a fixed
+"not a CFDI" disclaimer) which `openReceiptPrintWindow`
+(`receipt_print_web.dart`) opens in a genuinely new browser tab and hands
+to the real OS/browser print dialog via `window.print()` — a direct,
+deliberate `package:web` port of the legacy's own real
+`imprimirTicketActual()` (`AS POS V1.html:12187-12259`), not a
+reimplementation from scratch. Real, working reprint exists from Sale
+Detail/Refund Detail (idempotent, read-only, proven never to create a
+second payment/sale/inventory movement). Tenant logo/header/footer
+branding (`branding.logo_url`, `receipts.header_text`/`footer_text`) was
+already real and already wired into every print call site.
+
+**What was genuinely fake in the legacy and correctly NOT rebuilt**: the
+legacy's own hardware-config tab (`#cfg-hardware`) was a 100% fabricated
+device list (hardcoded "EPSON TM-T20III · Conectada" badges, "Verificar"
+just showed a toast) — no real WebUSB/WebSerial/device API call existed
+anywhere in the 14,712-line legacy file. The legacy's F4 reprint flow
+(`reimprimirTicketById`) was ALSO fake — it found the sale, showed a toast
+"Reimprimiendo ticket #X...", and never actually printed anything; the
+modern reprint (Sale Detail → Reimprimir) is a real, working replacement
+for that specific broken legacy capability.
+
+**What was genuinely missing and this task closed**: a place to
+configure the real, physical paper width (58mm/80mm — a hardware fact,
+not a preference) and a safe way to verify a freshly-connected printer
+before trusting it with a real sale. Added: `receipts.paper_width_mm`
+(new `settings.catalog.ts` entry, closed `58`/`80` allowlist,
+`branchOverride: true` since different branches/parks can run different
+physical printers), `PosPrinterSettingsScreen` ("Sistema → Impresora de
+Tickets"), and a real "Imprimir ticket de prueba" button wired to a new,
+dedicated `buildTestPrintHtml` (`test_print_html.dart`) — deliberately
+NOT the real `buildReceiptHtml` (whose `displaySaleFolio` always prefixes
+`"SALE-"`, which would make a synthetic test print look like a real sale
+folio); the test print instead reuses only the same width/typography/
+margin CSS for a faithful physical preview, wrapped in an unmissable
+"PRUEBA DE IMPRESIÓN — NO ES UNA VENTA" banner top and bottom, and is
+structurally incapable of a financial side effect — the screen holds no
+reference to any sales/cash/inventory gateway at all.
+
+### H — Architecture decision for V1
+
+Per the task's own explicit guidance, and matching what this codebase's
+`ADR-0012` had already committed to before this task existed: **browser
+print → OS print dialog → operator selects the ticketera already
+installed in Windows**. No WebUSB/WebSerial direct device connection and
+no local native print-agent was built. This works with any thermal (or
+regular) printer Windows can already print to, at either 58mm or 80mm —
+no printer model, VID/PID, IP, USB port, or Windows printer name is
+hardcoded anywhere. **Left open for a future local print agent**: silent
+printing (no browser print dialog), true ESC/POS raw device control, and
+automatic paper cutting — none of which this V1 needs, and none of which
+this task built prematurely. The one, narrow interface a future agent
+would need to satisfy is already the exact shape this task built around:
+"take a self-contained HTML/receipt document, print it" — `receipt_
+print_web.dart`'s `openReceiptPrintWindow` already isolates that
+boundary; a future agent-based implementation is a second implementation
+of the same contract, not a rewrite of the screens that call it.
+
+### K — Legacy parity matrix (printing / cash / hardware)
+
+| Legacy capability | Legacy evidence | Classification | Modern equivalent | Decision |
+|---|---|---|---|---|
+| Print current ticket | `imprimirTicketActual()` (`AS POS V1.html:12187-12259`) — real `window.open`+`document.write`+`window.print()` | **A** | `buildReceiptHtml` + `openReceiptPrintWindow` (`receipt_html.dart`, `receipt_print_web.dart`) — same real mechanism, more content fields | Already closed (ADR-0012) |
+| F4 reprint | `reimprimirTicketById()` (`AS POS V1.html:6057-6061`) — finds the sale, shows a fake toast, never prints | **G** | Sale Detail/Refund Detail "Reimprimir" — a real, idempotent, read-only reprint of the same document | Closed correctly — legacy's own fake mechanism NOT reproduced; the real capability (see something you already sold) is |
+| Cierre de caja print (corte) | `generarCorteImpreso()` (`AS POS V1.html:10515-10569`) — real `window.print()` on the running app's own DOM | **A** | Existing cash-close/report screens (out of this task's scope to re-verify; not touched) | Unchanged |
+| Cobrar blocked without open caja | `cobrar()` (`AS POS V1.html:5757-5762`) — real, client-side only | **H, modernized** | Client pre-check (fast UX) **and** authoritative server-side 409 `cash_session_required` — the legacy had only the weaker, spoofable client-side version | Already closed |
+| Efectivo recibido / cambio | `cobrar()` (`AS POS V1.html:5769-5776`) — real | **A** | `PaymentsService`, persisted per payment, rendered on every receipt | Already closed |
+| Hardware config screen (printer/scale/scanner/terminal) | `#cfg-hardware` (`AS POS V1.html:2970-2978`) — 100% fake hardcoded device list, "Verificar" just toasts | **G** | `PosPrinterSettingsScreen` (real paper-width setting + real test print) — deliberately NOT a fake device-status list | Closed this task, without reproducing the fiction |
+| Ticket header/footer/logo config | `#cfg-ticket` (`AS POS V1.html:2959-2968`) — real, localStorage-only, genuinely read by the real print function | **A** | `receipts.header_text`/`footer_text`/`branding.logo_url` (`settings.catalog.ts`), real company-scoped Postgres persistence, `PosReceiptBrandingScreen` | Already closed (TASK 14.5 Wave 3) |
+| Paper width (58mm/80mm) | Not present in legacy at all (single, unspecified paper assumption) | **N** (no legacy equivalent) | `receipts.paper_width_mm` — a genuine modern-only capability, needed because this platform now targets real, varied hardware across multiple tenants/parks | New this task |
+| "IVA incluido" ticket label | `.t-foot` markup (`AS POS V1.html:1143`) — dead, always `$0.00`, cosmetic only | **G** (the label itself was decorative/fake) | Real, correct "IVA" label matching the receipt | Fixed this task |
+| "Punto de Venta · solo lectura" bar | No legacy equivalent — an AS Platform-only artifact from its own earliest scaffold phase | **N/A** (not a legacy port at all) | Removed — the screen it sat on has been fully real and interactive for many tasks already | Fixed this task |
+
+### L — Tests and regression
+
+New/updated: `pos_shell_test.dart` (ticket-footer "IVA" label, unchanged
+read-only-notice mechanism for genuinely-unimplemented controls still
+passes), `sales.integration.test.ts` (tax-rate-change-after-sale
+snapshot), `settings.test.ts` (catalog now 16 keys), `pos_printer_
+settings_test.dart` (new — load/save/permission-gating/zero-side-effect
+print test), `test_print_html_test.dart` (new — pure builder tests
+proving the banner, absence of any `SALE-`-prefixed folio, and real
+configured width/branch/cashier/branding). Existing coverage already
+closed items D1-D7/D9-D11 of this task's own fiscal test checklist
+(server-authoritative pricing, `IVA_EXEMPT` as a genuine second rate,
+multi-line quantities, discount+tax interaction in `pricing.service.
+test.ts`, round-half-up arithmetic, price-change history, refund
+snapshot fidelity, receipt label/amount assertions, and reports reading
+persisted sale totals directly) — not duplicated. Full backend unit,
+backend integration (real PostgreSQL), Flutter test, `flutter analyze`,
+and a production web build were all run; see this task's own final
+report for exact counts.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

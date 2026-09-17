@@ -1617,4 +1617,94 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
     ]);
     await database.pool.query('delete from products where company_id=$1 and id=$2', [companyId, historyProductId]);
   });
+
+  // TASK 16.7B (fiscal forensic audit item D8): a later change to a
+  // product's tax classification (`products.tax_code`) must never alter
+  // an already-recorded sale's own frozen `tax_snapshot` — mirrors the
+  // price-change test immediately above, for tax rate instead of price.
+  // `sale_items.taxSnapshot` (`{tax_code, basis_points}`, set once at sale
+  // creation — `sales.service.ts`) is exactly the mechanism that makes
+  // this true; this test proves it end to end, not just by code reading.
+  it('a later tax_code change never alters an already-recorded sale — a new sale after the change uses the new rate (TASK 16.7B)', async () => {
+    const products = new ProductCatalogService(new ProductCatalogRepository(database));
+    const created = await products.createProduct(context, 'tax-history-sale-product', {
+      code: 'tax-history-sale',
+      name: 'Tax History Sale Product',
+      productType: 'simple',
+      tracksInventory: false,
+      taxCode: 'IVA_GENERAL',
+      status: 'active',
+      defaultVariant: {
+        sku: 'tax-history-sale',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        standardCost: '0',
+        currencyCode: 'MXN',
+      },
+    });
+    const taxHistoryProductId = created.value.id;
+    await products.createProductPrice(context, taxHistoryProductId, 'tax-history-initial-price', {
+      amount: '100.00',
+      currencyCode: 'MXN',
+    });
+
+    // A real sale, recorded while the product is still IVA_GENERAL (16%).
+    const oldSale = await sales.createSale(context, branchIds, 'tax-history-old-sale', {
+      branchId,
+      items: [{ productId: taxHistoryProductId, quantity: '1' }],
+    });
+    expect(oldSale.value.items[0]).toMatchObject({ taxTotal: '16.0000' });
+    expect(oldSale.value.sale).toMatchObject({ subtotal: '100.0000', taxTotal: '16.0000', total: '116.0000' });
+
+    // Re-classify the product as tax-exempt — a genuinely later context,
+    // mirroring the price-change test's own reasoning for why this must
+    // not reuse the shared fixed `context.timestamp`.
+    const laterContext = { ...context, timestamp: new Date(context.timestamp.getTime() + 60_000) };
+    await products.patchProduct(laterContext, taxHistoryProductId, created.value.version, {
+      taxCode: 'IVA_EXEMPT',
+    });
+
+    // A new sale, created AFTER the reclassification, is genuinely
+    // tax-exempt.
+    const newSale = await sales.createSale(laterContext, branchIds, 'tax-history-new-sale', {
+      branchId,
+      items: [{ productId: taxHistoryProductId, quantity: '1' }],
+    });
+    expect(newSale.value.items[0]).toMatchObject({ taxTotal: '0.0000' });
+    expect(newSale.value.sale).toMatchObject({ subtotal: '100.0000', taxTotal: '0.0000', total: '100.0000' });
+
+    // The historical sale's own line and its frozen tax_snapshot are
+    // untouched — re-read fresh from the database, not from any
+    // in-memory value captured earlier.
+    const reread = await database.pool.query<{ tax_total: string; tax_snapshot: { tax_code: string; basis_points: number } }>(
+      'select tax_total, tax_snapshot from sale_items where company_id=$1 and sale_id=$2',
+      [companyId, oldSale.value.sale.id],
+    );
+    expect(reread.rows[0]?.tax_total).toBe('16.0000');
+    expect(reread.rows[0]?.tax_snapshot).toEqual({ tax_code: 'IVA_GENERAL', basis_points: 1600 });
+
+    // Cleanup — this test creates its own product outside the shared
+    // beforeAll/afterAll fixtures.
+    await database.pool.query('delete from sale_items where company_id=$1 and sale_id=any($2::uuid[])', [
+      companyId,
+      [oldSale.value.sale.id, newSale.value.sale.id],
+    ]);
+    await database.pool.query('delete from sales where company_id=$1 and id=any($2::uuid[])', [
+      companyId,
+      [oldSale.value.sale.id, newSale.value.sale.id],
+    ]);
+    await database.pool.query('delete from product_prices where company_id=$1 and product_id=$2', [
+      companyId,
+      taxHistoryProductId,
+    ]);
+    await database.pool.query('delete from product_variants where company_id=$1 and product_id=$2', [
+      companyId,
+      taxHistoryProductId,
+    ]);
+    await database.pool.query('delete from idempotency_keys where company_id=$1 and key like $2', [
+      companyId,
+      'tax-history-%',
+    ]);
+    await database.pool.query('delete from products where company_id=$1 and id=$2', [companyId, taxHistoryProductId]);
+  });
 });

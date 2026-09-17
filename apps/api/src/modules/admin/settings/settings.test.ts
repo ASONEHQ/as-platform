@@ -14,12 +14,14 @@ describe('settings catalog', () => {
   // TASK 13.0 added `customers.default_country_code` (Part C) — 13 → 14.
   // TASK 14.5A added `branding.logo_url` (legacy parity for
   // `AS POS V1.html`'s operator-uploaded business logo) — 14 → 15.
-  it('defines the closed public version 1 catalog with 15 unique keys', () => {
+  // TASK 16.7B added `receipts.paper_width_mm` (thermal-printer readiness:
+  // real 58mm/80mm paper width driving `buildReceiptHtml`) — 15 → 16.
+  it('defines the closed public version 1 catalog with 16 unique keys', () => {
     expect(SETTINGS_CATALOG_VERSION).toBe(1);
-    expect(settingsCatalog).toHaveLength(15);
-    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(15);
+    expect(settingsCatalog).toHaveLength(16);
+    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(16);
     expect(settingsCatalog.map((definition) => definition.public)).toEqual(
-      Array.from({ length: 15 }, () => true),
+      Array.from({ length: 16 }, () => true),
     );
   });
 
