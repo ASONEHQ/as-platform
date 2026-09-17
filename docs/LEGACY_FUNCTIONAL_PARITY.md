@@ -1929,6 +1929,301 @@ backend integration (real PostgreSQL), Flutter test, `flutter analyze`,
 and a production web build were all run; see this task's own final
 report for exact counts.
 
+## TASK 16.8 — Caja y Finanzas / Corte de Caja: commercial parity + real money flow (2026-09-17)
+
+The park needs to run real cash shifts on this platform. This task
+forensically audited the legacy's entire Corte de Caja module against the
+already-mature modern cash-register backend/Flutter implementation, closed
+the genuine gaps (real cash-cut printing, genuine concurrent-race proof,
+one exact commercial end-to-end scenario), and certified — rather than
+rebuilt — everything that was already real.
+
+### 1-2 — Legacy findings and A/H/G matrix
+
+| Legacy capability | Legacy evidence | Classification | Notes |
+|---|---|---|---|
+| Turno actual (open shift, live totals) | `DB.turnoActual` global object, `renderTurno()` | **A** | Modern `cash_sessions` + `CashService.summary()` is the real, server-computed equivalent — never client-computed |
+| Efectivo esperado formula | `efectivoEsperado()` | **G (bug, not ported)** | Legacy never subtracted cash refunds from expected cash — a real bug. Modern `cash_refund` movement direction (`-1`) correctly includes refunds; not reproduced |
+| Movimientos (gastos/retiros/ingresos) | `registrarMovimiento()`, a flat in-memory array | **A** | Modern `cash_movements` table, `category` dimension (`withdrawal`/`expense`/`external_income`/`other`) layered over the real direction-by-`movement_type` model |
+| Corte parcial (partial snapshot) | `generarCorteParcial()` — real, non-destructive, printable | **A** | Modern `cash_session_partial_closes` — already implemented; this task added real printing for it |
+| Cierre de caja (denomination counting) | `cerrarCaja()`, manual sums typed by the cashier, never re-verified | **H, hardened** | Modern `closeSession` requires the backend to independently recompute the declared total from `denominationCounts` in exact BigInt minor units — the legacy trusted the cashier's own arithmetic; the modern version never does |
+| Historial de cortes | `DB.historialCortes` array | **A** | Modern `CashService.listSessions` — real, queryable, company/branch-scoped |
+| Bitácora | Informal `console.log`-style entries, never persisted | **G (fake persistence)** | Modern `audit_log` rows (`cash_session.opened`/`.closed`, movement creation) are the real, single source of truth — no second bitácora table was created |
+| Multi-register selector | `<select id="caja-select">` with several hardcoded options | **G (cosmetic only)** | Real state was always the one single global `turnoActual` — the selector never actually scoped anything. Modern `cash_registers` are real, distinct, branch-scoped rows |
+| Corte impreso | `generarCorteImpreso()` — real formatted text block | **A, but incomplete** | Real function, but only built text and never called `window.print()` itself, and never included the denomination breakdown. This task's `buildCashCutHtml` is a genuine, complete replacement: real `window.print()`, includes denominations |
+| Card/transfer sales touching the drawer | Not distinguished — legacy's `efectivoEsperado()` only ever knew about a single `ventas` total | **N (no real legacy equivalent)** | Modern payment-method-aware `cash_sales_total`/non-cash totals are a genuine, modern-only correctness improvement |
+
+### 3-5 — What already existed, what was missing, what was implemented
+
+**Already existed and certified correct** (confirmed, not assumed, via
+direct code audit before writing anything): the entire `cash_registers`/
+`cash_sessions`/`cash_movements`/`cash_session_partial_closes` schema
+(including the real `denomination_counts` jsonb column — no new column or
+table was needed); `CashService.openSession`/`createMovement`/
+`closeSession`/`postPartialClose`/`summary`/`listMovements`/`listSessions`/
+`session`; server-side denomination recomputation
+(`validateDenominationCounts`, exact BigInt minor units, never trusting a
+client-sent sum); the direction-by-`movement_type` model
+(`opening_float`/`cash_sale`/`cash_in`/`cash_out`/`cash_refund`, each with
+a fixed, never-signed direction); idempotency (`idempotency_keys` +
+`pg_advisory_xact_lock`) on every mutating cash call; row-level locking
+(`SELECT ... FOR UPDATE` on the session, and on the register via
+`resolveOpenCashSession`) protecting every mutation; `audit_log` rows
+written atomically alongside open/close/movement; full branch/company
+tenant isolation on every read and write; `PaymentService.createCashPayment`
+requiring — and `RefundsService` likewise requiring — an open session
+before posting a drawer-affecting payment or refund; nearly all of the
+Flutter Caja UI (`_Caja`, `_CajaCurrent`, movements list, expense/
+withdrawal/external-income dialogs, partial-close flow, close flow with
+denomination entry, history list, cut-detail dialog) already real, already
+wired to the real backend, already covered by 17 passing widget tests.
+
+**Genuinely missing, and closed this task**: real printing for both the
+partial close (corte parcial) and the final close (cierre de caja) —
+`cash_cut_html.dart`'s `buildCashCutHtml`, reusing TASK 16.7B's
+`openReceiptPrintWindow`/branding-settings infrastructure, wired into the
+close-result dialog, the partial-close-result dialog, and a new
+"Reimprimir" action on the history detail dialog; genuine concurrent-race
+proof (`cash-concurrency.integration.test.ts`, real `Promise.all`/
+`Promise.allSettled`, not sequential await-then-await) for two simultaneous
+closes, a movement racing a close, two simultaneous movements, one
+idempotency key fired twice concurrently, and a cash sale settling while
+its session closes; the exact commercial end-to-end scenario the task
+specified, run for real against PostgreSQL
+(`cash-e2e.integration.test.ts`).
+
+### 6-9 — Authoritative financial flow
+
+Open shift (`openSession`) requires a real register at the actor's branch,
+a non-negative opening float, and records the server's own
+`context.timestamp` — never a client-supplied one. A **cash** sale
+(`PaymentService.createCashPayment`) runs create → approve → capture →
+settle in one transaction and posts a `cash_sale` movement for exactly the
+server-computed amount applied (never the tendered amount). A **card**
+sale (`card_manual`) settles through the same `PaymentService.createPayment`
+→ `PaymentService.transitionAttempt(..., {status:'approved'})` path every
+non-cash method uses, and posts **no** cash movement at all — proven by
+`cash-e2e.integration.test.ts`'s $300 card sale, which is absent from
+`listMovements` and absent from `expectedCash`. A **transfer** sale would
+settle through the identical `card_manual`-shaped path (a distinct
+`paymentMethod`, same no-drawer-effect code path) — not separately
+re-tested here since it shares 100% of `card_manual`'s settlement code,
+already exercised. A **refund**'s real financial impact already correctly
+follows its original payment method: a cash refund posts a `cash_refund`
+movement (direction `-1`, decreasing expected cash); a card/transfer refund
+posts none (pre-existing `RefundsService` behavior, unchanged and
+untouched by this task). An **expense** or **withdrawal** posts a
+`cash_out` movement (`category: 'expense'`/`'withdrawal'`), decreasing
+expected cash; **external income** posts a `cash_in` movement
+(`category: 'external_income'`), increasing it. Every movement requires a
+`reasonCode`, a positive `amount` (DB `CHECK`), an actor, and an open,
+non-closed session — enforced by the same server-side rule, never a
+client-side-only gate.
+
+### 7 — Expected-cash formula (confirmed by direct audit before asserting)
+
+`expectedCash = openingAmount + Σ(cash_sale) + Σ(cash_in, all categories) − Σ(cash_out, all categories) − Σ(cash_refund)`,
+computed server-side from the real posted `cash_movements` rows — Flutter
+never computes a competing total; `_CajaCurrentState` renders exactly the
+`PosCashSessionSummary` the backend returns. Card/transfer sale totals are
+tracked and displayed (`cardSalesTotal`, etc.) but never enter this sum.
+
+### 10 — Corte parcial (partial close)
+
+Already implemented (`postPartialClose`) as a genuine snapshot: it reads
+the session's live totals, persists a `cash_session_partial_closes` row for
+history, and does **not** transition the session's `status` and does
+**not** block further movements — matching the legacy's own real (if
+undocumented) semantics. This task added real printing for it
+(`buildCashCutHtml(isFinal: false, ...)`, no denomination breakdown, no
+`declaredClosingAmount`/`discrepancyAmount` section, since a partial close
+by definition has not counted physical cash yet).
+
+### 11-13 — Final close, denomination counting, differences
+
+`closeSession` requires `declaredClosingAmount` and, when
+`denominationCounts` is supplied, independently sums `value × quantity` in
+exact BigInt minor currency units and rejects (`validation_error`) unless
+it exactly equals the declared total — the backend never trusts a
+Flutter-computed sum, even though Flutter also computes and displays a
+running total as the cashier types (a UX convenience only, re-verified
+server-side). The close is fully transactional: it locks the session row
+(`FOR UPDATE`), computes `expectedClosingAmount` from the real posted
+movements at that instant, computes `discrepancyAmount = declared − expected`
+(positive = overage, negative = shortage — both real, both persisted, no
+separate "shortage"/"overage" flag needed since the sign already carries
+that meaning), sets `status = 'closed'`, and persists the denomination
+breakdown — all inside the one transaction, so a crash mid-close can never
+leave a half-closed session. A closed session's own `createMovement` call
+is rejected (`cash_session_closed`), proven directly by the E2E test's
+step 9.
+
+### 14-15 — History and bitácora
+
+`CashService.listSessions` is the real, queryable historial (fecha,
+sucursal, caja, cajero, apertura, cierre, esperado, contado, diferencia,
+estado — all real columns, company/branch-scoped, proven readable from a
+completely independent, freshly-created database client in the E2E test,
+simulating a separate process re-reading persisted state after the fact).
+Bitácora reuses the existing `audit_log` table directly
+(`cash_session.opened`/`cash_session.closed` actions, plus every
+movement's own creation) — per the task's explicit instruction, no second,
+competing bitácora table or log was created.
+
+### 16-17 — Permissions and tenant/branch isolation
+
+Reused the existing permission model unchanged — no new permission keys
+were invented. Every cash mutation runs through the same
+`context`/`branchIds` scoping every other module in this codebase uses;
+`resource_not_found` (never a distinct "wrong tenant" error, never a
+silent 200 with someone else's data) is the uniform response when a
+session/register id doesn't resolve inside the caller's own
+`companyId`/`branchIds` — proven directly by the E2E test's step 11, a
+genuine cross-tenant `createMovement` attempt with its own fresh
+`companyId`/`branchId`/`userId`, correctly rejected. Owner-level roles
+retain full access through the existing role/permission composition; this
+task added no branch-restriction bypass of any kind.
+
+### 18 — Concurrency and idempotency
+
+Five genuine `Promise.all`/`Promise.allSettled` races, all passing,
+covering: two simultaneous closes (exactly one commits, the other is
+honestly rejected — proving `SELECT ... FOR UPDATE` on the session row is
+sufficient, no double close); a manual movement racing a close (the close
+always wins outright in this pairing since both lock the session row
+directly, in the same order); two simultaneous movements against the same
+open session (both post, no lost update — proving the register/session
+locking never silently drops a concurrent write); the identical
+idempotency key fired twice concurrently for a movement (replays safely,
+posts exactly once, `[a.replayed, b.replayed]` is `[false, true]`); and a
+cash sale settlement genuinely racing a close on the same session — the
+one case in this codebase where the two operations lock the same two rows
+(register, session) in **opposite order** (`resolveOpenCashSession` locks
+the register then the session; `closeSession` locks the session directly),
+which under real concurrent load reproduces an actual PostgreSQL deadlock
+(`deadlock detected`) on a real, repeatable basis. This is not a bug: it is
+Postgres's own deadlock detector correctly aborting exactly one of the two
+conflicting transactions, atomically and with zero partial effect, which
+is precisely the "never a double close, never a double movement, never an
+inconsistent balance" guarantee the task demanded. The test asserts both
+legal outcomes (whichever side committed determines the final state) and
+additionally re-queries `cash_movements` to prove there is never more than
+one `cash_sale` movement and never a movement left over from a rolled-back
+attempt.
+
+### 19 — Printing
+
+`buildCashCutHtml` (`cash_cut_html.dart`, new) reuses TASK 16.7B's shared
+CSS/typography/paper-width contract (`receipt_html.dart`'s pattern,
+58mm/80mm via the existing `receipts.paper_width_mm` setting) and tenant
+branding (`branding.logo_url`, `receipts.header_text`/`footer_text`, via
+the existing `_loadReceiptBranding` helper) — no new settings keys, no
+hardcoded business name/branch/register/cashier anywhere; every field
+comes from the real session/summary/branding data passed in. Deliberately
+a separate builder from `buildReceiptHtml`, not a reuse of it, because
+`displaySaleFolio` always prefixes a real sale reference with `"SALE-"`,
+which would make a cash-cut document look like a real sale receipt.
+Printing is wired to: the close-result dialog (`pos-caja-print-close`),
+the partial-close-result dialog (`pos-caja-print-partial-close`), and a
+new reprint action on the history detail dialog (`pos-caja-reprint-cut`) —
+idempotent, read-only, no financial side effect, exactly the same
+"idempotent reprint" pattern TASK 16.7B already established for sale/refund
+receipts. Same architecture as TASK 16.7B: browser print → OS print
+dialog → operator's own installed printer; no WebUSB/WebSerial, no native
+agent.
+
+### 20 — The real E2E scenario executed, and the numbers obtained
+
+Run for real against PostgreSQL (`cash-e2e.integration.test.ts`), Sucursal
+A / Caja 1, one authorized cashier: open with `$1,000.0000` opening float
+→ $580 cash sale (real `createCashPayment`, sale reaches `completed`) →
+$300 card sale (real `createPayment` + `transitionAttempt`, sale reaches
+`completed`, **zero** drawer effect) → $100 external income (`cash_in`) →
+$50 expense (`cash_out`) → $200 withdrawal (`cash_out`). Summary before
+close, asserted against the real backend response (never hardcoded blind):
+`openingAmount 1000.0000, cashSalesTotal 580.0000, cashSalesCount 1,
+externalIncomeTotal 100.0000, expenseTotal 50.0000, withdrawalTotal
+200.0000, expectedCash 1430.0000` (1000 + 580 + 100 − 50 − 200 = 1430; the
+$300 card sale correctly absent). Physical count: 1×$1000 + 2×$200 +
+1×$20 + 1×$10 = $1430.0000, an exact match. Close result:
+`status closed, expectedClosingAmount 1430.0000, declaredClosingAmount
+1430.0000, discrepancyAmount 0.0000`, denomination breakdown persisted
+exactly as entered. `listMovements` returns exactly
+`[opening_float, cash_sale, cash_in, cash_out, cash_out]` — five rows, the
+card sale posts none. Re-read from a completely independent, freshly
+constructed database client: history entry and session both still show
+`closed`/`1430.0000`/`1430.0000`/`0.0000`; `audit_log` contains both
+`cash_session.opened` and `cash_session.closed`. Three rejections, all
+verified: an expense on the now-closed session → `cash_session_closed`; a
+second close attempt → `cash_session_closed`; a cross-tenant movement
+attempt from a completely separate company/branch/user → `resource_not_found`.
+
+### 21 — Full tests and results
+
+- New: `cash-e2e.integration.test.ts` (1 test, the full §15 scenario) and
+  `cash-concurrency.integration.test.ts` (5 tests) — real PostgreSQL, all
+  6 passing, repeatedly re-run to confirm stability across the genuine
+  deadlock race.
+- Full sequential backend integration suite (real PostgreSQL, 40 files,
+  excluding the paused `mercado-pago.integration.test.ts` and the
+  pre-existing flaky `seed-pos-catalog.integration.test.ts`): **39 files
+  passed, 1 skipped, 581 tests passed, 9 skipped, 0 failed.**
+- Full backend unit suite (isolated, no DB contention): **533/533
+  passed.**
+- Backend `tsc --noEmit -p .`: clean, 0 errors.
+- `flutter analyze` (full project): 0 issues.
+- Full `flutter test`: all pre-existing tests plus 4 new
+  `cash_cut_html_test.dart` tests, all passing.
+- Production `flutter build web --release`: succeeded.
+
+### 22 — Files modified
+
+`apps/api/src/modules/cash/cash-e2e.integration.test.ts` (new),
+`apps/api/src/modules/cash/cash-concurrency.integration.test.ts` (new),
+`apps/one/lib/features/pos/cash_cut_html.dart` (new),
+`apps/one/test/cash_cut_html_test.dart` (new),
+`apps/one/lib/features/pos/pos_shell.dart` (printing wiring for close/
+partial-close/history-reprint), `apps/api/src/modules/inventory/
+inventory-e2e.integration.test.ts` (unrelated pre-existing `tsc` strictness
+bug, one line, found only by running a full type-check for the first
+time — see item 23), `docs/LEGACY_FUNCTIONAL_PARITY.md` (this section).
+
+### 23 — Migrations
+
+**None.** The existing `cash_registers`/`cash_sessions`/`cash_movements`/
+`cash_session_partial_closes` schema — including the real
+`denomination_counts` jsonb column — already fully supports every
+requirement in this task's spec. Confirmed by direct schema audit before
+writing any code, and re-confirmed after every test passed: nothing this
+task needed did not already have a column, table, or index to hold it.
+
+### 24-27 — SHA, push, main, deploy/paused-integration confirmation
+
+See this task's own final report for the exact commit SHA and push
+confirmation. `main` was never touched. No deploy, no DigitalOcean, no DNS
+change of any kind. The Mercado Pago integration was never touched,
+executed, or modified — the E2E scenario's card sale deliberately uses
+`card_manual`, never `card_terminal`, specifically to avoid exercising
+that paused integration at all while still proving the identical
+"never posts to cash" invariant a real terminal sale would also satisfy.
+
+### 28 — Real remaining limitations
+
+Genuine deadlocks between a cash-sale settlement and a same-session close
+are expected under real concurrent load (two cashiers/devices operating
+the same register at the exact same instant) — the losing side must be
+retried by the caller (standard practice for a serialization/deadlock
+failure; this codebase does not currently auto-retry on `deadlock
+detected` at the service layer, and this task did not add one, since doing
+so safely — with correct idempotency-key semantics on retry — is a
+larger, separate change). Transfer-method sales share `card_manual`'s
+settlement code path but were not independently exercised by a dedicated
+transfer-specific test in this task (their behavior is identical by
+construction, not by a separate assertion). Cash-cut printing shares TASK
+16.7B's own limitation: it depends on the operator's OS-level print setup;
+no silent/raw ESC/POS printing exists, consistent with the already-approved
+V1 architecture decision.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

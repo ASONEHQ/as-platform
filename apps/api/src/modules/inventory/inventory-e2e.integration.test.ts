@@ -311,7 +311,12 @@ integration('PostgreSQL inventory end-to-end commercial scenario (TASK 16.7 §14
     // brand-new service/repository instances (simulating a fresh process,
     // not merely a fresh request) proves the same numbers hold.
     const freshDatabase = createDatabaseClient({
-      connectionString: databaseUrl,
+      // `databaseUrl` is narrowed to `string` inside `beforeAll`'s own
+      // guard, not here (a sibling `it` closure) — `exactOptionalPropertyTypes`
+      // correctly flags the unnarrowed `string | undefined` without this
+      // assertion; the module-level `beforeAll` guard already throws
+      // before any test body runs if it were ever actually undefined.
+      connectionString: databaseUrl!,
       applicationName: 'asone-inventory-e2e-reload',
     });
     try {

@@ -65,6 +65,7 @@ import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
 import 'pos_user_administration_screen.dart';
 import 'receipt_html.dart';
+import 'cash_cut_html.dart';
 import 'receipt_print.dart';
 import 'refund_receipt_html.dart';
 import 'sale_folio.dart';
@@ -3129,6 +3130,7 @@ class _Content extends StatelessWidget {
                     key: ValueKey('caja-${this.context.session.branchId}'),
                     context: this.context,
                     cashGateway: cashGateway,
+                    settingsGateway: settingsGateway,
                   ),
                   // TASK 12.8: the pre-reserved `PosModule.returns` slot
                   // ("Devoluciones") — a real, backend-paginated global
@@ -15875,12 +15877,36 @@ String _formatCajaDate(DateTime value) {
   return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year} ${_formatClockTime(value)}';
 }
 
+/// TASK 16.8 — the real, backend-persisted denomination breakdown
+/// (`cash_sessions.denomination_counts`) formatted for the printed corte,
+/// when the cashier used the denomination-count entry rather than a
+/// single total. `null` when no denomination count exists — never a
+/// fabricated breakdown.
+List<CashCutLine>? _denominationLines(PosCashSession session, String currencyCode) {
+  final counts = session.denominationCounts;
+  if (counts == null || counts.isEmpty) return null;
+  return [
+    for (final count in counts)
+      if (count.quantity > 0)
+        CashCutLine(
+          '${_formatMoney(count.value, currencyCode)} x ${count.quantity}',
+          _formatMoney((double.parse(count.value) * count.quantity).toStringAsFixed(4), currencyCode),
+        ),
+  ];
+}
+
 enum _CajaTab { current, history }
 
 class _Caja extends StatefulWidget {
-  const _Caja({super.key, required this.context, required this.cashGateway});
+  const _Caja({
+    super.key,
+    required this.context,
+    required this.cashGateway,
+    required this.settingsGateway,
+  });
   final AuthenticatedContext context;
   final PosCashGateway cashGateway;
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_Caja> createState() => _CajaState();
@@ -15921,9 +15947,17 @@ class _CajaState extends State<_Caja> {
         if (!canRead)
           const _PermissionState()
         else if (_tab == _CajaTab.current)
-          _CajaCurrent(context: widget.context, cashGateway: widget.cashGateway)
+          _CajaCurrent(
+            context: widget.context,
+            cashGateway: widget.cashGateway,
+            settingsGateway: widget.settingsGateway,
+          )
         else
-          _CutHistory(context: widget.context, cashGateway: widget.cashGateway),
+          _CutHistory(
+            context: widget.context,
+            cashGateway: widget.cashGateway,
+            settingsGateway: widget.settingsGateway,
+          ),
       ],
     );
   }
@@ -15936,9 +15970,14 @@ enum _CajaPhase { loading, noRegister, closed, open, failure }
 /// (Caja/Sucursal/Cajero/Abierta/Fondo inicial/Efectivo esperado) plus
 /// Entrada/Salida/Cerrar caja actions and the movement history below.
 class _CajaCurrent extends StatefulWidget {
-  const _CajaCurrent({required this.context, required this.cashGateway});
+  const _CajaCurrent({
+    required this.context,
+    required this.cashGateway,
+    required this.settingsGateway,
+  });
   final AuthenticatedContext context;
   final PosCashGateway cashGateway;
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_CajaCurrent> createState() => _CajaCurrentState();
@@ -16116,9 +16155,88 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => _CloseResultDialog(session: closed),
+      builder: (dialogContext) => _CloseResultDialog(
+        session: closed,
+        onPrint: () => unawaited(
+          _printCashCut(
+            isFinal: true,
+            session: closed,
+            summary: summary,
+            takenAt: null,
+          ),
+        ),
+      ),
     );
     await _load();
+  }
+
+  /// TASK 16.8 — real, zero-side-effect printing for a corte parcial or
+  /// cierre final: reuses TASK 16.7B's exact browser-print infrastructure
+  /// (`openReceiptPrintWindow`, `receipts.paper_width_mm`/`header_text`/
+  /// `footer_text`/`branding.logo_url`, via the SAME `_loadReceiptBranding`
+  /// helper every sale/refund receipt already uses) and the real,
+  /// backend-sourced session/summary figures already on screen — never a
+  /// client-invented total. [session]'s own opened_by/closed_by are raw
+  /// user ids (the backend response carries no display name for either —
+  /// see `PosCashSession`'s own doc comment), so this only ever shows a
+  /// cashier NAME when it is provably the CURRENT actor (right after
+  /// opening/closing/partial-closing their own session) via
+  /// `widget.context.user.displayName`; a historical reprint (a different
+  /// viewer, possibly a different cashier's shift) omits the name rather
+  /// than printing a raw id or guessing.
+  Future<void> _printCashCut({
+    required bool isFinal,
+    required PosCashSession session,
+    required PosCashSessionSummary summary,
+    required DateTime? takenAt,
+    PosCashSessionPartialClose? partialSnapshot,
+    bool namesAreCurrentActor = true,
+  }) async {
+    final branding = await _loadReceiptBranding(
+      settingsGateway: widget.settingsGateway,
+      companyId: widget.context.session.companyId,
+    );
+    if (!mounted) return;
+    double parse(String value) => double.tryParse(value) ?? 0;
+    final otherCashIn = (parse(summary.cashInTotal) - parse(summary.externalIncomeTotal)).toStringAsFixed(4);
+    final otherCashOut =
+        (parse(summary.cashOutTotal) - parse(summary.withdrawalTotal) - parse(summary.expenseTotal)).toStringAsFixed(4);
+    final html = buildCashCutHtml(
+      isFinal: isFinal,
+      businessName: widget.context.currentCompany?.name ?? 'AS ONE POS',
+      branchName: widget.context.currentBranch?.name ?? '',
+      registerName: _selectedRegister?.name ?? '',
+      openedByName: namesAreCurrentActor ? widget.context.user.displayName : '',
+      openedAt: session.openedAt,
+      openingAmount: partialSnapshot?.openingAmount ?? summary.openingAmount,
+      cashSalesTotal: partialSnapshot?.cashSalesTotal ?? summary.cashSalesTotal,
+      cashSalesCount: summary.cashSalesCount,
+      externalIncomeTotal: summary.externalIncomeTotal,
+      withdrawalTotal: summary.withdrawalTotal,
+      expenseTotal: summary.expenseTotal,
+      otherCashInTotal: otherCashIn,
+      otherCashOutTotal: otherCashOut,
+      expectedCash: partialSnapshot?.expectedCash ?? summary.expectedCash,
+      currencyCode: session.currencyCode,
+      takenAt: takenAt,
+      closedByName: isFinal && namesAreCurrentActor ? widget.context.user.displayName : null,
+      closedAt: isFinal ? session.closedAt : null,
+      declaredClosingAmount: isFinal ? session.declaredClosingAmount : null,
+      discrepancyAmount: isFinal ? session.discrepancyAmount : null,
+      denominationLines: isFinal ? _denominationLines(session, session.currencyCode) : null,
+      paperWidthMm: branding.paperWidthMm ?? 80,
+      logoDataUri: branding.logoUrl,
+      headerText: branding.header,
+      footerText: branding.footer,
+    );
+    final opened = openReceiptPrintWindow(html);
+    if (!mounted) return;
+    if (!opened) {
+      _showNotice(
+        context,
+        'El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para imprimir.',
+      );
+    }
   }
 
   /// TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a real mutation (a
@@ -16129,8 +16247,9 @@ class _CajaCurrentState extends State<_CajaCurrent> {
   /// reads `currentSession`, which still reports `status: 'open'`.
   Future<void> _postPartialClose() async {
     final session = _session;
+    final summary = _summary;
     final currencyCode = session?.currencyCode;
-    if (session == null || currencyCode == null) return;
+    if (session == null || summary == null || currencyCode == null) return;
     final snapshot = await showDialog<PosCashSessionPartialClose>(
       context: context,
       builder: (dialogContext) => _PartialCloseDialog(
@@ -16143,8 +16262,19 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) =>
-          _PartialCloseResultDialog(snapshot: snapshot, currencyCode: currencyCode),
+      builder: (dialogContext) => _PartialCloseResultDialog(
+        snapshot: snapshot,
+        currencyCode: currencyCode,
+        onPrint: () => unawaited(
+          _printCashCut(
+            isFinal: false,
+            session: session,
+            summary: summary,
+            takenAt: snapshot.takenAt,
+            partialSnapshot: snapshot,
+          ),
+        ),
+      ),
     );
     // The session's own status is untouched by a partial close — this
     // just re-reads the (still-open) session plus the fresh movement and
@@ -17273,8 +17403,9 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
 /// difference verbatim (never re-derived): zero, shortage (red), or
 /// overage (amber) — matching AS POS V1's own three-state coloring.
 class _CloseResultDialog extends StatelessWidget {
-  const _CloseResultDialog({required this.session});
+  const _CloseResultDialog({required this.session, required this.onPrint});
   final PosCashSession session;
+  final VoidCallback onPrint;
 
   @override
   Widget build(BuildContext context) {
@@ -17345,6 +17476,12 @@ class _CloseResultDialog extends StatelessWidget {
         ),
       ),
       actions: [
+        OutlinedButton.icon(
+          key: const Key('pos-caja-print-close'),
+          onPressed: onPrint,
+          icon: const Icon(Icons.print_outlined, size: 16),
+          label: const Text('Imprimir'),
+        ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Entendido'),
@@ -17447,9 +17584,14 @@ class _PartialCloseDialogState extends State<_PartialCloseDialog> {
 /// (a partial close carries no declared/counted amount to compare
 /// against). CRITICALLY never implies the session closed.
 class _PartialCloseResultDialog extends StatelessWidget {
-  const _PartialCloseResultDialog({required this.snapshot, required this.currencyCode});
+  const _PartialCloseResultDialog({
+    required this.snapshot,
+    required this.currencyCode,
+    required this.onPrint,
+  });
   final PosCashSessionPartialClose snapshot;
   final String currencyCode;
+  final VoidCallback onPrint;
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -17485,6 +17627,12 @@ class _PartialCloseResultDialog extends StatelessWidget {
       ),
     ),
     actions: [
+      OutlinedButton.icon(
+        key: const Key('pos-caja-print-partial-close'),
+        onPressed: onPrint,
+        icon: const Icon(Icons.print_outlined, size: 16),
+        label: const Text('Imprimir'),
+      ),
       FilledButton(
         onPressed: () => Navigator.of(context).pop(),
         child: const Text('Entendido'),
@@ -17496,9 +17644,14 @@ class _PartialCloseResultDialog extends StatelessWidget {
 /// Part L — cut history: server-side paginated/filtered, never
 /// client-side loaded-all-then-filtered.
 class _CutHistory extends StatefulWidget {
-  const _CutHistory({required this.context, required this.cashGateway});
+  const _CutHistory({
+    required this.context,
+    required this.cashGateway,
+    required this.settingsGateway,
+  });
   final AuthenticatedContext context;
   final PosCashGateway cashGateway;
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_CutHistory> createState() => _CutHistoryState();
@@ -17575,6 +17728,10 @@ class _CutHistoryState extends State<_CutHistory> {
       builder: (dialogContext) => _CutDetailDialog(
         cashSessionId: summary.id,
         cashGateway: widget.cashGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.context.session.companyId,
+        companyName: widget.context.currentCompany?.name ?? 'AS ONE POS',
+        branchName: widget.context.currentBranch?.name ?? '',
       ),
     );
   }
@@ -17682,9 +17839,17 @@ class _CutDetailDialog extends StatefulWidget {
   const _CutDetailDialog({
     required this.cashSessionId,
     required this.cashGateway,
+    required this.settingsGateway,
+    required this.companyId,
+    required this.companyName,
+    required this.branchName,
   });
   final String cashSessionId;
   final PosCashGateway cashGateway;
+  final PosSettingsGateway settingsGateway;
+  final String? companyId;
+  final String companyName;
+  final String branchName;
 
   @override
   State<_CutDetailDialog> createState() => _CutDetailDialogState();
@@ -17693,6 +17858,8 @@ class _CutDetailDialog extends StatefulWidget {
 class _CutDetailDialogState extends State<_CutDetailDialog> {
   PosCashSessionSummary? _summary;
   String? _errorMessage;
+  bool _printing = false;
+  String? _printError;
 
   @override
   void initState() {
@@ -17712,6 +17879,70 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
       if (!mounted) return;
       setState(() => _errorMessage = 'No fue posible cargar el corte.');
     }
+  }
+
+  // TASK 16.8 — a real, read-only reprint of a past corte (closed or
+  // still-open, whichever this history entry actually is), reusing the
+  // exact same `buildCashCutHtml`/`openReceiptPrintWindow`/branding
+  // pipeline as a live close/partial-close print. Never re-derives any
+  // figure — every amount comes straight from the already-loaded
+  // [_summary]. No register/cashier NAME is printed here (this dialog is
+  // reached from history, which never assumes the current viewer is the
+  // cashier who ran that shift, and the backend response carries no
+  // display name for `opened_by`/`closed_by` — see `PosCashSession`'s own
+  // doc comment) — only real timestamps/amounts, honest rather than
+  // guessed.
+  Future<void> _print() async {
+    final summary = _summary;
+    final companyId = widget.companyId;
+    if (summary == null || companyId == null || _printing) return;
+    setState(() {
+      _printing = true;
+      _printError = null;
+    });
+    final branding = await _loadReceiptBranding(settingsGateway: widget.settingsGateway, companyId: companyId);
+    if (!mounted) return;
+    final session = summary.session;
+    final isFinal = session.status == 'closed';
+    double parse(String value) => double.tryParse(value) ?? 0;
+    final otherCashIn = (parse(summary.cashInTotal) - parse(summary.externalIncomeTotal)).toStringAsFixed(4);
+    final otherCashOut =
+        (parse(summary.cashOutTotal) - parse(summary.withdrawalTotal) - parse(summary.expenseTotal)).toStringAsFixed(4);
+    final html = buildCashCutHtml(
+      isFinal: isFinal,
+      businessName: widget.companyName,
+      branchName: widget.branchName,
+      registerName: '',
+      openedByName: '',
+      openedAt: session.openedAt,
+      openingAmount: summary.openingAmount,
+      cashSalesTotal: summary.cashSalesTotal,
+      cashSalesCount: summary.cashSalesCount,
+      externalIncomeTotal: summary.externalIncomeTotal,
+      withdrawalTotal: summary.withdrawalTotal,
+      expenseTotal: summary.expenseTotal,
+      otherCashInTotal: otherCashIn,
+      otherCashOutTotal: otherCashOut,
+      expectedCash: summary.expectedCash,
+      currencyCode: session.currencyCode,
+      takenAt: isFinal ? null : DateTime.now(),
+      closedAt: isFinal ? session.closedAt : null,
+      declaredClosingAmount: isFinal ? session.declaredClosingAmount : null,
+      discrepancyAmount: isFinal ? session.discrepancyAmount : null,
+      denominationLines: isFinal ? _denominationLines(session, session.currencyCode) : null,
+      paperWidthMm: branding.paperWidthMm ?? 80,
+      logoDataUri: branding.logoUrl,
+      headerText: branding.header,
+      footerText: branding.footer,
+    );
+    final opened = openReceiptPrintWindow(html);
+    if (!mounted) return;
+    setState(() {
+      _printing = false;
+      _printError = opened
+          ? null
+          : 'El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para imprimir.';
+    });
   }
 
   @override
@@ -17797,10 +18028,22 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
                         summary.session.currencyCode,
                       ),
                     ),
+                  if (_printError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_printError!, style: const TextStyle(color: Colors.red)),
+                  ],
                 ],
               ),
       ),
       actions: [
+        OutlinedButton.icon(
+          key: const Key('pos-caja-reprint-cut'),
+          onPressed: summary == null || _printing ? null : () => unawaited(_print()),
+          icon: _printing
+              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.print_outlined, size: 16),
+          label: const Text('Reimprimir'),
+        ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cerrar'),
