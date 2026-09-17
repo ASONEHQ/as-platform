@@ -1636,6 +1636,10 @@ Future<void> _submitCashSaleForPayment(
   // see that class's own doc comment for the branding read pattern.
   PosSettingsGateway settingsGateway = const EmptyPosSettingsGateway(),
   String? companyId,
+  // TASK 16.8A: whatever the cashier already typed into the ticket
+  // footer's own "Efectivo recibido" field — see `_CashPaymentDialog`'s
+  // own doc comment for why this is only ever a prefill.
+  Money? initialTendered,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1705,6 +1709,7 @@ Future<void> _submitCashSaleForPayment(
       saleNumber: sale.saleNumber,
       totalDue: totalDue,
       paymentsGateway: paymentsGateway,
+      initialTendered: initialTendered,
     ),
   );
   // `null` means the cashier cancelled — the sale exists as an orphaned
@@ -2435,11 +2440,21 @@ class _CashPaymentDialog extends StatefulWidget {
     required this.saleNumber,
     required this.totalDue,
     required this.paymentsGateway,
+    // TASK 16.8A: the amount, if any, the cashier already typed into the
+    // ticket footer's own "Efectivo recibido" field before tapping/Enter
+    // on Cobrar — a pure UX convenience so the cashier doesn't have to
+    // retype it here. Purely a starting value for THIS dialog's own
+    // `_controller`/`_tendered`; every guarantee this dialog already
+    // provides (client-side preview only, backend-authoritative
+    // `tendered_amount`/`change_amount`, explicit confirm required) is
+    // completely unchanged.
+    this.initialTendered,
   });
   final String saleId;
   final String saleNumber;
   final Money totalDue;
   final PosPaymentsGateway paymentsGateway;
+  final Money? initialTendered;
 
   @override
   State<_CashPaymentDialog> createState() => _CashPaymentDialogState();
@@ -2450,6 +2465,16 @@ class _CashPaymentDialogState extends State<_CashPaymentDialog> {
   Money? _tendered;
   bool _busy = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialTendered;
+    if (initial != null) {
+      _controller.text = initial.toDisplayString();
+      _tendered = initial;
+    }
+  }
 
   @override
   void dispose() {
@@ -2666,6 +2691,7 @@ class _CashPaymentDialogState extends State<_CashPaymentDialog> {
 
 class _CashSummaryRow extends StatelessWidget {
   const _CashSummaryRow({
+    super.key,
     required this.label,
     required this.value,
     this.big = false,
@@ -7576,11 +7602,14 @@ class _NoteDialogState extends State<_NoteDialog> {
 /// TASK 12.3: Subtotal/IVA/Total are now the real, reactive
 /// `saleSession` totals (kept centralized on `SaleSession` itself, not
 /// recomputed here — see `sale_session.dart`) instead of a static
-/// `$0.00`. Coupon, cash-received, and the payment-method grid remain
-/// exactly as before: visually faithful but wired to
-/// `_showReadOnlyNotice` — TASK 12.2C explicitly requires these stay
-/// visible, not removed. Only Cobrar (payment itself) is out of scope
-/// here — see `_PosCobrarButton`.
+/// `$0.00`. The payment-method grid remains visually faithful but wired
+/// only to selecting Cobrar's own next action (real since TASK 12.5A —
+/// see `_PosCobrarButton`). TASK 16.8A: the cash-received input is now a
+/// real, live tender field too (previously left permanently `readOnly`/
+/// wired to `_showReadOnlyNotice`, a stale TASK 12.2C leftover from
+/// before TASK 12.5A's real cash-payment flow existed) — see
+/// `_TicketFooterState`'s own `_footerTendered`/`_footerChange` doc
+/// comments.
 class _TicketFooter extends StatefulWidget {
   const _TicketFooter({
     required this.saleSession,
@@ -7632,6 +7661,19 @@ class _TicketFooterState extends State<_TicketFooter> {
   // here, not just a visual one.
   String _selectedMethod = 'cash';
 
+  // TASK 16.8A: the ticket footer's own real, live cash-tender entry —
+  // matches the legacy's own inline `#efectivo-input`/`calcCambio()`/
+  // Enter-submits behavior (`AS POS V1.html:1158`, `:5679-5685`), unlike
+  // the pre-16.8A field this replaces, which was permanently `readOnly`
+  // and only ever showed the stale "Modo de solo lectura" notice — a
+  // leftover from TASK 12.2C, from before TASK 12.5A built the real,
+  // backend-authoritative cash-payment flow this field now feeds into.
+  // Purely a client-side preview/prefill: the backend's own
+  // `insufficient_tendered`/`change_amount` in `createCashPayment` remain
+  // the sole authoritative source of truth either way.
+  final _tenderedController = TextEditingController();
+  Money? _footerTendered;
+
   final _couponController = TextEditingController();
   bool _couponBusy = false;
   String? _couponError;
@@ -7672,6 +7714,7 @@ class _TicketFooterState extends State<_TicketFooter> {
     widget.saleSession.removeListener(_onSaleSessionChanged);
     _quoteDebounce?.cancel();
     _couponController.dispose();
+    _tenderedController.dispose();
     super.dispose();
   }
 
@@ -7706,6 +7749,14 @@ class _TicketFooterState extends State<_TicketFooter> {
     _quoteDebounce?.cancel();
     if (saleSession.isEmpty) {
       _lastQuotedSignature = null;
+      // TASK 16.8A: an emptied cart — whether from a completed sale's own
+      // `clearAll()` (see `_submitCashSaleForPayment`) or the cashier
+      // manually clearing the ticket — must never leave a stale tendered
+      // amount sitting in the footer for the NEXT, unrelated ticket.
+      if (_tenderedController.text.isNotEmpty || _footerTendered != null) {
+        _tenderedController.clear();
+        if (mounted) setState(() => _footerTendered = null);
+      }
       return;
     }
     final signature = _cartSignature();
@@ -7920,6 +7971,51 @@ class _TicketFooterState extends State<_TicketFooter> {
 
   void _removeCustomer() => widget.saleSession.clearCustomer();
 
+  // TASK 16.8A: `null` while nothing valid has been typed yet or while the
+  // typed amount still falls short of the live total (see
+  // `_footerShortBy`) — mirrors `_CashPaymentDialogState._change`'s
+  // identical logic exactly, against `saleSession.displayTotal` instead
+  // of a fixed `totalDue` (the footer field is live against the ticket
+  // BEFORE a sale even exists, unlike the dialog's own copy of this
+  // logic).
+  Money? get _footerChange {
+    final tendered = _footerTendered;
+    if (tendered == null) return null;
+    final diff = tendered - widget.saleSession.displayTotal;
+    return diff.isNegative ? null : diff;
+  }
+
+  Money? get _footerShortBy {
+    final tendered = _footerTendered;
+    if (tendered == null) return null;
+    final diff = widget.saleSession.displayTotal - tendered;
+    return diff.isNegative || diff.isZero ? null : diff;
+  }
+
+  void _onTenderedChanged(String text) {
+    setState(() {
+      final trimmed = text.trim();
+      if (trimmed.isEmpty) {
+        _footerTendered = null;
+        return;
+      }
+      try {
+        _footerTendered = Money.parse(trimmed, widget.saleSession.displayTotal.currencyCode);
+      } on MoneyFormatException {
+        _footerTendered = null;
+      }
+    });
+  }
+
+  // TASK 16.8A: matches the legacy's own `onkeydown="if(event.key===
+  // 'Enter')cobrar()"` (`AS POS V1.html:1158`) — Enter in this field acts
+  // exactly like tapping Cobrar itself (the SAME `_handleTap()` the F8
+  // shortcut already reuses, per `_PosCobrarButton`'s own doc comment),
+  // never a second/parallel checkout path.
+  void _handleTenderedSubmitted() {
+    unawaited(widget.cobrarButtonKey?.currentState?._handleTap() ?? Future<void>.value());
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -8108,14 +8204,31 @@ class _TicketFooterState extends State<_TicketFooter> {
           Row(
             children: [
               Expanded(
+                // TASK 16.8A: a real, live cash-tender field — matches the
+                // legacy's own inline `#efectivo-input`
+                // (`AS POS V1.html:1158`), replacing the permanently
+                // `readOnly`/`_showReadOnlyNotice` stub left over from
+                // TASK 12.2C, from before TASK 12.5A's real
+                // backend-authoritative cash-payment flow existed. Only
+                // ever a client-side preview/prefill — see
+                // `_PosCobrarButtonState._handleTap`'s own doc comment for
+                // why the backend remains the sole authority on
+                // sufficiency and on the actual `change_amount`.
                 child: TextField(
                   key: const Key('pos-ticket-cash-input'),
-                  readOnly: true,
-                  onTap: () => _showReadOnlyNotice(context),
+                  controller: _tenderedController,
+                  enabled: _selectedMethod == 'cash',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ],
+                  onChanged: _onTenderedChanged,
+                  onSubmitted: (_) => _handleTenderedSubmitted(),
                   style: const TextStyle(fontSize: 13),
                   decoration: const InputDecoration(
                     isDense: true,
                     hintText: 'Efectivo recibido (Enter)',
+                    prefixText: r'$',
                     contentPadding: EdgeInsets.symmetric(
                       horizontal: 10,
                       vertical: 10,
@@ -8140,6 +8253,23 @@ class _TicketFooterState extends State<_TicketFooter> {
               ],
             ],
           ),
+          // TASK 16.8A: matches the legacy's own `#cambio-row` — hidden
+          // unless Efectivo is selected and a value has actually been
+          // typed (`AS POS V1.html:1145-1148`, `:5679-5685`). A live
+          // client-side preview only; the receipt/backend's own
+          // authoritative `change_amount` is what actually gets recorded.
+          if (_selectedMethod == 'cash' && (_footerChange != null || _footerShortBy != null)) ...[
+            const SizedBox(height: 6),
+            _CashSummaryRow(
+              key: const Key('pos-ticket-change-row'),
+              label: 'Cambio',
+              value: _footerChange != null
+                  ? _money(_footerChange!)
+                  : 'Faltan ${_money(_footerShortBy!)}',
+              warn: _footerShortBy != null,
+              emphasis: _footerChange != null,
+            ),
+          ],
           const SizedBox(height: 8),
           _PosCobrarButton(
             key: widget.cobrarButtonKey,
@@ -8152,6 +8282,7 @@ class _TicketFooterState extends State<_TicketFooter> {
             companyId: widget.companyId,
             branchId: widget.branchId,
             selectedMethod: _selectedMethod,
+            cashTenderedAmount: _footerTendered,
           ),
         ],
       ),
@@ -8774,6 +8905,7 @@ class _PosCobrarButton extends StatefulWidget {
     required this.companyId,
     required this.branchId,
     required this.selectedMethod,
+    this.cashTenderedAmount,
   });
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
@@ -8786,6 +8918,16 @@ class _PosCobrarButton extends StatefulWidget {
   final String companyId;
   final String selectedMethod;
   final String? branchId;
+  // TASK 16.8A: whatever the cashier already typed into the ticket
+  // footer's own "Efectivo recibido" field (`_TicketFooterState`'s own
+  // real, live tender entry — see that class), `null` when nothing valid
+  // has been typed yet. `_handleTap` uses this for two things only: an
+  // honest, immediate rejection (never creating a sale) when it is
+  // already known to fall short of the total, and prefilling the
+  // mandatory `_CashPaymentDialog` confirmation step so the cashier isn't
+  // asked to retype an amount already on screen. The backend remains the
+  // sole source of truth for the actual `change_amount` either way.
+  final Money? cashTenderedAmount;
 
   @override
   State<_PosCobrarButton> createState() => _PosCobrarButtonState();
@@ -8824,6 +8966,27 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
       return;
     }
     if (widget.selectedMethod == 'cash') {
+      // TASK 16.8A: an amount the cashier already typed into the ticket
+      // footer that is honestly known, right now, to fall short of the
+      // total — reject immediately, before a sale is even created, never
+      // silently letting Cobrar proceed with money that cannot possibly
+      // cover the ticket. This is a fast, honest UI pre-check only; the
+      // backend's own `insufficient_tendered` rejection inside
+      // `PaymentService.createCashPayment` remains the sole authoritative
+      // guard regardless of what this client-side check does or misses
+      // (e.g. a cart total that changes between typing and tapping).
+      final cashTendered = widget.cashTenderedAmount;
+      if (cashTendered != null) {
+        final shortBy = widget.saleSession.displayTotal - cashTendered;
+        if (!shortBy.isNegative && !shortBy.isZero) {
+          setState(() => _busy = false);
+          _showNotice(
+            context,
+            'El efectivo recibido es insuficiente. Faltan ${_money(shortBy)}.',
+          );
+          return;
+        }
+      }
       // TASK 12.7 Part N: checked as early as possible — before the sale
       // is even created, not only discovered from the eventual
       // `cash_session_required` rejection at confirmation time (the
@@ -8871,6 +9034,7 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         onDialogAboutToOpen: () {
           if (mounted) setState(() => _busy = false);
         },
+        initialTendered: widget.cashTenderedAmount,
       );
     } else {
       await _submitSaleForPayment(

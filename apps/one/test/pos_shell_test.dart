@@ -1480,6 +1480,167 @@ void main() {
     });
   });
 
+  group('Inline cash-tender field (TASK 16.8A)', () {
+    // product-1: $10.00 + 16% IVA_GENERAL = $11.60 (the client's own
+    // locally-computed total before any backend quote resolves — see
+    // `SaleSession.displayTotal`'s own doc comment).
+    testWidgets(
+      'the ticket-footer "Efectivo recibido" field is a real, editable, '
+      'live tender entry — never the stale TASK 12.2C read-only notice',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        final field = find.byKey(const Key('pos-ticket-cash-input'));
+        expect(field, findsOneWidget);
+        await tester.tap(field);
+        await tester.pump();
+        expect(find.textContaining('Modo de solo lectura'), findsNothing);
+
+        await tester.enterText(field, '11.60');
+        await tester.pump();
+        expect(
+          tester.widget<TextField>(field).controller?.text,
+          '11.60',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'typing a sufficient tender live-computes Cambio, and an exact '
+      'tender shows exactly \$0.00',
+      (tester) async {
+        await _pump(tester, const Size(1440, 900));
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        final field = find.byKey(const Key('pos-ticket-cash-input'));
+        await tester.enterText(field, '20');
+        await tester.pump();
+        expect(find.byKey(const Key('pos-ticket-change-row')), findsOneWidget);
+        expect(find.text(r'$8.40'), findsOneWidget);
+
+        await tester.enterText(field, '11.60');
+        await tester.pump();
+        expect(find.byKey(const Key('pos-ticket-change-row')), findsOneWidget);
+        expect(find.text(r'$0.00'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'an insufficient tender shows the exact shortfall inline and rejects '
+      'Cobrar without ever creating a sale',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-tender-insufficient-1',
+            saleNumber: 'SALE-tenderinsufficient1',
+            status: 'pending_payment',
+            total: '11.6000',
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.enterText(
+          find.byKey(const Key('pos-ticket-cash-input')),
+          '5',
+        );
+        await tester.pump();
+        expect(find.text(r'Faltan $6.60'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        expect(
+          find.textContaining(
+            'El efectivo recibido es insuficiente. Faltan \$6.60.',
+          ),
+          findsOneWidget,
+        );
+        expect(salesGateway.calls, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a sufficient inline tender prefills the mandatory confirmation '
+      'dialog, and a successful sale resets the field for the next ticket',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-tender-prefill-1',
+            saleNumber: 'SALE-tenderprefill1',
+            status: 'pending_payment',
+            total: '11.6000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          cashResult: const PosCashPaymentResult(
+            paymentId: 'payment-tender-prefill-1',
+            status: 'captured',
+            tenderedAmount: '20.0000',
+            changeAmount: '8.4000',
+            saleId: 'sale-tender-prefill-1',
+            saleNumber: 'SALE-tenderprefill1',
+            saleStatus: 'completed',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.enterText(
+          find.byKey(const Key('pos-ticket-cash-input')),
+          '20',
+        );
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // The mandatory TASK 12.5A confirmation dialog still opens — this
+        // never skips confirmation — but already prefilled from the
+        // footer, so the cashier isn't asked to retype an amount already
+        // on screen.
+        expect(
+          tester.widget<TextField>(find.byKey(const Key('pos-cash-dialog-input'))).controller?.text,
+          '20.00',
+        );
+
+        await tester.tap(find.byKey(const Key('pos-cash-dialog-confirm')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(paymentsGateway.cashCalls, hasLength(1));
+        expect(paymentsGateway.cashCalls.single.tenderedAmount, '20.0000');
+
+        // TASK 16.8A: never leaks a stale tendered amount into the next
+        // ticket — the ticket panel (and its footer) is still present in
+        // the tree behind the still-open success/receipt dialog, exactly
+        // like the pre-existing "Cobrar — $0.00" reset assertion above.
+        expect(
+          tester.widget<TextField>(find.byKey(const Key('pos-ticket-cash-input'))).controller?.text,
+          isEmpty,
+        );
+        expect(find.byKey(const Key('pos-ticket-change-row')), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
   group('Zero-total sale completion (TASK 13.2, ADR-0019)', () {
     testWidgets(
       'a sale whose backend-quoted total is exactly zero settles via the '
