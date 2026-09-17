@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from './promotions.types.js';
 import type { EvaluatePricingInput } from './pricing.service.js';
-import { evaluatePricing, formatMoney } from './pricing.service.js';
+import { evaluatePricing, formatMoney, isValidIanaTimezone } from './pricing.service.js';
 
 const BRANCH_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_BRANCH_ID = '00000000-0000-4000-8000-000000000002';
@@ -942,6 +942,67 @@ describe('pricing engine (TASK 12.9)', () => {
       const result = evaluatePricing(baseInput({ rewardCandidate: null }));
       expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
       expect(formatMoney(result.discountTotalUnits)).toBe('0.0000');
+    });
+  });
+
+  // TASK 16.8B — the production incident this guards against: a real
+  // branch was saved with the bare-city string "Mexico_City" (looks
+  // plausible, is not a real IANA identifier — the real one is
+  // "America/Mexico_City"), which later crashed `evaluatePricing` itself
+  // (via `localWeekdayAndTime`'s own `Intl.DateTimeFormat` call) with an
+  // unhandled `RangeError`. `isValidIanaTimezone` is the one runtime-native
+  // check every write path (`AdministrationService`) and the sales
+  // read-side defense-in-depth guard (`SalesService.createSale`) now share.
+  describe('isValidIanaTimezone (TASK 16.8B)', () => {
+    it('accepts America/Mexico_City — the exact zone the production incident should have used', () => {
+      expect(isValidIanaTimezone('America/Mexico_City')).toBe(true);
+    });
+
+    it('accepts other real IANA zones across regions, including UTC itself', () => {
+      expect(isValidIanaTimezone('UTC')).toBe(true);
+      expect(isValidIanaTimezone('America/Cancun')).toBe(true);
+      expect(isValidIanaTimezone('America/Tijuana')).toBe(true);
+      expect(isValidIanaTimezone('Europe/Madrid')).toBe(true);
+      expect(isValidIanaTimezone('Asia/Tokyo')).toBe(true);
+    });
+
+    it('rejects the exact production-incident value "Mexico_City" (missing the "America/" prefix)', () => {
+      expect(isValidIanaTimezone('Mexico_City')).toBe(false);
+    });
+
+    it('rejects an obviously nonsense string and a plausible-looking but fake region/city pair', () => {
+      expect(isValidIanaTimezone('foobar')).toBe(false);
+      expect(isValidIanaTimezone('Not/AZone')).toBe(false);
+    });
+
+    it('rejects blank and whitespace-only values', () => {
+      expect(isValidIanaTimezone('')).toBe(false);
+      expect(isValidIanaTimezone('   ')).toBe(false);
+    });
+
+    // Verified empirically against the real runtime before asserting —
+    // never assumed. Node's own ICU accepts a fixed numeric UTC offset
+    // like `"+05:00"` (it is a real, resolvable `Intl.DateTimeFormat`
+    // `timeZone` value, just not a *named* IANA zone with DST rules) but
+    // rejects the informal `"GMT+5"` spelling — this validator defers
+    // entirely to that real, engine-native behavior rather than a
+    // hand-written notion of "looks like a zone."
+    it('accepts a fixed numeric UTC-offset string (a real, resolvable Intl.DateTimeFormat value, if not a named zone)', () => {
+      expect(isValidIanaTimezone('+05:00')).toBe(true);
+    });
+
+    it('rejects the informal "GMT+5" spelling', () => {
+      expect(isValidIanaTimezone('GMT+5')).toBe(false);
+    });
+
+    // Also verified empirically: Node's own ICU canonicalizes zone-name
+    // casing during lookup, so a differently-cased real identifier still
+    // resolves — this validator is deliberately never stricter than the
+    // runtime it defers to (a hand-rolled case-sensitivity check here
+    // would reject a value the actual `localWeekdayAndTime` call below
+    // would have accepted just fine).
+    it('accepts a real IANA identifier regardless of casing, matching the runtime it defers to exactly', () => {
+      expect(isValidIanaTimezone('america/mexico_city')).toBe(true);
     });
   });
 });

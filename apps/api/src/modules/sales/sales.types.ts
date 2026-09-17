@@ -146,7 +146,14 @@ export type SaleErrorCode =
   | 'product_not_found'
   | 'product_not_active'
   | 'price_not_found'
-  | 'currency_mismatch';
+  | 'currency_mismatch'
+  // TASK 16.8B — the branch's own persisted `timezone` is not a real IANA
+  // zone (data corruption predating server-side validation; see
+  // `AdministrationService`'s own guard for the write-side fix). A
+  // controlled, explicit failure — never the opaque, unhandled
+  // `RangeError` a corrupted value used to throw straight out of
+  // `PricingService.localWeekdayAndTime`.
+  | 'branch_timezone_invalid';
 
 export class SaleError extends Error {
   constructor(

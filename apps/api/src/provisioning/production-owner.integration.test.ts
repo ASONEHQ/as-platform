@@ -115,6 +115,47 @@ integration('PostgreSQL production owner provisioning (TASK 14.1)', () => {
     await expect(provisioner.run(baseInput({ branchCode: 'CTR' }))).rejects.toBeInstanceOf(ProvisioningInputError);
   });
 
+  // TASK 16.8B — this CLI is the OTHER place (besides `AdministrationService`'s
+  // own HTTP routes) a real production company/branch timezone can be
+  // persisted, at first-tenant provisioning time. Same production
+  // incident, same fix: `--company-timezone`/`--branch-timezone` must be
+  // rejected outright, never silently written, if not a real IANA zone.
+  it('refuses an explicit, invalid company timezone rather than silently persisting it', async () => {
+    await expect(
+      provisioner.run(baseInput({ companyTimezone: 'Mexico_City' })),
+    ).rejects.toBeInstanceOf(ProvisioningInputError);
+  });
+
+  it('accepts a real, explicit IANA company timezone and persists it exactly', async () => {
+    const input = baseInput({ companyTimezone: 'America/Cancun' });
+    const summary = await provisioner.run(input);
+    const [company] = await database.pool
+      .query<{ timezone: string }>('select timezone from companies where id=$1', [summary.companyId])
+      .then((r) => r.rows);
+    expect(company?.timezone).toBe('America/Cancun');
+  });
+
+  it('refuses an explicit, invalid branch timezone rather than silently persisting it', async () => {
+    await expect(
+      provisioner.run(
+        baseInput({ branchName: 'Sucursal Norte', branchCode: 'NTE', branchTimezone: 'Mexico_City' }),
+      ),
+    ).rejects.toBeInstanceOf(ProvisioningInputError);
+  });
+
+  it('an omitted branch timezone still defaults to the (validated) company timezone, never a fake/placeholder value', async () => {
+    const input = baseInput({
+      companyTimezone: 'America/Tijuana',
+      branchName: 'Sucursal Frontera',
+      branchCode: 'FRT',
+    });
+    const summary = await provisioner.run(input);
+    const [branch] = await database.pool
+      .query<{ timezone: string }>('select timezone from branches where id=$1', [summary.branchId])
+      .then((r) => r.rows);
+    expect(branch?.timezone).toBe('America/Tijuana');
+  });
+
   it('refuses a weak/placeholder password with the same production policy AdministrationService.updateMembership enforces', async () => {
     await expect(provisioner.run(baseInput({ ownerPassword: 'password123' }))).rejects.toThrow(
       /at least 12 characters/u,

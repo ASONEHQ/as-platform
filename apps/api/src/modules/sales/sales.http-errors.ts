@@ -15,6 +15,13 @@ const statusCodeByCode: Readonly<Record<string, number>> = {
   idempotency_conflict: 409,
   version_conflict: 409,
   invalid_sale_state: 409,
+  // TASK 16.8B — a genuine server-side data/configuration fault (a
+  // branch's persisted timezone is not a real IANA zone), never something
+  // the caller can fix by retrying or changing their request — 500 is the
+  // honest status, but with this specific, actionable `code` instead of
+  // the generic `internal_error` an unhandled `RangeError` would have
+  // produced.
+  branch_timezone_invalid: 500,
 };
 
 // TASK 12.6: defensive mirror of the same mapping in

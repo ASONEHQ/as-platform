@@ -16,6 +16,7 @@ import {
 } from '@asone/database';
 
 import { hashPassword, validatePasswordStrength } from '../modules/auth/auth.passwords.js';
+import { isValidIanaTimezone } from '../modules/promotions/pricing.service.js';
 import { ProvisioningInputError, type ProvisionOwnerInput, type ProvisionOwnerSummary } from './production-owner.types.js';
 
 const ownerRoleCode = 'owner';
@@ -98,6 +99,18 @@ export class ProductionOwnerProvisioner {
         'The company slug must be lowercase kebab-case (e.g. "mi-tienda"), matching the database constraint exactly.',
       );
     const timezone = nonBlank(input.companyTimezone ?? 'America/Mexico_City', 'company timezone');
+    // TASK 16.8B — defense in depth for the ONE other place a
+    // company/branch timezone can be persisted outside the admin HTTP
+    // routes (`AdministrationService.createBranch`/`updateBranch`/
+    // `updateCompany`, which enforce the identical check). This CLI is
+    // ops-invoked, not tenant-facing, but a real production tenant's
+    // timezone still originates here at first-provisioning time — a typo
+    // in `--company-timezone`/`--branch-timezone` deserves the exact same
+    // honest, immediate rejection as a bad value typed into the admin UI,
+    // never a silent write that only surfaces as a `POST /api/v1/sales`
+    // 500 later.
+    if (!isValidIanaTimezone(timezone))
+      throw new ProvisioningInputError(`"${timezone}" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").`);
     const currencyCode = (input.companyCurrencyCode ?? 'MXN').trim().toUpperCase();
     if (!/^[A-Z]{3}$/u.test(currencyCode))
       throw new ProvisioningInputError('The company currency code must be a 3-letter ISO code (e.g. "MXN").');
@@ -116,6 +129,8 @@ export class ProductionOwnerProvisioner {
     const branchName = input.branchName === undefined ? null : nonBlank(input.branchName, 'branch name');
     const branchCode = input.branchCode === undefined ? null : nonBlank(input.branchCode, 'branch code');
     const branchTimezone = input.branchTimezone === undefined ? timezone : nonBlank(input.branchTimezone, 'branch timezone');
+    if (input.branchTimezone !== undefined && !isValidIanaTimezone(branchTimezone))
+      throw new ProvisioningInputError(`"${branchTimezone}" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").`);
 
     const passwordHash = await this.passwordHasher(input.ownerPassword);
 

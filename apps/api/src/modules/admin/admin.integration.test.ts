@@ -134,6 +134,130 @@ integration('PostgreSQL administration foundation', () => {
     expect(created).toMatchObject({ company_id: tenant.companyId, address: null });
   });
 
+  // TASK 16.8B — production incident: a real branch ("Puerta La Victoria")
+  // was created through the admin UI with `timezone: "Mexico_City"` — a
+  // plausible-looking but genuinely invalid IANA identifier (the real one
+  // is `"America/Mexico_City"`) — because neither this service nor the
+  // database schema validated the format at all (only a non-blank-text
+  // check). That later crashed `POST /api/v1/sales` with an unhandled
+  // `RangeError` the first time a sale needed the branch's local
+  // weekday/time. These tests prove the new server-side gate closes
+  // exactly that gap, for both `createBranch` and `updateBranch`.
+  describe('TASK 16.8B — timezone validation', () => {
+    it('creates a branch with a real IANA timezone', async () => {
+      const tenant = await tenantFixture(database, 'tz-create-valid');
+      const created = await service.createBranch(tenant.actor, {
+        code: 'QRO',
+        name: 'Querétaro',
+        timezone: 'America/Mexico_City',
+      });
+      expect(created).toMatchObject({ timezone: 'America/Mexico_City' });
+      // Persists correctly — re-read independently of the create response.
+      const scopedActor = withBranches(tenant.actor, [tenant.branchId, created.id as string]);
+      const reread = await service.branch(scopedActor, created.id as string);
+      expect(reread).toMatchObject({ timezone: 'America/Mexico_City' });
+    });
+
+    it('rejects creating a branch with the exact production-incident value "Mexico_City"', async () => {
+      const tenant = await tenantFixture(database, 'tz-create-bare-city');
+      await expect(
+        service.createBranch(tenant.actor, { code: 'BAD1', name: 'Bad Branch 1', timezone: 'Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+
+    it('rejects creating a branch with a nonsense timezone string', async () => {
+      const tenant = await tenantFixture(database, 'tz-create-nonsense');
+      await expect(
+        service.createBranch(tenant.actor, { code: 'BAD2', name: 'Bad Branch 2', timezone: 'foobar' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+      await expect(
+        service.createBranch(tenant.actor, { code: 'BAD3', name: 'Bad Branch 3', timezone: 'Not/AZone' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+
+    it('never persists a rejected branch — a failed timezone validation leaves no row behind', async () => {
+      const tenant = await tenantFixture(database, 'tz-create-no-row');
+      await expect(
+        service.createBranch(tenant.actor, { code: 'GHOST', name: 'Ghost Branch', timezone: 'Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+      const rows = await database.pool.query('select 1 from branches where company_id=$1 and code=$2', [
+        tenant.companyId,
+        'GHOST',
+      ]);
+      expect(rows.rowCount).toBe(0);
+    });
+
+    it('rejects updating an existing branch to an invalid timezone, leaving the original value untouched', async () => {
+      const tenant = await tenantFixture(database, 'tz-update-invalid');
+      const created = await service.createBranch(tenant.actor, {
+        code: 'GOOD',
+        name: 'Good Branch',
+        timezone: 'America/Cancun',
+      });
+      const scopedActor = withBranches(tenant.actor, [tenant.branchId, created.id as string]);
+      await expect(
+        service.updateBranch(scopedActor, created.id as string, { timezone: 'Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+      const reread = await service.branch(scopedActor, created.id as string);
+      expect(reread).toMatchObject({ timezone: 'America/Cancun' });
+    });
+
+    it('accepts updating an existing branch to a different, real IANA timezone', async () => {
+      const tenant = await tenantFixture(database, 'tz-update-valid');
+      const created = await service.createBranch(tenant.actor, {
+        code: 'MOVE',
+        name: 'Moving Branch',
+        timezone: 'America/Mexico_City',
+      });
+      const scopedActor = withBranches(tenant.actor, [tenant.branchId, created.id as string]);
+      const updated = await service.updateBranch(scopedActor, created.id as string, {
+        timezone: 'America/Tijuana',
+      });
+      expect(updated).toMatchObject({ timezone: 'America/Tijuana' });
+    });
+
+    it('an update that never touches timezone at all is unaffected by this validation', async () => {
+      const tenant = await tenantFixture(database, 'tz-update-untouched');
+      const created = await service.createBranch(tenant.actor, {
+        code: 'SAME',
+        name: 'Same Branch',
+        timezone: 'America/Mexico_City',
+      });
+      const scopedActor = withBranches(tenant.actor, [tenant.branchId, created.id as string]);
+      const updated = await service.updateBranch(scopedActor, created.id as string, { name: 'Renamed Branch' });
+      expect(updated).toMatchObject({ name: 'Renamed Branch', timezone: 'America/Mexico_City' });
+    });
+
+    it('rejects an invalid company timezone on update the identical way', async () => {
+      const tenant = await tenantFixture(database, 'tz-company-update');
+      await expect(
+        service.updateCompany(tenant.actor, { timezone: 'Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+      const reread = await service.currentCompany(tenant.actor);
+      expect(reread).toMatchObject({ timezone: 'UTC' });
+      const updated = await service.updateCompany(tenant.actor, { timezone: 'America/Merida' });
+      expect(updated).toMatchObject({ timezone: 'America/Merida' });
+    });
+
+    // TASK 16.8B item 5 — permission/tenant behavior is completely
+    // unaffected by the new timezone gate: `requirePermission` still runs
+    // FIRST, so an actor lacking `branch.create` is rejected on
+    // `permission_denied` regardless of whether the timezone they supplied
+    // is valid or not — the new check never weakens or bypasses the
+    // pre-existing authorization gate.
+    it('permission denial still takes precedence over timezone validation — an actor lacking branch.create is '
+      + 'rejected on permission_denied even with an otherwise-valid request', async () => {
+      const tenant = await tenantFixture(database, 'tz-permission-precedence');
+      const restrictedActor = withPermissions(tenant.actor, ['branch.read']);
+      await expect(
+        service.createBranch(restrictedActor, { code: 'NOPE', name: 'No Permission', timezone: 'America/Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'permission_denied' });
+      await expect(
+        service.createBranch(restrictedActor, { code: 'NOPE2', name: 'No Permission 2', timezone: 'Mexico_City' }),
+      ).rejects.toMatchObject({ code: 'permission_denied' });
+    });
+  });
+
   it('discovers only active companies and authoritative branch scope', async () => {
     const tenant = await tenantFixture(database, 'context');
     const eligibleCompanyId = randomUUID();

@@ -122,12 +122,45 @@ export interface PromotionScope {
   categoryIds: readonly string[];
 }
 
+/** TASK 16.8B — the one, runtime-native way to check whether `value` is a
+ * real IANA timezone identifier: ask `Intl.DateTimeFormat` to actually use
+ * it, exactly the same lookup `localWeekdayAndTime` below performs for
+ * real, and see whether the runtime's own ICU/tzdata accepts it. Never a
+ * hand-maintained list of "known good" zone strings (which would silently
+ * reject a real, valid zone the list-writer simply hadn't heard of, or
+ * accept a typo that happens to look right) — the runtime's own timezone
+ * database is always the authoritative, self-updating source of truth.
+ * `.format()` (not merely constructing the formatter) is required: V8/ICU
+ * only actually validates the `timeZone` option when the formatter is
+ * used, not at construction time. */
+export function isValidIanaTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** ISO 8601 weekday (1=Monday…7=Sunday) and "HH:MM" for `instant` as
  * observed in `timezone` — Node's own `Intl` support, never a
  * hand-rolled UTC-offset table (which could silently be wrong for a
- * timezone using DST). Throws only if `timezone` is not a real IANA
- * zone, which cannot happen for a real `branches.timezone` value (a
- * required, already-validated column). */
+ * timezone using DST). Throws if `timezone` is not a real IANA zone —
+ * TASK 16.8B found this was NOT actually prevented upstream despite this
+ * comment's own prior claim that it "cannot happen for a real
+ * `branches.timezone` value (a required, already-validated column)": the
+ * column was only ever checked for non-blank text
+ * (`branches_timezone_nonblank_ck`), a real production branch was created
+ * through the admin UI with the non-IANA value `"Mexico_City"`, and this
+ * function's own `RangeError` reached a real `POST /api/v1/sales` caller
+ * as an opaque 500. `isValidIanaTimezone` above now gates every write
+ * path that can persist a `timezone` value (`AdministrationService`'s
+ * branch/company create+update, the production-owner provisioning CLI),
+ * and `SalesService` independently re-validates the value it reads back
+ * out of the database before ever reaching this function — see
+ * `SalesService.createSale`'s own `branch_timezone_invalid` guard — so a
+ * `RangeError` escaping this function is now a defense-in-depth backstop,
+ * never the primary guard. */
 export function localWeekdayAndTime(instant: Date, timezone: string): { weekday: number; time: string } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,

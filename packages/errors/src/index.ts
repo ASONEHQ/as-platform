@@ -178,6 +178,13 @@ export const infrastructureErrorCodes = [
   'duplicate_clock_in',
   'invalid_clock_out',
   'payroll_period_closed',
+  // TASK 16.8B — a branch's persisted `timezone` is not a real IANA zone
+  // (production data corruption predating server-side validation; see
+  // `AdministrationService`'s write-side guard and `SalesService.
+  // createSale`'s own defense-in-depth re-check). A controlled,
+  // actionable failure — never the opaque `internal_error` an unhandled
+  // `RangeError` from `Intl.DateTimeFormat` used to produce.
+  'branch_timezone_invalid',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

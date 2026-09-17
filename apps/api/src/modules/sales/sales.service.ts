@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { ivaBasisPointsForTaxCode, normalizeCurrencyCode } from '@asone/database';
 
 import type { CustomersRepository } from '../customers/customers.repository.js';
-import { evaluatePricing } from '../promotions/pricing.service.js';
+import { evaluatePricing, isValidIanaTimezone } from '../promotions/pricing.service.js';
 import type { PromotionsRepository } from '../promotions/promotions.repository.js';
 import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from '../promotions/promotions.types.js';
 import type { RewardsService } from '../rewards/rewards.service.js';
@@ -293,6 +293,39 @@ export class SalesService {
             const resolvedTimezone = await promotionsRepository.branchTimezone(context.companyId, normalized.branchId);
             if (resolvedTimezone === null)
               throw new SaleError('validation_error', 'The branch was not found.');
+            // TASK 16.8B — defense in depth, never the primary guard (that
+            // is `AdministrationService`'s own write-side validation): a
+            // branch's persisted `timezone` predating that validation
+            // could still be corrupted (the exact production incident —
+            // `"Mexico_City"`, not the real IANA zone
+            // `"America/Mexico_City"`). Without this check,
+            // `evaluatePricing` below hands it straight to
+            // `localWeekdayAndTime`'s `Intl.DateTimeFormat`, which throws
+            // an unhandled `RangeError` — surfacing to the caller as an
+            // opaque 500 with no actionable code, exactly what broke
+            // `POST /api/v1/sales` in production. Never silently
+            // substitutes UTC or any other zone here: a wrong-but-quiet
+            // timezone would corrupt which day/time a promotion's
+            // schedule window evaluates against — an honest, controlled
+            // failure is strictly better than a wrong financial/business
+            // date. Logged with full, non-secret context (company/branch
+            // ids, the exact bad value) since `AppError`-based rejections
+            // are not otherwise logged by the global error handler.
+            if (!isValidIanaTimezone(resolvedTimezone)) {
+              console.error({
+                msg: 'branch has a corrupted, non-IANA timezone value',
+                code: 'branch_timezone_invalid',
+                companyId: context.companyId,
+                branchId: normalized.branchId,
+                timezone: resolvedTimezone,
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              });
+              throw new SaleError(
+                'branch_timezone_invalid',
+                'This branch has an invalid timezone configuration and cannot process sales until it is corrected. Contact support.',
+              );
+            }
             timezone = resolvedTimezone;
             promotions = await promotionsRepository.activePromotions(context.companyId, client);
             for (const rawCode of input.couponCodes ?? []) {

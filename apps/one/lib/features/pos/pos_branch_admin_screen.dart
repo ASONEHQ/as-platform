@@ -49,6 +49,52 @@ import 'pos_tokens.dart';
 
 enum _BranchListPhase { loading, empty, failure, ready }
 
+/// TASK 16.8B — a curated, human-readable shortlist of real, valid IANA
+/// timezone identifiers, presented as a searchable picker so an operator
+/// never has to guess/type a raw zone string by hand (the production
+/// incident this task fixes: a branch was saved with `"Mexico_City"`,
+/// which looks plausible but is not a real IANA identifier — the real one
+/// is `"America/Mexico_City"`). This is a UX convenience list, never the
+/// validation mechanism itself — every value below is independently real
+/// and already accepted by the backend's own runtime-native
+/// `Intl.DateTimeFormat`-based check (`isValidIanaTimezone` in
+/// `pricing.service.ts`), which remains authoritative and still accepts
+/// any other real IANA zone typed directly into the same field (this is a
+/// commercial multi-tenant platform, not limited to Mexico — see this
+/// list's own non-Mexico entries).
+class _TimezoneOption {
+  const _TimezoneOption(this.value, this.label);
+
+  /// The canonical IANA identifier — exactly what gets persisted.
+  final String value;
+
+  /// A short, human-readable Spanish description shown in the picker.
+  final String label;
+}
+
+const _timezoneOptions = <_TimezoneOption>[
+  _TimezoneOption('America/Mexico_City', 'Ciudad de México, Querétaro, Guadalajara (Zona Centro)'),
+  _TimezoneOption('America/Cancun', 'Cancún, Quintana Roo (Zona Sureste)'),
+  _TimezoneOption('America/Merida', 'Mérida, Yucatán'),
+  _TimezoneOption('America/Monterrey', 'Monterrey, Nuevo León'),
+  _TimezoneOption('America/Chihuahua', 'Chihuahua'),
+  _TimezoneOption('America/Hermosillo', 'Hermosillo, Sonora (sin horario de verano)'),
+  _TimezoneOption('America/Mazatlan', 'Mazatlán, Sinaloa, Baja California Sur, Nayarit (Zona Pacífico)'),
+  _TimezoneOption('America/Bahia_Banderas', 'Bahía de Banderas, Nayarit'),
+  _TimezoneOption('America/Tijuana', 'Tijuana, Baja California (Zona Noroeste)'),
+  _TimezoneOption('America/Matamoros', 'Matamoros, Tamaulipas'),
+  _TimezoneOption('UTC', 'UTC (horario universal coordinado)'),
+  _TimezoneOption('America/Bogota', 'Bogotá, Colombia'),
+  _TimezoneOption('America/Lima', 'Lima, Perú'),
+  _TimezoneOption('America/Argentina/Buenos_Aires', 'Buenos Aires, Argentina'),
+  _TimezoneOption('America/Santiago', 'Santiago, Chile'),
+  _TimezoneOption('America/Sao_Paulo', 'São Paulo, Brasil'),
+  _TimezoneOption('America/New_York', 'Nueva York, EE. UU. (hora del este)'),
+  _TimezoneOption('America/Chicago', 'Chicago, EE. UU. (hora central)'),
+  _TimezoneOption('America/Los_Angeles', 'Los Ángeles, EE. UU. (hora del Pacífico)'),
+  _TimezoneOption('Europe/Madrid', 'Madrid, España'),
+];
+
 /// The public "Sucursales" module screen. Constructed with the real
 /// [AuthenticatedContext] and a real [PosBranchAdminGateway].
 class PosBranchAdminScreen extends StatefulWidget {
@@ -289,6 +335,11 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
   late final _codeController = TextEditingController(text: widget.existing?.code ?? '');
   late final _nameController = TextEditingController(text: widget.existing?.name ?? '');
   late final _timezoneController = TextEditingController(text: widget.existing?.timezone ?? '');
+  // TASK 16.8B — `Autocomplete`'s own `RawAutocomplete` asserts that
+  // `textEditingController` and `focusNode` are either both supplied or
+  // both omitted; supplying the controller (so `_submit()` keeps reading
+  // the exact same field it always has) requires supplying this too.
+  final _timezoneFocusNode = FocusNode();
   late String _status = widget.existing?.status ?? 'active';
   bool _busy = false;
   String? _error;
@@ -300,6 +351,7 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
     _codeController.dispose();
     _nameController.dispose();
     _timezoneController.dispose();
+    _timezoneFocusNode.dispose();
     super.dispose();
   }
 
@@ -376,13 +428,69 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
                   decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
                 ),
                 const SizedBox(height: 10),
-                TextField(
-                  key: const Key('pos-branch-admin-form-timezone'),
-                  controller: _timezoneController,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'Zona horaria',
-                    hintText: 'Ej. America/Mexico_City',
+                // TASK 16.8B — a searchable picker over a curated list of
+                // real, valid IANA identifiers (`_timezoneOptions`), so an
+                // operator can find "Ciudad de México" and get the real
+                // `America/Mexico_City` written into the field instead of
+                // guessing a raw zone string by hand. `textEditingController:
+                // _timezoneController` keeps this the exact same underlying
+                // field `_submit()` already reads from — typing a real IANA
+                // value directly (this is a commercial multi-tenant
+                // platform; not every real tenant's timezone is in this
+                // shortlist) still works exactly as before. The backend's
+                // own `isValidIanaTimezone` check remains the sole
+                // authority regardless of what this picker suggests.
+                Autocomplete<_TimezoneOption>(
+                  key: const Key('pos-branch-admin-form-timezone-picker'),
+                  textEditingController: _timezoneController,
+                  focusNode: _timezoneFocusNode,
+                  displayStringForOption: (option) => option.value,
+                  optionsBuilder: (textEditingValue) {
+                    final query = textEditingValue.text.trim().toLowerCase();
+                    if (query.isEmpty) return _timezoneOptions;
+                    return _timezoneOptions.where(
+                      (option) =>
+                          option.value.toLowerCase().contains(query) ||
+                          option.label.toLowerCase().contains(query),
+                    );
+                  },
+                  optionsViewBuilder: (context, onSelected, options) {
+                    final list = options.toList(growable: false);
+                    return Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        elevation: 4,
+                        borderRadius: BorderRadius.circular(8),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 260, maxWidth: 380),
+                          child: ListView.builder(
+                            padding: EdgeInsets.zero,
+                            shrinkWrap: true,
+                            itemCount: list.length,
+                            itemBuilder: (context, index) {
+                              final option = list[index];
+                              return ListTile(
+                                key: Key('pos-branch-admin-form-timezone-option-${option.value}'),
+                                dense: true,
+                                title: Text(option.label),
+                                subtitle: Text(option.value, style: const TextStyle(fontSize: 11)),
+                                onTap: () => onSelected(option),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) => TextField(
+                    key: const Key('pos-branch-admin-form-timezone'),
+                    controller: controller,
+                    focusNode: focusNode,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: 'Zona horaria',
+                      hintText: 'Busca por ciudad, ej. Ciudad de México',
+                    ),
                   ),
                 ),
                 if (_isEdit) ...[

@@ -5,6 +5,7 @@ import { AppError } from '@asone/errors';
 import { requireBranchAccess, requirePermission } from '../../auth/auth.guards.js';
 import type { AuthService } from '../../auth/auth.service.js';
 import { hashPassword, validatePasswordStrength } from '../../auth/auth.passwords.js';
+import { isValidIanaTimezone } from '../../promotions/pricing.service.js';
 import type { AdminActor } from './admin.types.js';
 import type { AdminRepository } from './admin.repository.js';
 
@@ -14,6 +15,25 @@ function missing(): AppError {
     message: 'The resource was not found.',
     statusCode: 404,
   });
+}
+
+/** TASK 16.8B — the ONE gate every company/branch write path funnels
+ * through before a `timezone` value ever reaches the database. A bare
+ * non-blank-text check (the schema's own `..._timezone_nonblank_ck`) let
+ * a real production branch persist `"Mexico_City"` — not a real IANA
+ * zone (the real one is `"America/Mexico_City"`) — which later crashed
+ * `POST /api/v1/sales` with an unhandled `RangeError` the first time a
+ * sale needed this branch's local weekday/time (see
+ * `pricing.service.ts`'s `localWeekdayAndTime`). Reuses the same
+ * runtime-native `Intl.DateTimeFormat` check that engine already relies
+ * on, never a hand-maintained list of "known good" zone strings. */
+function requireValidTimezone(value: string): void {
+  if (!isValidIanaTimezone(value))
+    throw new AppError({
+      code: 'validation_error',
+      message: `"${value}" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").`,
+      statusCode: 400,
+    });
 }
 
 export class AdministrationService {
@@ -82,6 +102,7 @@ export class AdministrationService {
     },
   ): Promise<Record<string, unknown>> {
     requirePermission(this.authentication, actor.context, 'company.update');
+    if (values.timezone !== undefined) requireValidTimezone(values.timezone);
     const [current] = await this.repository.query<{ id: string }>(
       'select id from companies where id=$1',
       [actor.context.companyId],
@@ -155,6 +176,7 @@ export class AdministrationService {
     },
   ): Promise<Record<string, unknown>> {
     requirePermission(this.authentication, actor.context, 'branch.create');
+    requireValidTimezone(values.timezone);
     const id = randomUUID();
     await this.repository.mutate({
       companyId: actor.context.companyId,
@@ -224,6 +246,7 @@ export class AdministrationService {
   ): Promise<Record<string, unknown>> {
     requirePermission(this.authentication, actor.context, 'branch.update');
     requireBranchAccess(this.authentication, actor.context, branchId);
+    if (values.timezone !== undefined) requireValidTimezone(values.timezone);
     await this.repository.mutate({
       companyId: actor.context.companyId,
       branchId,

@@ -63,7 +63,15 @@ void main() {
 
       await tester.enterText(find.byKey(const Key('pos-branch-admin-form-code')), 'SUR');
       await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Sur');
-      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'America/Mexico_City');
+      // TASK 16.8B: the timezone field is now a searchable picker
+      // (`Autocomplete<_TimezoneOption>`) over a curated list of real IANA
+      // identifiers — typing filters the suggestion overlay, and tapping
+      // the matching option both fills the field with the canonical value
+      // and closes the overlay (never leaving it open to obscure "Guardar").
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'méxico');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-timezone-option-America/Mexico_City')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
       await tester.pumpAndSettle();
 
@@ -77,7 +85,88 @@ void main() {
       expect(gateway.createCalls.single.input.status, isNull);
       expect(find.text('Sucursal Sur'), findsOneWidget);
     });
+  });
 
+  group('TASK 16.8B — timezone picker', () {
+    testWidgets('searching by city name filters to the matching real IANA options, and selecting one '
+        'writes the canonical identifier into the field', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(seed: const []);
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'cancún');
+      await tester.pumpAndSettle();
+
+      // The search matches the Spanish label, not just the raw IANA value —
+      // exactly the point of a human-readable picker over a raw text field.
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-option-America/Cancun')), findsOneWidget);
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-option-America/Mexico_City')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-timezone-option-America/Cancun')));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-branch-admin-form-timezone'))).controller?.text,
+        'America/Cancun',
+      );
+    });
+
+    testWidgets('a real IANA value not in the curated shortlist can still be typed directly — the '
+        'picker is a convenience, never a lock-out (the backend remains authoritative)', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(seed: const []);
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-code')), 'TOK');
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Tokio');
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Asia/Tokyo');
+      // Dismiss the (empty, no-match) suggestions overlay before tapping
+      // Guardar, exactly like the picker's own real-usage flow.
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls.single.input.timezone, 'Asia/Tokyo');
+    });
+
+    testWidgets('the backend\'s own rejection of an invalid timezone (defense in depth even though '
+        'the picker only offers real values) surfaces as the real, honest error message', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(
+        seed: const [],
+        createFailure: ApiException(
+          const AppFailure(
+            AppErrorKind.validation,
+            '"Mexico_City" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").',
+            code: 'validation_error',
+          ),
+        ),
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-code')), 'SUR');
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Sur');
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Mexico_City');
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('"Mexico_City" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  group('TASK 15.1 — create (blank fields, status field)', () {
     testWidgets('blank required fields are rejected client-side — no gateway call at all', (tester) async {
       final gateway = _RecordingBranchAdminGateway(seed: const []);
       await _pump(tester, gateway: gateway, permissions: _readWrite);
@@ -204,10 +293,18 @@ PosBranch _fixtureBranch({required String id, required String code, required Str
     );
 
 class _RecordingBranchAdminGateway implements PosBranchAdminGateway {
-  _RecordingBranchAdminGateway({List<PosBranch>? seed, this.failOnList = false}) : items = List.of(seed ?? const []);
+  _RecordingBranchAdminGateway({List<PosBranch>? seed, this.failOnList = false, this.createFailure})
+    : items = List.of(seed ?? const []);
 
   final List<PosBranch> items;
   final bool failOnList;
+  // TASK 16.8B — simulates the real backend's own `validation_error`
+  // rejection (`AdministrationService.createBranch`'s `requireValidTimezone`
+  // guard) so this file can prove the honest server-side error message
+  // reaches the form's `_error` state exactly like every other rejection
+  // already does here — the server remains authoritative even though the
+  // Flutter picker already only offers real IANA values.
+  final ApiException? createFailure;
   final List<String> listCalls = [];
   final List<({String companyId, PosBranchInput input})> createCalls = [];
   final List<({String id, PosBranchInput input})> updateCalls = [];
@@ -227,6 +324,7 @@ class _RecordingBranchAdminGateway implements PosBranchAdminGateway {
   @override
   Future<PosBranch> createBranch({required String companyId, required PosBranchInput input}) async {
     createCalls.add((companyId: companyId, input: input));
+    if (createFailure != null) throw createFailure!;
     final branch = PosBranch(
       id: 'branch-${_autoId++}',
       companyId: companyId,
