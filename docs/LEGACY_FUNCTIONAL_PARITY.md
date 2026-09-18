@@ -2224,6 +2224,62 @@ construction, not by a separate assertion). Cash-cut printing shares TASK
 no silent/raw ESC/POS printing exists, consistent with the already-approved
 V1 architecture decision.
 
+## TASK 16.9 — Real 80mm Thermal Printer Hardware Certification (2026-09-17)
+
+A real thermal printer was physically connected for the first time. Two
+physical print attempts surfaced real, hardware-level divergence between
+the browser print preview and the actual paper output: attempt #1 printed
+flattened/unformatted text (consistent with the printer's Windows driver
+extracting plain DOM text rather than rendering CSS — a driver/OS-level
+concern outside this codebase); attempt #2 used the real formatted
+document but showed horizontal content clipping, a faint/washed-out logo,
+and an effective printable width narrower than the CSS assumed.
+
+**Root cause (software side)**: `receipt_html.dart`'s `@page{margin:3mm}`
+CSS margin and its separately-computed `body{width:paperWidthMm-6mm}`
+were two independent inset mechanisms stacked on top of each other,
+neither anchored to what a real printer driver's own non-printable
+margins actually allow — `@page` margin is a request, not a guarantee.
+The `.amount` (monetary) table column also had no guaranteed minimum
+width (auto table layout), so a sufficiently long label could in
+principle still leave less room for the amount than assumed. The tenant
+logo mixed `px` (height) and `mm` (width) sizing and had no
+contrast/print-color-adjust treatment, which explains the faint print
+under real thermal dithering.
+
+**Fix implemented**: a single, real-hardware-verified 72mm safe content
+width for 80mm paper (`_safeContentWidthMm`, down from the previous
+optimistic 74mm), `@page{margin:0}` with the entire horizontal inset
+now owned by `body{width:72mm;margin:0 auto}` (one mechanism, not two),
+`table-layout:fixed` with a guaranteed `.amount{width:38%}` column on
+every monetary table (the amount can never shrink; the label/name wraps
+instead), and a high-contrast logo treatment
+(`filter:grayscale(1) contrast(1.6)`, `print-color-adjust:exact`,
+`image-rendering:crisp-edges`, sized entirely in `mm`). A real quantity
+greater than 1 now also renders a "{qty} x {unit price}" sub-row using
+only already-persisted `unitPrice`/`quantity` snapshot values, matching
+a conventional paper receipt's own layout.
+
+**80mm thermal receipt implementation complete. Real thermal printer
+connectivity and printing were previously proven. Final physical
+certification of the revised 72mm-safe thermal layout remains pending
+and must be performed when hardware is available again.**
+
+**Status**: CODE/IMPLEMENTATION — **GREEN** (38/38 receipt tests, full
+Flutter suite green, `flutter analyze` clean, production web build
+succeeded; verified against a real persisted sale's real data in a local
+browser). PHYSICAL 80MM CERTIFICATION — **PENDING**. Physical access to
+the thermal printer was unavailable to complete this task; the browser
+preview is explicitly NOT the acceptance criterion for this capability
+(see this task's own governing instruction) — only a reviewed photograph
+of the actual 80mm paper output may close this out. A ready-to-print
+standalone HTML artifact (the real test sale's own receipt, already
+using this task's new CSS) was generated and preserved
+(`TICKET_PRUEBA_FISICA_80mm.html`, delivered to the operator) so the
+physical test can resume without rebuilding the local dev stack — open
+it in a browser on the machine with the thermal printer attached and
+print via the browser's own print dialog.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

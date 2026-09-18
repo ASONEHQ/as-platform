@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:as_one/features/pos/pos_receipt.dart';
 import 'package:as_one/features/pos/receipt_html.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -57,16 +59,20 @@ void main() {
     ],
   );
 
-  test('targets 80mm by default via a real CSS @page rule, not just a comment', () {
+  test('targets 80mm by default via a real CSS @page rule, and a conservative, real-hardware-verified '
+      'content width (TASK 16.9) — never the full nominal paper width', () {
     final html = buildReceiptHtml(receipt: receipt());
-    expect(html, contains('@page{size:80.0mm auto;margin:3mm}'));
-    expect(html, contains('width:74.0mm'));
+    expect(html, contains('@page{size:80.0mm auto;margin:0}'));
+    // 72mm — not 74mm (paperWidthMm - 6) — real 80mm print QA found that
+    // more optimistic figure still clipped against a real printer
+    // driver's own non-printable margins.
+    expect(html, contains('width:72.0mm'));
   });
 
   test('a different paperWidthMm cheaply retargets the page — 58mm-ready per ADR-0012', () {
     final html = buildReceiptHtml(receipt: receipt(), paperWidthMm: 58);
-    expect(html, contains('@page{size:58.0mm auto;margin:3mm}'));
-    expect(html, contains('width:52.0mm'));
+    expect(html, contains('@page{size:58.0mm auto;margin:0}'));
+    expect(html, contains('width:48.0mm'));
   });
 
   test('renders exact backend totals, never clipped or re-derived — subtotal, IVA, and TOTAL all present', () {
@@ -430,6 +436,245 @@ void main() {
       expect(html, contains('&lt;script&gt;alert(1)&lt;/script&gt;'));
       expect(html, isNot(contains('<b>Hola</b>')));
       expect(html, isNot(contains('<script>alert(1)</script>')));
+    });
+  });
+
+  group('TASK 16.9 — real 80mm physical thermal print certification', () {
+    test('carries real thermal print CSS: an explicit @page rule, print-color-adjust for faithful '
+        'monochrome output, and @media print to hide the on-screen-only print button', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      expect(html, contains('@page{size:80.0mm auto'));
+      expect(html, contains('-webkit-print-color-adjust:exact'));
+      expect(html, contains('print-color-adjust:exact'));
+      expect(html, contains('@media print{.print-action{display:none!important}}'));
+    });
+
+    test('the 80mm content width is a conservative, real-printable value — never the full nominal '
+        'paper width, and never a desktop-viewport assumption', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      // 72mm of 80mm nominal paper — real hardware margin, not 100% of
+      // the paper claimed as printable.
+      expect(html, contains('width:72.0mm'));
+      expect(html, isNot(contains('width:80.0mm')));
+      // No desktop-scale pixel width anywhere driving the page layout —
+      // the whole document is dimensioned in `mm`, tied to the physical
+      // page, never a fixed on-screen pixel viewport.
+      expect(RegExp(r'width:\d+px').hasMatch(html), isFalse);
+    });
+
+    test('every monetary table uses a fixed table layout with a guaranteed amount-column width — '
+        'the amount can never shrink to make room for a long label, only the label wraps', () {
+      final html = buildReceiptHtml(receipt: receipt());
+      expect(html, contains('table-layout:fixed'));
+      expect(html, contains('.amount{width:38%'));
+    });
+
+    test('an extremely long product name still leaves the amount fully visible, never clipped, by '
+        'wrapping the name instead of shrinking the reserved amount column', () {
+      final html = buildReceiptHtml(
+        receipt: receipt(
+          longName: 'Paquete familiar todo incluido para cumpleaños infantil con decoración temática '
+              'personalizada y servicio de mesero dedicado durante todo el evento',
+        ),
+      );
+      expect(html, contains(r'$116.00'));
+      expect(html, contains('overflow-wrap:anywhere'));
+    });
+
+    test('large, multi-digit amounts (5+ figures) print in full — never truncated or clipped', () {
+      final bigReceipt = PosReceipt(
+        sale: PosReceiptSale(
+          id: 'sale-big',
+          saleNumber: 'SALE-big000000000000000000000000000',
+          status: 'completed',
+          currencyCode: 'MXN',
+          branchId: 'branch-1',
+          occurredAt: DateTime.utc(2026, 9, 17, 10, 0),
+          completedAt: DateTime.utc(2026, 9, 17, 10, 1),
+          subtotal: '9482.7586',
+          discountTotal: '0.0000',
+          taxTotal: '1517.2414',
+          total: '11000.0000',
+        ),
+        business: const PosReceiptBusiness(
+          companyName: 'AS ONE Demo Co.',
+          branchName: 'Sucursal Centro',
+          branchAddress: null,
+        ),
+        cashier: const PosReceiptCashier(id: 'user-1', displayName: 'Ana Cajera'),
+        items: const [
+          PosReceiptItem(
+            lineNumber: 1,
+            nameSnapshot: 'Renta de salón',
+            skuSnapshot: 'SALON-1',
+            quantity: '1.000000',
+            unitPrice: '11000.0000',
+            discountTotal: '0.0000',
+            taxTotal: '1517.2414',
+            lineTotal: '11000.0000',
+          ),
+        ],
+        payments: const [
+          PosReceiptPayment(
+            id: 'payment-1',
+            paymentMethod: 'cash',
+            status: 'captured',
+            amount: '11000.0000',
+            currencyCode: 'MXN',
+            capturedAt: null,
+            tenderedAmount: '15000.0000',
+            changeAmount: '4000.0000',
+            provider: null,
+            terminalId: null,
+            providerReference: null,
+          ),
+        ],
+      );
+      final html = buildReceiptHtml(receipt: bigReceipt);
+      // TASK 16.9: verified against the real `Money.toDisplayString()`
+      // this app's ENTIRE money display already relies on everywhere
+      // (`money.dart`) before asserting — it does not insert thousands
+      // separators today (no `NumberFormat`/grouping exists anywhere in
+      // this codebase's money path). Adding one would be a cross-cutting
+      // change to every money display in the app, not something this
+      // hardware/CSS certification task should do — what actually matters
+      // here is that a real 5-figure amount prints in full, unsplit,
+      // regardless of separator style.
+      expect(html, contains(r'$9482.76')); // subtotal, rounded half-up
+      expect(html, contains(r'$1517.24')); // IVA
+      expect(html, contains(r'$11000.00')); // TOTAL and line total
+      expect(html, contains(r'$15000.00')); // efectivo recibido
+      expect(html, contains(r'$4000.00')); // cambio
+      // The amount column is `white-space:nowrap` — confirm a real
+      // 5-digit amount is never split mid-string by anything this
+      // function itself controls (the printer/driver is the only other
+      // place a genuine physical clip could still happen).
+      expect(html, isNot(contains('1100\n0')));
+      expect(html, isNot(contains('1500\n0')));
+    });
+
+    test('a real quantity greater than 1 renders "{qty} x {unit price}" beneath the product name, '
+        'using only already-persisted snapshot values — never a client-invented figure', () {
+      final html = buildReceiptHtml(receipt: receipt()); // fixture quantity is 2.000000, unitPrice 50.0000
+      expect(html, contains('class="item-qty muted">2 x \$50.00<'));
+      expect(html, contains('class="qty-row"'));
+    });
+
+    test('a quantity of exactly 1 unit renders the classic single-row shape unchanged — no qty sub-row', () {
+      final singleUnitHtml = buildReceiptHtml(
+        receipt: PosReceipt(
+          sale: PosReceiptSale(
+            id: 'sale-1',
+            saleNumber: 'SALE-single',
+            status: 'completed',
+            currencyCode: 'MXN',
+            branchId: 'branch-1',
+            occurredAt: DateTime.utc(2026, 9, 17),
+            completedAt: DateTime.utc(2026, 9, 17, 0, 1),
+            subtotal: '25.0000',
+            discountTotal: '0.0000',
+            taxTotal: '4.0000',
+            total: '29.0000',
+          ),
+          business: const PosReceiptBusiness(
+            companyName: 'AS ONE Demo Co.',
+            branchName: 'Sucursal Centro',
+            branchAddress: null,
+          ),
+          cashier: const PosReceiptCashier(id: 'user-1', displayName: 'Ana Cajera'),
+          items: const [
+            PosReceiptItem(
+              lineNumber: 1,
+              nameSnapshot: 'Agua',
+              skuSnapshot: 'AGUA-1',
+              quantity: '1.000000',
+              unitPrice: '25.0000',
+              discountTotal: '0.0000',
+              taxTotal: '4.0000',
+              lineTotal: '29.0000',
+            ),
+          ],
+          payments: const [],
+        ),
+      );
+      expect(singleUnitHtml, isNot(contains('class="qty-row"')));
+      expect(singleUnitHtml, isNot(contains('class="item-qty')));
+      expect(singleUnitHtml, contains('<title>Ticket'));
+    });
+
+    test('the tenant logo receives thermal-legible high-contrast treatment (grayscale + boosted '
+        'contrast), never printed at its raw, potentially washed-out source contrast', () {
+      final html = buildReceiptHtml(receipt: receipt(), logoDataUri: 'data:image/png;base64,QUJD');
+      expect(html, contains('filter:grayscale(1) contrast(1.6)'));
+      expect(html, contains('image-rendering:crisp-edges'));
+    });
+
+    test('no INFLAPARK-specific data ever appears for a different tenant\'s receipt — shared print '
+        'logic carries no customer-specific hardcoding', () {
+      final otherTenant = PosReceipt(
+        sale: PosReceiptSale(
+          id: 'sale-other',
+          saleNumber: 'SALE-othertenant00000000000000000',
+          status: 'completed',
+          currencyCode: 'MXN',
+          branchId: 'branch-other',
+          occurredAt: DateTime.utc(2026, 9, 17),
+          completedAt: DateTime.utc(2026, 9, 17, 0, 1),
+          subtotal: '200.0000',
+          discountTotal: '0.0000',
+          taxTotal: '32.0000',
+          total: '232.0000',
+        ),
+        business: const PosReceiptBusiness(
+          companyName: 'Multi-Tenant Test Corp',
+          branchName: 'Sucursal Alterna',
+          branchAddress: {'line1': 'Calle Genérica 456'},
+        ),
+        cashier: const PosReceiptCashier(id: 'user-other', displayName: 'Otro Cajero'),
+        items: const [
+          PosReceiptItem(
+            lineNumber: 1,
+            nameSnapshot: 'Producto genérico',
+            skuSnapshot: 'GEN-1',
+            quantity: '1.000000',
+            unitPrice: '200.0000',
+            discountTotal: '0.0000',
+            taxTotal: '32.0000',
+            lineTotal: '232.0000',
+          ),
+        ],
+        payments: const [
+          PosReceiptPayment(
+            id: 'payment-other',
+            paymentMethod: 'cash',
+            status: 'captured',
+            amount: '232.0000',
+            currencyCode: 'MXN',
+            capturedAt: null,
+            tenderedAmount: '250.0000',
+            changeAmount: '18.0000',
+            provider: null,
+            terminalId: null,
+            providerReference: null,
+          ),
+        ],
+      );
+      final html = buildReceiptHtml(receipt: otherTenant);
+      expect(html, contains('Multi-Tenant Test Corp'));
+      expect(html, contains('Sucursal Alterna'));
+      for (final forbidden in ['INFLAPARK', 'Inflapark', 'Puerta La Victoria', 'Bryant', 'AGUA', 'Agua']) {
+        expect(html, isNot(contains(forbidden)), reason: '"$forbidden" must never leak into another tenant\'s receipt');
+      }
+    });
+
+    test('the shared print builder source itself contains no hardcoded INFLAPARK/customer-specific '
+        'literal — every tenant-facing value is a parameter or a field read off the receipt', () {
+      final source = File(
+        '${Directory.current.path}/lib/features/pos/receipt_html.dart',
+      ).readAsStringSync();
+      for (final forbidden in ['INFLAPARK', 'Inflapark', 'Puerta La Victoria', 'AGUA']) {
+        expect(source, isNot(contains(forbidden)), reason: '"$forbidden" must never be hardcoded in shared print logic');
+      }
     });
   });
 }

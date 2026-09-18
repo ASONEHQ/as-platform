@@ -56,11 +56,54 @@ String _paymentMethodLabel(String method) => switch (method) {
   _ => method,
 };
 
+// TASK 16.9 — real 80mm physical print QA found the previous
+// `paperWidthMm - 6` assumption (74mm of "safe" content on 80mm paper)
+// still let real printer-driver margins clip content: `@page` margin is a
+// REQUEST, not a guarantee, and a driver's own hardware-reported
+// printable area can be narrower than what the CSS asked for. 72mm is
+// the printable width most common 80mm thermal printers (the
+// Epson TM-T20/TM-88 family and the generic ESC/POS "80mm" class this
+// platform is being certified against) actually document; 48mm mirrors
+// the same real-hardware convention for a future 58mm roll (58mm paper,
+// ~48mm printable is the equivalent common spec for that class of
+// printer) — kept as its own explicit case rather than a blind
+// percentage-of-paperWidthMm formula, so a genuine 58mm certification
+// pass can verify/adjust it independently without touching the 80mm
+// value this task actually certifies. Anything else falls back to a
+// conservative 8mm total margin.
+double _safeContentWidthMm(double paperWidthMm) {
+  if (paperWidthMm >= 76) return 72;
+  if (paperWidthMm >= 54) return 48;
+  return paperWidthMm - 8;
+}
+
+// TASK 16.9 — the backend's own `quantity` column is a fixed 6-decimal
+// string (`"2.000000"`, or `"2.350000"` for a real weight-based line —
+// TASK 14.3 Wave 1 Part B.3), never meant to be shown to a customer
+// verbatim. Pure string trimming, never `double.parse` (ADR-0001's own
+// "never binary floating point for anything money-adjacent" discipline
+// extends here defensively, even though a quantity is a count/weight, not
+// money) — a malformed value (no decimal point at all) is returned
+// completely unchanged rather than risk mangling it.
+String _formatQuantity(String quantity) {
+  if (!quantity.contains('.')) return quantity;
+  var trimmed = quantity;
+  while (trimmed.endsWith('0')) {
+    trimmed = trimmed.substring(0, trimmed.length - 1);
+  }
+  if (trimmed.endsWith('.')) trimmed = trimmed.substring(0, trimmed.length - 1);
+  return trimmed;
+}
+
 /// Renders [receipt] as a full HTML document string.
 ///
-/// [paperWidthMm] drives both the CSS `@page` size and the content
-/// width — 80mm is the required target; a future 58mm layout is simply
-/// a different value here (see ADR-0012's "80mm target, 58mm-ready").
+/// [paperWidthMm] drives the CSS `@page` size — 80mm is the required
+/// target; a future 58mm layout is simply a different value here (see
+/// ADR-0012's "80mm target, 58mm-ready"). The actual CONTENT width is a
+/// separate, deliberately more conservative value (see
+/// `_safeContentWidthMm`'s own doc comment — TASK 16.9's real hardware
+/// certification) — never assume the full nominal paper width is
+/// actually printable.
 /// [logoDataUri], when supplied, must already be a complete `data:`
 /// URI (e.g. from the bundled `assets/branding/as_logo_mark.png`) — this
 /// function never fetches or reads a file itself, and never accepts a
@@ -108,7 +151,7 @@ String buildReceiptHtml({
   final business = receipt.business;
   final cashier = receipt.cashier;
   final currency = sale.currencyCode;
-  final contentWidthMm = paperWidthMm - 6; // page minus 3mm margins each side.
+  final contentWidthMm = _safeContentWidthMm(paperWidthMm);
 
   final logoHtml = logoDataUri == null
       ? ''
@@ -139,23 +182,37 @@ String buildReceiptHtml({
   // `discount_total` (real since this task; always `"0.0000"` before it)
   // is nonzero, so a legacy/undiscounted receipt renders byte-identical
   // to before (ADR-0016 D14).
+  //
+  // TASK 16.9: a quantity of exactly 1 unit renders exactly as before
+  // (name + line total on the same row — the common case, and the exact
+  // shape every pre-existing test already pins). A real quantity greater
+  // than 1 adds a second, muted row directly beneath the product name —
+  // "{quantity} x {unit price}" on the left, the same line total on the
+  // right — mirroring a real paper receipt's own convention and using
+  // only already-persisted, frozen snapshot values (`unitPrice`/
+  // `quantity`/`lineTotal`), never a client-invented figure.
   final itemsRowsHtml = receipt.items.isEmpty
       ? '<tr><td colspan="2" class="muted">Sin artículos</td></tr>'
       : receipt.items
             .map((item) {
-              final qty = item.quantity;
-              final qtySuffix = qty == '1.000000' ? '' : ' x$qty';
+              final isSingleUnit = item.quantity == '1.000000';
+              final nameRow = '<tr>'
+                  '<td class="item-name">${_escape(item.nameSnapshot)}</td>'
+                  '<td class="amount">${isSingleUnit ? _money(item.lineTotal, currency) : ''}</td>'
+                  '</tr>';
+              final qtyRow = isSingleUnit
+                  ? ''
+                  : '<tr class="qty-row">'
+                        '<td class="item-qty muted">${_formatQuantity(item.quantity)} x ${_money(item.unitPrice, currency)}</td>'
+                        '<td class="amount">${_money(item.lineTotal, currency)}</td>'
+                        '</tr>';
               final discountRow = _isNonZeroAmount(item.discountTotal)
                   ? '<tr class="discount-row">'
                         '<td class="item-name muted">Descuento</td>'
                         '<td class="amount muted">-${_money(item.discountTotal, currency)}</td>'
                         '</tr>'
                   : '';
-              return '<tr>'
-                      '<td class="item-name">${_escape(item.nameSnapshot)}$qtySuffix</td>'
-                      '<td class="amount">${_money(item.lineTotal, currency)}</td>'
-                      '</tr>' +
-                  discountRow;
+              return nameRow + qtyRow + discountRow;
             })
             .join();
 
@@ -203,23 +260,66 @@ String buildReceiptHtml({
   return '<!DOCTYPE html><html><head><meta charset="UTF-8">'
       '<title>Ticket ${_escape(sale.saleNumber)}</title>'
       '<style>'
-      '@page{size:${paperWidthMm}mm auto;margin:3mm}'
+      // TASK 16.9 — real 80mm hardware certification. `margin:0` here
+      // deliberately claims the FULL nominal paper width for the page box
+      // — the horizontal safety inset lives entirely in `body`'s own
+      // `width`/`margin:0 auto` below instead of relying on the printer
+      // driver's own (inconsistent, request-not-guarantee) interpretation
+      // of an `@page` margin. That single, browser-computed centering
+      // rule is what actually determines the printed inset, on screen and
+      // on paper alike — never two independent inset mechanisms stacked
+      // on top of each other (the previous `@page margin:3mm` PLUS a
+      // separately-computed `body` width was exactly that double
+      // bookkeeping, and real print QA showed the two disagreeing with
+      // the printer's actual printable area).
+      '@page{size:${paperWidthMm}mm auto;margin:0}'
       '*{margin:0;padding:0;box-sizing:border-box}'
       'html,body{background:#fff}'
       'body{font-family:"Courier New",Courier,monospace;font-size:12px;color:#000;'
-      'width:${contentWidthMm}mm;max-width:${contentWidthMm}mm;margin:6px auto;padding:0 2mm}'
-      '.logo{display:block;margin:0 auto 4px;max-height:44px;max-width:${contentWidthMm}mm}'
+      'width:${contentWidthMm}mm;max-width:${contentWidthMm}mm;margin:0 auto;padding:3mm 0 4mm;'
+      '-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+      // TASK 16.9: real print QA found the tenant logo printed very faint
+      // — a photo-quality/anti-aliased source image dithers into a washed-
+      // out, low-contrast pattern on a low-density thermal head.
+      // `grayscale`+`contrast` push mid-tone pixels toward pure
+      // black/white BEFORE the browser rasterizes for print, giving the
+      // printer driver's own dithering algorithm a much more binary
+      // source to work from; `print-color-adjust:exact` stops the browser
+      // from independently lightening it for print; `crisp-edges` avoids
+      // a soft/blurry scale that would only make dithering worse. Sized
+      // in `mm` (not `px`) so it scales with the physical page exactly
+      // like every other dimension on this ticket, never a separate unit
+      // system that could scale inconsistently across browsers/drivers.
+      '.logo{display:block;margin:0 auto 4px;max-height:16mm;max-width:${contentWidthMm}mm;'
+      'image-rendering:crisp-edges;filter:grayscale(1) contrast(1.6);'
+      '-webkit-print-color-adjust:exact;print-color-adjust:exact}'
       'h1{text-align:center;font-size:15px;margin-bottom:2px;font-weight:700}'
       '.sub{text-align:center;font-size:10px;color:#333;margin-bottom:8px}'
       '.tenant-header{white-space:pre-line;overflow-wrap:anywhere}'
       '.divider{border:none;border-top:1px dashed #000;margin:6px 0}'
-      'table{width:100%;border-collapse:collapse}'
+      // `table-layout:fixed` + a fixed percentage on `.amount` is what
+      // actually guarantees "nothing may be horizontally clipped" for a
+      // monetary figure (TASK 16.9's own hard requirement): every table
+      // on this ticket is exactly two columns (label/name, amount), so
+      // reserving a fixed share for the amount column means it can never
+      // shrink to accommodate a long label/product name — the NAME column
+      // wraps instead (via `.item-name`'s own `word-break`/`overflow-wrap`
+      // below), never the amount. Auto table layout (the previous
+      // behavior) sizes columns from content, which is exactly how real
+      // print QA saw an amount partially clipped alongside a long enough
+      // label.
+      'table{width:100%;border-collapse:collapse;table-layout:fixed}'
       'td{padding:2px 0;vertical-align:top}'
-      '.item-name{word-break:break-word;padding-right:6px}'
+      '.item-name{word-break:break-word;overflow-wrap:anywhere;padding-right:6px}'
+      // TASK 16.9: a real quantity greater than 1 — "{qty} x {unit
+      // price}" — directly beneath the product name; see `buildReceiptHtml`
+      // itself for the row-building logic. Muted/smaller like the
+      // pre-existing `.discount-row` sub-detail convention.
+      '.item-qty{font-size:11px;color:#555;padding-right:6px;overflow-wrap:anywhere}'
       '.discount-row td{font-size:11px}'
-      '.amount{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'
+      '.amount{width:38%;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}'
       '.totals td{padding:1px 0}'
-      '.total-row td{font-size:14px;font-weight:700;padding-top:4px;border-top:1px solid #000;'
+      '.total-row td{font-size:14px;font-weight:700;padding-top:4px;border-top:2px solid #000;'
       'letter-spacing:0.4px}'
       // `overflow-wrap:anywhere` is a defense-in-depth safety net for the
       // folio line specifically (see `displaySaleFolio` in `sale_folio.dart`
@@ -238,7 +338,7 @@ String buildReceiptHtml({
       'line-height:1.4;white-space:pre-line;overflow-wrap:anywhere}'
       '.print-action{text-align:center;margin-top:14px}'
       '.print-action button{padding:8px 20px;font-size:13px;cursor:pointer}'
-      '@media print{.print-action{display:none!important}body{margin:0}}'
+      '@media print{.print-action{display:none!important}}'
       '</style></head>'
       '<body>'
       '$logoHtml'
