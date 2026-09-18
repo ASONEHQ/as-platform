@@ -225,6 +225,13 @@
       "when": 1789695772723,
       "tag": "0031_burly_nomad",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789712303103,
+      "tag": "0032_absurd_liz_osborn",
+      "breakpoints": true
     }
   ]
 }

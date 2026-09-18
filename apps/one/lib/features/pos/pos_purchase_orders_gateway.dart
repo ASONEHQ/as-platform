@@ -65,6 +65,9 @@ class PosPurchaseOrderLine {
     required this.id,
     required this.lineNumber,
     required this.productVariantId,
+    required this.productName,
+    this.variantName,
+    this.sku,
     required this.orderedQuantity,
     required this.receivedQuantity,
     required this.unitCost,
@@ -76,6 +79,13 @@ class PosPurchaseOrderLine {
     id: json['id']! as String,
     lineNumber: (json['line_number'] as num?)?.toInt() ?? 0,
     productVariantId: json['product_variant_id']! as String,
+    // `product_name` is only absent for a shape older than TASK 16.10A —
+    // falls back to the raw variant id rather than throwing, so an
+    // unmigrated/mixed environment degrades to the old (ugly but honest)
+    // display instead of crashing the whole order.
+    productName: json['product_name'] as String? ?? json['product_variant_id']! as String,
+    variantName: json['variant_name'] as String?,
+    sku: json['sku'] as String?,
     orderedQuantity: json['ordered_quantity']! as String,
     receivedQuantity: json['received_quantity'] as String? ?? '0',
     unitCost: json['unit_cost']! as String,
@@ -86,11 +96,25 @@ class PosPurchaseOrderLine {
   final String id;
   final int lineNumber;
   final String productVariantId;
+  /// Frozen at line-creation time from the catalog's product name — never
+  /// re-derived live, so it stays legible even after the product is later
+  /// renamed. See `purchase-orders.types.ts`'s own doc comment on
+  /// `PurchaseOrderLineRow.productNameSnapshot`.
+  final String productName;
+  final String? variantName;
+  final String? sku;
   final String orderedQuantity;
   final String receivedQuantity;
   final String unitCost;
   final String lineTotal;
   final String? notes;
+
+  /// The single human-readable label for this line — "ProductName" alone,
+  /// or "ProductName — VariantName" when the variant has its own distinct
+  /// label. Never the raw [productVariantId]. [sku] is deliberately not
+  /// folded in here — callers show it as secondary text (see
+  /// `pos_shell.dart`'s PO line-row widgets).
+  String get displayName => variantName == null || variantName!.isEmpty ? productName : '$productName — $variantName';
 }
 
 /// A `purchase_orders` row — exactly what `purchase-orders.routes.ts`

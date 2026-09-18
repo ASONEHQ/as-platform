@@ -13710,9 +13710,16 @@ class _PurchaseOrderDetailDialogState extends State<_PurchaseOrderDetailDialog> 
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _compactId(line.productVariantId),
+                      line.displayName,
+                      key: Key('pos-po-detail-line-name-${line.id}'),
                       style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
                     ),
+                    if (line.sku != null && line.sku!.isNotEmpty)
+                      Text(
+                        'SKU: ${line.sku}',
+                        key: Key('pos-po-detail-line-sku-${line.id}'),
+                        style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                      ),
                     const SizedBox(height: 2),
                     Text(
                       'Pedido: ${line.orderedQuantity} · Recibido: ${line.receivedQuantity} · '
@@ -13928,9 +13935,15 @@ class _PurchaseOrderReceiveDialogState extends State<_PurchaseOrderReceiveDialog
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                _compactId(line.productVariantId),
+                                line.displayName,
+                                key: Key('pos-po-receive-line-name-${line.id}'),
                                 style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
                               ),
+                              if (line.sku != null && line.sku!.isNotEmpty)
+                                Text(
+                                  'SKU: ${line.sku}',
+                                  style: TextStyle(color: palette.textSecondary, fontSize: 10),
+                                ),
                               Text(
                                 'Pedido: ${line.orderedQuantity}',
                                 style: TextStyle(color: palette.textSecondary, fontSize: 11),

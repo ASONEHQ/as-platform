@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { postPurchaseOrderReceipt } from '../inventory/purchase-order-receipt.js';
 import type { SuppliersRepository } from '../suppliers/suppliers.repository.js';
-import type { PurchaseOrdersRepository } from './purchase-orders.repository.js';
+import type { PurchaseOrderVariantLookup, PurchaseOrdersRepository } from './purchase-orders.repository.js';
 import {
   PurchaseOrderError,
   type CreatePurchaseOrderInput,
@@ -158,6 +158,11 @@ export class PurchaseOrdersService {
     if (!branchIds.includes(input.branchId))
       throw new PurchaseOrderError('resource_not_found', 'The branch was not found.');
 
+    // Resolved once here and reused below when building each line — never
+    // a second lookup, and never trusted from client input: the display
+    // identity frozen onto `purchase_order_lines` always comes from the
+    // server's own read of the catalog at this exact moment.
+    const variantsById = new Map<string, PurchaseOrderVariantLookup>();
     for (const line of input.lines) {
       const variant = await this.repository.productVariant(context.companyId, line.productVariantId);
       if (variant === null)
@@ -170,6 +175,7 @@ export class PurchaseOrdersService {
           'purchase_order_non_tracked_variant',
           'A product variant on this purchase order does not track inventory.',
         );
+      variantsById.set(line.productVariantId, variant);
     }
 
     const cleanCurrency = input.currencyCode.trim().toUpperCase();
@@ -204,8 +210,16 @@ export class PurchaseOrdersService {
       if (unitCostUnits < 0n) throw new PurchaseOrderError('validation_error', 'unit_cost must not be negative.');
       const lineTotal = lineTotalUnits(unitCostUnits, orderedUnits);
       totalUnits += lineTotal;
+      // Guaranteed present — every id in `input.lines` was resolved into
+      // `variantsById` by the validation loop above, which throws on any
+      // miss before execution ever reaches here.
+      const variant = variantsById.get(line.productVariantId);
+      if (variant === undefined) throw new Error('Unreachable: variant not resolved during validation.');
       return {
         productVariantId: line.productVariantId,
+        productNameSnapshot: variant.productNameSnapshot,
+        variantNameSnapshot: variant.variantNameSnapshot,
+        skuSnapshot: variant.skuSnapshot,
         orderedQuantity: formatQuantity(orderedUnits),
         unitCost: formatMoney(unitCostUnits),
         lineTotal: formatMoney(lineTotal),

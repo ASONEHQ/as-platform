@@ -11,6 +11,14 @@ export interface PurchaseOrderLineRow {
   id: string;
   lineNumber: number;
   productVariantId: string;
+  /** Frozen at line-creation time from the catalog's product/variant
+   * identity — never re-derived live on read. See
+   * `packages/database/src/schema/purchasing.ts`'s own doc comment on
+   * `purchaseOrderLines` for why (a PO line must stay legible even after
+   * the product is renamed/deactivated). */
+  productNameSnapshot: string;
+  variantNameSnapshot: string | null;
+  skuSnapshot: string | null;
   orderedQuantity: string;
   receivedQuantity: string;
   unitCost: string;

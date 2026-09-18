@@ -47,7 +47,7 @@ function jsonValue(_key: string, value: unknown): unknown {
 const PURCHASE_ORDER_COLUMNS =
   'id,company_id,branch_id,order_number,status,supplier_name,supplier_id,order_date,expected_date,currency_code,total_cost,notes,submitted_at,submitted_by,received_at,received_by,cancelled_at,cancelled_by,receipt_movement_id,version,created_by,created_at,updated_at';
 const PURCHASE_ORDER_LINE_COLUMNS =
-  'id,line_number,product_variant_id,ordered_quantity,received_quantity,unit_cost,line_total,notes';
+  'id,line_number,product_variant_id,product_name_snapshot,variant_name_snapshot,sku_snapshot,ordered_quantity,received_quantity,unit_cost,line_total,notes';
 
 interface PurchaseOrderDb {
   id: string;
@@ -78,11 +78,21 @@ interface PurchaseOrderLineDb {
   id: string;
   line_number: number;
   product_variant_id: string;
+  product_name_snapshot: string;
+  variant_name_snapshot: string | null;
+  sku_snapshot: string | null;
   ordered_quantity: string;
   received_quantity: string;
   unit_cost: string;
   line_total: string;
   notes: string | null;
+}
+export interface PurchaseOrderVariantLookup {
+  id: string;
+  tracksInventory: boolean;
+  productNameSnapshot: string;
+  variantNameSnapshot: string | null;
+  skuSnapshot: string;
 }
 interface IdempotencyDb {
   request_hash: string;
@@ -94,6 +104,9 @@ function purchaseOrderLine(row: PurchaseOrderLineDb): PurchaseOrderLineRow {
     id: row.id,
     lineNumber: row.line_number,
     productVariantId: row.product_variant_id,
+    productNameSnapshot: row.product_name_snapshot,
+    variantNameSnapshot: row.variant_name_snapshot,
+    skuSnapshot: row.sku_snapshot,
     orderedQuantity: row.ordered_quantity,
     receivedQuantity: row.received_quantity,
     unitCost: row.unit_cost,
@@ -133,6 +146,9 @@ function purchaseOrder(row: PurchaseOrderDb, lines: readonly PurchaseOrderLineRo
 
 export interface InsertPurchaseOrderLineInput {
   productVariantId: string;
+  productNameSnapshot: string;
+  variantNameSnapshot: string | null;
+  skuSnapshot: string | null;
   orderedQuantity: string;
   unitCost: string;
   lineTotal: string;
@@ -314,9 +330,10 @@ export class PurchaseOrdersRepository {
       const lineRow = result<PurchaseOrderLineDb>(
         await client.query(
           `insert into purchase_order_lines
-           (id,company_id,purchase_order_id,line_number,product_variant_id,ordered_quantity,
-            received_quantity,unit_cost,line_total,notes,created_at,updated_at)
-           values ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,$10)
+           (id,company_id,purchase_order_id,line_number,product_variant_id,product_name_snapshot,
+            variant_name_snapshot,sku_snapshot,ordered_quantity,received_quantity,unit_cost,line_total,
+            notes,created_at,updated_at)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,$11,$12,$13,$13)
            returning ${PURCHASE_ORDER_LINE_COLUMNS}`,
           [
             randomUUID(),
@@ -324,6 +341,9 @@ export class PurchaseOrdersRepository {
             input.id,
             index + 1,
             line.productVariantId,
+            line.productNameSnapshot,
+            line.variantNameSnapshot,
+            line.skuSnapshot,
             line.orderedQuantity,
             line.unitCost,
             line.lineTotal,
@@ -354,17 +374,36 @@ export class PurchaseOrdersRepository {
    * receive time the way `postPurchaseOrderReceipt` necessarily does (it
    * only ever reports one merged code, mirroring `postDirectPurchaseReceipt`
    * exactly — see that file's own doc comment). */
-  public async productVariant(
-    companyId: string,
-    id: string,
-  ): Promise<{ id: string; tracksInventory: boolean } | null> {
-    const row = result<{ id: string; tracks_inventory: boolean }>(
+  /** Also resolves the current product/variant display identity in the
+   * SAME query (never a second round-trip) — the caller freezes it onto
+   * the new `purchase_order_lines` row as `product_name_snapshot`/
+   * `variant_name_snapshot`/`sku_snapshot` at creation time (see
+   * `PurchaseOrdersService.createPurchaseOrder`'s own doc comment). */
+  public async productVariant(companyId: string, id: string): Promise<PurchaseOrderVariantLookup | null> {
+    const row = result<{
+      id: string;
+      tracks_inventory: boolean;
+      product_name: string;
+      variant_name: string | null;
+      sku: string;
+    }>(
       await this.database.pool.query(
-        `select id, tracks_inventory from product_variants where company_id=$1 and id=$2`,
+        `select pv.id, pv.tracks_inventory, pv.name as variant_name, pv.sku, p.name as product_name
+         from product_variants pv
+         join products p on p.company_id = pv.company_id and p.id = pv.product_id
+         where pv.company_id=$1 and pv.id=$2`,
         [companyId, id],
       ),
     ).rows[0];
-    return row === undefined ? null : { id: row.id, tracksInventory: row.tracks_inventory };
+    return row === undefined
+      ? null
+      : {
+          id: row.id,
+          tracksInventory: row.tracks_inventory,
+          productNameSnapshot: row.product_name,
+          variantNameSnapshot: row.variant_name,
+          skuSnapshot: row.sku,
+        };
   }
 
   /** Locks the `purchase_orders` row `FOR UPDATE` — used by every

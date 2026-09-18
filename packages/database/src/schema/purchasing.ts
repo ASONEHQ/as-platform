@@ -288,6 +288,19 @@ export const purchaseOrderLines = pgTable(
     purchaseOrderId: uuid('purchase_order_id').notNull(),
     lineNumber: integer('line_number').notNull(),
     productVariantId: uuid('product_variant_id').notNull(),
+    // TASK 16.10A — a frozen, transaction-time display snapshot, exactly
+    // mirroring `sale_items.name_snapshot`/`sale_items.sku_snapshot`'s own
+    // established precedent (see `sales.service.ts`'s product/variant
+    // lookup): a PO line must stay human-readable forever, even after the
+    // product is renamed, its SKU changes, or the variant is deactivated —
+    // never re-derived live from the current catalog on read.
+    // `variantNameSnapshot` is additionally captured (sales' own precedent
+    // does not) because unlike a sale (rung up against whatever the
+    // catalog says *right now*), a PO line's identity must remain legible
+    // long after creation with no live catalog lookup at all.
+    productNameSnapshot: text('product_name_snapshot').notNull(),
+    variantNameSnapshot: text('variant_name_snapshot'),
+    skuSnapshot: text('sku_snapshot'),
     orderedQuantity: numeric('ordered_quantity', { precision: 19, scale: 6 }).notNull(),
     receivedQuantity: numeric('received_quantity', { precision: 19, scale: 6 })
       .notNull()

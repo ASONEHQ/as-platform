@@ -53,6 +53,129 @@ void main() {
     });
   });
 
+  group('TASK 16.10A — Órdenes: human-readable line items', () {
+    testWidgets('the detail view shows the product name (and SKU as secondary text), never the raw variant id', (
+      tester,
+    ) async {
+      final order = _fixtureOrder(id: 'po-name-1', status: 'draft');
+      final gateway = _RecordingPurchaseOrdersGateway(seed: [order]);
+      await _pump(tester, purchaseOrdersGateway: gateway);
+      await _navigateToPurchases(tester);
+
+      await tester.tap(find.text(displayPurchaseOrderNumber(order.orderNumber)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Agua'), findsOneWidget);
+      expect(find.textContaining('SKU: TDA-AGUA'), findsOneWidget);
+      expect(find.textContaining('variant-1'), findsNothing);
+    });
+
+    testWidgets('the receiving dialog shows the product name (and SKU), never the raw variant id', (tester) async {
+      final order = _fixtureOrder(id: 'po-name-2', status: 'submitted');
+      final gateway = _RecordingPurchaseOrdersGateway(seed: [order]);
+      await _pump(tester, purchaseOrdersGateway: gateway);
+      await _navigateToPurchases(tester);
+
+      await tester.tap(find.text(displayPurchaseOrderNumber(order.orderNumber)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-po-receive-order')));
+      await tester.pumpAndSettle();
+
+      // The detail view stays mounted behind the receive dialog, so "Agua"
+      // legitimately renders twice (once in each) — the point of this test
+      // is that it renders at all and the raw id never does.
+      expect(find.text('Agua'), findsWidgets);
+      expect(find.textContaining('SKU: TDA-AGUA'), findsWidgets);
+      expect(find.textContaining('variant-1'), findsNothing);
+    });
+
+    testWidgets('a reload (fresh fetch from the gateway) preserves the readable identity, never falling back to '
+        'the raw id', (tester) async {
+      final order = _fixtureOrder(id: 'po-name-3', status: 'draft');
+      final gateway = _RecordingPurchaseOrdersGateway(seed: [order]);
+      await _pump(tester, purchaseOrdersGateway: gateway);
+      await _navigateToPurchases(tester);
+      // Reloading the list re-fetches from the gateway rather than reusing
+      // any client-cached state — the same round trip a real page reload
+      // would take.
+      await tester.tap(find.byKey(const Key('pos-po-refresh')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text(displayPurchaseOrderNumber(order.orderNumber)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Agua'), findsOneWidget);
+      expect(find.textContaining('variant-1'), findsNothing);
+    });
+  });
+
+  group('PosPurchaseOrderLine.displayName / fromJson — real wire shapes', () {
+    test('shows just the product name when the variant has no distinct label', () {
+      const line = PosPurchaseOrderLine(
+        id: 'line-1',
+        lineNumber: 1,
+        productVariantId: 'variant-1',
+        productName: 'Agua',
+        variantName: null,
+        sku: 'TDA-AGUA',
+        orderedQuantity: '10',
+        receivedQuantity: '0',
+        unitCost: '12.50',
+        lineTotal: '125.00',
+      );
+      expect(line.displayName, 'Agua');
+    });
+
+    test('combines product and variant name when the variant has its own distinct label', () {
+      const line = PosPurchaseOrderLine(
+        id: 'line-1',
+        lineNumber: 1,
+        productVariantId: 'variant-1',
+        productName: 'Playera',
+        variantName: 'Talla M',
+        sku: 'PLY-M',
+        orderedQuantity: '10',
+        receivedQuantity: '0',
+        unitCost: '80.00',
+        lineTotal: '800.00',
+      );
+      expect(line.displayName, 'Playera — Talla M');
+    });
+
+    test('fromJson parses product_name/variant_name/sku from a real detail-response line shape', () {
+      final line = PosPurchaseOrderLine.fromJson(<String, Object?>{
+        'id': 'line-1',
+        'line_number': 1,
+        'product_variant_id': 'f3160803-e8fa-4571-92ef-159662cb4578',
+        'product_name': 'Agua',
+        'variant_name': null,
+        'sku': 'TDA-AGUA',
+        'ordered_quantity': '10.000000',
+        'received_quantity': '0.000000',
+        'unit_cost': '12.5000',
+        'line_total': '125.0000',
+        'notes': null,
+      });
+      expect(line.productName, 'Agua');
+      expect(line.sku, 'TDA-AGUA');
+      expect(line.displayName, 'Agua');
+    });
+
+    test('degrades to the raw variant id — never throws — for a shape older than TASK 16.10A missing product_name', () {
+      final line = PosPurchaseOrderLine.fromJson(<String, Object?>{
+        'id': 'line-1',
+        'line_number': 1,
+        'product_variant_id': 'f3160803-e8fa-4571-92ef-159662cb4578',
+        'ordered_quantity': '10.000000',
+        'received_quantity': '0.000000',
+        'unit_cost': '12.5000',
+        'line_total': '125.0000',
+        'notes': null,
+      });
+      expect(line.productName, 'f3160803-e8fa-4571-92ef-159662cb4578');
+    });
+  });
+
   group('TASK 14.3 Wave 4 — Órdenes: create', () {
     testWidgets('creating a purchase order with 2 lines calls the gateway with the exact payload and shows it '
         'in the list afterward', (tester) async {
@@ -557,6 +680,9 @@ PosPurchaseOrder _fixtureOrder({
       id: '$id-line-1',
       lineNumber: 1,
       productVariantId: 'variant-1',
+      productName: 'Agua',
+      variantName: null,
+      sku: 'TDA-AGUA',
       orderedQuantity: orderedQuantity,
       receivedQuantity: receivedQuantity,
       unitCost: '10.0000',
@@ -662,6 +788,9 @@ class _RecordingPurchaseOrdersGateway implements PosPurchaseOrdersGateway {
           id: '$id-line-$lineNumber',
           lineNumber: lineNumber,
           productVariantId: line.productVariantId,
+          productName: 'Agua',
+          variantName: null,
+          sku: 'TDA-AGUA',
           orderedQuantity: line.orderedQuantity,
           receivedQuantity: '0',
           unitCost: line.unitCost,
@@ -725,6 +854,9 @@ class _RecordingPurchaseOrdersGateway implements PosPurchaseOrdersGateway {
           id: line.id,
           lineNumber: line.lineNumber,
           productVariantId: line.productVariantId,
+          productName: line.productName,
+          variantName: line.variantName,
+          sku: line.sku,
           orderedQuantity: line.orderedQuantity,
           receivedQuantity: receivedById[line.id] ?? '0',
           unitCost: line.unitCost,

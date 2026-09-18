@@ -143,6 +143,12 @@ integration('PostgreSQL purchase order operations (TASK 12.2)', { concurrent: fa
     // TASK 12.2 — the new `purchase_orders`/`purchase_order_lines` tables
     // this task's own migration adds.
     await applyIfMissing(database, 'purchase_orders', ['0031_burly_nomad.sql']);
+    // TASK 16.10A — the `product_name_snapshot`/`variant_name_snapshot`/
+    // `sku_snapshot` columns this task's own migration adds to the
+    // already-existing `purchase_order_lines` table.
+    await applyColumnIfMissing(database, 'purchase_order_lines', 'product_name_snapshot', [
+      '0032_absurd_liz_osborn.sql',
+    ]);
 
     await database.pool.query(
       `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
@@ -325,6 +331,29 @@ integration('PostgreSQL purchase order operations (TASK 12.2)', { concurrent: fa
     expect(body.total_cost).toBe('60.0000'); // 10*5 + 4*2.5
     expect(await balance(variantAId)).toBe(beforeA);
     expect(await balance(variantBId)).toBe(beforeB);
+  });
+
+  it('freezes a human-readable product_name/variant_name/sku on each line at creation time, and never re-derives it live from a later catalog rename (TASK 16.10A)', async () => {
+    const draft = await createDraft();
+    const detail = await get(`/api/v1/purchase-orders/${draft.id}`);
+    expect(detail.statusCode).toBe(200);
+    const before = detail.json<{
+      data: { lines: { product_variant_id: string; product_name: string; variant_name: string | null; sku: string | null }[] };
+    }>().data;
+    const lineA = before.lines.find((line) => line.product_variant_id === variantAId);
+    expect(lineA?.product_name).toBe('PO A');
+    expect(lineA?.variant_name).toBe('Variante');
+    expect(lineA?.sku).toBe('PO-A');
+
+    // Rename the product AFTER the PO line was created — the frozen
+    // snapshot must not change, exactly mirroring `sale_items.name_snapshot`'s
+    // own established "never re-derived live" guarantee.
+    await database.pool.query(`update products set name='PO A (renamed)' where id=$1`, [variantAProductId]);
+    const after = await get(`/api/v1/purchase-orders/${draft.id}`);
+    const afterBody = after.json<{
+      data: { lines: { product_variant_id: string; product_name: string }[] };
+    }>().data;
+    expect(afterBody.lines.find((line) => line.product_variant_id === variantAId)?.product_name).toBe('PO A');
   });
 
   it('rejects an empty lines array and a duplicate variant within the same request', async () => {
