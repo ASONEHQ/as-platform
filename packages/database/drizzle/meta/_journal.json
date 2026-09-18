@@ -218,6 +218,13 @@
       "when": 1789668401284,
       "tag": "0030_repair_invalid_branch_company_timezones",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789695772723,
+      "tag": "0031_burly_nomad",
+      "breakpoints": true
     }
   ]
 }

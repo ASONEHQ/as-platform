@@ -284,8 +284,18 @@ export class InventoryReversalService {
       );
     if (movement.status !== 'posted')
       throw new InventoryDraftError('invalid_movement_state', 'The movement is not posted.');
+    // TASK 12.2 — `receipt` added to this allow-list alongside
+    // `opening_balance`/`adjustment` so `direct_purchases`' own receipt
+    // movement (TASK 14.3) can be reversed through this SAME generic
+    // mechanism (`POST /api/v1/direct-purchases/:id/reverse` —
+    // `PurchasingService.reverseDirectPurchase` — reuses this service
+    // directly, never a parallel reversal implementation). A `receipt` is
+    // the same shape of "simple, one-directional, mass-additive" movement
+    // `opening_balance`/`adjustment` already are: exactly one direction
+    // per line, no multi-step lifecycle of its own to worry about
+    // unwinding, so reversing it is symmetric for the exact same reason.
     if (
-      !['opening_balance', 'adjustment'].includes(movement.movementType) ||
+      !['opening_balance', 'adjustment', 'receipt'].includes(movement.movementType) ||
       movement.reversalOfMovementId !== null
     )
       throw new InventoryDraftError(

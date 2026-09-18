@@ -2280,6 +2280,146 @@ physical test can resume without rebuilding the local dev stack — open
 it in a browser on the machine with the thermal printer attached and
 print via the browser's own print dialog.
 
+## TASK 16.10 — Compras / Procurement Commercial Closure (2026-09-18)
+
+Full re-audit method: (1) an independent, direct re-read of the canonical
+`AS POS V1.html` (SHA-256 `c7fc92d8…16ace`, re-verified) covering every
+Compras-adjacent markup block, modal, and JS function — not a re-use of
+prior tasks' notes; (2) an independent audit of the current
+Flutter+Fastify+Postgres purchasing implementation, field-by-field; (3) a
+full implementation of a real Purchase Order workflow, a reversal path for
+Compra Directa, real PostgreSQL integration tests, and a real local live
+browser walkthrough against the actual running stack — not a simulated one.
+This section supersedes the "Compras" rows in `## 4. Inventario` and `## 5`
+above (the deprecated per-row entries there now point here).
+
+### §0 — Legacy forensic re-verification (independent of prior sessions' notes)
+
+| Legacy feature | Legacy evidence (function/line) | Classification | Finding |
+|---|---|---|---|
+| Órdenes tab (list) | `renderCompras()`, ~6600 | Real (data-bound) | Renders the shared `DB.compras[]` array — the only dynamically data-driven Compras tab |
+| "Nueva orden de compra" — line-item entry UX | `agregarItemCompra()`/`calcTotalCompra()`, ~13760-13786 | **H** — real interaction shape, fake persistence | Genuinely interactive product/qty/price rows with a correctly live-computed running total |
+| "Nueva orden de compra" — SAVE (`saveCompra()`) | ~6605-6618 | **G — broken decoy, not merely incomplete** | Reads a non-existent DOM id `comp-prov` (the real field is `mc-proveedor`); `renderProveedores()`'s own populate call targets the SAME non-existent id, so the supplier dropdown silently never populates either (both sites guard with `if(cp)`/`\|\|{}`, no error, no partial data). Always writes `productos:"Varios"`, `total:"Por confirmar"`, `estado:"Pendiente"` — discarding everything `agregarItemCompra()` genuinely captured. Never touches inventory |
+| PO status transitions (receive/cancel/approve) | exhaustive grep across the full 14,712-line file | **G — provably absent, not just unused** | Zero functions of any kind change `estado` after creation. `"Pendiente"` is permanent. No state machine exists at any level |
+| Compra Directa (`saveCompraDirecta()`) | ~13786-13817 | **A — must exist** | Real: `p.stock+=qty` across every product table, a real Kardex push, a real `DB.compras` record (`tipo:'directa'`, `estado:'Recibida'`), a real bitácora log |
+| Cost auto-fill (`autoFillCostoDirecta()`) | ~13819-13826 | Informational | Pre-fills the cost field from the product's current `costo` as a convenience default only; never writes back to `p.costo` — the legacy has no auto-cost-update rule to replicate |
+| Historial tab | markup only | **G** | 100% static HTML, zero data binding, decoy "Filtrar" button |
+| Comparativo tab | markup only | **G** | 100% static HTML, fabricated example numbers, decoy "Filtrar" button |
+| Suppliers (`DB.proveedores` CRUD) | `renderProveedores()`/`addProveedor()`, ~6574-6598 | **H** | Real inline-editable CRUD (`{id,nombre,contacto,tel,rfc,correo,adeudo}`), gated by `requiereMasterOAdmin` |
+| Access gating on PO creation | `requiereMasterOAdmin(...)` wrapping `openModalCompra` | Signal to preserve | The legacy consistently gated purchase-order creation behind a PIN/admin check — informed this task's permission design, not literally ported |
+
+### §1 — Current implementation (this task)
+
+| Legacy feature | Legacy classification | Modern implementation | Backend authority | Persistence | Permissions | Test evidence | Status |
+|---|---|---|---|---|---|---|---|
+| Compra Directa | **A** | Unchanged by this task (already real since TASK 14.3/14.4) — audited, confirmed still correct, extended with a reversal path | `purchasing.service.ts`/`purchase-receipt.ts` | `direct_purchases` + `inventory_movements` (`reference_type='direct_purchase'`) | `purchase.create`, `purchase.read` | Pre-existing `purchasing.integration.test.ts`/`purchasing-supplier-linkage.integration.test.ts` (15 tests, re-run and still passing) | **Confirmed, unchanged** |
+| Compra Directa — reversal (new) | n/a (no legacy equivalent; legacy never modeled a reversal of any kind) | `POST /direct-purchases/:id/reverse` — reuses the EXISTING generic `InventoryReversalService` directly (extended its allow-list to include `receipt`-type movements, not a parallel implementation); Flutter: a required-reason dialog + a "Reversada" badge in Historial | `purchasing.service.ts reverseDirectPurchase` → `InventoryReversalService` | Reuses `inventory_movements.status`/`reversed_by_movement_id` — no new table | `inventory.reverse` (existing, reused — not duplicated) | New `purchasing-reversal.integration.test.ts` (4 tests: reverses correctly, rejects double-reversal, permission-gated, list-row reflects reversed status) | **New this task, closed** |
+| "Nueva orden de compra" (formal Purchase Order) | **H** (real UX shape, G/decoy persistence) | A genuine `draft → submitted → (partially_received \| received) → cancelled` state machine — `purchase_orders`/`purchase_order_lines` tables, `apps/api/src/modules/purchasing/purchase-orders.*`, a new "Órdenes" tab (list/create/detail) in the Compras screen | `purchase-orders.service.ts`/`.repository.ts` | `purchase_orders`/`purchase_order_lines` (migration `0031_burly_nomad.sql`), a `_lifecycle_ck` constraint enforcing status/timestamp/actor consistency at the DB level | `purchase.create` (create/submit/cancel), `purchase.receive` (**new** — the only new permission this task adds; `purchase.read` reused for viewing) | New `purchase-orders.integration.test.ts` (14 tests: draft has zero stock effect, submit has zero stock effect, full receive, partial receive, over-receipt rejected, double-receive rejected, cancel from every cancellable status, cancel never touches already-received stock, cancel rejected from `received`, supplier linkage/freezing, cross-company isolation, permission enforcement) | **New this task, closed** |
+| Receiving (the event that creates inventory) | n/a — legacy's PO never reached this step for real | `postPurchaseOrderReceipt()` (`apps/api/src/modules/inventory/purchase-order-receipt.ts`) — one `receipt` movement, N `inventory_movement_lines` (one per line actually received), real balance locking (`for update`), one `audit_log` row, two `outbox_events` rows. **Deliberately a single receiving event per PO** (not resumable multi-event partial receiving) — an explicit, documented restraint matching this codebase's own most mature comparable feature (`inventory_transfers`), which likewise never implemented genuine multi-event partial receiving | Same as above | `inventory_movements` (`movement_type='receipt'`, `reference_type='purchase_order'`) — distinguishable from Compra Directa's `reference_type='direct_purchase'` in the Kardex | `purchase.receive` | Covered by the 14 tests above | **New this task, closed, with an explicitly documented scope limit** |
+| History (Órdenes list + detail) | **G** (legacy Historial was 100% static/fake) | Real, paginated `GET /purchase-orders` list + real detail view (status chip, line items, linked movement) — never fabricated rows; an honest empty state for a brand-new tenant | `purchase-orders.service.ts` | `purchase_orders` | `purchase.read` | Covered by backend tests + `pos_purchase_orders_test.dart` (empty state, list-after-create) | **Rebuilt honestly — real data only, never the legacy's fake rows** |
+| Comparativo (supplier price comparison) | **G** (legacy was 100% static/fabricated example data) | **Correctly omitted.** No authoritative historical multi-supplier price dataset exists yet to make this genuinely useful; building it now would mean either fabricating data (explicitly forbidden) or shipping a screen with no real content. Only "Órdenes / Compra Directa / Historial" tabs exist | n/a | n/a | n/a | n/a | **Deliberately not rebuilt — matches the legacy's own G classification; will only be added if/when real historical supplier-price data justifies it** |
+
+### §2 — Cost accounting (audited, deliberately unchanged)
+
+The current authoritative rule, confirmed by direct code inspection before
+any change was made: `product_variants.standard_cost` is **never** written
+by any purchasing code path (direct purchase or PO receipt) — the only
+writer anywhere in `apps/api` is the catalog admin module
+(`product-catalog.repository.ts`), a manual, human-set field. Likewise,
+`inventory_balances.average_unit_cost` is a documented, intentional
+placeholder that no posting path recomputes. This exactly mirrors the
+legacy's own behavior (`autoFillCostoDirecta()` never wrote back to
+`p.costo` either) — so no change was made. A real weighted-average or
+latest-cost rule remains a deliberately separate, out-of-scope feature, not
+silently introduced by this task.
+
+### §3 — Reversal / cancellation semantics
+
+- A draft/submitted/partially_received PO can be cancelled; a `received` PO
+  cannot (only the underlying movement's own reversal mechanism can undo
+  it — never a PO-level cancel).
+- Cancelling a `partially_received` PO never touches the stock already
+  posted by its one receiving event — only the PO's own status changes.
+- Direct-purchase reversal reuses the platform's existing generic
+  `InventoryReversalService` (never a second, parallel reversal
+  implementation) — double-reversal is rejected by that shared mechanism.
+
+### §4 — Live browser verification (local dev stack, real Postgres, real Fastify server)
+
+Performed against the running local stack (`pnpm --filter @asone/api dev`
++ `flutter build web` served statically), logged in as the real
+`ceo@inflapark.local` dev owner, branch = Campeche, product = the real
+seeded "Agua" variant (baseline stock 47.000000):
+
+1. Created a draft PO (Agua × 10 @ $12.50, supplier free-text "Distribuidora
+   QA") — stock confirmed **unchanged at 47** via direct SQL.
+2. Submitted the PO — stock confirmed **still 47**.
+3. Received the PO in full — stock confirmed **57** (47+10); the posted
+   movement confirmed `movement_type='receipt'`,
+   `reference_type='purchase_order'`, `status='posted'`.
+4. Registered a Compra Directa (Agua × 5 @ $13.00) — stock confirmed **62**
+   (57+5), regression-free.
+5. Reversed that direct purchase — stock confirmed back to **57**; the
+   Historial list, after a full page reload, correctly showed a
+   "Reversada" badge (see the list-row bug fixed below).
+6. Confirmed state (statuses, badges) survives a full page reload —
+   real backend persistence, not client-side state.
+
+**Three real bugs were found and fixed during this live walkthrough** (none
+caught by the automated test suites beforehand, since all three lived
+exactly at the client/server JSON boundary or a missing header that no
+existing fake-gateway-based widget test exercises):
+
+1. `PosPurchaseOrder.fromJson` cast `version` as `(json['version'] as
+   num?)?.toInt()`, but the backend serializes the `bigint` column as a
+   JSON *string* (`"1"`) — every list/create/detail response threw a
+   `TypeError`, surfacing as a generic "No fue posible..." failure even
+   though the server had already succeeded (a real 201/200 was returned
+   and discarded client-side). Fixed to `int.parse(...)`; a second bug in
+   the same model — `created_by`/`updated_at` read with the `!` null-
+   assertion operator — crashed identically against the deliberately light
+   `GET /purchase-orders` list-row shape, which omits both fields. Both
+   are now nullable and parsed defensively. Two new unit tests pin the
+   real detail-response and real list-row JSON shapes byte-for-byte.
+2. `receivePurchaseOrder` and `reverseDirectPurchase` (Flutter gateway)
+   omitted the `Idempotency-Key` header every other mutation in the same
+   files sends — the backend's `required` validation rejected every
+   receive/reverse attempt with a 400. Fixed by adding
+   `idempotencyKey: createIdempotencyKey()` to both calls.
+3. `GET /api/v1/direct-purchases` (list) never included `inventory_movement`
+   at all (only single-item create/detail/reverse responses did, to avoid
+   an N+1 lookup) — so the Historial table's "Reversada" badge could never
+   render after a page reload, only in the instant after a reversal
+   completed client-side. Fixed with a cheap correlated-subquery lookup
+   (`movement_status`/`movement_number`) in `listDirectPurchases`'s own
+   query — one query, no N+1 — feeding a lightweight `inventory_movement`
+   object into each list row. A new integration test pins this exact
+   regression.
+
+All three fixes are backed by new automated tests (2 Flutter unit tests +
+1 backend integration test) so they cannot silently regress.
+
+### §5 — Known, honest, non-blocking gaps
+
+- Purchase-order line items render the product's compact variant-id prefix
+  (e.g. `f3160803...`) rather than its resolved product name, in both the
+  create form's line rows and the detail view — a cosmetic gap (the
+  underlying data and every financial/inventory calculation is correct),
+  not a functional one. Flagged for a follow-up, not fixed in this task.
+- Receiving is a single event per Purchase Order by design (see §1) — a
+  PO that goes `partially_received` cannot later receive the remainder
+  through a second event; only cancellation is available afterward. This
+  mirrors `inventory_transfers`' own established limit in this codebase,
+  not a shortcut unique to this task.
+
+### Deprecated rows (superseded by this section)
+
+The "Compras → Orden de Compra formal" row in `## 4. Inventario` (originally
+correctly excluded per TASK 16.7's explicit "no reconstruir Compras"
+instruction) and the "Purchase orders"/"Purchase history"/"Supplier price
+comparison" rows in `## 5` above are now superseded by this section — the
+formal PO workflow was built in TASK 16.10, per the sections above.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

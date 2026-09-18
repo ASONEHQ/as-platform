@@ -30,6 +30,15 @@ export interface DirectPurchaseRow {
   inventoryMovementId: string;
   createdBy: string;
   createdAt: Date;
+  /** The linked movement's `status` ('posted'/'reversed'/…) and
+   * `movement_number`, populated only by `listDirectPurchases`'s own cheap
+   * correlated-subquery lookup — so the Historial list can render a
+   * "Reversada" badge without an N+1 round-trip per row. Both `null` for
+   * `find`/`insert`, which attach a FULL `DirectPurchaseMovementSummary`
+   * separately via `movementSummary()` instead (see
+   * `purchasing.routes.ts`'s `directPurchaseHttp`). */
+  movementStatus: string | null;
+  movementNumber: string | null;
 }
 
 export interface CreateDirectPurchaseInput {

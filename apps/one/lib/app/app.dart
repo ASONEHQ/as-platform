@@ -24,6 +24,7 @@ import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
 import '../features/pos/pos_product_variants_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
+import '../features/pos/pos_purchase_orders_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
@@ -52,6 +53,7 @@ class AsOneApp extends StatefulWidget {
     this.posPartiesGateway = const EmptyPosPartiesGateway(),
     this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
+    this.posPurchaseOrdersGateway = const EmptyPosPurchaseOrdersGateway(),
     this.posSuppliersGateway = const EmptyPosSuppliersGateway(),
     this.posReportsGateway = const EmptyPosReportsGateway(),
     this.posAccessGateway = const EmptyPosAccessGateway(),
@@ -108,6 +110,9 @@ class AsOneApp extends StatefulWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway posPurchasingGateway;
+  // TASK 14.3 Wave 4: formal Purchase Orders — see
+  // `pos_purchase_orders_gateway.dart`.
+  final PosPurchaseOrdersGateway posPurchaseOrdersGateway;
   // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
   // `pos_suppliers_gateway.dart`.
   final PosSuppliersGateway posSuppliersGateway;
@@ -177,6 +182,7 @@ class _AsOneAppState extends State<AsOneApp> {
       posPartiesGateway: widget.posPartiesGateway,
       posHeldSalesGateway: widget.posHeldSalesGateway,
       posPurchasingGateway: widget.posPurchasingGateway,
+      posPurchaseOrdersGateway: widget.posPurchaseOrdersGateway,
       posSuppliersGateway: widget.posSuppliersGateway,
       posReportsGateway: widget.posReportsGateway,
       posAccessGateway: widget.posAccessGateway,
@@ -219,6 +225,7 @@ class PlatformScope extends InheritedWidget {
     this.posPartiesGateway = const EmptyPosPartiesGateway(),
     this.posHeldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.posPurchasingGateway = const EmptyPosPurchasingGateway(),
+    this.posPurchaseOrdersGateway = const EmptyPosPurchaseOrdersGateway(),
     this.posSuppliersGateway = const EmptyPosSuppliersGateway(),
     this.posReportsGateway = const EmptyPosReportsGateway(),
     this.posAccessGateway = const EmptyPosAccessGateway(),
@@ -293,6 +300,10 @@ class PlatformScope extends InheritedWidget {
   /// `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway posPurchasingGateway;
 
+  /// TASK 14.3 Wave 4: formal Purchase Orders — see
+  /// `pos_purchase_orders_gateway.dart`.
+  final PosPurchaseOrdersGateway posPurchaseOrdersGateway;
+
   /// TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
   /// `pos_suppliers_gateway.dart`.
   final PosSuppliersGateway posSuppliersGateway;
@@ -364,6 +375,7 @@ class PlatformScope extends InheritedWidget {
       posPartiesGateway != oldWidget.posPartiesGateway ||
       posHeldSalesGateway != oldWidget.posHeldSalesGateway ||
       posPurchasingGateway != oldWidget.posPurchasingGateway ||
+      posPurchaseOrdersGateway != oldWidget.posPurchaseOrdersGateway ||
       posSuppliersGateway != oldWidget.posSuppliersGateway ||
       posReportsGateway != oldWidget.posReportsGateway ||
       posAccessGateway != oldWidget.posAccessGateway ||

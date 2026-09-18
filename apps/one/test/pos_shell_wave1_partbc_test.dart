@@ -308,6 +308,19 @@ void main() {
         await _navigateToPurchases(tester);
         await tester.pumpAndSettle();
 
+        // TASK 14.3 (Wave 4): "Compras" is now a 3-tab screen (Órdenes /
+        // Compra Directa / Historial), defaulting to Órdenes — switch to
+        // the Compra Directa tab first, mirroring
+        // `pos_inventory_admin_test.dart`'s own established
+        // `SegmentedButton` tab-switch pattern.
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const Key('pos-purchases-tabs')),
+            matching: find.text('Compra Directa'),
+          ),
+        );
+        await tester.pumpAndSettle();
+
         await tester.tap(find.byKey(const Key('pos-direct-purchase-product')));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Producto Unitario (SKU-1)').last);
@@ -648,6 +661,10 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
     String? cursor,
     int limit = 50,
   }) async => const PosDirectPurchasePage(items: [], nextCursor: null);
+
+  @override
+  Future<PosDirectPurchase> reverseDirectPurchase(String id, {required String reason}) =>
+      Future.error(StateError('not used'));
 }
 
 Future<void> _pump(

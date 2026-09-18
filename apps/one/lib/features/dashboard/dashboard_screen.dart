@@ -111,6 +111,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             partiesGateway: PlatformScope.of(context).posPartiesGateway,
             heldSalesGateway: PlatformScope.of(context).posHeldSalesGateway,
             purchasingGateway: PlatformScope.of(context).posPurchasingGateway,
+            purchaseOrdersGateway: PlatformScope.of(context).posPurchaseOrdersGateway,
             suppliersGateway: PlatformScope.of(context).posSuppliersGateway,
             reportsGateway: PlatformScope.of(context).posReportsGateway,
             accessGateway: PlatformScope.of(context).posAccessGateway,

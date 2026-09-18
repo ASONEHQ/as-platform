@@ -29,6 +29,7 @@ import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
 import '../features/pos/pos_product_variants_gateway.dart';
 import '../features/pos/pos_promotions_gateway.dart';
+import '../features/pos/pos_purchase_orders_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
@@ -85,6 +86,7 @@ void bootstrap() {
       posPartiesGateway: ApiPosPartiesGateway(api),
       posHeldSalesGateway: ApiPosHeldSalesGateway(api),
       posPurchasingGateway: ApiPosPurchasingGateway(api),
+      posPurchaseOrdersGateway: ApiPosPurchaseOrdersGateway(api),
       posSuppliersGateway: ApiPosSuppliersGateway(api),
       posReportsGateway: ApiPosReportsGateway(api),
       posAccessGateway: ApiPosAccessGateway(api),

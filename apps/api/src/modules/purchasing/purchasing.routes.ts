@@ -150,6 +150,43 @@ export function registerPurchasingRoutes(
       }),
   );
 
+  // POST /api/v1/direct-purchases/:id/reverse — TASK 12.2. Reuses the
+  // EXISTING generic inventory-movement reversal mechanism directly (see
+  // `PurchasingService.reverseDirectPurchase`'s own doc comment) — never
+  // a new/parallel reversal implementation.
+  app.post<{ Params: Params; Body: { reason: string } }>(
+    '/api/v1/direct-purchases/:id/reverse',
+    {
+      schema: {
+        tags: ['purchasing'],
+        headers: idempotencyHeaders,
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['reason'],
+          properties: { reason: { type: 'string', minLength: 1, maxLength: 2000, pattern: '.*\\S.*' } },
+        },
+        response: { 200: responseSchema, ...commonErrors, 422: errorSchema },
+      },
+    },
+    async (request, reply) =>
+      withPurchaseErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'inventory.reverse');
+        const reversed = await service.reverseDirectPurchase(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.body.reason,
+        );
+        if (reversed.replayed) reply.header('idempotency-replayed', 'true');
+        const movement = await service.movementSummary(auth.companyId, reversed.value);
+        return reply.send(successResponse(directPurchaseHttp(reversed.value, movement), request.requestContext));
+      }),
+  );
+
   // GET /api/v1/direct-purchases/:id.
   app.get<{ Params: Params }>(
     '/api/v1/direct-purchases/:id',
@@ -218,7 +255,20 @@ export function registerPurchasingRoutes(
           ...(query.purchase_date_to === undefined ? {} : { purchaseDateTo: query.purchase_date_to }),
         });
         return reply.send({
-          data: page.items.map((item) => directPurchaseHttp(item)),
+          data: page.items.map((item) =>
+            directPurchaseHttp(
+              item,
+              item.movementStatus === null
+                ? undefined
+                : {
+                    movementId: item.inventoryMovementId,
+                    movementNumber: item.movementNumber ?? '',
+                    status: item.movementStatus,
+                    postedAt: null,
+                    currentQuantityOnHand: null,
+                  },
+            ),
+          ),
           meta: { ...responseMeta(request.requestContext), page: { next_cursor: page.nextCursor, has_more: page.nextCursor !== null } },
         });
       }),

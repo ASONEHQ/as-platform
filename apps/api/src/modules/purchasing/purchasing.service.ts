@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 
 import { postDirectPurchaseReceipt } from '../inventory/purchase-receipt.js';
+import type { InventoryReversalService } from '../inventory/inventory-reversal.service.js';
 import type { SuppliersRepository } from '../suppliers/suppliers.repository.js';
 import type { PurchasingRepository } from './purchasing.repository.js';
 import {
@@ -99,6 +100,14 @@ export class PurchasingService {
     // `SalesService`'s own multi-repository constructor) — never a
     // silently-degraded runtime path when it happens to be omitted.
     private readonly suppliersRepository: SuppliersRepository,
+    // TASK 12.2 — required, never optional (same established convention
+    // as `suppliersRepository` above): reused DIRECTLY for `POST
+    // /api/v1/direct-purchases/:id/reverse`
+    // (`reverseDirectPurchase`) — the SAME generic inventory-movement
+    // reversal mechanism `inventory-reversal.routes.ts` already exposes
+    // at `POST /api/v1/inventory/movements/:movement_id/reversals`, never
+    // a second/parallel reversal implementation.
+    private readonly reversalService: InventoryReversalService,
   ) {}
 
   /**
@@ -269,6 +278,48 @@ export class PurchasingService {
       // rather than silently returning a half-built response.
       throw new Error('The linked inventory movement was not found for this direct purchase.');
     return summary;
+  }
+
+  /**
+   * TASK 12.2 — reverses a direct purchase's own `receipt` inventory
+   * movement by reusing `InventoryReversalService.reverse` DIRECTLY —
+   * never a new/parallel reversal implementation. Loads the direct
+   * purchase (branch-scoped, so cross-tenant/cross-branch access 404s
+   * exactly like every other read in this module), reads its linked
+   * movement's CURRENT `version` fresh (see `PurchasingRepository.
+   * movementVersion`'s own doc comment for why this wrapper does not
+   * surface an `If-Match` to its own caller), then calls the reversal
+   * mechanism with that movement id/version. That mechanism's own
+   * `eligible()` guard already rejects an already-reversed movement
+   * (`movement_already_reversed`) — surfaced through this module's own
+   * `purchasing.http-errors.ts`, which now also maps `InventoryDraftError`.
+   */
+  public async reverseDirectPurchase(
+    context: PurchaseMutationContext,
+    branchIds: readonly string[],
+    id: string,
+    key: string,
+    reason: string,
+  ): Promise<{ value: DirectPurchaseRow; replayed: boolean }> {
+    const purchase = await this.directPurchase(context.companyId, branchIds, id);
+    const version = await this.repository.movementVersion(context.companyId, purchase.inventoryMovementId);
+    if (version === null)
+      throw new PurchaseError('resource_not_found', 'The linked inventory movement was not found.');
+    const reversed = await this.reversalService.reverse(
+      {
+        companyId: context.companyId,
+        actorId: context.actorId,
+        requestId: context.requestId,
+        correlationId: context.correlationId,
+        timestamp: context.timestamp,
+      },
+      branchIds,
+      purchase.inventoryMovementId,
+      version,
+      key,
+      { reasonCode: reason.trim(), note: null },
+    );
+    return { value: purchase, replayed: reversed.replayed };
   }
 
   public listDirectPurchases(

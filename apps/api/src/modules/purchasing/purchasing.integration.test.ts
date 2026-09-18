@@ -10,6 +10,8 @@ import { AppError } from '@asone/errors';
 
 import type { AuthContext } from '../auth/auth.types.js';
 import type { AuthService } from '../auth/auth.service.js';
+import { InventoryReversalRepository } from '../inventory/inventory-reversal.repository.js';
+import { InventoryReversalService } from '../inventory/inventory-reversal.service.js';
 import { SuppliersRepository } from '../suppliers/suppliers.repository.js';
 import { registerPurchasingRoutes } from './purchasing.routes.js';
 import { PurchasingRepository } from './purchasing.repository.js';
@@ -230,10 +232,20 @@ integration('PostgreSQL direct-purchase operations (TASK 14.3, Wave 1 Part C)', 
     // file never does, so this is a purely additive wiring change — see
     // this task's own final report for why this one line was the single
     // necessary tweak to an otherwise-unmodified existing test file).
+    // TASK 12.2 — `PurchasingService` now takes a third, required
+    // `InventoryReversalService` collaborator (used only by `POST
+    // /api/v1/direct-purchases/:id/reverse`, which no test in THIS file
+    // ever calls — see `purchasing-reversal.integration.test.ts` for that
+    // endpoint's own dedicated coverage), mirroring this file's own
+    // established "single necessary tweak" precedent from TASK 14.4.
     registerPurchasingRoutes(
       app,
       authentication,
-      new PurchasingService(new PurchasingRepository(database), new SuppliersRepository(database)),
+      new PurchasingService(
+        new PurchasingRepository(database),
+        new SuppliersRepository(database),
+        new InventoryReversalService(new InventoryReversalRepository(database)),
+      ),
     );
     await app.ready();
   });

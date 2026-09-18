@@ -49,6 +49,7 @@ import 'pos_product_card_visual.dart';
 import 'pos_product_variants_gateway.dart';
 import 'pos_product_variants_screen.dart';
 import 'pos_promotions_gateway.dart';
+import 'pos_purchase_orders_gateway.dart';
 import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
 import 'pos_receipt.dart';
@@ -64,6 +65,7 @@ import 'pos_suppliers_gateway.dart';
 import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
 import 'pos_user_administration_screen.dart';
+import 'purchase_order_folio.dart';
 import 'receipt_html.dart';
 import 'cash_cut_html.dart';
 import 'receipt_print.dart';
@@ -94,6 +96,7 @@ class PosShell extends StatefulWidget {
     required this.partiesGateway,
     this.heldSalesGateway = const EmptyPosHeldSalesGateway(),
     this.purchasingGateway = const EmptyPosPurchasingGateway(),
+    this.purchaseOrdersGateway = const EmptyPosPurchaseOrdersGateway(),
     this.suppliersGateway = const EmptyPosSuppliersGateway(),
     this.reportsGateway = const EmptyPosReportsGateway(),
     this.accessGateway = const EmptyPosAccessGateway(),
@@ -170,6 +173,9 @@ class PosShell extends StatefulWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway purchasingGateway;
+  // TASK 14.3 (Wave 4): formal Purchase Orders ("Órdenes de compra") — see
+  // `pos_purchase_orders_gateway.dart`.
+  final PosPurchaseOrdersGateway purchaseOrdersGateway;
   // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
   // `pos_suppliers_gateway.dart`.
   final PosSuppliersGateway suppliersGateway;
@@ -451,6 +457,7 @@ class _PosShellState extends State<PosShell> {
                             partiesGateway: widget.partiesGateway,
                             heldSalesGateway: widget.heldSalesGateway,
                             purchasingGateway: widget.purchasingGateway,
+                            purchaseOrdersGateway: widget.purchaseOrdersGateway,
                             suppliersGateway: widget.suppliersGateway,
                             reportsGateway: widget.reportsGateway,
                             accessGateway: widget.accessGateway,
@@ -2936,6 +2943,7 @@ class _Content extends StatelessWidget {
     required this.partiesGateway,
     required this.heldSalesGateway,
     required this.purchasingGateway,
+    required this.purchaseOrdersGateway,
     required this.suppliersGateway,
     required this.reportsGateway,
     required this.accessGateway,
@@ -2990,6 +2998,9 @@ class _Content extends StatelessWidget {
   // TASK 14.3 Wave 1 Part C: direct purchase / quick restock — see
   // `pos_purchasing_gateway.dart`.
   final PosPurchasingGateway purchasingGateway;
+  // TASK 14.3 (Wave 4): formal Purchase Orders ("Órdenes de compra") — see
+  // `pos_purchase_orders_gateway.dart`.
+  final PosPurchaseOrdersGateway purchaseOrdersGateway;
   // TASK 14.4 (Wave 2, Part C.1): real supplier directory — see
   // `pos_suppliers_gateway.dart`.
   final PosSuppliersGateway suppliersGateway;
@@ -3222,14 +3233,17 @@ class _Content extends StatelessWidget {
                     heldSalesGateway: heldSalesGateway,
                     onNavigateToPos: () => onNavigateToModule(PosModule.pos),
                   ),
-                  // TASK 14.3 Wave 1 Part C: the pre-reserved
-                  // `PosModule.purchases` slot ("Compras") — "Compra
-                  // Directa" (direct purchase / quick restock) form plus
-                  // its real history.
+                  // TASK 14.3 Wave 1 Part C, extended TASK 14.3 (Wave 4):
+                  // the pre-reserved `PosModule.purchases` slot
+                  // ("Compras") — now a 3-tab screen: Órdenes (formal
+                  // purchase orders), Compra Directa (quick restock form),
+                  // Historial (Compra Directa's own history) — see
+                  // `_DirectPurchases`'s own doc comment.
                   PosModule.purchases => _DirectPurchases(
                     context: this.context,
                     controller: controller,
                     purchasingGateway: purchasingGateway,
+                    purchaseOrdersGateway: purchaseOrdersGateway,
                     suppliersGateway: suppliersGateway,
                   ),
                   // TASK 14.4 (Wave 2, Part C.1): the pre-reserved
@@ -11801,15 +11815,44 @@ class _HeldSalesTable extends StatelessWidget {
   }
 }
 
-// --- TASK 14.3 (Wave 1, Part C): Compra Directa / quick restock --------
+// --- TASK 14.3 (Wave 1, Part C), extended TASK 14.3 (Wave 4): Compras —
+// Órdenes de compra / Compra Directa / Historial -------------------------
 
-enum _DirectPurchaseHistoryPhase { loading, ready, empty, failure }
+enum _PurchasesTab { ordenes, compraDirecta, historial }
 
+/// The "Compras" screen. TASK 14.3 (Wave 4) restructured the original
+/// single Compra-Directa-plus-history view into three tabs: **Órdenes**
+/// (formal purchase orders — draft -> submitted -> (partially_)received ->
+/// cancelled, backed by [PosPurchaseOrdersGateway]), **Compra Directa**
+/// (the pre-existing quick-restock form, byte-for-byte unchanged — see
+/// `_DirectPurchaseForm`), and **Historial** (the pre-existing Compra
+/// Directa history table, relocated into its own tab, now with a
+/// "Reversar" action — see `_DirectPurchaseTable`'s own doc comment).
+///
+/// Deliberately no fourth "Comparativo" tab: it does not exist in the
+/// current real implementation, and the legacy version's own was 100%
+/// static/fake data — this task's own governing rule against fabricating
+/// data makes omitting it the correct call, not an oversight.
+///
+/// Tabbed via `SegmentedButton` + a file-private enum, exactly like
+/// `PosInventoryAdminScreen`'s own established `_InventoryTab`/
+/// `_InventoryHeader` shape (`pos_inventory_admin_screen.dart`) — this
+/// codebase's real tab convention; there is no Flutter `TabBar`/
+/// `TabBarView` anywhere in this app to mirror instead. Switching tabs
+/// tears down and reconstructs the previous tab's widget (a `switch`
+/// expression, never an `IndexedStack`) — so, e.g., the Historial tab
+/// always reloads fresh real data, including right after a purchase was
+/// just registered in the sibling Compra Directa tab.
 class _DirectPurchases extends StatefulWidget {
   const _DirectPurchases({
     required this.context,
     required this.controller,
     required this.purchasingGateway,
+    // TASK 14.3 (Wave 4): optional — defaults to an empty gateway (every
+    // call throws honestly, never a fabricated page) so this stays
+    // additive for any call site that has not yet threaded a real
+    // `PosPurchaseOrdersGateway` down.
+    this.purchaseOrdersGateway = const EmptyPosPurchaseOrdersGateway(),
     // TASK 14.4 (Wave 2, Part C.2): optional real-supplier picker for the
     // "Compra Directa" form — see `_DirectPurchaseForm`'s own doc comment.
     // Defaults to `EmptyPosSuppliersGateway` (an empty picker, never a
@@ -11822,6 +11865,7 @@ class _DirectPurchases extends StatefulWidget {
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPurchasingGateway purchasingGateway;
+  final PosPurchaseOrdersGateway purchaseOrdersGateway;
   final PosSuppliersGateway suppliersGateway;
 
   @override
@@ -11829,11 +11873,7 @@ class _DirectPurchases extends StatefulWidget {
 }
 
 class _DirectPurchasesState extends State<_DirectPurchases> {
-  _DirectPurchaseHistoryPhase _phase = _DirectPurchaseHistoryPhase.loading;
-  List<PosDirectPurchase> _items = const [];
-  String? _nextCursor;
-  bool _loadingMore = false;
-  String? _errorMessage;
+  _PurchasesTab _tab = _PurchasesTab.ordenes;
 
   @override
   void initState() {
@@ -11846,126 +11886,103 @@ class _DirectPurchasesState extends State<_DirectPurchases> {
       // ancestor while it is still building this same frame.
       unawaited(Future.microtask(() => widget.controller.loadProducts()));
     }
-    unawaited(_load());
-  }
-
-  PosDirectPurchaseListFilter get _filter => PosDirectPurchaseListFilter(
-    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
-  );
-
-  Future<void> _load() async {
-    setState(() {
-      _phase = _DirectPurchaseHistoryPhase.loading;
-      _errorMessage = null;
-    });
-    try {
-      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter);
-      if (!mounted) return;
-      setState(() {
-        _items = page.items;
-        _nextCursor = page.nextCursor;
-        _phase = _items.isEmpty ? _DirectPurchaseHistoryPhase.empty : _DirectPurchaseHistoryPhase.ready;
-      });
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _phase = _DirectPurchaseHistoryPhase.failure;
-        _errorMessage = error.failure.message;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() {
-        _phase = _DirectPurchaseHistoryPhase.failure;
-        _errorMessage = 'No fue posible cargar el historial de compras.';
-      });
-    }
-  }
-
-  Future<void> _loadMore() async {
-    final cursor = _nextCursor;
-    if (cursor == null || _loadingMore) return;
-    setState(() => _loadingMore = true);
-    try {
-      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter, cursor: cursor);
-      if (!mounted) return;
-      setState(() {
-        _items = [..._items, ...page.items];
-        _nextCursor = page.nextCursor;
-        _loadingMore = false;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() => _loadingMore = false);
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final canCreate = widget.context.permissions.contains('purchase.create');
-    final canRead = widget.context.permissions.contains('purchase.read');
     final palette = PosPalette.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SectionHeader(
-          title: 'Compras',
-          description: 'Compra Directa: registra existencia recién llegada y ya pagada.',
-          action: _ReadOnlyButton(onPressed: () => unawaited(_load())),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.start,
+            runSpacing: 10,
+            children: [
+              SizedBox(
+                width: 420,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Compras',
+                      style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Órdenes de compra formales, Compra Directa (restock rápido) y su historial.',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              SegmentedButton<_PurchasesTab>(
+                key: const Key('pos-purchases-tabs'),
+                segments: const [
+                  ButtonSegment(value: _PurchasesTab.ordenes, label: Text('Órdenes')),
+                  ButtonSegment(value: _PurchasesTab.compraDirecta, label: Text('Compra Directa')),
+                  ButtonSegment(value: _PurchasesTab.historial, label: Text('Historial')),
+                ],
+                selected: {_tab},
+                onSelectionChanged: (value) => setState(() => _tab = value.first),
+              ),
+            ],
+          ),
         ),
-        if (canCreate)
-          _DirectPurchaseForm(
+        switch (_tab) {
+          _PurchasesTab.ordenes => _PurchaseOrdersTab(
+            context: widget.context,
+            controller: widget.controller,
+            gateway: widget.purchaseOrdersGateway,
+            suppliersGateway: widget.suppliersGateway,
+          ),
+          _PurchasesTab.compraDirecta => _CompraDirectaTab(
             context: widget.context,
             controller: widget.controller,
             purchasingGateway: widget.purchasingGateway,
             suppliersGateway: widget.suppliersGateway,
-            onCreated: () => unawaited(_load()),
-          )
-        else
-          const _PermissionState(),
-        const SizedBox(height: 20),
-        Text(
-          'Historial',
-          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: palette.text),
-        ),
-        const SizedBox(height: 10),
-        if (!canRead)
-          const _PermissionState()
-        else
-          switch (_phase) {
-            _DirectPurchaseHistoryPhase.loading => const _LoadingState(),
-            _DirectPurchaseHistoryPhase.empty => const _EmptyState(
-              message: 'No hay compras directas registradas.',
-            ),
-            _DirectPurchaseHistoryPhase.failure => _FailureState(
-              message: _errorMessage ?? 'No fue posible cargar el historial de compras.',
-              onRetry: () => unawaited(_load()),
-            ),
-            _DirectPurchaseHistoryPhase.ready => Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _DirectPurchaseTable(items: _items),
-                if (_nextCursor != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Center(
-                      child: OutlinedButton.icon(
-                        key: const Key('pos-direct-purchases-load-more'),
-                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
-                        icon: _loadingMore
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.expand_more),
-                        label: const Text('Cargar más'),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          },
+          ),
+          _PurchasesTab.historial => _DirectPurchaseHistoryTab(
+            context: widget.context,
+            purchasingGateway: widget.purchasingGateway,
+          ),
+        },
       ],
+    );
+  }
+}
+
+/// The "Compra Directa" tab — the pre-existing form, unchanged, now
+/// standalone in its own tab rather than sitting above a merged history
+/// table (see `_DirectPurchases`'s own doc comment for the Wave 4
+/// restructure).
+class _CompraDirectaTab extends StatelessWidget {
+  const _CompraDirectaTab({
+    required this.context,
+    required this.controller,
+    required this.purchasingGateway,
+    required this.suppliersGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPurchasingGateway purchasingGateway;
+  final PosSuppliersGateway suppliersGateway;
+
+  @override
+  Widget build(BuildContext buildContext) {
+    if (!context.permissions.contains('purchase.create')) return const _PermissionState();
+    return _DirectPurchaseForm(
+      context: context,
+      controller: controller,
+      purchasingGateway: purchasingGateway,
+      suppliersGateway: suppliersGateway,
+      // The Historial tab is a sibling, separately-constructed widget now
+      // (Wave 4) rather than shared state in this same screen — it always
+      // reloads fresh from the real backend the next time it is selected
+      // (see `_DirectPurchases`'s own doc comment), so there is nothing
+      // for this callback to do here.
+      onCreated: () {},
     );
   }
 }
@@ -12333,9 +12350,302 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
   }
 }
 
+enum _DirectPurchaseHistoryPhase { loading, ready, empty, failure }
+
+/// TASK 14.3 (Wave 1, Part C), extended TASK 14.3 (Wave 4): the
+/// "Historial" tab — the pre-existing Compra Directa history table,
+/// relocated out of the previously-merged view into its own tab (see
+/// `_DirectPurchases`'s own doc comment) — no behavior change beyond the
+/// new "Reversar" action below.
+class _DirectPurchaseHistoryTab extends StatefulWidget {
+  const _DirectPurchaseHistoryTab({required this.context, required this.purchasingGateway});
+  final AuthenticatedContext context;
+  final PosPurchasingGateway purchasingGateway;
+
+  @override
+  State<_DirectPurchaseHistoryTab> createState() => _DirectPurchaseHistoryTabState();
+}
+
+class _DirectPurchaseHistoryTabState extends State<_DirectPurchaseHistoryTab> {
+  _DirectPurchaseHistoryPhase _phase = _DirectPurchaseHistoryPhase.loading;
+  List<PosDirectPurchase> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+  String? _reverseErrorMessage;
+
+  bool get _canRead => widget.context.permissions.contains('purchase.read');
+  // TASK 14.3 (Wave 4): the EXISTING `inventory.reverse` permission — the
+  // same code an inventory movement reversal already requires elsewhere
+  // in this app (`pos_inventory_admin_screen.dart`) — governs the new
+  // "Reversar" action here too; never a new, invented permission string.
+  bool get _canReverse => widget.context.permissions.contains('inventory.reverse');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  PosDirectPurchaseListFilter get _filter => PosDirectPurchaseListFilter(
+    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
+  );
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _DirectPurchaseHistoryPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _DirectPurchaseHistoryPhase.empty : _DirectPurchaseHistoryPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DirectPurchaseHistoryPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _DirectPurchaseHistoryPhase.failure;
+        _errorMessage = 'No fue posible cargar el historial de compras.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.purchasingGateway.listDirectPurchases(filter: _filter, cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  /// TASK 14.3 (Wave 4): "Reversar" — captures a required free-text reason
+  /// (via [_promptReason]/[_ReasonDialog], this file's own small
+  /// redeclaration of `pos_inventory_admin_screen.dart`'s established
+  /// "confirm a destructive action with a reason" shape) before calling
+  /// the real `POST /direct-purchases/{id}/reverse`. Never a bare
+  /// single-tap confirm — a reversal is irreversible-looking and
+  /// destructive-feeling.
+  Future<void> _reverse(PosDirectPurchase item) async {
+    final reason = await _promptReason(
+      context,
+      title: 'Reversar compra directa',
+      body:
+          '¿Reversar la compra de ${_compactId(item.productVariantId)}? El movimiento de '
+          'inventario que generó quedará marcado como reversado. Esta acción no se puede '
+          'deshacer.',
+      actionLabel: 'Reversar',
+      actionKey: const Key('pos-direct-purchase-reverse-confirm'),
+    );
+    if (reason == null || !mounted) return;
+    setState(() => _reverseErrorMessage = null);
+    try {
+      await widget.purchasingGateway.reverseDirectPurchase(item.id, reason: reason);
+      if (!mounted) return;
+      unawaited(_load());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _reverseErrorMessage = error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _reverseErrorMessage = 'No fue posible reversar la compra.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_canRead) return const _PermissionState();
+    return switch (_phase) {
+      _DirectPurchaseHistoryPhase.loading => const _LoadingState(),
+      _DirectPurchaseHistoryPhase.empty => const _EmptyState(
+        message: 'No hay compras directas registradas.',
+      ),
+      _DirectPurchaseHistoryPhase.failure => _FailureState(
+        message: _errorMessage ?? 'No fue posible cargar el historial de compras.',
+        onRetry: () => unawaited(_load()),
+      ),
+      _DirectPurchaseHistoryPhase.ready => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_reverseErrorMessage != null) ...[
+            Text(
+              _reverseErrorMessage!,
+              key: const Key('pos-direct-purchase-reverse-error'),
+              style: TextStyle(color: PosPalette.of(context).error, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+          ],
+          _DirectPurchaseTable(items: _items, canReverse: _canReverse, onReverse: _reverse),
+          if (_nextCursor != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Center(
+                child: OutlinedButton.icon(
+                  key: const Key('pos-direct-purchases-load-more'),
+                  onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                  icon: _loadingMore
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.expand_more),
+                  label: const Text('Cargar más'),
+                ),
+              ),
+            ),
+        ],
+      ),
+    };
+  }
+}
+
+/// TASK 14.3 (Wave 4): a small reusable "type a reason, then confirm"
+/// dialog — mirrors `pos_inventory_admin_screen.dart`'s own file-private
+/// `_ReasonDialog`/`_promptReason` shape exactly (that file's own doc
+/// comment explains why every reason-requiring mutation there opens
+/// exactly this, never a bare confirm with no reason captured); this is
+/// its own small redeclaration here since that one is private to its own
+/// file and cannot be imported. The one caller today is "Reversar" on a
+/// Compra Directa history row above.
+class _ReasonDialog extends StatefulWidget {
+  const _ReasonDialog({
+    required this.title,
+    required this.body,
+    required this.actionLabel,
+    required this.actionKey,
+  });
+  final String title;
+  final String body;
+  final String actionLabel;
+  final Key actionKey;
+
+  @override
+  State<_ReasonDialog> createState() => _ReasonDialogState();
+}
+
+class _ReasonDialogState extends State<_ReasonDialog> {
+  final _reasonController = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _error = 'El motivo es obligatorio.');
+      return;
+    }
+    Navigator.of(context).pop(reason);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(widget.title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text(widget.body, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-direct-purchase-reverse-reason'),
+                controller: _reasonController,
+                decoration: const InputDecoration(isDense: true, labelText: 'Motivo (obligatorio)'),
+                maxLines: 2,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, style: TextStyle(color: palette.error, fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(null),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: palette.textSecondary,
+                        side: BorderSide(color: palette.border),
+                      ),
+                      child: const Text('Cerrar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      key: widget.actionKey,
+                      onPressed: _confirm,
+                      style: FilledButton.styleFrom(backgroundColor: palette.error),
+                      child: Text(widget.actionLabel),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens an [_ReasonDialog] and returns the entered reason, or `null` if
+/// the user closed it without confirming.
+Future<String?> _promptReason(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String actionLabel,
+  required Key actionKey,
+}) => showDialog<String>(
+  context: context,
+  builder: (dialogContext) =>
+      _ReasonDialog(title: title, body: body, actionLabel: actionLabel, actionKey: actionKey),
+);
+
+/// TASK 14.3 (Wave 1, Part C), extended TASK 14.3 (Wave 4): the Compra
+/// Directa history table — now with a "Reversar" action per row (gated on
+/// the existing `inventory.reverse` permission, hidden behind a
+/// "Reversada" badge once the row's own linked movement is already
+/// `reversed`).
 class _DirectPurchaseTable extends StatelessWidget {
-  const _DirectPurchaseTable({required this.items});
+  const _DirectPurchaseTable({required this.items, required this.canReverse, required this.onReverse});
   final List<PosDirectPurchase> items;
+  final bool canReverse;
+  final ValueChanged<PosDirectPurchase> onReverse;
 
   @override
   Widget build(BuildContext context) {
@@ -12353,22 +12663,1328 @@ class _DirectPurchaseTable extends StatelessWidget {
             DataColumn(label: Text('Cantidad'), numeric: true),
             DataColumn(label: Text('Costo unitario'), numeric: true),
             DataColumn(label: Text('Total'), numeric: true),
+            DataColumn(label: Text('Acciones')),
+          ],
+          rows: items.map((item) {
+            final reversed = item.movement?.status == 'reversed';
+            return DataRow(
+              key: ValueKey('pos-direct-purchase-row-${item.id}'),
+              cells: [
+                DataCell(Text(item.purchaseDate)),
+                DataCell(Text(_compactId(item.productVariantId))),
+                DataCell(Text(item.supplierName ?? '—')),
+                DataCell(Text(item.quantity)),
+                DataCell(Text(_formatMoney(item.unitCost, item.currencyCode))),
+                DataCell(Text(_formatMoney(item.totalCost, item.currencyCode))),
+                DataCell(
+                  reversed
+                      ? Container(
+                          key: ValueKey('pos-direct-purchase-reversed-${item.id}'),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: palette.error.withValues(alpha: .12),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            'Reversada',
+                            style: TextStyle(color: palette.error, fontSize: 10, fontWeight: FontWeight.w800),
+                          ),
+                        )
+                      : Tooltip(
+                          message: canReverse
+                              ? 'Reversar compra'
+                              : 'Tu sesión no incluye el permiso inventory.reverse.',
+                          child: OutlinedButton(
+                            key: ValueKey('pos-direct-purchase-reverse-${item.id}'),
+                            onPressed: canReverse ? () => onReverse(item) : null,
+                            style: OutlinedButton.styleFrom(foregroundColor: palette.error),
+                            child: const Text('Reversar'),
+                          ),
+                        ),
+                ),
+              ],
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+}
+
+// --- TASK 14.3 (Wave 4): Órdenes de compra (formal Purchase Orders) -----
+
+enum _PurchaseOrderListPhase { loading, ready, empty, failure }
+
+/// The "Órdenes" tab — a real, backend-paginated list of formal purchase
+/// orders (draft -> submitted -> (partially_)received -> cancelled),
+/// "Nueva orden" (gated on `purchase.create`), and a row-tap detail view
+/// with contextual Enviar/Recibir/Cancelar actions. Mirrors
+/// `_DirectPurchaseHistoryTab`'s own list/load-more shape.
+class _PurchaseOrdersTab extends StatefulWidget {
+  const _PurchaseOrdersTab({
+    required this.context,
+    required this.controller,
+    required this.gateway,
+    required this.suppliersGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPurchaseOrdersGateway gateway;
+  final PosSuppliersGateway suppliersGateway;
+
+  @override
+  State<_PurchaseOrdersTab> createState() => _PurchaseOrdersTabState();
+}
+
+class _PurchaseOrdersTabState extends State<_PurchaseOrdersTab> {
+  _PurchaseOrderListPhase _phase = _PurchaseOrderListPhase.loading;
+  List<PosPurchaseOrder> _items = const [];
+  String? _nextCursor;
+  bool _loadingMore = false;
+  String? _errorMessage;
+
+  bool get _canCreate => widget.context.permissions.contains('purchase.create');
+  bool get _canRead => widget.context.permissions.contains('purchase.read');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  PosPurchaseOrderListFilter get _filter => PosPurchaseOrderListFilter(
+    branchId: widget.context.companyWideAccess ? null : widget.context.session.branchId,
+  );
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    setState(() {
+      _phase = _PurchaseOrderListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.gateway.listPurchaseOrders(filter: _filter);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _nextCursor = page.nextCursor;
+        _phase = _items.isEmpty ? _PurchaseOrderListPhase.empty : _PurchaseOrderListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _PurchaseOrderListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _PurchaseOrderListPhase.failure;
+        _errorMessage = 'No fue posible cargar las órdenes de compra.';
+      });
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final cursor = _nextCursor;
+    if (cursor == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await widget.gateway.listPurchaseOrders(filter: _filter, cursor: cursor);
+      if (!mounted) return;
+      setState(() {
+        _items = [..._items, ...page.items];
+        _nextCursor = page.nextCursor;
+        _loadingMore = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+    }
+  }
+
+  Future<void> _openNewOrderForm() async {
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PurchaseOrderFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        gateway: widget.gateway,
+        suppliersGateway: widget.suppliersGateway,
+      ),
+    );
+    if (created == true) unawaited(_load());
+  }
+
+  Future<void> _openDetail(PosPurchaseOrder summary) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) =>
+          _PurchaseOrderDetailDialog(context: widget.context, orderId: summary.id, gateway: widget.gateway),
+    );
+    if (changed == true) unawaited(_load());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Órdenes de compra',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+            ),
+            IconButton(
+              key: const Key('pos-po-refresh'),
+              tooltip: 'Actualizar',
+              onPressed: () => unawaited(_load()),
+              icon: Icon(Icons.refresh, color: palette.textSecondary),
+            ),
+            const SizedBox(width: 6),
+            Tooltip(
+              message: _canCreate ? 'Nueva orden de compra' : 'Tu sesión no incluye el permiso purchase.create.',
+              child: FilledButton.icon(
+                key: const Key('pos-po-new'),
+                onPressed: _canCreate ? () => unawaited(_openNewOrderForm()) : null,
+                icon: const Icon(Icons.add_shopping_cart_outlined, size: 16),
+                label: const Text('Nueva orden'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (!_canRead)
+          const _PermissionState()
+        else
+          switch (_phase) {
+            _PurchaseOrderListPhase.loading => const _LoadingState(),
+            _PurchaseOrderListPhase.empty => const _EmptyState(
+              message:
+                  'Aún no hay órdenes de compra. Crea tu primera orden para llevar el '
+                  'control de lo que pides a tus proveedores.',
+            ),
+            _PurchaseOrderListPhase.failure => _FailureState(
+              message: _errorMessage ?? 'No fue posible cargar las órdenes de compra.',
+              onRetry: () => unawaited(_load()),
+            ),
+            _PurchaseOrderListPhase.ready => Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _PurchaseOrderTable(items: _items, onSelect: (order) => unawaited(_openDetail(order))),
+                if (_nextCursor != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-po-load-more'),
+                        onPressed: _loadingMore ? null : () => unawaited(_loadMore()),
+                        icon: _loadingMore
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.expand_more),
+                        label: const Text('Cargar más'),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          },
+      ],
+    );
+  }
+}
+
+class _PurchaseOrderTable extends StatelessWidget {
+  const _PurchaseOrderTable({required this.items, required this.onSelect});
+  final List<PosPurchaseOrder> items;
+  final ValueChanged<PosPurchaseOrder> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _PosCard(
+      padding: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          headingTextStyle: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800),
+          columns: const [
+            DataColumn(label: Text('Folio')),
+            DataColumn(label: Text('Estado')),
+            DataColumn(label: Text('Proveedor')),
+            DataColumn(label: Text('Fecha')),
+            DataColumn(label: Text('Total'), numeric: true),
           ],
           rows: items
               .map(
-                (item) => DataRow(
-                  key: ValueKey('pos-direct-purchase-row-${item.id}'),
+                (order) => DataRow(
+                  key: ValueKey('pos-po-row-${order.id}'),
+                  onSelectChanged: (_) => onSelect(order),
                   cells: [
-                    DataCell(Text(item.purchaseDate)),
-                    DataCell(Text(_compactId(item.productVariantId))),
-                    DataCell(Text(item.supplierName ?? '—')),
-                    DataCell(Text(item.quantity)),
-                    DataCell(Text(_formatMoney(item.unitCost, item.currencyCode))),
-                    DataCell(Text(_formatMoney(item.totalCost, item.currencyCode))),
+                    DataCell(Text(displayPurchaseOrderNumber(order.orderNumber))),
+                    DataCell(_PurchaseOrderStatusChip(status: order.status)),
+                    DataCell(Text(order.supplierName ?? '—')),
+                    DataCell(Text(order.orderDate)),
+                    DataCell(Text(_formatMoney(order.totalCost, order.currencyCode))),
                   ],
                 ),
               )
               .toList(),
+        ),
+      ),
+    );
+  }
+}
+
+/// C2-style status pill (mirrors `_SaleStatusChip`'s own established
+/// per-status color mapping in this file) — represents the canonical
+/// `PurchaseOrderStatus` states honestly, never an invented status.
+class _PurchaseOrderStatusChip extends StatelessWidget {
+  const _PurchaseOrderStatusChip({required this.status});
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final (label, color) = switch (status) {
+      'draft' => ('Borrador', palette.textMuted),
+      'submitted' => ('Enviada', palette.blue),
+      'partially_received' => ('Recibida parcial', palette.warning),
+      'received' => ('Recibida', palette.success),
+      'cancelled' => ('Cancelada', palette.error),
+      _ => (status, palette.textMuted),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+/// A single draft line in the "Nueva orden de compra" form — plain state
+/// (not a widget) so `_PurchaseOrderFormDialogState` can own a growable
+/// list of these and add/remove rows freely; each owns its own
+/// [TextEditingController]s and must be [dispose]d when removed or when
+/// the form itself closes.
+class _PoLineDraft {
+  _PoLineDraft()
+    : quantityController = TextEditingController(),
+      unitCostController = TextEditingController(),
+      notesController = TextEditingController();
+
+  PosProduct? product;
+  final TextEditingController quantityController;
+  final TextEditingController unitCostController;
+  final TextEditingController notesController;
+
+  void dispose() {
+    quantityController.dispose();
+    unitCostController.dispose();
+    notesController.dispose();
+  }
+
+  /// `null` for empty/malformed input — never a fabricated fallback.
+  /// Mirrors `_DirectPurchaseFormState._lineTotal`'s exact real
+  /// fixed-point computation.
+  Money? lineTotal() {
+    final rawUnitCost = unitCostController.text.trim();
+    final quantity = quantityController.text.trim();
+    if (rawUnitCost.isEmpty || quantity.isEmpty) return null;
+    try {
+      final unitCost = Money.parse(rawUnitCost, 'MXN');
+      return unitCost.multiplyByDecimalQuantity(quantity);
+    } on MoneyFormatException {
+      return null;
+    }
+  }
+}
+
+/// The "Nueva orden de compra" form — branch taken directly from the real
+/// current session (never re-prompted — mirrors how `_DirectPurchaseForm`
+/// itself reads `widget.context.session.branchId`), supplier (the SAME
+/// registered-supplier autocomplete + free-text-fallback pattern
+/// `_DirectPurchaseForm` uses, mirrored here with `pos-po-supplier-*`
+/// keys), order date, expected date (optional), currency (hardcoded MXN —
+/// same as Compra Directa), notes, and a repeatable line-item editor (see
+/// [_PurchaseOrderLineEditor]) with a live-computed running total via the
+/// same real `Money` fixed-point utility. At least one valid line is
+/// required — the backend itself rejects an order with none.
+class _PurchaseOrderFormDialog extends StatefulWidget {
+  const _PurchaseOrderFormDialog({
+    required this.context,
+    required this.controller,
+    required this.gateway,
+    required this.suppliersGateway,
+  });
+  final AuthenticatedContext context;
+  final PosReadController controller;
+  final PosPurchaseOrdersGateway gateway;
+  final PosSuppliersGateway suppliersGateway;
+
+  @override
+  State<_PurchaseOrderFormDialog> createState() => _PurchaseOrderFormDialogState();
+}
+
+class _PurchaseOrderFormDialogState extends State<_PurchaseOrderFormDialog> {
+  final _supplierController = TextEditingController();
+  final _notesController = TextEditingController();
+  DateTime _orderDate = DateTime.now();
+  DateTime? _expectedDate;
+  PosSupplier? _selectedSupplier;
+  List<PosSupplier> _supplierOptions = const [];
+  final List<_PoLineDraft> _lines = [_PoLineDraft()];
+  bool _submitting = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSuppliers());
+  }
+
+  Future<void> _loadSuppliers() async {
+    try {
+      final page = await widget.suppliersGateway.listSuppliers(status: 'active');
+      if (!mounted) return;
+      setState(() => _supplierOptions = page.items);
+    } on Object {
+      // Leaves the picker honestly empty on failure — mirrors
+      // `_DirectPurchaseFormState._loadSuppliers` exactly.
+    }
+  }
+
+  @override
+  void dispose() {
+    _supplierController.dispose();
+    _notesController.dispose();
+    for (final line in _lines) {
+      line.dispose();
+    }
+    super.dispose();
+  }
+
+  String _isoDate(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+  Future<void> _pickOrderDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _orderDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (picked != null) setState(() => _orderDate = picked);
+  }
+
+  Future<void> _pickExpectedDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _expectedDate ?? _orderDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null) setState(() => _expectedDate = picked);
+  }
+
+  void _addLine() => setState(() => _lines.add(_PoLineDraft()));
+
+  void _removeLine(_PoLineDraft line) {
+    if (_lines.length <= 1) return;
+    setState(() {
+      _lines.remove(line);
+      line.dispose();
+    });
+  }
+
+  Money? get _total {
+    Money? total;
+    for (final line in _lines) {
+      final lineTotal = line.lineTotal();
+      if (lineTotal == null) continue;
+      total = total == null ? lineTotal : total + lineTotal;
+    }
+    return total;
+  }
+
+  Future<void> _submit() async {
+    final branchId = widget.context.session.branchId;
+    if (branchId == null) {
+      setState(() => _error = 'Esta sesión no tiene una sucursal asignada.');
+      return;
+    }
+    final lineInputs = <PosPurchaseOrderLineInput>[];
+    for (final line in _lines) {
+      final product = line.product;
+      final variantId = product?.defaultVariantId;
+      if (product == null || variantId == null) continue;
+      final quantity = line.quantityController.text.trim();
+      final parsedQuantity = double.tryParse(quantity);
+      if (quantity.isEmpty || parsedQuantity == null || parsedQuantity <= 0) continue;
+      final rawUnitCost = line.unitCostController.text.trim();
+      final Money unitCost;
+      try {
+        unitCost = Money.parse(rawUnitCost, 'MXN');
+      } on MoneyFormatException {
+        continue;
+      }
+      lineInputs.add(
+        PosPurchaseOrderLineInput(
+          productVariantId: variantId,
+          orderedQuantity: quantity,
+          unitCost: unitCost.toApiString(),
+          notes: line.notesController.text.trim().isEmpty ? null : line.notesController.text.trim(),
+        ),
+      );
+    }
+    if (lineInputs.isEmpty) {
+      setState(() => _error = 'Agrega al menos un producto con cantidad y costo válidos.');
+      return;
+    }
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+    try {
+      await widget.gateway.createPurchaseOrder(
+        branchId: branchId,
+        supplierName: _selectedSupplier != null
+            ? null
+            : (_supplierController.text.trim().isEmpty ? null : _supplierController.text.trim()),
+        supplierId: _selectedSupplier?.id,
+        orderDate: _isoDate(_orderDate),
+        expectedDate: _expectedDate == null ? null : _isoDate(_expectedDate!),
+        currencyCode: 'MXN',
+        notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+        lines: lineInputs,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = 'No fue posible crear la orden de compra.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final products = widget.controller.products.items
+        .where((product) => product.defaultVariantId != null)
+        .toList(growable: false);
+    final total = _total;
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Nueva orden de compra',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Sucursal: ${widget.context.currentBranch?.name ?? 'Sucursal actual'}',
+                  style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                ),
+                const SizedBox(height: 14),
+                Autocomplete<PosSupplier>(
+                  key: const Key('pos-po-supplier-picker'),
+                  displayStringForOption: (supplier) => supplier.name,
+                  optionsBuilder: (textEditingValue) {
+                    final query = textEditingValue.text.trim().toLowerCase();
+                    if (query.isEmpty) return _supplierOptions;
+                    return _supplierOptions.where((supplier) => supplier.name.toLowerCase().contains(query));
+                  },
+                  onSelected: (supplier) => setState(() {
+                    _selectedSupplier = supplier;
+                    _supplierController.clear();
+                  }),
+                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) => TextField(
+                    key: const Key('pos-po-supplier-search'),
+                    controller: controller,
+                    focusNode: focusNode,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: 'Proveedor registrado (opcional, buscar)',
+                    ),
+                  ),
+                ),
+                if (_selectedSupplier != null) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(8)),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Se usará el nombre actual del proveedor «${_selectedSupplier!.name}» '
+                            '(se congela al guardar la orden).',
+                            key: const Key('pos-po-supplier-selected'),
+                            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                          ),
+                        ),
+                        IconButton(
+                          key: const Key('pos-po-supplier-clear'),
+                          tooltip: 'Quitar proveedor registrado',
+                          icon: const Icon(Icons.close, size: 16),
+                          onPressed: () => setState(() => _selectedSupplier = null),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-po-supplier'),
+                  controller: _supplierController,
+                  enabled: _selectedSupplier == null,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: 'Proveedor (texto libre, opcional)',
+                    helperText: _selectedSupplier == null
+                        ? null
+                        : 'Deshabilitado: ya hay un proveedor registrado seleccionado arriba.',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-po-order-date'),
+                        onPressed: () => unawaited(_pickOrderDate()),
+                        icon: const Icon(Icons.calendar_today_outlined, size: 16),
+                        label: Text('Fecha: ${_isoDate(_orderDate)}'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-po-expected-date'),
+                        onPressed: () => unawaited(_pickExpectedDate()),
+                        icon: const Icon(Icons.event_available_outlined, size: 16),
+                        label: Text(
+                          _expectedDate == null ? 'Entrega esperada (opcional)' : _isoDate(_expectedDate!),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  key: const Key('pos-po-notes'),
+                  controller: _notesController,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Notas (opcional)'),
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 16),
+                Text('Productos', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 13)),
+                const SizedBox(height: 8),
+                for (var i = 0; i < _lines.length; i++)
+                  _PurchaseOrderLineEditor(
+                    key: ValueKey(_lines[i]),
+                    index: i,
+                    line: _lines[i],
+                    products: products,
+                    onChanged: () => setState(() {}),
+                    onRemove: _lines.length > 1 ? () => _removeLine(_lines[i]) : null,
+                  ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    key: const Key('pos-po-add-line'),
+                    onPressed: _addLine,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Agregar producto'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Total: ${total == null ? '—' : _money(total)}',
+                  key: const Key('pos-po-total'),
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_error!, key: const Key('pos-po-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.textSecondary,
+                          side: BorderSide(color: palette.border),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-po-submit'),
+                        onPressed: _submitting ? null : () => unawaited(_submit()),
+                        child: _submitting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Crear orden de compra'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One repeatable line row inside [_PurchaseOrderFormDialog] — product/
+/// variant picker (same `PosProduct.defaultVariantId` convention
+/// `_DirectPurchaseForm` uses), ordered quantity, unit cost, and a
+/// per-line live subtotal. [onRemove] is `null` while this is the form's
+/// only remaining line — an order must always keep at least one.
+class _PurchaseOrderLineEditor extends StatelessWidget {
+  const _PurchaseOrderLineEditor({
+    super.key,
+    required this.index,
+    required this.line,
+    required this.products,
+    required this.onChanged,
+    required this.onRemove,
+  });
+  final int index;
+  final _PoLineDraft line;
+  final List<PosProduct> products;
+  final VoidCallback onChanged;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final total = line.lineTotal();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(border: Border.all(color: palette.border), borderRadius: BorderRadius.circular(10)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<PosProduct>(
+                    key: Key('pos-po-line-product-$index'),
+                    initialValue: line.product,
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Producto / variante'),
+                    items: [
+                      for (final product in products)
+                        DropdownMenuItem(
+                          value: product,
+                          child: Text('${product.name} (${product.sku ?? product.code})'),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      line.product = value;
+                      onChanged();
+                    },
+                  ),
+                ),
+                if (onRemove != null)
+                  IconButton(
+                    key: Key('pos-po-line-remove-$index'),
+                    tooltip: 'Quitar producto',
+                    icon: Icon(Icons.delete_outline, size: 18, color: palette.error),
+                    onPressed: onRemove,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: Key('pos-po-line-quantity-$index'),
+                    controller: line.quantityController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Cantidad'),
+                    onChanged: (_) => onChanged(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    key: Key('pos-po-line-unit-cost-$index'),
+                    controller: line.unitCostController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Costo unitario (MXN)'),
+                    onChanged: (_) => onChanged(),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Subtotal: ${total == null ? '—' : _money(total)}',
+              key: Key('pos-po-line-total-$index'),
+              style: TextStyle(color: palette.textSecondary, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _PoDetailPhase { loading, ready, failure }
+
+/// A single purchase order's detail — every real field, its lines (ordered
+/// vs. received quantity per line), and contextual action buttons
+/// depending on the order's own `status` and the actor's real permissions:
+/// **Enviar** (`draft` only, `purchase.create`), **Recibir** (`submitted`
+/// only, `purchase.receive` — a NEW permission, never conflated with
+/// `purchase.create`), **Cancelar** (`draft`/`submitted`/
+/// `partially_received`, `purchase.create`, with a confirmation dialog —
+/// mirrors `_discard`'s own established plain-confirm shape elsewhere in
+/// this file), plus the linked inventory movement once (partially)
+/// received.
+class _PurchaseOrderDetailDialog extends StatefulWidget {
+  const _PurchaseOrderDetailDialog({required this.context, required this.orderId, required this.gateway});
+  final AuthenticatedContext context;
+  final String orderId;
+  final PosPurchaseOrdersGateway gateway;
+
+  @override
+  State<_PurchaseOrderDetailDialog> createState() => _PurchaseOrderDetailDialogState();
+}
+
+class _PurchaseOrderDetailDialogState extends State<_PurchaseOrderDetailDialog> {
+  _PoDetailPhase _phase = _PoDetailPhase.loading;
+  PosPurchaseOrder? _order;
+  String? _errorMessage;
+  bool _busy = false;
+  bool _changed = false;
+
+  bool get _canCreate => widget.context.permissions.contains('purchase.create');
+  bool get _canReceive => widget.context.permissions.contains('purchase.receive');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _PoDetailPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final order = await widget.gateway.getPurchaseOrder(widget.orderId);
+      if (!mounted) return;
+      setState(() {
+        _order = order;
+        _phase = _PoDetailPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _PoDetailPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _PoDetailPhase.failure;
+        _errorMessage = 'No fue posible cargar la orden de compra.';
+      });
+    }
+  }
+
+  Future<void> _submitOrder() async {
+    setState(() {
+      _busy = true;
+      _errorMessage = null;
+    });
+    try {
+      final updated = await widget.gateway.submitPurchaseOrder(widget.orderId);
+      if (!mounted) return;
+      setState(() {
+        _order = updated;
+        _busy = false;
+        _changed = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _errorMessage = 'No fue posible enviar la orden de compra.';
+      });
+    }
+  }
+
+  Future<void> _openReceive() async {
+    final order = _order;
+    if (order == null) return;
+    final received = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) =>
+          _PurchaseOrderReceiveDialog(orderId: order.id, lines: order.lines ?? const [], gateway: widget.gateway),
+    );
+    if (received == true) {
+      setState(() => _changed = true);
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _cancelOrder() async {
+    final order = _order;
+    if (order == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Cancelar orden de compra'),
+        content: Text(
+          '¿Cancelar la orden ${displayPurchaseOrderNumber(order.orderNumber)}? '
+          'Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cerrar')),
+          FilledButton(
+            key: const Key('pos-po-cancel-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: PosPalette.of(context).error),
+            child: const Text('Cancelar orden'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _busy = true;
+      _errorMessage = null;
+    });
+    try {
+      final updated = await widget.gateway.cancelPurchaseOrder(order.id);
+      if (!mounted) return;
+      setState(() {
+        _order = updated;
+        _busy = false;
+        _changed = true;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _errorMessage = 'No fue posible cancelar la orden de compra.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+          child: switch (_phase) {
+            _PoDetailPhase.loading => const SizedBox(
+              height: 200,
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            _PoDetailPhase.failure => SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _errorMessage ?? 'No fue posible cargar la orden de compra.',
+                      style: TextStyle(color: palette.error),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton(onPressed: () => unawaited(_load()), child: const Text('Reintentar')),
+                  ],
+                ),
+              ),
+            ),
+            _PoDetailPhase.ready => _buildReady(palette),
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReady(PosPalette palette) {
+    final order = _order!;
+    final lines = order.lines ?? const [];
+    final movement = order.inventoryMovement;
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  displayPurchaseOrderNumber(order.orderNumber),
+                  key: const Key('pos-po-detail-folio'),
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+              ),
+              _PurchaseOrderStatusChip(status: order.status),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _PoDetailField(label: 'Proveedor', value: order.supplierName),
+          _PoDetailField(label: 'Fecha de orden', value: order.orderDate),
+          _PoDetailField(label: 'Entrega esperada', value: order.expectedDate),
+          _PoDetailField(label: 'Notas', value: order.notes),
+          const SizedBox(height: 10),
+          Text('Productos', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          for (final line in lines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Container(
+                key: Key('pos-po-detail-line-${line.id}'),
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  border: Border.all(color: palette.border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _compactId(line.productVariantId),
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Pedido: ${line.orderedQuantity} · Recibido: ${line.receivedQuantity} · '
+                      'Costo unitario: ${_formatMoney(line.unitCost, order.currencyCode)} · '
+                      'Total: ${_formatMoney(line.lineTotal, order.currencyCode)}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          const SizedBox(height: 6),
+          Text(
+            'Total de la orden: ${_formatMoney(order.totalCost, order.currencyCode)}',
+            key: const Key('pos-po-detail-total'),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          ),
+          if (movement != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(8)),
+              child: Text(
+                'Movimiento de inventario: '
+                '${movement.movementNumber.isEmpty ? _compactId(movement.movementId) : movement.movementNumber} '
+                '(${movement.status}).',
+                key: const Key('pos-po-detail-movement'),
+                style: TextStyle(color: palette.textSecondary, fontSize: 12),
+              ),
+            ),
+          ],
+          if (_errorMessage != null) ...[
+            const SizedBox(height: 10),
+            Text(_errorMessage!, key: const Key('pos-po-detail-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+          ],
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              if (order.status == 'draft')
+                Tooltip(
+                  message: _canCreate ? 'Enviar orden' : 'Tu sesión no incluye el permiso purchase.create.',
+                  child: FilledButton.icon(
+                    key: const Key('pos-po-submit-order'),
+                    onPressed: _canCreate && !_busy ? () => unawaited(_submitOrder()) : null,
+                    icon: const Icon(Icons.send_outlined, size: 16),
+                    label: const Text('Enviar'),
+                  ),
+                ),
+              if (order.status == 'submitted')
+                Tooltip(
+                  message: _canReceive ? 'Recibir mercancía' : 'Tu sesión no incluye el permiso purchase.receive.',
+                  child: FilledButton.icon(
+                    key: const Key('pos-po-receive-order'),
+                    onPressed: _canReceive && !_busy ? () => unawaited(_openReceive()) : null,
+                    icon: const Icon(Icons.inventory_outlined, size: 16),
+                    label: const Text('Recibir'),
+                  ),
+                ),
+              if (order.status == 'draft' || order.status == 'submitted' || order.status == 'partially_received')
+                Tooltip(
+                  message: _canCreate ? 'Cancelar orden' : 'Tu sesión no incluye el permiso purchase.create.',
+                  child: OutlinedButton.icon(
+                    key: const Key('pos-po-cancel-order'),
+                    onPressed: _canCreate && !_busy ? () => unawaited(_cancelOrder()) : null,
+                    style: OutlinedButton.styleFrom(foregroundColor: palette.error),
+                    icon: const Icon(Icons.block, size: 16),
+                    label: const Text('Cancelar'),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              key: const Key('pos-po-detail-close'),
+              onPressed: () => Navigator.of(context).pop(_changed),
+              child: const Text('Cerrar'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PoDetailField extends StatelessWidget {
+  const _PoDetailField({required this.label, required this.value});
+  final String label;
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final display = value == null || value!.isEmpty ? '—' : value!;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label, style: TextStyle(color: palette.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+          ),
+          Expanded(child: Text(display, style: TextStyle(color: palette.text, fontSize: 13))),
+        ],
+      ),
+    );
+  }
+}
+
+/// The "Recibir" form — pre-filled with each line's own ordered quantity
+/// as an editable "cantidad recibida" field defaulting to the full ordered
+/// amount, so the common full-receive case is one tap, but any line can be
+/// reduced for a genuine partial receipt. Every line is always sent
+/// explicitly (never omitted) — the backend only defaults an OMITTED line
+/// to 0 received, and this form's own "send every line, editable" shape
+/// means that path is never hit by an honest use of this dialog.
+class _PurchaseOrderReceiveDialog extends StatefulWidget {
+  const _PurchaseOrderReceiveDialog({required this.orderId, required this.lines, required this.gateway});
+  final String orderId;
+  final List<PosPurchaseOrderLine> lines;
+  final PosPurchaseOrdersGateway gateway;
+
+  @override
+  State<_PurchaseOrderReceiveDialog> createState() => _PurchaseOrderReceiveDialogState();
+}
+
+class _PurchaseOrderReceiveDialogState extends State<_PurchaseOrderReceiveDialog> {
+  late final Map<String, TextEditingController> _controllers = {
+    for (final line in widget.lines) line.id: TextEditingController(text: line.orderedQuantity),
+  };
+  bool _submitting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    for (final controller in _controllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final lineInputs = <PosPurchaseOrderReceiveLineInput>[];
+    for (final line in widget.lines) {
+      final raw = _controllers[line.id]!.text.trim();
+      final parsed = double.tryParse(raw);
+      if (raw.isEmpty || parsed == null || parsed < 0) {
+        setState(() => _error = 'Captura una cantidad recibida válida (0 o más) para cada producto.');
+        return;
+      }
+      lineInputs.add(PosPurchaseOrderReceiveLineInput(purchaseOrderLineId: line.id, receivedQuantity: raw));
+    }
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
+    try {
+      await widget.gateway.receivePurchaseOrder(widget.orderId, lines: lineInputs);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = 'No fue posible registrar la recepción.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480, maxHeight: 640),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Recibir mercancía',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'La cantidad recibida inicia igual a la pedida — redúcela si la entrega fue parcial.',
+                  style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                ),
+                const SizedBox(height: 14),
+                for (final line in widget.lines)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _compactId(line.productVariantId),
+                                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                              ),
+                              Text(
+                                'Pedido: ${line.orderedQuantity}',
+                                style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            key: Key('pos-po-receive-line-${line.id}'),
+                            controller: _controllers[line.id],
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(isDense: true, labelText: 'Cant. recibida'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_error != null) ...[
+                  Text(_error!, key: const Key('pos-po-receive-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                  const SizedBox(height: 8),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: palette.textSecondary,
+                          side: BorderSide(color: palette.border),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-po-receive-submit'),
+                        onPressed: _submitting ? null : () => unawaited(_submit()),
+                        child: _submitting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text('Confirmar recepción'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

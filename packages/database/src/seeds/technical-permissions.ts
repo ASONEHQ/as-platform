@@ -171,6 +171,16 @@ export const technicalPermissionCodes = [
   // separation (TASK 12.7).
   'purchase.read',
   'purchase.create',
+  // TASK 12.2 — the formal Purchase Order workflow. `purchase.receive`
+  // gates `POST /api/v1/purchase-orders/:id/receive` — the one action
+  // that actually posts real stock (a receipt inventory movement),
+  // deliberately separate from `purchase.create` (which gates
+  // create/submit/cancel — paperwork actions with no inventory effect)
+  // the same way this file's own established `cash_movement.create` vs.
+  // `cash_register.manage` and `inventory.transfer` vs. `inventory.
+  // receive` separations already keep "receiving real stock" as its own,
+  // more sensitive permission from the surrounding create/manage action.
+  'purchase.receive',
   // TASK 14.4 (Wave 2, Part B) — the People domain (Planilla/Horarios/
   // Checador/Nómina). `payroll.close` is deliberately separate from
   // `payroll.manage` — closing a period is a materially higher-risk,

@@ -10,6 +10,8 @@ import { AppError } from '@asone/errors';
 
 import type { AuthContext } from '../auth/auth.types.js';
 import type { AuthService } from '../auth/auth.service.js';
+import { InventoryReversalRepository } from '../inventory/inventory-reversal.repository.js';
+import { InventoryReversalService } from '../inventory/inventory-reversal.service.js';
 import { SuppliersRepository } from '../suppliers/suppliers.repository.js';
 import { SuppliersService } from '../suppliers/suppliers.service.js';
 import { registerSupplierRoutes } from '../suppliers/suppliers.routes.js';
@@ -202,7 +204,22 @@ integration('PostgreSQL direct-purchase supplier linkage (TASK 14.4, Wave 2 Part
 
     const suppliersRepository = new SuppliersRepository(database);
     registerSupplierRoutes(app, authentication, new SuppliersService(suppliersRepository));
-    registerPurchasingRoutes(app, authentication, new PurchasingService(new PurchasingRepository(database), suppliersRepository));
+    // TASK 12.2 — `PurchasingService` now takes a third, required
+    // `InventoryReversalService` collaborator (used only by `POST
+    // /api/v1/direct-purchases/:id/reverse`, which no test in THIS file
+    // ever calls) — see `purchasing-reversal.integration.test.ts` for
+    // that endpoint's own dedicated coverage, and this file's own prior
+    // comment above for the identical precedent this same one-line tweak
+    // already followed when `suppliersRepository` was added.
+    registerPurchasingRoutes(
+      app,
+      authentication,
+      new PurchasingService(
+        new PurchasingRepository(database),
+        suppliersRepository,
+        new InventoryReversalService(new InventoryReversalRepository(database)),
+      ),
+    );
     await app.ready();
   });
 

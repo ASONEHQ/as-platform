@@ -185,6 +185,40 @@ export const infrastructureErrorCodes = [
   // actionable failure — never the opaque `internal_error` an unhandled
   // `RangeError` from `Intl.DateTimeFormat` used to produce.
   'branch_timezone_invalid',
+  // TASK 12.2 — the formal Purchase Order workflow, alongside "Compra
+  // Directa" above. Every other new failure reuses an existing generic
+  // code (`resource_not_found`, `validation_error`, `idempotency_conflict`),
+  // matching this codebase's own established convention. These ten are
+  // genuinely new semantic concepts a generic code cannot express:
+  // `purchase_order_not_found` (a PO id that does not resolve, branch-
+  // scoped); `purchase_order_supplier_not_found`/`_supplier_inactive`
+  // (the PO-creation-time mirror of `supplier_inactive` above);
+  // `purchase_order_product_variant_not_found`/`_non_tracked_variant`
+  // (a line's `product_variant_id` rejected outright at PO-creation time
+  // — see `purchase-orders.service.ts`'s own doc comment for why this
+  // validates earlier than a direct purchase's own single, merged
+  // `product_variant_not_found`); `purchase_order_inventory_location_
+  // not_found` (the receive-time mirror of `inventory_location_not_found`);
+  // `purchase_order_duplicate_variant` (the same `product_variant_id`
+  // submitted twice in one PO's `lines`); `purchase_order_empty_lines`/
+  // `_empty_receipt` (an empty `lines` array on create/receive);
+  // `purchase_order_over_receipt` (a receive request whose quantity
+  // exceeds a line's own `ordered_quantity`); `purchase_order_invalid_
+  // transition` (a status-machine transition rejected by the service
+  // layer's own guard — see `purchaseOrders`' own `_lifecycle_ck` doc
+  // comment in `packages/database/src/schema/purchasing.ts` for why the
+  // DATABASE constraint alone cannot express "only from status X").
+  'purchase_order_not_found',
+  'purchase_order_supplier_not_found',
+  'purchase_order_supplier_inactive',
+  'purchase_order_product_variant_not_found',
+  'purchase_order_non_tracked_variant',
+  'purchase_order_inventory_location_not_found',
+  'purchase_order_duplicate_variant',
+  'purchase_order_empty_lines',
+  'purchase_order_over_receipt',
+  'purchase_order_empty_receipt',
+  'purchase_order_invalid_transition',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

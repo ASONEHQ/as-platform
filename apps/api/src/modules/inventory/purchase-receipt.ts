@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  extendedCostUnits,
+  formatMoney,
+  formatQuantity,
+  moneyUnits,
+  quantityUnits,
+} from './purchase-money.js';
+
 /**
  * TASK 14.3 (Wave 1, Part C) — "Compra Directa": posts exactly one
  * `receipt` inventory movement for a single stock-tracked variant, at the
@@ -82,44 +90,6 @@ export class PurchaseInventoryPostingError extends Error {
     super(message);
     this.name = 'PurchaseInventoryPostingError';
   }
-}
-
-const QUANTITY_SCALE = 1_000_000n; // numeric(19,6) — matches inventory_balances/direct_purchases.quantity exactly.
-const MONEY_SCALE = 10_000n; // numeric(19,4) — matches direct_purchases.unit_cost/total_cost exactly.
-
-function decimalUnits(value: string, scale: bigint, digits: number): bigint {
-  const [whole = '', fraction = ''] = value.split('.');
-  const wholeDigits = whole.length === 0 ? '0' : whole;
-  const fractionDigits = fraction.padEnd(digits, '0').slice(0, digits);
-  return BigInt(wholeDigits) * scale + BigInt(fractionDigits.length === 0 ? '0' : fractionDigits);
-}
-function formatUnits(units: bigint, scale: bigint, digits: number): string {
-  const negative = units < 0n;
-  const magnitude = negative ? -units : units;
-  const whole = magnitude / scale;
-  const fraction = (magnitude % scale).toString().padStart(digits, '0');
-  return `${negative ? '-' : ''}${whole.toString()}.${fraction}`;
-}
-function quantityUnits(value: string): bigint {
-  return decimalUnits(value, QUANTITY_SCALE, 6);
-}
-function formatQuantity(units: bigint): string {
-  return formatUnits(units, QUANTITY_SCALE, 6);
-}
-function moneyUnits(value: string): bigint {
-  return decimalUnits(value, MONEY_SCALE, 4);
-}
-function formatMoney(units: bigint): string {
-  return formatUnits(units, MONEY_SCALE, 4);
-}
-/** Same round-half-up algorithm `refunds.service.ts`'s own
- * `multiplyMoneyByQuantity` established — reused for the exact same
- * reason: a money amount times a quantity must round consistently
- * everywhere it is computed, never a second, possibly-drifting
- * implementation. */
-function extendedCostUnits(unitCostUnits: bigint, qtyUnits: bigint): bigint {
-  const numerator = unitCostUnits * qtyUnits;
-  return (numerator + QUANTITY_SCALE / 2n) / QUANTITY_SCALE;
 }
 
 interface QueryResult<T> {

@@ -158,6 +158,15 @@ abstract interface class PosPurchasingGateway {
     String? cursor,
     int limit = 50,
   });
+
+  /// TASK 14.3 (Wave 4): `POST /api/v1/direct-purchases/{id}/reverse`
+  /// (`inventory.reverse`) — reverses this direct purchase's own backing
+  /// inventory movement; on success the returned purchase's own
+  /// `movement.status` is `'reversed'`. [reason] is required — mirrors
+  /// this app's own established free-text reason convention for every
+  /// reversal/cancel action (see `pos_inventory_admin_screen.dart`'s own
+  /// `_ReasonDialog` doc comment).
+  Future<PosDirectPurchase> reverseDirectPurchase(String id, {required String reason});
 }
 
 class ApiPosPurchasingGateway implements PosPurchasingGateway {
@@ -235,6 +244,16 @@ class ApiPosPurchasingGateway implements PosPurchasingGateway {
     );
   }
 
+  @override
+  Future<PosDirectPurchase> reverseDirectPurchase(String id, {required String reason}) async {
+    final envelope = await _client.postJson(
+      '/api/v1/direct-purchases/$id/reverse',
+      idempotencyKey: createIdempotencyKey(),
+      body: {'reason': reason},
+    );
+    return _decode(envelope);
+  }
+
   PosDirectPurchase _decode(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -270,4 +289,8 @@ class EmptyPosPurchasingGateway implements PosPurchasingGateway {
     String? cursor,
     int limit = 50,
   }) => Future.error(StateError('No purchasing gateway is configured.'));
+
+  @override
+  Future<PosDirectPurchase> reverseDirectPurchase(String id, {required String reason}) =>
+      Future.error(StateError('No purchasing gateway is configured.'));
 }

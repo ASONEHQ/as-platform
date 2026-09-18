@@ -91,6 +91,9 @@ import { PartyReservationsService } from '../modules/parties/party-reservations.
 import { PurchasingRepository } from '../modules/purchasing/purchasing.repository.js';
 import { registerPurchasingRoutes } from '../modules/purchasing/purchasing.routes.js';
 import { PurchasingService } from '../modules/purchasing/purchasing.service.js';
+import { PurchaseOrdersRepository } from '../modules/purchasing/purchase-orders.repository.js';
+import { registerPurchaseOrdersRoutes } from '../modules/purchasing/purchase-orders.routes.js';
+import { PurchaseOrdersService } from '../modules/purchasing/purchase-orders.service.js';
 import { SuppliersRepository } from '../modules/suppliers/suppliers.repository.js';
 import { registerSupplierRoutes } from '../modules/suppliers/suppliers.routes.js';
 import { SuppliersService } from '../modules/suppliers/suppliers.service.js';
@@ -269,13 +272,14 @@ export async function registerPlugins(
           new InventoryPostingRepository(options.infrastructure.database),
         ),
       );
-      registerInventoryReversalRoutes(
-        app,
-        authentication,
-        new InventoryReversalService(
-          new InventoryReversalRepository(options.infrastructure.database),
-        ),
+      // TASK 12.2 — named const: `PurchasingService.reverseDirectPurchase`
+      // (`POST /api/v1/direct-purchases/:id/reverse`, registered further
+      // below) reuses this SAME instance directly, never a
+      // second/duplicate one.
+      const inventoryReversalService = new InventoryReversalService(
+        new InventoryReversalRepository(options.infrastructure.database),
       );
+      registerInventoryReversalRoutes(app, authentication, inventoryReversalService);
       registerInventoryTransferRoutes(
         app,
         authentication,
@@ -422,6 +426,21 @@ export async function registerPlugins(
         authentication,
         new PurchasingService(
           new PurchasingRepository(options.infrastructure.database),
+          suppliersRepository,
+          // TASK 12.2 — reused directly for `POST /api/v1/direct-purchases/
+          // :id/reverse` (see `inventoryReversalService`'s own comment
+          // above, and `PurchasingService.reverseDirectPurchase`).
+          inventoryReversalService,
+        ),
+      );
+      // TASK 12.2 — the formal Purchase Order workflow, alongside "Compra
+      // Directa" above. Reuses the same `suppliersRepository` instance for
+      // its own optional real-supplier linkage.
+      registerPurchaseOrdersRoutes(
+        app,
+        authentication,
+        new PurchaseOrdersService(
+          new PurchaseOrdersRepository(options.infrastructure.database),
           suppliersRepository,
         ),
       );

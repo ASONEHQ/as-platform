@@ -1,5 +1,6 @@
 import { AppError } from '@asone/errors';
 
+import { InventoryDraftError } from '../inventory/inventory-drafts.types.js';
 import { PurchaseInventoryPostingError } from '../inventory/purchase-receipt.js';
 import { PurchaseError } from './purchasing.types.js';
 
@@ -22,6 +23,18 @@ const purchaseErrorStatus: Readonly<Record<string, number>> = {
 export function mapPurchaseError(error: unknown): Error {
   if (error instanceof PurchaseInventoryPostingError)
     return new AppError({ code: error.code, message: error.message, statusCode: 404 });
+  // TASK 12.2 — `POST /api/v1/direct-purchases/:id/reverse` reuses
+  // `InventoryReversalService.reverse` directly (see `purchasing.
+  // service.ts`'s own `reverseDirectPurchase`), so its own
+  // `InventoryDraftError` needs mapping here too — same status-code
+  // logic `inventory-reversal.routes.ts`'s own `errorsToHttp` already
+  // uses (404 for "not found", 422 for the two structurally-invalid
+  // codes, 409 for everything else, e.g. `movement_already_reversed`).
+  if (error instanceof InventoryDraftError) {
+    const statusCode = error.code === 'inventory_movement_not_found' ? 404 : 409;
+    const unprocessable = ['invalid_movement_line', 'numeric_overflow'].includes(error.code);
+    return new AppError({ code: error.code, message: error.message, statusCode: unprocessable ? 422 : statusCode });
+  }
   if (!(error instanceof PurchaseError)) return error instanceof Error ? error : new Error('Unknown error');
   const statusCode = purchaseErrorStatus[error.code] ?? 409;
   // TASK 14.4 (Wave 2, Part C.2) — `supplier_inactive` was added to the

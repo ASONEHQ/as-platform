@@ -45,6 +45,8 @@ interface DirectPurchaseDb {
   inventory_movement_id: string;
   created_by: string;
   created_at: Date | string;
+  movement_status?: string | null;
+  movement_number?: string | null;
 }
 interface IdempotencyDb {
   request_hash: string;
@@ -68,6 +70,8 @@ function directPurchase(row: DirectPurchaseDb): DirectPurchaseRow {
     inventoryMovementId: row.inventory_movement_id,
     createdBy: row.created_by,
     createdAt: new Date(row.created_at),
+    movementStatus: row.movement_status ?? null,
+    movementNumber: row.movement_number ?? null,
   };
 }
 
@@ -308,6 +312,25 @@ export class PurchasingRepository {
     };
   }
 
+  /** TASK 12.2 — the direct purchase's linked movement's own CURRENT
+   * `version` — read fresh, right before calling
+   * `InventoryReversalService.reverse` (which requires an
+   * `expectedVersion` for its own optimistic-concurrency guard). This
+   * thin wrapper endpoint deliberately does not surface an `If-Match`/
+   * ETag to its own caller the way the generic reversal endpoint does —
+   * a direct purchase's movement is only ever mutated by this one
+   * wrapper, so reading the version fresh, inside the SAME transaction
+   * the reversal itself runs in, is sufficient. */
+  public async movementVersion(companyId: string, movementId: string): Promise<bigint | null> {
+    const row = result<{ version: string }>(
+      await this.database.pool.query(
+        `select version::text from inventory_movements where company_id=$1 and id=$2`,
+        [companyId, movementId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : BigInt(row.version);
+  }
+
   public async listDirectPurchases(
     companyId: string,
     branchIds: readonly string[],
@@ -351,7 +374,12 @@ export class PurchasingRepository {
     values.push(input.limit + 1);
     const rows = result<DirectPurchaseDb>(
       await this.database.pool.query(
-        `select ${DIRECT_PURCHASE_COLUMNS} from direct_purchases where ${where.join(' and ')}
+        `select ${DIRECT_PURCHASE_COLUMNS},
+          (select movement_number from inventory_movements im where im.id = direct_purchases.inventory_movement_id)
+            as movement_number,
+          (select status from inventory_movements im where im.id = direct_purchases.inventory_movement_id)
+            as movement_status
+         from direct_purchases where ${where.join(' and ')}
          order by created_at desc, id desc limit $${String(values.length)}`,
         values,
       ),

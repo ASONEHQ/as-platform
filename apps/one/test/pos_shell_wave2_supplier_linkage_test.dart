@@ -314,6 +314,10 @@ class _RecordingPurchasingGateway implements PosPurchasingGateway {
     String? cursor,
     int limit = 50,
   }) async => const PosDirectPurchasePage(items: [], nextCursor: null);
+
+  @override
+  Future<PosDirectPurchase> reverseDirectPurchase(String id, {required String reason}) =>
+      Future.error(StateError('not used'));
 }
 
 class _FixtureReadGateway implements PosReadGateway {
@@ -413,5 +417,14 @@ Future<void> _openGroupIfNeeded(WidgetTester tester, String group, String navKey
 Future<void> _navigateToPurchases(WidgetTester tester) async {
   await _openGroupIfNeeded(tester, 'Inventario', 'nav-purchases');
   await tester.tap(find.byKey(const Key('nav-purchases')));
+  await tester.pumpAndSettle();
+  // TASK 14.3 (Wave 4): "Compras" is now a 3-tab screen (Órdenes / Compra
+  // Directa / Historial), defaulting to Órdenes — every test in this file
+  // is about the Compra Directa form specifically, so this helper switches
+  // straight to that tab (mirrors `pos_inventory_admin_test.dart`'s own
+  // established `SegmentedButton` tab-switch pattern).
+  await tester.tap(
+    find.descendant(of: find.byKey(const Key('pos-purchases-tabs')), matching: find.text('Compra Directa')),
+  );
   await tester.pumpAndSettle();
 }
