@@ -1,4 +1,5 @@
 import { createDatabaseClient } from '../client.js';
+import { syncSystemRolePermissions } from '../seeds/system-role-permissions.js';
 import { seedTechnicalPermissions } from '../seeds/technical-permissions.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -17,6 +18,13 @@ const client = createDatabaseClient({
 try {
   const count = await seedTechnicalPermissions(client.db);
   process.stdout.write(`Inserted ${String(count)} approved permission definitions.\n`);
+  // TASK 16.10B — keeps every tenant's system-managed (is_system=true,
+  // e.g. "Owner") role's permission set current with the catalogue above,
+  // for tenants provisioned before a given permission existed. Never
+  // touches a tenant's own custom roles. See this function's own doc
+  // comment for the full incident/rationale.
+  const granted = await syncSystemRolePermissions(client.db);
+  process.stdout.write(`Granted ${String(granted)} new system-role permission(s) across existing tenants.\n`);
 } finally {
   await client.close();
 }

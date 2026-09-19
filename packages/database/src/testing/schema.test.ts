@@ -88,26 +88,26 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  // TASK 15.0 (RC certification, Phase 15 final regression) — updated from
-  // a stale 24-entry snapshot: the legacy-parity closure waves that landed
-  // immediately before the RC freeze (commits d367272, 1035a58) added five
-  // more migrations (0024-0028) without updating this tracker, so it was
-  // failing against the real, correct journal even though nothing in this
-  // certification's own fixes touched migrations. Verified independently
-  // (`_journal.json` really does have 29 sequential entries 0-28 ending at
-  // `0028_crazy_nightcrawler`) before bumping the numbers — same precedent
-  // as TASK 14.1's own update to this test. The test's actual intent —
-  // the journal is sequential, contiguous, and its last entry matches the
-  // newest real migration file — is unchanged.
+  // TASK 16.10B — updated from a stale 29-entry snapshot: five tasks'
+  // worth of migrations (0029-0032, TASK 16.6D through 16.10A) landed
+  // without updating this tracker, so it was failing against the real,
+  // correct journal even though nothing in TASK 16.10B's own fix touched
+  // migrations directly (`syncSystemRolePermissions` is a seed-only
+  // change, no new migration). Verified independently (`_journal.json`
+  // really does have 33 sequential entries 0-32 ending at
+  // `0032_absurd_liz_osborn`) before bumping the numbers — same precedent
+  // as TASK 15.0's own prior update to this exact test. The test's actual
+  // intent — the journal is sequential, contiguous, and its last entry
+  // matches the newest real migration file — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(29);
+    expect(journal.entries).toHaveLength(33);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 29 }, (_, index) => index),
+      Array.from({ length: 33 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0028_crazy_nightcrawler');
+    expect(journal.entries.at(-1)?.tag).toBe('0032_absurd_liz_osborn');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {
@@ -323,19 +323,20 @@ describe('database foundation schema', () => {
   // TASK 15.0 (RC certification, Phase 15 final regression) — updated from
   // a stale hardcoded 75: the legacy-parity closure waves just before the
   // RC freeze (commits d367272, 1035a58) grew the real catalogue to 98,
-  // then this certification's own narrowly-scoped fix (`technical-
-  // permissions.ts`: `inventory.transfer` + `inventory.receive`, a real
-  // 403-for-everyone bug — see that file's own comment) brought it to 100,
-  // without either change updating this tracker. Verified independently
-  // (the array really does hold exactly 100 unique codes, matching
-  // `db:seed`'s own "Inserted 100 approved permission definitions." output
-  // against a fresh database) before bumping the number — same precedent
-  // as TASK 14.1's own update to this test. The uniqueness check and the
-  // specific spot-checked codes are the test's real intent and are
-  // unchanged.
+  // then TASK 15.0's own narrowly-scoped fix (`technical-permissions.ts`:
+  // `inventory.transfer` + `inventory.receive`, a real 403-for-everyone
+  // bug — see that file's own comment) brought it to 100. TASK 16.10 then
+  // added `purchase.receive` (the formal Purchase Order receiving
+  // permission), bringing it to 101, again without updating this tracker
+  // — the same drift pattern this test's own history already
+  // demonstrates happens every time a permission is added. Verified
+  // independently (the array really does hold exactly 101 unique codes)
+  // before bumping the number — same precedent as TASK 15.0's own prior
+  // update to this test. The uniqueness check and the specific
+  // spot-checked codes are the test's real intent and are unchanged.
   it('contains exactly the current approved permission definitions, each unique', () => {
-    expect(technicalPermissionCodes).toHaveLength(100);
-    expect(new Set(technicalPermissionCodes).size).toBe(100);
+    expect(technicalPermissionCodes).toHaveLength(101);
+    expect(new Set(technicalPermissionCodes).size).toBe(101);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');
@@ -343,6 +344,7 @@ describe('database foundation schema', () => {
     expect(technicalPermissionCodes).toContain('role.permission.manage');
     expect(technicalPermissionCodes).toContain('inventory.transfer');
     expect(technicalPermissionCodes).toContain('inventory.receive');
+    expect(technicalPermissionCodes).toContain('purchase.receive');
   });
 
   it('defines scoped settings ownership, uniqueness, and structural checks', () => {

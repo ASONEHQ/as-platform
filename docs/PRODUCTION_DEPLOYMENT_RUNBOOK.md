@@ -177,11 +177,61 @@ DATABASE_URL=<production URL> pnpm --filter @asone/database db:seed
 ```
 
 Idempotent (`ON CONFLICT DO NOTHING`) — inserts the approved permission
-catalogue (75 codes as of this task; `seedTechnicalPermissions` reports
+catalogue (101 codes as of TASK 16.10B; `seedTechnicalPermissions` reports
 exactly how many were newly inserted). Safe to re-run on every deploy;
 never destroys or alters an existing row. See Part H below for the full
 seed classification — this is the ONLY seed command that belongs in a
 production deploy.
+
+**TASK 16.10B addition — this step now ALSO keeps every existing tenant's
+system-managed role current.** `db:seed` now runs `syncSystemRolePermissions`
+immediately after inserting the permission catalogue, reporting how many
+`role_permissions` rows it newly granted. Read this output every deploy:
+a nonzero count means at least one tenant's Owner role just picked up a
+permission introduced since that tenant was provisioned — expected and
+healthy the first time a deploy adds a new permission code, and `0` on
+every ordinary re-run afterward.
+
+**The generic permission-upgrade contract** (read this before ever adding
+a new permission code):
+- A tenant's Owner role (and ONLY that role — the one `roles` row per
+  company with `is_system=true`; nothing else in this codebase sets that
+  flag) is granted the COMPLETE current permission catalogue automatically
+  on every `db:seed` run, for every tenant, forever — not just at
+  first-provisioning time. Adding a new code to
+  `technicalPermissionCodes` and deploying (which always includes running
+  this step) is the ENTIRE upgrade procedure. No new migration, no new
+  deploy step, and no manual/tenant-specific SQL is ever required solely
+  because a permission was added.
+- A tenant's own CUSTOM roles (anything created via
+  `PUT /roles/{id}/permissions` — `is_system=false`) are never touched by
+  this sync, on purpose: their permission set is that tenant's own
+  deliberate configuration, and an upgrade must never silently widen it.
+  If a custom role should get a new capability, that is the tenant's own
+  administrative action (or an explicit, reviewed one-off `PUT` on that
+  tenant's behalf), never an automatic side effect of a platform upgrade.
+- No re-authentication is required for this to take effect, and none of
+  this weakens session/token security: permissions are never frozen into
+  a session or access token — `AuthService.authenticate` re-resolves the
+  live `role_permissions` join on every single authenticated request (see
+  `auth.repository.ts`'s `resolveContext`/`contextForSession`). The
+  backend is correctly authorized on the very next request after this
+  step runs. The Flutter client's own in-memory permission list is
+  refreshed on login, on cold-start session restore (a page
+  reload/app relaunch), and on every automatic access-token refresh cycle
+  — so an already-logged-in user sees the change within one normal
+  refresh cycle with no action required, or immediately after a page
+  reload/re-login if urgency demands it.
+- **Incident record (2026-09-18/19, TASK 16.10B):** TASK 16.10 introduced
+  `purchase.receive` without this sync mechanism existing yet, so
+  INFLAPARK's (and every other already-provisioned tenant's) Owner role
+  never received it — `role_permissions` was, at that point, only ever
+  populated once, at first-provisioning time. The fix is this section's
+  own new behavior, is fully generic (not specific to
+  `purchase.receive`/INFLAPARK/any tenant), and the very next `db:seed`
+  run against production resolves it for every affected tenant and every
+  permission gap that has ever accumulated this way, not just the one
+  that was noticed.
 
 ### 8. First-owner provisioning (fresh tenant only — Part E)
 

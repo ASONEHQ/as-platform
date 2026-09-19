@@ -31,8 +31,10 @@ integration('PostgreSQL auth login challenge foundation', () => {
   // at migration 0010) and was never updated as later waves (through
   // migration 0028) grew it; the login-challenge table's continued
   // presence, which is this test's real intent, is unaffected and
-  // unchanged.
-  it('applies 0000-0028 and retains the login challenge table', async () => {
+  // unchanged. TASK 16.10B: corrected again, 29 -> 33 (0000-0032),
+  // same drift, same fix, same precedent — see this test's own doc
+  // comment history.
+  it('applies 0000-0032 and retains the login challenge table', async () => {
     const table = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema = 'public' and table_name = 'auth_login_challenges'`,
@@ -41,7 +43,7 @@ integration('PostgreSQL auth login challenge foundation', () => {
     const migrations = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(migrations.rows[0]?.count).toBe('29');
+    expect(migrations.rows[0]?.count).toBe('33');
   });
 
   it('persists a valid pending challenge without plaintext token or floating columns', async () => {
