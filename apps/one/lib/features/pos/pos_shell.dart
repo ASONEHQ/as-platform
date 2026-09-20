@@ -19265,7 +19265,28 @@ class _CashAuditLogDialogState extends State<_CashAuditLogDialog> {
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     return AlertDialog(
-      title: const Text('Bitácora'),
+      title: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Bitácora'),
+          const SizedBox(height: 4),
+          // TASK 16.11A §3 — honest scope: this is the shift's own
+          // operational log (apertura/movimientos/reversiones/cortes/
+          // cierre), never claimed as a complete financial timeline. A
+          // cash sale's own evidence lives in Historial de ventas — never
+          // duplicated in here.
+          Text(
+            'Apertura, movimientos, reversiones, cortes y cierre de este '
+            'turno. Las ventas se consultan en Historial de ventas.',
+            style: TextStyle(
+              color: palette.textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
       content: SizedBox(
         width: 420,
         height: 420,
@@ -19998,6 +20019,13 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
   String? _errorMessage;
   bool _printing = false;
   String? _printError;
+  // TASK 16.11A §7 — the printable cash-cut summary must show the real
+  // register, same as the live close/partial-close print already does
+  // (`_printCashCut`'s own `_selectedRegister?.name`); a reprint from
+  // history has no register object in memory, only `PosCashSession.
+  // cashRegisterId`, so it's resolved once here from the session's own
+  // branch — never a fabricated/omitted name.
+  String? _registerName;
 
   @override
   void initState() {
@@ -20010,6 +20038,19 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
       final summary = await widget.cashGateway.summary(widget.cashSessionId);
       if (!mounted) return;
       setState(() => _summary = summary);
+      try {
+        final registers = await widget.cashGateway.registersForBranch(summary.session.branchId);
+        final register = registers
+            .where((candidate) => candidate.id == summary.session.cashRegisterId)
+            .firstOrNull;
+        if (!mounted) return;
+        if (register != null) setState(() => _registerName = register.name);
+      } on Object {
+        // The register name is a display nicety on the printed summary —
+        // an inactive/deleted register or a transient fetch failure must
+        // never block loading or printing the real financial figures
+        // above; the print simply omits the name, exactly as before.
+      }
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() => _errorMessage = error.failure.message);
@@ -20050,7 +20091,7 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
       isFinal: isFinal,
       businessName: widget.companyName,
       branchName: widget.branchName,
-      registerName: '',
+      registerName: _registerName ?? '',
       openedByName: '',
       openedAt: session.openedAt,
       openingAmount: summary.openingAmount,

@@ -4811,6 +4811,10 @@ void main() {
           find.text(r'$1029.00'),
           findsWidgets,
         ); // esperado/contado both $1029.00 here.
+        // TASK 16.11A §7 — the reprint dialog resolves the real register
+        // name for the print summary (previously hardcoded blank), from
+        // the session's own branch — never a fabricated/guessed one.
+        expect(cashGateway.registersForBranchCalls, contains('branch-id'));
       },
     );
 
@@ -8853,12 +8857,15 @@ class _FakeCashGateway implements PosCashGateway {
   movementCalls = [];
   final List<({String cashSessionId, String declaredClosingAmount})>
   closeCalls = [];
+  final List<String> registersForBranchCalls = [];
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
-      registers
-          .where((candidate) => candidate.branchId == branchId)
-          .toList(growable: false);
+  Future<List<PosCashRegister>> registersForBranch(String branchId) async {
+    registersForBranchCalls.add(branchId);
+    return registers
+        .where((candidate) => candidate.branchId == branchId)
+        .toList(growable: false);
+  }
 
   @override
   Future<PosCashRegister> createRegister({

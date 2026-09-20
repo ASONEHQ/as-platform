@@ -227,6 +227,25 @@ function partialClose(row: PartialCloseDb): CashSessionPartialCloseRow {
 export class CashRepository {
   public constructor(private readonly database: DatabaseClient) {}
 
+  /** TASK 16.11A — the company's own authoritative currency (the same
+   * value `business.currency`'s own `resolveDefault` reads —
+   * `settings.catalog.ts`'s `companyString('business.currency', (company)
+   * => company.currencyCode, ...)`), read directly rather than going
+   * through the full settings-resolution service: `companies.currency_code`
+   * IS the value that resolver reads, `business.currency` has no branch
+   * override, and a cash session's own currency is a company-wide fact,
+   * never a per-branch one. Used as `openSession`'s default so a session
+   * is tagged with the tenant's REAL configured currency (which the
+   * platform's own provisioning already allows as any 3-letter ISO code,
+   * not just MXN/USD) instead of a hardcoded literal. */
+  public async companyCurrencyCode(client: CashTransaction, companyId: string): Promise<string> {
+    const row = result<{ currency_code: string }>(
+      await client.query('select currency_code from companies where id=$1', [companyId]),
+    ).rows[0];
+    if (row === undefined) throw new CashError('resource_not_found', 'The company was not found.');
+    return row.currency_code;
+  }
+
   public async transaction<T>(callback: (client: CashTransaction) => Promise<T>): Promise<T> {
     const client = await this.database.pool.connect();
     try {
@@ -974,7 +993,20 @@ export class CashRepository {
    * `cash_session_partial_close` row that belongs to it (joined by id,
    * since `audit_log` itself only ever carries the mutated entity's own id,
    * never a session id for those two entity types). Never a second write
-   * path: this only ever reads rows `auditAndPublish` already wrote. */
+   * path: this only ever reads rows `auditAndPublish` already wrote.
+   *
+   * TASK 16.11A §3 — SCOPE BOUNDARY, documented on purpose: this is the
+   * cash SESSION's own operational audit trail (open/manual movement/
+   * reversal/partial-close/close) — it is NOT a complete financial
+   * timeline. A `cash_sale` movement's own evidence lives in the payment
+   * domain's audit rows (`resourceType: 'payment'`/`'payment_attempt'`,
+   * written by `PaymentService.createCashPayment`), which this method
+   * deliberately never composes in: doing so would mean surfacing
+   * payment-internals action names inside a cash-drawer log, and would
+   * duplicate evidence that already has its own authoritative home (the
+   * sale/payment's own history) — see `cash.integration.test.ts`'s own
+   * "never shows a cash_sale as a cash_movement audit entry" test, which
+   * pins this as intentional. */
   public async auditLogForSession(
     companyId: string,
     cashSessionId: string,

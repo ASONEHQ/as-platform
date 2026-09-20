@@ -469,6 +469,142 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
     });
   });
 
+  // TASK 16.11A §1 — "AS POS is a commercial multi-tenant product and
+  // must not have an architectural assumption that only MXN/USD can ever
+  // exist." A session's currency must come from the tenant's own real
+  // configured `companies.currency_code` (which the platform's own
+  // provisioning already accepts as ANY 3-letter ISO code, not just
+  // MXN/USD — see `production-owner.service.ts`), never a hardcoded
+  // literal. An unsupported currency must never block closing with a
+  // plain manual total, and must never silently substitute the MXN set
+  // if a denomination breakdown is attempted.
+  describe('currency-aware sessions (TASK 16.11A §1)', () => {
+    const eurCompanyId = randomUUID();
+    const eurBranchId = randomUUID();
+    const eurUserId = randomUUID();
+
+    beforeAll(async () => {
+      // A real, provisioned-shape tenant configured with a currency this
+      // platform's own `business.currency` SETTING does not (yet) allow
+      // choosing via the admin UI — proving the cash module itself never
+      // assumes "only MXN/USD exist", independent of that separate,
+      // narrower settings-catalog allowlist.
+      await database.pool.query(
+        `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
+         values($1,'Cash EUR Co','Cash EUR Co',$2,'active','UTC','EUR','es-MX')`,
+        [eurCompanyId, `cash-eur-${eurCompanyId}`],
+      );
+      await database.pool.query(
+        `insert into branches(id,company_id,name,code,status,timezone)
+         values($1,$2,'Cash EUR Main','CEURMAIN','active','UTC')`,
+        [eurBranchId, eurCompanyId],
+      );
+      await database.pool.query(
+        `insert into users(id,email,normalized_email,display_name,status)
+         values($1,$2,$2,'Cash EUR Cashier','active')`,
+        [eurUserId, `cash-eur-${eurUserId}@example.test`],
+      );
+      await database.pool.query(
+        `insert into company_memberships(id,company_id,user_id,status)
+         values($1,$2,$3,'active')`,
+        [randomUUID(), eurCompanyId, eurUserId],
+      );
+    });
+
+    afterAll(async () => {
+      await database.pool.query('delete from cash_movements where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from cash_sessions where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from cash_registers where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from idempotency_keys where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from outbox_events where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from audit_log where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from company_memberships where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from branches where company_id=$1', [eurCompanyId]);
+      await database.pool.query('delete from companies where id=$1', [eurCompanyId]);
+      await database.pool.query('delete from users where id=$1', [eurUserId]);
+    });
+
+    const eurContext = {
+      companyId: eurCompanyId,
+      actorId: eurUserId,
+      requestId: 'cash-eur-request',
+      correlationId: 'cash-eur-correlation',
+      timestamp: new Date('2026-09-20T09:00:00.000Z'),
+    };
+    const eurBranchIds = [eurBranchId];
+
+    it('opening a session with no explicit currencyCode tags it with the tenant\'s REAL configured currency — never a hardcoded MXN literal', async () => {
+      const register = await cash.createRegister(eurContext, eurBranchIds, 'reg-eur-1', {
+        branchId: eurBranchId,
+        code: 'REG-EUR-1',
+        name: 'Caja EUR 1',
+      });
+      const opened = await cash.openSession(eurContext, eurBranchIds, 'session-eur-open-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      expect(opened.value.currencyCode).toBe('EUR');
+      const summary = await cash.summary(eurCompanyId, eurBranchIds, opened.value.id);
+      expect(summary.openingAmount).toBe('500.0000');
+    });
+
+    it('closes with a plain manual total for an unsupported-denomination currency — never blocked', async () => {
+      const register = await cash.createRegister(eurContext, eurBranchIds, 'reg-eur-2', {
+        branchId: eurBranchId,
+        code: 'REG-EUR-2',
+        name: 'Caja EUR 2',
+      });
+      const opened = await cash.openSession(eurContext, eurBranchIds, 'session-eur-open-2', {
+        cashRegisterId: register.value.id,
+        openingAmount: '100.0000',
+      });
+      const closed = await cash.closeSession(eurContext, eurBranchIds, 'session-eur-close-2', opened.value.id, {
+        declaredClosingAmount: '100.0000',
+      });
+      expect(closed.value.status).toBe('closed');
+      expect(closed.value.discrepancyAmount).toBe('0.0000');
+    });
+
+    it('rejects a denomination breakdown attempt for an unsupported currency — never silently substitutes the MXN set', async () => {
+      const register = await cash.createRegister(eurContext, eurBranchIds, 'reg-eur-3', {
+        branchId: eurBranchId,
+        code: 'REG-EUR-3',
+        name: 'Caja EUR 3',
+      });
+      const opened = await cash.openSession(eurContext, eurBranchIds, 'session-eur-open-3', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      // A real MXN bill — if this were silently validated against the MXN
+      // set instead of being refused outright, it would wrongly pass.
+      await expect(
+        cash.closeSession(eurContext, eurBranchIds, 'session-eur-close-3', opened.value.id, {
+          declaredClosingAmount: '500.0000',
+          denominationCounts: [{ value: '500', quantity: 1 }],
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+      // The session was never closed — the failed validation must not
+      // leave a partial/mismatched closure.
+      const reread = await cash.session(eurCompanyId, eurBranchIds, opened.value.id);
+      expect(reread.status).toBe('open');
+    });
+
+    it('an explicit currencyCode override still works for a caller that already knows the exact currency it wants', async () => {
+      const register = await cash.createRegister(eurContext, eurBranchIds, 'reg-eur-4', {
+        branchId: eurBranchId,
+        code: 'REG-EUR-4',
+        name: 'Caja EUR 4',
+      });
+      const opened = await cash.openSession(eurContext, eurBranchIds, 'session-eur-open-4', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+        currencyCode: 'USD',
+      });
+      // The EUR company's own default is overridden, exactly as asked.
+      expect(opened.value.currencyCode).toBe('USD');
+    });
+  });
+
   // --- Manual movements ------------------------------------------------------
 
   describe('manual cash in/out', () => {
@@ -705,6 +841,52 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       ).rejects.toMatchObject({ code: 'cash_movement_not_reversible' });
     });
 
+    // TASK 16.11A §4 — the guard in `CashService.reverseMovement` is a
+    // positive whitelist (`movementType === 'cash_in' || 'cash_out'`),
+    // not a per-type blacklist, so `cash_sale` is rejected by the exact
+    // same generic mechanism the `opening_float` test above already
+    // proves — no per-type special-casing exists to drift out of sync.
+    // `cash_refund` is structurally covered by the identical whitelist
+    // check (not independently re-tested here, to avoid duplicating the
+    // refund flow's own heavy fixture setup for a guard that is provably
+    // the same single `if` for every non-cash_in/cash_out type).
+    it('rejects reversing a system-posted cash_sale movement', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-cashsale-1', {
+        branchId,
+        code: 'REG-REVERSE-CASHSALE',
+        name: 'Caja Reverse Cash Sale',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-cashsale-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const createdSale = await sales.createSale(context, branchIds, 'reverse-cashsale-1', {
+        branchId,
+        items: [{ productId, quantity: '1' }],
+      });
+      await payments.createCashPayment(context, branchIds, 'reverse-cashsale-1-pay', {
+        saleId: createdSale.value.sale.id,
+        tenderedAmount: '29.00',
+        cashRegisterId: register.value.id,
+      });
+      const movements = await cash.listMovements(companyId, branchIds, opened.value.id, { limit: 10 });
+      const saleMovement = movements.items.find((item) => item.movementType === 'cash_sale');
+      expect(saleMovement).toBeDefined();
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-cashsale-1-attempt', opened.value.id, saleMovement!.id, {
+          reasonCode: 'attempted',
+        }),
+      ).rejects.toMatchObject({ code: 'cash_movement_not_reversible' });
+
+      await database.pool.query(
+        'delete from payment_attempts where payment_id in (select id from payments where sale_id=$1)',
+        [createdSale.value.sale.id],
+      );
+      await database.pool.query('delete from payments where sale_id=$1', [createdSale.value.sale.id]);
+      await database.pool.query('delete from sale_items where sale_id=$1', [createdSale.value.sale.id]);
+      await database.pool.query('delete from sales where id=$1', [createdSale.value.sale.id]);
+    });
+
     it('rejects reversing a movement after the session has closed', async () => {
       const register = await cash.createRegister(context, branchIds, 'reg-reverse-6', {
         branchId,
@@ -792,6 +974,32 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       });
       await expect(
         cash.reverseMovement(context, branchIds, 'reverse-9-attempt', opened.value.id, randomUUID(), {
+          reasonCode: 'test',
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+
+    // TASK 16.11A §4 — a partial-close snapshot or the session's own
+    // closing record are entirely different tables/entities from
+    // `cash_movements` (`cash_session_partial_closes`/`cash_sessions`
+    // themselves), never rows this endpoint's `lockMovement` (scoped to
+    // `cash_movements`) could ever resolve — so a partial-close id can
+    // only ever be met with the same honest `resource_not_found` as any
+    // other id that doesn't name a real movement, never mistakenly
+    // "found and reversed".
+    it('rejects reversing a partial-close snapshot id — it is not a cash_movements row at all', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-10', {
+        branchId,
+        code: 'REG-REVERSE-10',
+        name: 'Caja Reverse 10',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-10', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const snapshot = await cash.partialClose(context, branchIds, 'reverse-10-partial', opened.value.id);
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-10-attempt', opened.value.id, snapshot.value.id, {
           reasonCode: 'test',
         }),
       ).rejects.toMatchObject({ code: 'resource_not_found' });
@@ -896,6 +1104,59 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       await expect(cash.auditLog(otherCompanyId, branchIds, opened.value.id, 100)).rejects.toMatchObject({
         code: 'resource_not_found',
       });
+    });
+
+    // TASK 16.11A §3 — documents, on purpose, the Bitácora's real
+    // boundary: it is the cash-SESSION's own operational audit trail
+    // (open/manual-movement/reversal/partial-close/close), not a
+    // complete financial timeline. A cash sale's own evidence lives in
+    // the payment domain's own audit rows (`resourceType: 'payment'`/
+    // `'payment_attempt'`, written by `PaymentService.createCashPayment`)
+    // — this module deliberately never wrote a `cash_movement` audit row
+    // for a `cash_sale` movement (only `CashService`'s own mutations do
+    // that), and this test pins that as intentional, not an oversight:
+    // composing the payment domain's own audit rows in here would mean
+    // showing payment-internals action names (`payment.created`,
+    // `payment_attempt.status_changed`) inside a cash-drawer operational
+    // log, and — worse — duplicating evidence that already has its own
+    // authoritative home (the sale/payment's own history), which is
+    // exactly what this task's own instruction forbids ("do NOT duplicate
+    // payment audit events merely to fill the UI").
+    it('never shows a cash_sale as a cash_movement audit entry — that evidence lives in the payment domain, not duplicated here', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-audit-4', {
+        branchId,
+        code: 'REG-AUDIT-4',
+        name: 'Caja Audit 4',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-audit-4', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const createdSale = await sales.createSale(context, branchIds, 'cashaudit-sale-1', {
+        branchId,
+        items: [{ productId, quantity: '1' }],
+      });
+      await payments.createCashPayment(context, branchIds, 'cashaudit-sale-1-pay', {
+        saleId: createdSale.value.sale.id,
+        tenderedAmount: '29.00',
+        cashRegisterId: register.value.id,
+      });
+      // The cash_sale movement is real and does affect expected cash —
+      // this is not a claim that the sale itself went unrecorded.
+      const summary = await cash.summary(companyId, branchIds, opened.value.id);
+      expect(summary.cashSalesTotal).toBe('29.0000');
+
+      const log = await cash.auditLog(companyId, branchIds, opened.value.id, 100);
+      expect(log.map((entry) => entry.action)).toEqual(['cash_session.opened']);
+      expect(log.some((entry) => entry.entityType === 'cash_movement')).toBe(false);
+
+      await database.pool.query(
+        'delete from payment_attempts where payment_id in (select id from payments where sale_id=$1)',
+        [createdSale.value.sale.id],
+      );
+      await database.pool.query('delete from payments where sale_id=$1', [createdSale.value.sale.id]);
+      await database.pool.query('delete from sale_items where sale_id=$1', [createdSale.value.sale.id]);
+      await database.pool.query('delete from sales where id=$1', [createdSale.value.sale.id]);
     });
   });
 
@@ -1181,6 +1442,166 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       await database.pool.query('delete from product_prices where product_id=$1', [trackedProductId]);
       await database.pool.query('delete from product_variants where id=$1', [trackedVariantId]);
       await database.pool.query('delete from products where id=$1', [trackedProductId]);
+    });
+  });
+
+  // TASK 16.11A §2 — the backend alone is authoritative for
+  // expected_cash/counted_cash/difference. `CashService.closeSession`'s
+  // own input type structurally has no `expectedClosingAmount`/
+  // `discrepancyAmount` parameter at all (see its signature) — this
+  // proves at runtime, against real Postgres, that no amount the client
+  // submits can move `expectedClosingAmount` away from what the real
+  // posted movements say, and that `discrepancyAmount` always follows
+  // deterministically from `declared - expected`, never a second,
+  // separately-trusted client value.
+  describe('financial authority — close tamper resistance (TASK 16.11A §2)', () => {
+    it('ignores a client-submitted "expected cash" attempt — the persisted value always comes from real posted movements', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-tamper-1', {
+        branchId,
+        code: 'REG-TAMPER-1',
+        name: 'Caja Tamper 1',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-tamper-open-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      await cash.createMovement(context, branchIds, 'tamper-movement-in-1', opened.value.id, {
+        movementType: 'cash_in',
+        amount: '20.0000',
+        reasonCode: 'external_income',
+        category: 'external_income',
+      });
+      // The real, backend-computed figure: 500 + 20 = 520.
+      const realSummary = await cash.summary(companyId, branchIds, opened.value.id);
+      expect(realSummary.expectedCash).toBe('520.0000');
+
+      // The service's own `closeSession` input type has no field for
+      // "expected cash" or "difference" at all — there is no code path
+      // through which a caller could submit `expected_cash: 999999`, even
+      // an adversarial one bypassing the HTTP schema entirely and calling
+      // the service directly (the strongest possible attempt). The
+      // closest a caller can do is submit an absurd COUNTED total, which
+      // is legitimate input (that's what a physical count IS) — and the
+      // persisted `expectedClosingAmount` must still equal the real
+      // figure regardless.
+      const closed = await cash.closeSession(context, branchIds, 'session-tamper-close-1', opened.value.id, {
+        declaredClosingAmount: '999999.0000',
+      });
+      expect(closed.value.expectedClosingAmount).toBe('520.0000');
+      expect(closed.value.declaredClosingAmount).toBe('999999.0000');
+      // difference = declared - expected, computed server-side, never a
+      // second client-trusted value.
+      expect(closed.value.discrepancyAmount).toBe('999479.0000');
+
+      // Re-read from a fresh query — the persisted authoritative figures
+      // survive exactly, never silently corrected or recomputed on read.
+      const reread = await cash.session(companyId, branchIds, opened.value.id);
+      expect(reread.expectedClosingAmount).toBe('520.0000');
+      expect(reread.discrepancyAmount).toBe('999479.0000');
+    });
+  });
+
+  // TASK 16.11A §6 — deterministic close/denomination scenario, run for
+  // real against PostgreSQL, using generic fixtures (never hardcoded into
+  // production code — see `cash.service.ts`, which has no awareness of
+  // these specific numbers).
+  describe('deterministic close scenario (TASK 16.11A §6)', () => {
+    it('520 expected / 515 counted / -5 difference — persisted exactly, and survives a fresh reload with no client recalculation', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-det-1', {
+        branchId,
+        code: 'REG-DET-1',
+        name: 'Caja Determinista',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-det-open-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      await cash.createMovement(context, branchIds, 'det-external-income-1', opened.value.id, {
+        movementType: 'cash_in',
+        amount: '50.0000',
+        reasonCode: 'external_income',
+        category: 'external_income',
+      });
+      await cash.createMovement(context, branchIds, 'det-expense-1', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '30.0000',
+        reasonCode: 'expense',
+        category: 'expense',
+      });
+      await cash.createMovement(context, branchIds, 'det-withdrawal-1', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '100.0000',
+        reasonCode: 'withdrawal',
+        category: 'withdrawal',
+      });
+      // A real $100 cash sale, exactly like the task's own scenario —
+      // posted the same way a real POS checkout would (through
+      // `PaymentService.createCashPayment`), never a synthetic movement.
+      // A dedicated product/price (`product_prices_company_active_uq`
+      // allows only one ACTIVE price per product — the shared fixture
+      // `productId` is already priced at $29.00 by other tests in this
+      // suite) rather than disturbing that shared fixture.
+      const detProductId = randomUUID();
+      await database.pool.query(
+        `insert into products
+         (id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+         values($1,$2,'CASH-DET-PRODUCT','cash-det-product','Cash Det Product','simple',false,'IVA_EXEMPT','active',$3,$3)`,
+        [detProductId, companyId, userId],
+      );
+      await database.pool.query(
+        `insert into product_prices (id,company_id,product_id,amount,currency_code,status,created_by,updated_by)
+         values($1,$2,$3,'100.0000','MXN','active',$4,$4)`,
+        [randomUUID(), companyId, detProductId, userId],
+      );
+      const sale = await sales.createSale(context, branchIds, 'det-sale-1', {
+        branchId,
+        items: [{ productId: detProductId, quantity: '1' }],
+      });
+      expect(sale.value.sale.total).toBe('100.0000');
+      await payments.createCashPayment(context, branchIds, 'det-payment-1', {
+        saleId: sale.value.sale.id,
+        tenderedAmount: '100.0000',
+        cashRegisterId: register.value.id,
+      });
+
+      const preCloseSummary = await cash.summary(companyId, branchIds, opened.value.id);
+      // 500 + 50 (external income) + 100 (cash sale) - 30 (expense) - 100
+      // (withdrawal) = 520.
+      expect(preCloseSummary.expectedCash).toBe('520.0000');
+
+      const closed = await cash.closeSession(context, branchIds, 'session-det-close-1', opened.value.id, {
+        declaredClosingAmount: '515.0000',
+      });
+      expect(closed.value.expectedClosingAmount).toBe('520.0000');
+      expect(closed.value.declaredClosingAmount).toBe('515.0000');
+      expect(closed.value.discrepancyAmount).toBe('-5.0000');
+      expect(closed.value.status).toBe('closed');
+
+      // Reload from history through a completely separate read path
+      // (`listSessions`, the same one the "Cortes de caja" history screen
+      // uses) — the exact same three figures, never client-recomputed.
+      const history = await cash.listSessions(companyId, branchIds, { limit: 50 });
+      const historyRow = history.items.find((item) => item.id === opened.value.id);
+      expect(historyRow).toBeDefined();
+      expect(historyRow?.expectedClosingAmount).toBe('520.0000');
+      expect(historyRow?.declaredClosingAmount).toBe('515.0000');
+      expect(historyRow?.discrepancyAmount).toBe('-5.0000');
+
+      // And the single-session read (`GET /cash-sessions/{id}`) agrees too.
+      const reread = await cash.session(companyId, branchIds, opened.value.id);
+      expect(reread.expectedClosingAmount).toBe('520.0000');
+      expect(reread.declaredClosingAmount).toBe('515.0000');
+      expect(reread.discrepancyAmount).toBe('-5.0000');
+
+      await database.pool.query(
+        'delete from payment_attempts where payment_id in (select id from payments where sale_id=$1)',
+        [sale.value.sale.id],
+      );
+      await database.pool.query('delete from payments where sale_id=$1', [sale.value.sale.id]);
+      await database.pool.query('delete from sale_items where sale_id=$1', [sale.value.sale.id]);
+      await database.pool.query('delete from sales where id=$1', [sale.value.sale.id]);
+      await database.pool.query('delete from product_prices where product_id=$1', [detProductId]);
+      await database.pool.query('delete from products where id=$1', [detProductId]);
     });
   });
 

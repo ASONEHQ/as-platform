@@ -303,7 +303,17 @@ export class CashService {
           const existing = await this.repository.openSessionForRegister(client, context.companyId, input.cashRegisterId);
           if (existing !== null)
             throw new CashError('cash_session_already_open', 'The register already has an open session.');
-          const currencyCode = input.currencyCode === undefined ? 'MXN' : normalizeCurrencyCode(input.currencyCode);
+          // TASK 16.11A — the tenant's own authoritative configured
+          // currency (never a hardcoded 'MXN' literal, which silently
+          // mistagged every session for any non-MXN company — see
+          // `CashRepository.companyCurrencyCode`'s own doc comment). The
+          // explicit override remains for the rare caller that already
+          // knows the exact currency it wants (e.g. this module's own
+          // test fixtures) — real Flutter callers never send one.
+          const currencyCode =
+            input.currencyCode === undefined
+              ? await this.repository.companyCurrencyCode(client, context.companyId)
+              : normalizeCurrencyCode(input.currencyCode);
           const id = input.id ?? randomUUID();
           const created = await this.repository.insertSession(client, {
             ...context,
