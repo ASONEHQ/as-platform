@@ -45,7 +45,7 @@ void main() {
       await pumpLogin(tester);
       expect(find.text('Iniciar sesión'), findsOneWidget);
       expect(find.text('CONTROLA. VENDE. CRECE.'), findsOneWidget);
-      expect(find.text('Plataforma AS ONE+ · Acceso seguro'), findsOneWidget);
+      expect(find.text('Plataforma ACCESS GO · Acceso seguro'), findsOneWidget);
       // "Contraseña" labels both the tab and the active tab's field.
       expect(find.text('Contraseña'), findsNWidgets(2));
       expect(find.text('PIN'), findsOneWidget);
@@ -169,7 +169,7 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('¡Bienvenido a AS+ POS!'), findsOneWidget);
+        expect(find.text('¡Bienvenido a ACCESS GO!'), findsOneWidget);
         expect(find.byKey(const Key('wiz-clave')), findsOneWidget);
         expect(find.byKey(const Key('wiz-nombre-negocio')), findsOneWidget);
         expect(find.byKey(const Key('wiz-admin-nombre')), findsOneWidget);

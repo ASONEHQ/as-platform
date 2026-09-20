@@ -268,6 +268,13 @@ class AsPageHeader extends StatelessWidget {
   );
 }
 
+// TASK 16.12 — the official ACCESS GO logo (a real wordmark image, never
+// redrawn as styled text) replaces the previous literal "AS ONE"/"AS"
+// text rendering. [compact]/[onDark] stay accepted for source
+// compatibility with this widget's existing callers, but no longer
+// change the rendering: the supplied asset is one fixed-color-gradient
+// mark with its own built-in transparent background, not a single flat
+// color a `compact`/`onDark` text treatment could meaningfully vary.
 class AsAppLogo extends StatelessWidget {
   const AsAppLogo({this.compact = false, this.onDark = false, super.key});
   final bool compact;
@@ -275,14 +282,12 @@ class AsAppLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     image: true,
-    label: 'AS ONE',
-    child: Text(
-      compact ? 'AS' : 'AS ONE',
-      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-        color: onDark ? Colors.white : AsColors.primaryDark,
-        fontWeight: FontWeight.w800,
-        letterSpacing: 1.4,
-      ),
+    label: 'ACCESS GO',
+    child: Image.asset(
+      'assets/branding/access_go_logo.png',
+      height: compact ? 28 : 36,
+      fit: BoxFit.contain,
+      semanticLabel: 'ACCESS GO',
     ),
   );
 }

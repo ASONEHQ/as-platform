@@ -105,7 +105,7 @@ String _formatQuantity(String quantity) {
 /// certification) — never assume the full nominal paper width is
 /// actually printable.
 /// [logoDataUri], when supplied, must already be a complete `data:`
-/// URI (e.g. from the bundled `assets/branding/as_logo_mark.png`) — this
+/// URI (e.g. from the bundled `assets/branding/access_go_logo.png`) — this
 /// function never fetches or reads a file itself, and never accepts a
 /// bare filesystem path.
 /// [customerDisplayName], when given, is rendered as one extra line under

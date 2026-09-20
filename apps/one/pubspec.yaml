@@ -74,14 +74,20 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # Canonical "AS+" brand asset (TASK 12.2F.1), source of truth:
-  # `C:\Users\InMagic\Desktop\LOGO\LOGO AS ONE POS 2207.png` (295x296 PNG,
-  # RGBA with transparent corners). Copied verbatim, at full resolution, no
+  # Canonical ACCESS GO brand asset (TASK 16.12), source of truth:
+  # `C:\Users\InMagic\Downloads\logo accessgo\accessgo.png` (400x219 PNG,
+  # RGBA, transparent background). Copied verbatim, at full resolution, no
   # crop/stretch/recolor. Reused at every size the startup flow, login
   # card, and shared POS chrome need the real mark instead of drawn text —
   # see `StartupLogoMark` in `lib/features/authentication/startup_visuals.dart`.
+  # `as_logo_mark.png` (the previous "AS+" square icon) stays on disk,
+  # unreferenced by any of those, since TASK 16.9's own receipt-branding
+  # default-mark handling reads it independently (a tenant's own uploaded
+  # logo takes priority there regardless — see `receipt_html.dart`) and
+  # this task does not touch receipt/merchant branding.
   assets:
     - assets/branding/as_logo_mark.png
+    - assets/branding/access_go_logo.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

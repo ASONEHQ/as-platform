@@ -10,8 +10,9 @@ import 'auth_models.dart';
 import 'startup_visuals.dart';
 
 /// The splash state — ported from V1's `#pos-splash`: the same deep-blue
-/// radial gradient, the real "AS+" mark, and a letter-spaced "PUNTO DE
-/// VENTA" label, with a light fade/scale entrance (TASK 12.2F).
+/// radial gradient, the official ACCESS GO mark (TASK 16.12), and a
+/// letter-spaced "PUNTO DE VENTA" label, with a light fade/scale entrance
+/// (TASK 12.2F).
 class BootstrapScreen extends StatefulWidget {
   const BootstrapScreen({super.key});
 
@@ -99,7 +100,7 @@ enum _LoginTab { password, pin, qr }
 
 /// The mandatory sign-in gate — ported from V1's
 /// `#modal-login.gate-activo`: centered card over the same deep-blue
-/// background, "Iniciar sesión" header, AS+ branding, Contraseña/PIN/QR
+/// background, "Iniciar sesión" header, ACCESS GO branding, Contraseña/PIN/QR
 /// tabs. Only the Contraseña tab is real (it drives the existing
 /// `AuthController.login`); PIN and QR are visually faithful but inert —
 /// there is no PIN/QR authentication contract on the backend (TASK 12.2F).
@@ -243,40 +244,20 @@ class _LoginFoundationScreenState extends State<LoginFoundationScreen> {
                             Center(
                               child: Column(
                                 children: [
-                                  const StartupLogoMark(),
-                                  const SizedBox(height: 10),
-                                  const Text.rich(
-                                    TextSpan(
-                                      children: [
-                                        TextSpan(
-                                          text: 'AS',
-                                          style: TextStyle(
-                                            color: StartupColors.purpleDeep,
-                                          ),
-                                        ),
-                                        TextSpan(
-                                          text: '+',
-                                          style: TextStyle(
-                                            color: StartupColors.purple,
-                                          ),
-                                        ),
-                                        TextSpan(
-                                          text: ' PUNTO DE VENTA',
-                                          style: TextStyle(
-                                            color: StartupColors.text,
-                                          ),
-                                        ),
-                                        TextSpan(
-                                          text: '+',
-                                          style: TextStyle(
-                                            color: StartupColors.purple,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    style: AsTypography.wordmark,
+                                  // TASK 16.12 — the official ACCESS GO
+                                  // logo already contains its own wordmark
+                                  // ("access go"), so the previous
+                                  // separately hand-styled "AS+ PUNTO DE
+                                  // VENTA+" text is removed rather than
+                                  // relabeled — showing both would
+                                  // duplicate the product name.
+                                  Image.asset(
+                                    'assets/branding/access_go_logo.png',
+                                    height: 56,
+                                    fit: BoxFit.contain,
+                                    semanticLabel: 'ACCESS GO',
                                   ),
-                                  const SizedBox(height: 2),
+                                  const SizedBox(height: 8),
                                   Text(
                                     'CONTROLA. VENDE. CRECE.',
                                     style: AsTypography.caption.copyWith(
@@ -286,7 +267,7 @@ class _LoginFoundationScreenState extends State<LoginFoundationScreen> {
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
-                                    'Plataforma AS ONE+ · Acceso seguro',
+                                    'Plataforma ACCESS GO · Acceso seguro',
                                     style: AsTypography.body.copyWith(
                                       color: StartupColors.textSecondary,
                                     ),
@@ -707,7 +688,7 @@ class UnavailableScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Scaffold(
     body: AsErrorState(
-      title: notFound ? 'Página no encontrada' : 'AS ONE no está disponible',
+      title: notFound ? 'Página no encontrada' : 'ACCESS GO no está disponible',
       message: notFound
           ? 'La dirección solicitada no existe.'
           : 'No pudimos conectar con la plataforma. Vuelve a intentarlo.',

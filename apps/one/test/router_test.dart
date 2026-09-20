@@ -72,7 +72,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Iniciar sesión'), findsOneWidget);
-      expect(find.text('¡Bienvenido a AS+ POS!'), findsNothing);
+      expect(find.text('¡Bienvenido a ACCESS GO!'), findsNothing);
     },
   );
 

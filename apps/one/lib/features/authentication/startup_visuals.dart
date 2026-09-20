@@ -167,19 +167,24 @@ class _StartupCardEntranceState extends State<StartupCardEntrance>
   }
 }
 
-/// The real "AS+" mark — canonical source:
-/// `C:\Users\InMagic\Desktop\LOGO\LOGO AS ONE POS 2207.png` (295×296 PNG,
-/// RGBA, transparent corners), copied verbatim at full resolution into
-/// `assets/branding/as_logo_mark.png`. Not redrawn as text anywhere.
+/// The official ACCESS GO logo (TASK 16.12) — canonical source:
+/// `C:\Users\InMagic\Downloads\logo accessgo\accessgo.png` (400×219 PNG,
+/// RGBA, transparent background), copied verbatim at full resolution into
+/// `assets/branding/access_go_logo.png`. Not redrawn as text anywhere.
 ///
-/// V1 itself applies this exact mark with two literal treatments:
-///   * a square box with rounded corners + a blue-tinted drop shadow —
-///     used at 72px in the login modal and (without the shadow) at 24px
-///     in the sidebar brand row; both scale `border-radius` at the same
-///     0.25-of-size ratio, so [rounded] derives the radius the same way;
-///   * a plain, unrounded, shadow-less mark sized only by height (natural
-///     aspect ratio, `.logo-img{height:28px;width:auto}`) — the topbar.
-/// [rounded]/[shadow] select between these; nothing here is invented.
+/// This replaces the previous square "AS+" app-icon mark (295×296,
+/// `as_logo_mark.png`, still on disk but no longer referenced by this
+/// widget — TASK 16.9's own thermal-receipt logo handling is unrelated
+/// and untouched). The supplied asset is a wide horizontal wordmark, not
+/// a square icon, so [size] is now always interpreted as a HEIGHT with
+/// the width scaling naturally (`BoxFit.contain`) — never force-cropped
+/// into a square via `BoxFit.cover`, which would slice off most of the
+/// "access go" wordmark. [rounded]/[shadow] are kept as accepted
+/// parameters for every existing call site's source compatibility, but
+/// are now no-ops: a rounded-square drop-shadow treatment was designed
+/// for the old solid-icon mark and would render as an ugly box around a
+/// mostly-transparent wordmark image, not a design the official asset
+/// supports.
 class StartupLogoMark extends StatelessWidget {
   const StartupLogoMark({
     this.size = 72,
@@ -192,42 +197,12 @@ class StartupLogoMark extends StatelessWidget {
   final bool shadow;
 
   @override
-  Widget build(BuildContext context) {
-    if (!rounded) {
-      // `.logo-img{height:28px;width:auto}` — natural aspect ratio, no
-      // rounding, no shadow (the topbar).
-      return Image.asset(
-        'assets/branding/as_logo_mark.png',
-        height: size,
-        semanticLabel: 'AS+',
-      );
-    }
-    final radius = size * 0.25;
-    final image = ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: Image.asset(
-        'assets/branding/as_logo_mark.png',
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        semanticLabel: 'AS+',
-      ),
-    );
-    if (!shadow) return image;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(radius),
-        boxShadow: [
-          BoxShadow(
-            color: StartupColors.purpleDeep.withValues(alpha: .35),
-            blurRadius: 18,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: image,
-    );
-  }
+  Widget build(BuildContext context) => Image.asset(
+    'assets/branding/access_go_logo.png',
+    height: size,
+    fit: BoxFit.contain,
+    semanticLabel: 'ACCESS GO',
+  );
 }
 
 /// V1's bottom-center pill toast (`#toast-el`) — a custom overlay rather
@@ -340,16 +315,18 @@ class _StartupToastViewState extends State<_StartupToastView>
   );
 }
 
-/// The bottom-left "Asistente AS+ POS" FAB (`.ai-fab`) shown over the
+/// The bottom-left AI assistant FAB (`.ai-fab`) shown over the
 /// splash/wizard/login gate. Inert — no chat surface exists in this app;
 /// tapping it surfaces the same deferred notice as the topbar's AI button
-/// (TASK 12.2E) rather than inventing a chat experience here.
+/// (TASK 12.2E) rather than inventing a chat experience here. Label
+/// matches the topbar's own "Asistente IA" wording (TASK 16.12) — never
+/// a second, differently-worded product-name reference.
 class StartupAiBadge extends StatelessWidget {
   const StartupAiBadge({super.key});
 
   @override
   Widget build(BuildContext context) => Tooltip(
-    message: 'Asistente AS+ POS',
+    message: 'Asistente IA',
     // `.ai-fab:hover{transform:scale(1.08)}` — literal V1 hover transform.
     child: _InteractiveScale(
       hoverScale: 1.08,

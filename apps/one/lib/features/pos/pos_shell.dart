@@ -569,13 +569,14 @@ class _Sidebar extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Matches `.sb-brand`: the real `#sb-logo-img` mark (24px,
-          // rounded 6px, no shadow — same 0.25 radius ratio as the login
-          // modal's 72px treatment, just without its shadow), the
-          // two-tone "AS+ POS" wordmark (`--purple2` / `--purple` / muted
-          // "POS"), and — only when expanded — an inline online indicator
-          // pushed to the right (`.sb-online{margin-left:auto}`), not a
-          // footer element.
+          // TASK 16.12 — the official ACCESS GO logo already contains its
+          // own wordmark, so the previous separate icon + hand-styled
+          // "AS+ POS" text is now just the one image (wider when
+          // expanded, since horizontal space allows it; unchanged natural
+          // aspect ratio, never force-cropped into the old 24px SQUARE
+          // slot the icon-only mark used) — and, only when expanded, an
+          // inline online indicator pushed to the right
+          // (`.sb-online{margin-left:auto}`), not a footer element.
           Padding(
             padding: expanded
                 ? const EdgeInsets.fromLTRB(14, 14, 12, 14)
@@ -583,43 +584,17 @@ class _Sidebar extends StatelessWidget {
             child: Row(
               mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
               children: [
-                const StartupLogoMark(size: 24, shadow: false),
+                if (expanded)
+                  // `Flexible` (not a bare fixed-width child): the
+                  // horizontal wordmark is wider than the old square
+                  // icon, so it now shares the row's available width with
+                  // the trailing online indicator instead of assuming it
+                  // always fits — shrinks via `BoxFit.contain` rather
+                  // than ever overflowing the 224px rail.
+                  Flexible(child: StartupLogoMark(size: 26))
+                else
+                  const StartupLogoMark(size: 24),
                 if (expanded) ...[
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            text: 'AS',
-                            style: TextStyle(
-                              color: palette.blueDeep,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 13,
-                            ),
-                          ),
-                          TextSpan(
-                            text: '+ ',
-                            style: TextStyle(
-                              color: palette.action,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 13,
-                            ),
-                          ),
-                          TextSpan(
-                            text: 'POS',
-                            style: TextStyle(
-                              color: palette.textMuted,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 10,
-                            ),
-                          ),
-                        ],
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                    ),
-                  ),
                   const Spacer(),
                   // `Flexible` + `FittedBox` guarantee this never overflows
                   // the 224px expanded rail even at the widest realistic
@@ -1935,9 +1910,13 @@ Future<void> _submitZeroTotalSale(
   );
 }
 
-/// TASK 12.5B: the bundled AS+ mark, base64-encoded once and reused for
-/// every receipt print — never a second copy of the asset on disk, and
-/// never a raw filesystem path (see ADR-0012 "Branding"). A print-window
+/// TASK 12.5B (asset updated TASK 16.12): the bundled ACCESS GO mark,
+/// base64-encoded once and reused for every receipt print — never a
+/// second copy of the asset on disk, and never a raw filesystem path
+/// (see ADR-0012 "Branding"). This is only ever the FALLBACK shown when
+/// a tenant has not uploaded their own logo (`branding.logoUrl`, checked
+/// first at every call site below) — a real tenant's own configured
+/// receipt branding is never affected by this asset. A print-window
 /// document is a separate browser document from the running app, so it
 /// cannot simply reference a Flutter asset URL — the data URI embeds the
 /// bytes directly, working identically regardless of how that popup
@@ -1948,7 +1927,7 @@ Future<String?> _receiptLogoDataUri() async {
   final cached = _cachedReceiptLogoDataUri;
   if (cached != null) return cached;
   try {
-    final asset = await rootBundle.load('assets/branding/as_logo_mark.png');
+    final asset = await rootBundle.load('assets/branding/access_go_logo.png');
     final uri =
         'data:image/png;base64,${base64Encode(asset.buffer.asUint8List())}';
     _cachedReceiptLogoDataUri = uri;
@@ -1968,7 +1947,7 @@ const _receiptFooterSettingKey = 'receipts.footer_text';
 // admin-uploaded per-tenant logo `pos_branding_screen.dart` writes via
 // `PosSettingsGateway.uploadCompanyLogo` — never a second, diverging key
 // name. When set, this real tenant logo takes priority over the bundled
-// generic AS ONE mark on every printed receipt (see `_receiptLogoDataUri`
+// generic ACCESS GO mark on every printed receipt (see `_receiptLogoDataUri`
 // below), matching the legacy's own `aplicarBrandingNegocio()` behavior
 // of a real operator-configured logo overriding the default everywhere it
 // renders.
@@ -17383,7 +17362,7 @@ class _ComingSoon extends StatelessWidget {
         _SectionHeader(
           title: module.label,
           description:
-              'Módulo visible para preservar la navegación canónica de AS POS.',
+              'Módulo visible para preservar la navegación canónica de ACCESS GO.',
         ),
         _PosCard(
           child: SizedBox(

@@ -118,7 +118,7 @@ class _FirstRunWizardPreviewScreenState
                         const SizedBox(height: 12),
                         Center(
                           child: Text(
-                            '¡Bienvenido a AS+ POS!',
+                            '¡Bienvenido a ACCESS GO!',
                             style: AsTypography.heading.copyWith(
                               color: StartupColors.text,
                             ),
@@ -140,7 +140,7 @@ class _FirstRunWizardPreviewScreenState
                           key: const Key('wiz-clave'),
                           label: 'Clave de activación *',
                           controller: activationKey,
-                          hintText: 'ASPOS-XXXX-XXXX-XXXX',
+                          hintText: 'ACCESSGO-XXXX-XXXX-XXXX',
                           textCapitalization: TextCapitalization.characters,
                         ),
                         Padding(

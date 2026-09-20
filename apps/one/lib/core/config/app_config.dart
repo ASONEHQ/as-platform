@@ -31,9 +31,14 @@ class AppConfig {
     return AppConfig(
       environment: environment,
       apiBaseUrl: apiBaseUrl,
+      // TASK 16.12 — the customer-facing software brand is now ACCESS GO
+      // (the browser/OS window title this feeds — see `app.dart`'s
+      // `MaterialApp.router(title: ...)`); the `AS_APP_NAME` environment
+      // variable NAME itself is unchanged (internal build config, not
+      // customer-facing).
       appName: const String.fromEnvironment(
         'AS_APP_NAME',
-        defaultValue: 'AS ONE',
+        defaultValue: 'ACCESS GO',
       ),
       telemetryEnabled: const bool.fromEnvironment('AS_ENABLE_TELEMETRY'),
     );

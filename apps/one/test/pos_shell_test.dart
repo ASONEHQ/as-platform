@@ -4111,10 +4111,14 @@ void main() {
         '`.sidebar` with no `.expanded` class', (tester) async {
       await _pump(tester, const Size(1440, 900));
       expect(find.text('Manager'), findsOneWidget); // sanity: shell rendered
-      expect(find.textContaining('AS+'), findsNothing);
+      // TASK 16.12 — the sidebar brand row's "En línea" indicator (never
+      // the logo itself, which now renders in both rail and expanded
+      // states) is the real collapsed-vs-expanded signal: only shown
+      // alongside the brand mark once the rail is expanded.
+      expect(find.text('En línea'), findsNothing);
       await tester.tap(find.byKey(const Key('pos-hamburger')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('AS+'), findsOneWidget);
+      expect(find.text('En línea'), findsOneWidget);
     });
   });
 
