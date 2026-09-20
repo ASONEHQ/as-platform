@@ -74,6 +74,7 @@ function partialCloseValue(): Readonly<Record<string, unknown>> {
     expectedCash: '1029.0000',
     createdBy: userId,
     createdAt: new Date('2026-09-01T12:00:00.000Z'),
+    operationalSummary: null,
   };
 }
 

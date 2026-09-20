@@ -1,0 +1,3 @@
+ALTER TABLE "product_categories" ADD COLUMN "operational_group" text;--> statement-breakpoint
+ALTER TABLE "cash_session_partial_closes" ADD COLUMN "operational_summary" jsonb;--> statement-breakpoint
+ALTER TABLE "product_categories" ADD CONSTRAINT "product_categories_operational_group_ck" CHECK ("product_categories"."operational_group" is null or "product_categories"."operational_group" in ('cafeteria'));

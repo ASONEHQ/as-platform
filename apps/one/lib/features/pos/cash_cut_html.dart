@@ -7,17 +7,20 @@
 /// `receipts.header_text`/`footer_text`, `branding.logo_url`) rather than
 /// inventing a second printing mechanism.
 ///
-/// Deliberately CASH-ONLY in scope: every figure here comes from
-/// `cash_sessions`/`cash_movements` (`PosCashSession`/
-/// `PosCashSessionSummary`/`PosCashSessionPartialClose`), which by this
-/// platform's own correct design never records card/transfer sales at all
-/// (only a `cash_sale` movement's cash leg ever touches the drawer). This
-/// document therefore never claims to show "sales by payment method" —
-/// that would require pulling data from the Sales/Reports module, a
-/// genuinely different, already-existing capability (`GET /reports/
-/// financial`), not something the cash-drawer document should fabricate
-/// or approximate. See `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.8
-/// section for the full reasoning.
+/// The cash-truth block above is deliberately CASH-ONLY in scope: every
+/// figure in it comes from `cash_sessions`/`cash_movements`
+/// (`PosCashSession`/`PosCashSessionSummary`/`PosCashSessionPartialClose`),
+/// which by this platform's own correct design never records card/
+/// transfer sales at all (only a `cash_sale` movement's cash leg ever
+/// touches the drawer). It never claims to show "sales by payment
+/// method" — see `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.8 section.
+///
+/// TASK 16.13 adds an optional, visually SEPARATE "Resumen operativo"
+/// section ([operationalSummary]) — Ventas/Taquilla, Cafetería/Snacks,
+/// Eventos/Fiestas — printed below the cash-truth block, never mixed
+/// into it. It renders only the already-final figures the backend
+/// computed and froze at the moment of the cut (`CashPartialCloseOperationalSummary`);
+/// this file performs no computation of its own, only formatting.
 library;
 
 const String _cashCutDisclaimer = 'Documento interno de control de caja — no es un comprobante fiscal.';
@@ -48,6 +51,47 @@ class CashCutLine {
   final String label;
   final String value;
   final bool emphasize;
+}
+
+/// TASK 16.13 — plain, print-ready mirror of `PosCashOperationalSummary`
+/// (`pos_cash_gateway.dart`). Deliberately primitives only, matching this
+/// file's own pure-string-building design (no Flutter/gateway import
+/// here) — the caller converts from the real gateway model.
+class CashCutOperationalSummary {
+  const CashCutOperationalSummary({
+    required this.posNetSales,
+    required this.posTicketCount,
+    required this.posRefundsTotal,
+    required this.cafeteriaAvailable,
+    required this.cafeteriaNetSales,
+    required this.cafeteriaTicketCount,
+    required this.cafeteriaUnitsSold,
+    required this.eventsReservationsCreated,
+    required this.eventsDepositsCollected,
+    required this.eventsTotalCollected,
+    required this.eventsOutstandingForNew,
+    required this.eventsOccurringToday,
+    required this.eventsCancelledCount,
+  });
+  final String posNetSales;
+  final int posTicketCount;
+  final String posRefundsTotal;
+  final bool cafeteriaAvailable;
+  final String cafeteriaNetSales;
+  final int cafeteriaTicketCount;
+  final String cafeteriaUnitsSold;
+  final int eventsReservationsCreated;
+  final String eventsDepositsCollected;
+  final String eventsTotalCollected;
+  final String eventsOutstandingForNew;
+  final int eventsOccurringToday;
+  final int eventsCancelledCount;
+}
+
+String _units(String raw) {
+  final parsed = double.tryParse(raw);
+  if (parsed == null) return raw;
+  return parsed == parsed.truncateToDouble() ? parsed.truncate().toString() : parsed.toString();
 }
 
 /// Renders a cash-register cut (corte parcial or cierre final) as a
@@ -86,6 +130,7 @@ String buildCashCutHtml({
   String? declaredClosingAmount,
   String? discrepancyAmount,
   List<CashCutLine>? denominationLines,
+  CashCutOperationalSummary? operationalSummary,
   double paperWidthMm = 80,
   String? logoDataUri,
   String? headerText,
@@ -134,6 +179,40 @@ String buildCashCutHtml({
                     '$denomHtml';
               }());
 
+  // TASK 16.13 — visually separate from the cash-truth block above (its
+  // own heading, its own `<hr>`), reporting-only, and Cafetería is
+  // explicitly labeled as a subset of Taquilla so the printed page can
+  // never be misread as "$X Taquilla + $Y Cafetería = bigger total".
+  final operationalHtml = operationalSummary == null
+      ? ''
+      : () {
+          final s = operationalSummary;
+          final cafeteriaRows = s.cafeteriaAvailable
+              ? '${row('Ventas netas', _money(s.cafeteriaNetSales, currencyCode))}'
+                    '${row('Tickets', s.cafeteriaTicketCount.toString())}'
+                    '${row('Unidades', _units(s.cafeteriaUnitsSold))}'
+              : '<tr><td colspan="2">No configurado</td></tr>';
+          return '<hr class="divider">'
+              '<div class="meta"><b>RESUMEN OPERATIVO</b></div>'
+              '<div class="meta">Ventas / Taquilla</div>'
+              '<table class="kv">'
+              '${row('Ventas netas', _money(s.posNetSales, currencyCode))}'
+              '${row('Tickets', s.posTicketCount.toString())}'
+              '${_isNonZero(s.posRefundsTotal) ? row('Devoluciones', '-${_money(s.posRefundsTotal, currencyCode)}') : ''}'
+              '</table>'
+              '<div class="meta">Cafetería / Snacks (parte de Taquilla)</div>'
+              '<table class="kv">$cafeteriaRows</table>'
+              '<div class="meta">Eventos / Fiestas</div>'
+              '<table class="kv">'
+              '${row('Reservados (turno)', s.eventsReservationsCreated.toString())}'
+              '${row('Anticipos cobrados', _money(s.eventsDepositsCollected, currencyCode))}'
+              '${row('Cobrado', _money(s.eventsTotalCollected, currencyCode))}'
+              '${row('Saldo pendiente (nuevas)', _money(s.eventsOutstandingForNew, currencyCode))}'
+              '${row('Eventos de hoy', s.eventsOccurringToday.toString())}'
+              '${s.eventsCancelledCount > 0 ? row('Cancelaciones', s.eventsCancelledCount.toString()) : ''}'
+              '</table>';
+        }();
+
   return '<!DOCTYPE html><html><head><meta charset="UTF-8">'
       '<title>${isFinal ? 'Cierre de caja' : 'Corte parcial'}</title>'
       '<style>'
@@ -180,6 +259,7 @@ String buildCashCutHtml({
       '${row('Efectivo esperado', _money(expectedCash, currencyCode), emphasize: true)}'
       '</table>'
       '$closingSectionHtml'
+      '$operationalHtml'
       '<hr class="divider">'
       '$footerTextHtml'
       '<div class="footer">${_escape(_cashCutDisclaimer)}</div>'

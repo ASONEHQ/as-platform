@@ -2499,6 +2499,235 @@ one new endpoint `E165` documented in §13's table), this section.
   every other manual movement's own `reasonCode` field exactly; no
   narrower validation exists for any `reasonCode` anywhere in this module.
 
+## TASK 16.13 — Corte Operativo: Ventas/Taquilla, Cafetería/Snacks, and Eventos/Fiestas inside the partial cash cut (2026-09-20)
+
+The partial cash cut (`corte parcial`, TASK 14.4/16.8/16.11) correctly
+answers "how much cash should be in this drawer." Owners also need it to
+answer "how is the business/park doing so far" — without corrupting the
+cash-truth calculation or double-counting revenue that already exists
+elsewhere. This task adds a reporting-only "Resumen operativo" section to
+the existing snapshot.
+
+### §1 — Legacy forensic findings (re-read of the canonical `AS POS V1.html`, SHA-256 `c7fc92d8…16ace`)
+
+The legacy `DB.turnoActual.ventas` object already carried a real,
+non-overlapping split between PAYMENT-METHOD buckets
+(`efectivo`/`tarjeta`/`transferencia`/`qr`) and CATEGORY buckets
+(`membresias`/`fiestas`/`alimentos`/`productos`). Direct inspection of
+`totalVentasTurno()` (`return v.efectivo+v.tarjeta+v.transferencia+v.qr`)
+proves the category buckets were purely INFORMATIONAL subsets — never
+summed into the displayed total — which is the one genuinely correct
+architectural idea this task reuses (Cafetería is a labeled subset of
+Taquilla below, never additive).
+
+| Legacy behavior | Evidence | Classification |
+|---|---|---|
+| Category-bucket totals (`ventas.membresias`/`ventas.alimentos`/`ventas.productos`) never double-counted on top of the payment-method total | `totalVentasTurno()` sums only `efectivo+tarjeta+transferencia+qr`; category buckets are read-only display lines under "Total ventas" | **A** — the one idea worth keeping |
+| "· Fiestas" line in the corte resumen (`renderResumenCierre`) | `ventas.fiestas` is READ at 3 call sites (corte-summary render, close, partial-close print) but WRITTEN at zero — only `membresias`/`alimentos`/`productos` are incremented (by a free-text `cat==="X"` match) in the cart-checkout handler. Fiestas revenue was never linked to the cash/POS engine at all | **G** — dead field, always renders `$0`, never reproduced |
+| "Ingresos fiestas" / "Anticipos pendientes" KPIs (Reportes → Fiestas) | Hardcoded literal HTML values (`$36,000`/`$4,400`, lines 2312-2313); `renderRepFiestas()` updates `rfie-mes`/`rfie-proximas` but never touches these two elements — confirmed by grep, zero writers | **G** — static placeholder, never reproduced |
+| "Fiestas este mes" KPI | Labeled "this month" but computed as `DB.fiestas.length` — the lifetime count of every party ever created, no date filter at all | **G** (mislabeled) — not reproduced; this task's own `reservationsCreated` is genuinely window-scoped |
+| "Próximas 30 días" KPI | Labeled "next 30 days" but computed as a count of `estado==='Pendiente de anticipo'` — a status filter, not a date-range filter | **G** (mislabeled) — not reproduced |
+| Fiesta `anticipo`/`saldo` fields | `calcularTotalFiesta = anticipo + saldo` (a real conceptual anticipo-vs-outstanding split) but both are plain manually-typed numbers on the party record — no link whatsoever to any real payment/cash transaction or audit trail | **H** — the concept (collected vs. outstanding) is real and worth keeping; the legacy's own implementation (unlinked to cash) is not reused. The modern `party_reservation_payments` → real `cash_movements` link (TASK 14.3) already supersedes it |
+| `categoriasPOS[].estiloCafe` (structured per-category boolean, `id:4,nombre:"Cafetería",estiloCafe:true`) vs. the SEPARATE free-text `.cat==="Cafetería"` string match used for the `ventas.alimentos` bucket | Two parallel, inconsistent classification mechanisms coexisted in the legacy for what should be one concept | **H** — the STRUCTURED-flag idea (`estiloCafe`) is the right shape; the free-text string-match sibling is exactly the fragile pattern this task's own spec forbids reproducing |
+
+### §2 — Modern authoritative sources audited
+
+- **POS/Taquilla**: `sales`/`sale_items` (`packages/database/src/schema/sales.ts`) — `sales.status='completed'`, `sales.completedAt`, `sales.branchId`; `refunds`/`refund_items` for the negative side.
+- **Cafetería/Snacks**: NO existing structured classification axis existed (`product_categories.is_visual_tile` is a purely visual UI-tile flag, forensically confirmed unrelated to merchandising department — TASK 14.5 Wave 3; there is no "department"/"business unit" concept anywhere in the schema). Per this task's own explicit instruction ("implement the smallest proper classification mechanism if clearly justified"), a new column was added: `product_categories.operational_group` (nullable `text`, `CHECK (... in ('cafeteria'))`), mirroring `is_visual_tile`'s own precedent exactly — narrow, structured, admin-settable through the existing category create/update endpoints, never a name match.
+- **Eventos/Fiestas**: `party_reservations`/`party_reservation_payments` (`packages/database/src/schema/parties.ts`, TASK 14.3). Confirmed structurally disjoint from `sales`: `party_reservation_payments` never inserts a `sales`/`sale_items` row — it posts directly to `cash_movements` with `reference_type='party_reservation'` (`party-reservations.service.ts`'s `recordPayment`), while a POS sale's cash leg posts with `reference_type='payment'`. Different reference types, enforced by two separate partial unique indexes on `cash_movements` (`cash_movements_payment_reference_uq`/no direct party equivalent needed since parties never claim `reference_type='payment'`).
+
+### §3 — Reporting window
+
+`[cash_session.openedAt, partialClose's own context.timestamp]`, per branch
+(never company-wide, never a fixed calendar day) — matches this task's own
+§5 guidance ("at minimum distinguish cash session opened_at → partial-cut
+timestamp"). "Today" for `reservationsOccurringToday` (§8's "eventos que
+ocurren hoy") is the calendar date (UTC) of that same `context.timestamp`,
+compared against `party_reservations.event_date` — a known, documented
+simplification (see §7 below) rather than a branch-timezone-aware
+boundary, mirroring how `POST /cash-sessions/{id}/partial-close` already
+threads `context.timestamp` as its sole "as of" clock throughout this
+module (never a raw SQL `now()`).
+
+### §4 — Double-counting prevention model
+
+`CashRepository.operationalSummary` (`apps/api/src/modules/cash/cash.repository.ts`)
+computes three genuinely independent numbers, never summed together:
+
+1. **`pos`** — every `sales` row for the branch/window, any payment
+   method (not cash-session-scoped — a card/transfer sale is real
+   business activity the owner needs to see, even though it never
+   touches `expectedCash`).
+2. **`cafeteria`** — an authoritatively-classified SUBSET of `pos`,
+   computed by joining `sale_items → products → product_categories`
+   where `operational_group='cafeteria'`. Presented side by side with
+   `pos`, explicitly labeled "(parte de Taquilla)" in both the Flutter UI
+   and the print document — never added on top of `pos.netSales`.
+3. **`events`** — built entirely from `party_reservations`/
+   `party_reservation_payments`, structurally incapable of overlapping
+   `pos`/`cafeteria` per §2 above. An explicit isolated test (zero POS/
+   Cafetería activity, one event deposit) proves the deposit shows up in
+   `events.depositsCollected` and in the session's own cash-truth
+   `cashInTotal` (the SAME real cash-in fact, viewed from the drawer
+   side) but never in `pos.grossSales`/`cafeteria.grossSales`.
+
+Within `events`, `reservationsCreated`/`contractedValue`/
+`collectedForNewReservations`/`outstandingForNewReservations` are all
+scoped to reservations CREATED in this exact window ("sold this shift");
+`depositsCollected`/`totalCollected` are broader — any payment recorded in
+the window, for any reservation (cash the events desk took in, this
+shift) — and `reservationsOccurringToday` is a THIRD, independent metric
+(event date = today, regardless of when booked). `contractedValue` is
+never presented as collected revenue — it sits beside, not merged with,
+`collectedForNewReservations`/`outstandingForNewReservations`.
+
+### §5 — Operational metrics implemented
+
+| Section | Metric | Definition |
+|---|---|---|
+| Ventas / Taquilla | Ventas netas / Tickets / Devoluciones | `sales.total` sum minus `refunds.total` sum, completed within the window, this branch |
+| Cafetería / Snacks | Ventas netas / Tickets / Unidades | Same window, restricted to `sale_items` whose product's category has `operational_group='cafeteria'`; `available=false` (never a misleading `$0`) when the company has no such category at all |
+| Eventos / Fiestas | Reservados / Anticipos cobrados / Cobrado / Saldo pendiente / Eventos de hoy / Cancelaciones | See §4 above for exact scoping of each |
+
+### §6 — Financial block: unchanged
+
+`CashService.partialClose`'s existing fold (`expectedCash`/
+`cashSalesTotal`/`cashInTotal`/`cashOutTotal`, `packages/database/src/schema/cash.ts`'s
+`cash_session_partial_closes` table) is untouched — the operational
+summary is computed AFTER that fold, in the same request, and persisted
+as an additional, independent column. No expected-cash/discrepancy/
+closing-semantics computation reads it.
+
+### §7 — Snapshot persistence
+
+New nullable column `cash_session_partial_closes.operational_summary`
+(`jsonb`, migration `packages/database/drizzle/0034_bored_hydra.sql`,
+additive-only — two `ADD COLUMN` statements plus one `CHECK` constraint on
+the unrelated `product_categories` table, no data migration, no existing
+column touched). Computed once, at `partialClose` time, from the same
+window/branch inputs, and frozen forever afterward — reopening an old
+partial close never recalculates it (proven by the deterministic E2E:
+activity created after a cut leaves that cut's own re-read numbers
+unchanged, while a second cut correctly reflects the new activity).
+
+### §8 — Old-cut compatibility
+
+Every partial close taken before this task has `operational_summary =
+NULL`. `CashRepository`'s decoder maps `NULL` straight to
+`operationalSummary: null` — never a crash, never synthesized zeros. The
+Flutter "Corte parcial" detail dialog and the print document both render
+an honest "Resumen operativo no disponible para este corte." notice (in
+the UI) or omit the section entirely (in print) when `null`.
+
+### §9 — UI / Print / History
+
+Flutter: `_OperationalSummarySection` (`pos_shell.dart`) renders below the
+existing financial block in the post-registration dialog, and every row
+in "Cortes parciales de esta sesión" is now tappable, reopening the exact
+same dialog with that historical snapshot's own frozen figures (never
+recomputed). Print: `buildCashCutHtml`'s new optional
+`operationalSummary` parameter (`cash_cut_html.dart`) renders a visually
+separate "RESUMEN OPERATIVO" block below the existing cash-truth section,
+using the same tenant-derived branding/business name as the rest of the
+document — no software or tenant brand hardcoded into this task's changes.
+
+### §10 — Permissions
+
+No new permission code introduced. The existing `cash_movement.create`
+(create) / `cash_session.read` (list) gates on `POST/GET .../partial-close(s)`
+already require the actor to hold branch access to the session's own
+branch (`branchIds.includes(sessionRow.branchId)`) — since every new
+operational query is scoped by that SAME `branchId`, no company-wide or
+cross-branch event/sales data can leak through this endpoint.
+
+### §11 — Test evidence
+
+- Database: `packages/database`'s `schema.test.ts` journal-length check
+  updated (34 → 35 entries).
+- Backend: `apps/api/src/modules/catalog/catalog.integration.test.ts`
+  (`operationalGroup` create/patch/validate), `apps/api/src/modules/catalog/catalog.routes.test.ts`
+  fixture updated, `apps/api/src/modules/cash/cash-operational-summary.integration.test.ts`
+  (new, 7 tests: the full deterministic multi-domain scenario from this
+  task's own §18 — 2 Taquilla sales, 3 Cafetería sales, 1 new reservation
+  with a deposit, snapshot immutability across a second cut; a completed
+  refund netting out of POS/Cafetería; a cancelled reservation excluded
+  from contracted value; an isolated event-deposit-only scenario proving
+  no double count; branch/company isolation; `cafeteria.available=false`
+  honesty; old-partial-close `NULL` compatibility).
+- Flutter: `cash_cut_html_test.dart` (+3: section omitted when absent,
+  full render with subset labeling, "No configurado" honesty),
+  `pos_shell_wave2_recovery_cash_test.dart` (extended: the post-
+  registration dialog renders real operational figures; tapping a
+  historical row shows the honest unavailable notice for an old cut).
+
+A real bug was caught during live browser verification (§19) that every
+automated test above had missed: `CashRepository.operationalSummary`'s
+camelCase TS shape (`grossSales`, `ticketCount`, etc.) was being passed
+straight through to the HTTP response body, never converted to this API's
+snake_case wire convention — only the OUTER `operational_summary` key
+itself was snake_cased, not its nested contents. `cash-operational-
+summary.integration.test.ts` calls `CashService.partialClose` directly
+and never exercises the HTTP route/mapper layer, so it could not have
+caught this; it only surfaced when the real Flutter app tried to decode
+the real HTTP response and failed with "No fue posible registrar el corte
+parcial." Fixed with a dedicated `operationalSummaryHttp` mapper in
+`cash.routes.ts` (mirroring every other HTTP mapper in that file), plus 3
+new HTTP-layer tests in `cash.routes.test.ts` that assert on the exact
+snake_case shape and specifically check the old camelCase names never
+leak onto the wire — the class of regression this bug represents. Also
+fixed: two pre-existing `cash-advanced.routes.test.ts` fixtures that
+predate this task and never set `operationalSummary` (so it was
+`undefined` at runtime despite the field's non-optional TS type) — the
+mapper is now defensive against both `null` and `undefined`.
+
+### §12 — Files changed
+
+`packages/database/src/schema/catalog.ts`, `packages/database/src/schema/cash.ts`,
+`packages/database/drizzle/0034_bored_hydra.sql` (new),
+`packages/database/src/testing/schema.test.ts`,
+`apps/api/src/modules/catalog/catalog.types.ts`, `catalog.service.ts`,
+`catalog.repository.ts`, `catalog.routes.ts`, `catalog.schemas.ts`,
+`catalog.integration.test.ts`, `catalog.routes.test.ts`,
+`apps/api/src/modules/cash/cash.types.ts`, `cash.repository.ts`,
+`cash.service.ts`, `cash.routes.ts`, `cash.routes.test.ts`,
+`cash-advanced.routes.test.ts`,
+`cash-operational-summary.integration.test.ts` (new),
+`apps/one/lib/features/pos/pos_cash_gateway.dart`, `pos_shell.dart`,
+`cash_cut_html.dart`, `apps/one/test/cash_cut_html_test.dart`,
+`apps/one/test/pos_shell_wave2_recovery_cash_test.dart`,
+`apps/one/test/pos_shell_test.dart`, this section.
+
+### §13 — Genuine, honest remaining limitations
+
+- `reservationsOccurringToday`'s "today" is derived from the partial
+  close's own UTC `context.timestamp`, not a branch-local timezone
+  boundary — a party whose `event_date` is "today" in the branch's own
+  timezone but not yet UTC-today (or already past UTC-midnight) could be
+  mis-bucketed near midnight. The rest of this codebase's own "today"
+  concept for parties (`DashboardService`) is caller-supplied, not
+  server-derived, for the same reason; adopting that pattern for a single
+  partial-cut sub-metric was judged out of proportion to this task's
+  scope.
+- `sale_items` does not snapshot a product's category at sale time (only
+  `product_id`/commercial fields) — a Cafetería total is accurate for the
+  overwhelming common case (a product's category essentially never
+  changes mid-shift) but is technically computed from the product's
+  CURRENT category, not a frozen-at-sale-time one. Acceptable for a same-
+  shift snapshot; would need a `sale_items.category_id_snapshot` column to
+  close entirely, which is a larger, separate schema change.
+- A partial close taken before this task, or any partial close viewed
+  from a CLOSED session's own history screen (`_CutDetailDialog`, reached
+  from "Cortes de caja"), has no route to browse ITS OWN prior partial
+  closes today — "Cortes parciales de esta sesión" (where the new tap-to-
+  view detail lives) has only ever been wired to the CURRENTLY OPEN
+  session's live view, a pre-existing characteristic this task did not
+  expand.
+- Physical 80mm printer certification of the new "RESUMEN OPERATIVO"
+  print block specifically remains pending real hardware (TASK 16.9
+  certified the pre-existing cash-cut layout; this task's addition
+  follows the identical CSS/table structure but was only verified via
+  browser print-preview, not a physical thermal printer).
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

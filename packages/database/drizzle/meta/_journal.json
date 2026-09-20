@@ -239,6 +239,13 @@
       "when": 1789857381076,
       "tag": "0033_small_shatterstar",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789928096714,
+      "tag": "0034_bored_hydra",
+      "breakpoints": true
     }
   ]
 }

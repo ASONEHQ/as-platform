@@ -181,6 +181,74 @@ export interface CashMovementRow {
   category: CashMovementCategory | null;
 }
 
+/** TASK 16.13 — "Resumen operativo": a reporting-only breakdown of how the
+ * business/park is doing during a partial-cut window, deliberately
+ * SEPARATE from the cash-truth figures above (`expectedCash` etc.) —
+ * never read by any expected-cash/discrepancy computation, and never
+ * capable of changing one. Every money field is independently netted
+ * (gross minus its own domain's refunds/cancellations) so nothing here
+ * ever implies a bigger total than reality — see
+ * `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.13 section for the exact
+ * double-counting analysis this shape encodes.
+ *
+ * `pos` and `cafeteria` are NOT additive: `cafeteria` is the
+ * authoritatively-classified SUBSET of `pos.netSales` that belongs to a
+ * category tagged `operational_group = 'cafeteria'` (see
+ * `packages/database/src/schema/catalog.ts`), not a second revenue
+ * stream on top of it. `events` is a genuinely separate domain — party
+ * deposits/payments post to `cash_movements` with
+ * `reference_type='party_reservation'`, never to `sales`, so it can never
+ * overlap with `pos`/`cafeteria` (see `CashRepository.eventsOperationalSummary`'s
+ * own doc comment). */
+export interface CashPartialCloseOperationalSummary {
+  readonly windowStart: string;
+  readonly windowEnd: string;
+  readonly pos: {
+    readonly grossSales: string;
+    readonly refundsTotal: string;
+    readonly netSales: string;
+    readonly ticketCount: number;
+  };
+  readonly cafeteria: {
+    /** `false` when this company has no category tagged
+     * `operational_group = 'cafeteria'` at all — the UI must show "not
+     * configured," never a misleading `$0`. */
+    readonly available: boolean;
+    readonly grossSales: string;
+    readonly refundsTotal: string;
+    readonly netSales: string;
+    readonly ticketCount: number;
+    readonly unitsSold: string;
+  };
+  readonly events: {
+    /** Reservations CREATED within [windowStart, windowEnd] — "sold this
+     * shift," never conflated with `reservationsOccurringToday`. */
+    readonly reservationsCreated: number;
+    /** Sum of `quoted_total` for those same (non-cancelled) reservations —
+     * accounts-receivable-shaped, never presented as collected revenue. */
+    readonly contractedValue: string;
+    /** Payments collected so far, but ONLY toward those same
+     * window-created reservations. */
+    readonly collectedForNewReservations: string;
+    /** `contractedValue - collectedForNewReservations`, floored at the
+     * fixed-point level, never negative by construction. */
+    readonly outstandingForNewReservations: string;
+    /** All deposit-purpose payments recorded in the window, for ANY
+     * reservation (not only window-created ones) — "cash the events desk
+     * took in this shift." */
+    readonly depositsCollected: string;
+    /** All payments (deposit + balance + additional) recorded in the
+     * window, for any reservation. */
+    readonly totalCollected: string;
+    /** Reservations cancelled (`cancelled_at`) within the window. */
+    readonly cancelledCount: number;
+    /** Reservations whose `event_date` is the calendar day of `takenAt`,
+     * excluding cancelled — "the park is hosting N parties today,"
+     * deliberately NOT the same metric as `reservationsCreated`. */
+    readonly reservationsOccurringToday: number;
+  };
+}
+
 /** TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a persisted, audited
  * SNAPSHOT of exactly what `CashService.summary()` said at `takenAt`.
  * Never a second drawer-balance source of truth — the live `summary()`
@@ -200,6 +268,11 @@ export interface CashSessionPartialCloseRow {
   expectedCash: string;
   createdBy: string;
   createdAt: Date;
+  // TASK 16.13 — `null` for every partial close taken before this column
+  // existed (and for any row where the operational query legitimately
+  // found nothing to report). The UI must render "operational breakdown
+  // unavailable" for `null`, never synthesize zeros.
+  operationalSummary: CashPartialCloseOperationalSummary | null;
 }
 
 /** TASK 16.11 (§13) — "Bitácora": one already-real `audit_log` row

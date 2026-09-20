@@ -148,4 +148,87 @@ void main() {
     expect(html, contains('Gracias'));
     expect(html, isNot(contains('INFLAPARK')));
   });
+
+  group('TASK 16.13 — Resumen operativo section', () {
+    String buildWithOperationalSummary({CashCutOperationalSummary? operationalSummary}) =>
+        buildCashCutHtml(
+          isFinal: false,
+          businessName: 'AS ONE Park',
+          branchName: 'Puerta La Victoria',
+          registerName: 'Caja 1',
+          openedByName: 'Ana Cajera',
+          openedAt: DateTime.utc(2026, 9, 17, 9, 0),
+          takenAt: DateTime.utc(2026, 9, 17, 12, 0),
+          openingAmount: '1000.0000',
+          cashSalesTotal: '580.0000',
+          cashSalesCount: 3,
+          externalIncomeTotal: '0.0000',
+          withdrawalTotal: '0.0000',
+          expenseTotal: '0.0000',
+          otherCashInTotal: '0.0000',
+          otherCashOutTotal: '0.0000',
+          expectedCash: '1580.0000',
+          currencyCode: 'MXN',
+          operationalSummary: operationalSummary,
+        );
+
+    test('omits the section entirely when no operational summary is supplied (old partial cuts)', () {
+      final html = buildWithOperationalSummary();
+      expect(html, isNot(contains('RESUMEN OPERATIVO')));
+    });
+
+    test('renders Ventas/Taquilla, Cafetería (labeled as a subset), and Eventos — never implying a bigger total', () {
+      final html = buildWithOperationalSummary(
+        operationalSummary: const CashCutOperationalSummary(
+          posNetSales: '450.0000',
+          posTicketCount: 5,
+          posRefundsTotal: '0.0000',
+          cafeteriaAvailable: true,
+          cafeteriaNetSales: '150.0000',
+          cafeteriaTicketCount: 3,
+          cafeteriaUnitsSold: '3.000000',
+          eventsReservationsCreated: 1,
+          eventsDepositsCollected: '500.0000',
+          eventsTotalCollected: '500.0000',
+          eventsOutstandingForNew: '1500.0000',
+          eventsOccurringToday: 0,
+          eventsCancelledCount: 0,
+        ),
+      );
+
+      expect(html, contains('RESUMEN OPERATIVO'));
+      expect(html, contains('Ventas / Taquilla'));
+      expect(html, contains(r'$450.00')); // pos net sales
+      // Cafetería is explicitly labeled a SUBSET of Taquilla — never two
+      // independent totals a reader could add together.
+      expect(html, contains('Cafetería / Snacks (parte de Taquilla)'));
+      expect(html, contains(r'$150.00')); // cafeteria net sales
+      expect(html, contains('Eventos / Fiestas'));
+      expect(html, contains(r'$500.00')); // deposits/collected
+      expect(html, contains(r'$1500.00')); // outstanding for new reservations
+      // Units formatted without noisy trailing zeros.
+      expect(html, isNot(contains('3.000000')));
+    });
+
+    test('shows an honest "not configured" notice when no Cafetería category exists — never a misleading \$0', () {
+      final html = buildWithOperationalSummary(
+        operationalSummary: const CashCutOperationalSummary(
+          posNetSales: '300.0000',
+          posTicketCount: 2,
+          posRefundsTotal: '0.0000',
+          cafeteriaAvailable: false,
+          cafeteriaNetSales: '0.0000',
+          cafeteriaTicketCount: 0,
+          cafeteriaUnitsSold: '0.000000',
+          eventsReservationsCreated: 0,
+          eventsDepositsCollected: '0.0000',
+          eventsTotalCollected: '0.0000',
+          eventsOutstandingForNew: '0.0000',
+          eventsOccurringToday: 0,
+          eventsCancelledCount: 0,
+        ),
+      );
+      expect(html, contains('No configurado'));
+    });
+  });
 }

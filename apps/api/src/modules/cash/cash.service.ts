@@ -765,6 +765,20 @@ export class CashService {
             else if (item.movementType === 'cash_in') cashInUnits += units;
             else if (item.movementType === 'cash_out') cashOutUnits += units;
           }
+          // TASK 16.13 — "Resumen operativo": reporting-only, computed
+          // fresh from this exact window (session open → this instant)
+          // and persisted alongside the cash-truth figures above so a
+          // historical partial close stays a frozen snapshot forever (see
+          // `CashRepository.operationalSummary`'s own doc comment for the
+          // double-counting analysis). Never influences `expectedUnits`/
+          // `cashSalesUnits`/etc. above in any way.
+          const operationalSummary = await this.repository.operationalSummary(
+            context.companyId,
+            sessionRow.branchId,
+            sessionRow.openedAt,
+            context.timestamp,
+            context.timestamp.toISOString().slice(0, 10),
+          );
           const created = await this.repository.insertPartialClose(client, {
             id: randomUUID(),
             companyId: context.companyId,
@@ -777,6 +791,7 @@ export class CashService {
             cashOutTotal: formatMoney(cashOutUnits),
             expectedCash: formatMoney(expectedUnits),
             createdBy: context.actorId,
+            operationalSummary,
           });
           // Same audit/outbox pattern every other mutation in this module
           // already uses (`auditAndPublish`) — never a second, separate
@@ -797,6 +812,7 @@ export class CashService {
               cash_in_total: created.cashInTotal,
               cash_out_total: created.cashOutTotal,
               expected_cash: created.expectedCash,
+              operational_summary: created.operationalSummary,
             },
           });
           return created;

@@ -45,6 +45,20 @@ export const productCategories = pgTable(
     // (a bakery's "Panadería", a hardware store's "Ofertas", etc.) into
     // the same compact/prominent tile treatment.
     isVisualTile: boolean('is_visual_tile').notNull().default(false),
+    // TASK 16.13 — the real, structured classification anchor the partial
+    // cash-cut's "Cafetería / Snacks" operational summary needs. Forensic
+    // inspection of the legacy `estiloCafe` flag (`docs/
+    // LEGACY_FUNCTIONAL_PARITY.md`) found it conflated with a SEPARATE,
+    // unrelated free-text `.cat === "Cafetería"` string match used for the
+    // legacy's own sales-by-category counters — exactly the fragile
+    // display-name matching this task's spec explicitly forbids
+    // reproducing. This column is deliberately narrow (nullable, a single
+    // approved value today) rather than a general taxonomy: it exists
+    // only so a report can ask "is this category the operator's
+    // Cafetería/Snacks line" via a real WHERE clause, never a name
+    // comparison. Extending the approved value set later is a small,
+    // additive CHECK-constraint migration, not a redesign.
+    operationalGroup: text('operational_group'),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
       .default(sql`1`),
@@ -94,6 +108,10 @@ export const productCategories = pgTable(
     check(
       'product_categories_not_self_parent_ck',
       sql`${table.parentId} is null or ${table.parentId} <> ${table.id}`,
+    ),
+    check(
+      'product_categories_operational_group_ck',
+      sql`${table.operationalGroup} is null or ${table.operationalGroup} in ('cafeteria')`,
     ),
   ],
 );

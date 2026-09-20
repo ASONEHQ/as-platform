@@ -29,6 +29,7 @@ interface CategoryRow {
   readonly sort_order: number;
   readonly status: CatalogStatus;
   readonly is_visual_tile: boolean;
+  readonly operational_group: string | null;
   readonly version: string;
   readonly created_at: Date;
   readonly updated_at: Date;
@@ -52,7 +53,7 @@ interface IdempotencyRow {
 }
 
 const CATEGORY_COLUMNS =
-  'id,company_id,parent_id,code,name,description,sort_order,status,is_visual_tile,version,created_at,updated_at,deleted_at';
+  'id,company_id,parent_id,code,name,description,sort_order,status,is_visual_tile,operational_group,version,created_at,updated_at,deleted_at';
 const BRAND_COLUMNS =
   'id,company_id,code,name,description,status,version,created_at,updated_at,deleted_at';
 
@@ -86,6 +87,7 @@ function category(row: CategoryRow): Category {
     sortOrder: row.sort_order,
     status: row.status,
     visualTile: row.is_visual_tile,
+    operationalGroup: row.operational_group as Category['operationalGroup'],
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -354,14 +356,15 @@ export class CatalogRepository {
       readonly sortOrder: number;
       readonly status: CatalogStatus;
       readonly visualTile?: boolean;
+      readonly operationalGroup?: Category['operationalGroup'];
     },
   ): Promise<Category> {
     const row = result<CategoryRow>(
       await client.query(
         `insert into product_categories
        (id,company_id,parent_id,code,normalized_code,name,description,sort_order,status,is_visual_tile,
-        deleted_at,created_by,updated_by,created_at,updated_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$13)
+        operational_group,deleted_at,created_by,updated_by,created_at,updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$14)
        returning ${CATEGORY_COLUMNS}`,
         [
           input.id,
@@ -374,6 +377,7 @@ export class CatalogRepository {
           input.sortOrder,
           input.status,
           input.visualTile ?? false,
+          input.operationalGroup ?? null,
           input.status === 'retired' ? input.timestamp : null,
           input.actorId,
           input.timestamp,
@@ -429,12 +433,13 @@ export class CatalogRepository {
       readonly sortOrder: number;
       readonly status: CatalogStatus;
       readonly visualTile: boolean;
+      readonly operationalGroup: Category['operationalGroup'];
     },
   ): Promise<Category> {
     const row = result<CategoryRow>(
       await client.query(
         `update product_categories set parent_id=$4,name=$5,description=$6,sort_order=$7,status=$8,
-       is_visual_tile=$11,
+       is_visual_tile=$11,operational_group=$12,
        deleted_at=case when $8='retired' then $9::timestamptz else null end,updated_by=$10,updated_at=$9,version=version+1
        where company_id=$1 and id=$2 and version=$3 returning ${CATEGORY_COLUMNS}`,
         [
@@ -449,6 +454,7 @@ export class CatalogRepository {
           input.timestamp,
           input.actorId,
           input.visualTile,
+          input.operationalGroup,
         ],
       ),
     ).rows[0];
@@ -560,6 +566,7 @@ export class CatalogRepository {
       sort_order: value.sortOrder,
       status: value.status,
       is_visual_tile: value.visualTile,
+      operational_group: value.operationalGroup,
       version: value.version.toString(),
       created_at: value.createdAt,
       updated_at: value.updatedAt,

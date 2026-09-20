@@ -24,6 +24,7 @@ const category = {
   sortOrder: 0,
   status: 'active' as const,
   visualTile: false,
+  operationalGroup: null,
   version: 1n,
   createdAt: now,
   updatedAt: now,

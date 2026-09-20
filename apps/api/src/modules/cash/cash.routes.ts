@@ -9,6 +9,7 @@ import type { CashService } from './cash.service.js';
 import type {
   CashMovementRow,
   CashMutationContext,
+  CashPartialCloseOperationalSummary,
   CashRegisterRow,
   CashSessionPartialCloseRow,
   CashSessionRow,
@@ -100,6 +101,49 @@ function movementHttp(value: CashMovementRow): Readonly<Record<string, unknown>>
     category: value.category,
   };
 }
+// TASK 16.13 — the nested "Resumen operativo" object was previously
+// passed through verbatim from `CashRepository.operationalSummary`'s own
+// camelCase TS shape, never converted to this API's snake_case wire
+// convention (only the outer `operational_summary` key itself was). Fixed
+// here, matching every other HTTP mapper in this file.
+function operationalSummaryHttp(
+  value: CashPartialCloseOperationalSummary | null,
+): Readonly<Record<string, unknown>> | null {
+  // Loose check on purpose: a real DB row's `operational_summary` is
+  // always exactly `null` when absent, but a few pre-TASK-16.13 test
+  // fixtures construct a partial-close value without the field at all
+  // (`undefined` at runtime despite the stricter TS type) — both mean
+  // the same thing here, "no snapshot to show."
+  if (value == null) return null;
+  return {
+    window_start: value.windowStart,
+    window_end: value.windowEnd,
+    pos: {
+      gross_sales: value.pos.grossSales,
+      refunds_total: value.pos.refundsTotal,
+      net_sales: value.pos.netSales,
+      ticket_count: value.pos.ticketCount,
+    },
+    cafeteria: {
+      available: value.cafeteria.available,
+      gross_sales: value.cafeteria.grossSales,
+      refunds_total: value.cafeteria.refundsTotal,
+      net_sales: value.cafeteria.netSales,
+      ticket_count: value.cafeteria.ticketCount,
+      units_sold: value.cafeteria.unitsSold,
+    },
+    events: {
+      reservations_created: value.events.reservationsCreated,
+      contracted_value: value.events.contractedValue,
+      collected_for_new_reservations: value.events.collectedForNewReservations,
+      outstanding_for_new_reservations: value.events.outstandingForNewReservations,
+      deposits_collected: value.events.depositsCollected,
+      total_collected: value.events.totalCollected,
+      cancelled_count: value.events.cancelledCount,
+      reservations_occurring_today: value.events.reservationsOccurringToday,
+    },
+  };
+}
 function partialCloseHttp(value: CashSessionPartialCloseRow): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -112,6 +156,10 @@ function partialCloseHttp(value: CashSessionPartialCloseRow): Readonly<Record<st
     expected_cash: value.expectedCash,
     created_by: value.createdBy,
     created_at: value.createdAt.toISOString(),
+    // TASK 16.13 — `null` for any partial close taken before this column
+    // existed; the client must render "operational breakdown
+    // unavailable" for `null`, never synthesize zeros.
+    operational_summary: operationalSummaryHttp(value.operationalSummary),
   };
 }
 

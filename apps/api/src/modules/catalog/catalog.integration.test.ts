@@ -8,6 +8,7 @@ import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 
 import { CatalogRepository } from './catalog.repository.js';
 import { CatalogService } from './catalog.service.js';
+import { CatalogApplicationError } from './catalog.types.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
@@ -116,6 +117,45 @@ integration('PostgreSQL catalog categories and brands', () => {
     await expect(
       service.createCategory(context, 'category-key', { code: 'Other', name: 'Other' }),
     ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+  // TASK 16.13 — the real, structured classification anchor the partial
+  // cash-cut's "Cafetería / Snacks" operational summary reads.
+  it('accepts, persists, clears, and validates the operationalGroup classification', async () => {
+    const created = await service.createCategory(context, 'opgroup-create-key', {
+      code: 'OPGROUP-CAFETERIA',
+      name: 'Cafetería',
+      operationalGroup: 'cafeteria',
+    });
+    expect(created.value.operationalGroup).toBe('cafeteria');
+    const reread = await service.category(companyId, created.value.id);
+    expect(reread.operationalGroup).toBe('cafeteria');
+
+    const cleared = await service.patchCategory(context, created.value.id, created.value.version, {
+      operationalGroup: null,
+    });
+    expect(cleared.operationalGroup).toBeNull();
+
+    // Validated synchronously, before any repository access — mirrors
+    // `normalizeCatalogCode`'s own pre-validation throw pattern
+    // (`catalog.service.test.ts`), so this is a plain `toThrow`, not an
+    // awaited rejection.
+    expect(() =>
+      service.createCategory(context, 'opgroup-invalid-key', {
+        code: 'OPGROUP-INVALID',
+        name: 'Invalid',
+        // @ts-expect-error — deliberately an unapproved value, mirroring
+        // `product_categories_operational_group_ck`.
+        operationalGroup: 'snacks',
+      }),
+    ).toThrow(CatalogApplicationError);
+
+    // A category created without specifying it stays unclassified — never
+    // inferred from its name.
+    const unclassified = await service.createCategory(context, 'opgroup-default-key', {
+      code: 'OPGROUP-DEFAULT',
+      name: 'Cafetería y Snacks', // name alone must never imply classification
+    });
+    expect(unclassified.value.operationalGroup).toBeNull();
   });
   it('isolates tenant reads and rejects duplicate normalized codes', async () => {
     const created = await service.createBrand(context, 'brand-key', {

@@ -10,11 +10,12 @@ import type { CatalogRepository, CatalogSqlClient } from './catalog.repository.j
 import type {
   Brand,
   CatalogPage,
+  CategoryOperationalGroup,
   CatalogStatus,
   Category,
   MutationContext,
 } from './catalog.types.js';
-import { CatalogApplicationError } from './catalog.types.js';
+import { CatalogApplicationError, categoryOperationalGroups } from './catalog.types.js';
 
 export interface CategoryCreate {
   readonly id?: string;
@@ -25,6 +26,7 @@ export interface CategoryCreate {
   readonly sortOrder?: number;
   readonly status?: CatalogStatus;
   readonly visualTile?: boolean;
+  readonly operationalGroup?: CategoryOperationalGroup | null;
 }
 export interface CategoryPatch {
   readonly parentId?: string | null;
@@ -33,6 +35,7 @@ export interface CategoryPatch {
   readonly sortOrder?: number;
   readonly status?: CatalogStatus;
   readonly visualTile?: boolean;
+  readonly operationalGroup?: CategoryOperationalGroup | null;
 }
 export interface BrandCreate {
   readonly id?: string;
@@ -63,6 +66,19 @@ function optionalDescription(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const clean = value.trim();
   return clean.length === 0 ? null : clean;
+}
+// TASK 16.13 — mirrors `product_categories_operational_group_ck` exactly
+// (see the schema column's own doc comment), so the DB constraint and
+// this pre-DB validation can never quietly drift apart.
+function operationalGroup(
+  value: CategoryOperationalGroup | null | undefined,
+): CategoryOperationalGroup | null {
+  if (value === null || value === undefined) return null;
+  if (!categoryOperationalGroups.includes(value))
+    throw new CatalogApplicationError('invalid_input', `operationalGroup "${String(value)}" is not recognized.`, {
+      field: 'operationalGroup',
+    });
+  return value;
 }
 function applicationError(error: unknown): never {
   if (error instanceof CatalogDomainError) {
@@ -128,6 +144,7 @@ export class CatalogService {
       sortOrder: input.sortOrder ?? 0,
       status: input.status ?? 'active',
       visualTile: input.visualTile ?? false,
+      operationalGroup: operationalGroup(input.operationalGroup),
     };
     const normalized = { ...normalizedRequest, id: input.id ?? randomUUID() };
     return this.repository.transaction(async (client) =>
@@ -185,6 +202,10 @@ export class CatalogService {
         sortOrder: patch.sortOrder ?? current.sortOrder,
         status,
         visualTile: patch.visualTile ?? current.visualTile,
+        operationalGroup:
+          patch.operationalGroup === undefined
+            ? current.operationalGroup
+            : operationalGroup(patch.operationalGroup),
       });
       const retired = status === 'retired';
       await this.repository.auditAndPublish(client, context, {

@@ -88,24 +88,24 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  // TASK 16.11 — updated from a stale 33-entry snapshot: migration 0033
-  // (`cash_movements_reversal_of_uq`, a real DB-level guarantee backing
-  // the new manual-movement reversal endpoint) landed without updating
-  // this tracker. Verified independently (`_journal.json` really does
-  // have 34 sequential entries 0-33 ending at `0033_small_shatterstar`)
-  // before bumping the numbers — same precedent as TASK 15.0's and TASK
-  // 16.10B's own prior updates to this exact test. The test's actual
-  // intent — the journal is sequential, contiguous, and its last entry
-  // matches the newest real migration file — is unchanged.
+  // TASK 16.13 — updated from a stale 34-entry snapshot: migration 0034
+  // (`product_categories.operational_group` + `cash_session_partial_
+  // closes.operational_summary`, backing the partial cut's operational
+  // summary) landed without updating this tracker. Verified independently
+  // (`_journal.json` really does have 35 sequential entries 0-34 ending at
+  // `0034_bored_hydra`) before bumping the numbers — same precedent as
+  // TASK 15.0's/16.10B's/16.11's own prior updates to this exact test.
+  // The test's actual intent — the journal is sequential, contiguous, and
+  // its last entry matches the newest real migration file — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(34);
+    expect(journal.entries).toHaveLength(35);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 34 }, (_, index) => index),
+      Array.from({ length: 35 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0033_small_shatterstar');
+    expect(journal.entries.at(-1)?.tag).toBe('0034_bored_hydra');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {

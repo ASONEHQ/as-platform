@@ -17650,6 +17650,112 @@ String _formatMoney(String raw, String currencyCode) {
   }
 }
 
+/// TASK 16.13 — a units-sold figure (`sale_items.quantity`, numeric(19,6))
+/// formatted without noisy trailing zeros: "3.000000" -> "3", "1.500000"
+/// -> "1.5".
+String _formatUnits(String raw) {
+  final parsed = double.tryParse(raw);
+  if (parsed == null) return raw;
+  return parsed == parsed.truncateToDouble() ? parsed.truncate().toString() : parsed.toString();
+}
+
+/// TASK 16.13 — converts the real, backend-persisted operational snapshot
+/// into `cash_cut_html.dart`'s own plain print-ready shape. Pure
+/// reformatting, never a recomputation.
+CashCutOperationalSummary _toCashCutOperationalSummary(PosCashOperationalSummary summary) =>
+    CashCutOperationalSummary(
+      posNetSales: summary.pos.netSales,
+      posTicketCount: summary.pos.ticketCount,
+      posRefundsTotal: summary.pos.refundsTotal,
+      cafeteriaAvailable: summary.cafeteria.available,
+      cafeteriaNetSales: summary.cafeteria.netSales,
+      cafeteriaTicketCount: summary.cafeteria.ticketCount,
+      cafeteriaUnitsSold: summary.cafeteria.unitsSold,
+      eventsReservationsCreated: summary.events.reservationsCreated,
+      eventsDepositsCollected: summary.events.depositsCollected,
+      eventsTotalCollected: summary.events.totalCollected,
+      eventsOutstandingForNew: summary.events.outstandingForNewReservations,
+      eventsOccurringToday: summary.events.reservationsOccurringToday,
+      eventsCancelledCount: summary.events.cancelledCount,
+    );
+
+/// TASK 16.13 — "RESUMEN OPERATIVO": renders below the existing financial
+/// block, visually separate (its own heading/divider), reporting-only.
+/// `null` (a pre-TASK-16.13 partial close) renders an honest
+/// "no disponible" notice rather than synthesizing zeros. Cafetería is
+/// explicitly labeled as part of Taquilla so it can never read as an
+/// additional total on top of it.
+class _OperationalSummarySection extends StatelessWidget {
+  const _OperationalSummarySection({required this.summary, required this.currencyCode});
+  final PosCashOperationalSummary? summary;
+  final String currencyCode;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final value = summary;
+    Widget heading(String text) => Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 2),
+      child: Text(
+        text,
+        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: palette.textSecondary, letterSpacing: .3),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 24),
+        const Text('RESUMEN OPERATIVO', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3)),
+        if (value == null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              'Resumen operativo no disponible para este corte.',
+              style: TextStyle(color: palette.textSecondary, fontSize: 12),
+            ),
+          )
+        else ...[
+          heading('VENTAS / TAQUILLA'),
+          _CajaInfoRow(label: 'Ventas netas', value: _formatMoney(value.pos.netSales, currencyCode)),
+          _CajaInfoRow(label: 'Tickets', value: value.pos.ticketCount.toString()),
+          if (_isMoneyPositive(value.pos.refundsTotal))
+            _CajaInfoRow(label: 'Devoluciones', value: '-${_formatMoney(value.pos.refundsTotal, currencyCode)}'),
+          heading('CAFETERÍA / SNACKS (parte de Taquilla)'),
+          if (!value.cafeteria.available)
+            Text(
+              'No configurado — ninguna categoría está marcada como Cafetería.',
+              style: TextStyle(color: palette.textSecondary, fontSize: 12),
+            )
+          else ...[
+            _CajaInfoRow(label: 'Ventas netas', value: _formatMoney(value.cafeteria.netSales, currencyCode)),
+            _CajaInfoRow(label: 'Tickets', value: value.cafeteria.ticketCount.toString()),
+            _CajaInfoRow(label: 'Unidades', value: _formatUnits(value.cafeteria.unitsSold)),
+          ],
+          heading('EVENTOS / FIESTAS'),
+          _CajaInfoRow(label: 'Reservados (este turno)', value: value.events.reservationsCreated.toString()),
+          _CajaInfoRow(
+            label: 'Anticipos cobrados',
+            value: _formatMoney(value.events.depositsCollected, currencyCode),
+          ),
+          _CajaInfoRow(label: 'Cobrado', value: _formatMoney(value.events.totalCollected, currencyCode)),
+          _CajaInfoRow(
+            label: 'Saldo pendiente (nuevas)',
+            value: _formatMoney(value.events.outstandingForNewReservations, currencyCode),
+          ),
+          _CajaInfoRow(label: 'Eventos de hoy', value: value.events.reservationsOccurringToday.toString()),
+          if (value.events.cancelledCount > 0)
+            _CajaInfoRow(label: 'Cancelaciones', value: value.events.cancelledCount.toString()),
+        ],
+      ],
+    );
+  }
+}
+
+bool _isMoneyPositive(String raw) {
+  final parsed = double.tryParse(raw);
+  return parsed != null && parsed > 0;
+}
+
 String _formatClockTime(DateTime value) {
   final local = value.toLocal();
   return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
@@ -18007,6 +18113,9 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       declaredClosingAmount: isFinal ? session.declaredClosingAmount : null,
       discrepancyAmount: isFinal ? session.discrepancyAmount : null,
       denominationLines: isFinal ? _denominationLines(session, session.currencyCode) : null,
+      operationalSummary: partialSnapshot?.operationalSummary == null
+          ? null
+          : _toCashCutOperationalSummary(partialSnapshot!.operationalSummary!),
       paperWidthMm: branding.paperWidthMm ?? 80,
       logoDataUri: branding.logoUrl,
       headerText: branding.header,
@@ -18064,6 +18173,42 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     // partial-close lists, never `_load()`'s own "closed/no register"
     // re-evaluation.
     await _loadSessionForSelectedRegister();
+  }
+
+  /// TASK 16.13 (§13) — reopens an already-persisted "Corte parcial" of
+  /// this session from the "Cortes parciales de esta sesión" list, showing
+  /// its exact FROZEN headline figures (cash-sales total, expected cash,
+  /// and the full operational summary) — never recomputed from current
+  /// live data, and no separate API call needed since [snapshot] is
+  /// already the full row this screen already loaded. The printed
+  /// in/out BREAKDOWN (external income/withdrawal/expense) still reads
+  /// from the current live [_summary], matching the exact same behavior
+  /// [_postPartialClose]'s own immediate print already has — this
+  /// snapshot table has never captured that breakdown split, only
+  /// aggregate totals (a pre-existing characteristic, not something this
+  /// task changes).
+  Future<void> _viewPartialClose(PosCashSessionPartialClose snapshot) async {
+    final session = _session;
+    final summary = _summary;
+    final currencyCode = session?.currencyCode;
+    if (session == null || summary == null || currencyCode == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _PartialCloseResultDialog(
+        title: 'Corte parcial · ${_formatCajaDate(snapshot.takenAt)}',
+        snapshot: snapshot,
+        currencyCode: currencyCode,
+        onPrint: () => unawaited(
+          _printCashCut(
+            isFinal: false,
+            session: session,
+            summary: summary,
+            takenAt: snapshot.takenAt,
+            partialSnapshot: snapshot,
+          ),
+        ),
+      ),
+    );
   }
 
   /// TASK 16.11 (§6) — "Never delete posted financial movements.
@@ -18201,6 +18346,7 @@ class _CajaCurrentState extends State<_CajaCurrent> {
           onCashOut: () => unawaited(_postMovement('cash_out')),
           onClose: _closeRegister,
           onPartialClose: () => unawaited(_postPartialClose()),
+          onViewPartialClose: (snapshot) => unawaited(_viewPartialClose(snapshot)),
           onReverseMovement: (movement) => unawaited(_reverseMovement(movement)),
           onShowAuditLog: () => unawaited(_showAuditLog()),
           onRefresh: () => unawaited(_loadSessionForSelectedRegister()),
@@ -18221,6 +18367,7 @@ class _CajaOpenView extends StatelessWidget {
     required this.onCashOut,
     required this.onClose,
     required this.onPartialClose,
+    required this.onViewPartialClose,
     required this.onReverseMovement,
     required this.onShowAuditLog,
     required this.onRefresh,
@@ -18241,6 +18388,10 @@ class _CajaOpenView extends StatelessWidget {
   final VoidCallback onCashOut;
   final VoidCallback onClose;
   final VoidCallback onPartialClose;
+  // TASK 16.13 (§13) — opens a read-only detail view of an already-taken
+  // partial close, showing its exact frozen financial + operational
+  // snapshot.
+  final ValueChanged<PosCashSessionPartialClose> onViewPartialClose;
   // TASK 16.11 (§6) — reverses one client-postable movement.
   final ValueChanged<PosCashMovement> onReverseMovement;
   // TASK 16.11 (§13) — opens the read-only "Bitácora" for this session.
@@ -18472,7 +18623,11 @@ class _CajaOpenView extends StatelessWidget {
                 )
               else
                 for (final snapshot in partialCloses)
-                  _PartialCloseRow(snapshot: snapshot, currencyCode: session.currencyCode),
+                  _PartialCloseRow(
+                    snapshot: snapshot,
+                    currencyCode: session.currencyCode,
+                    onTap: () => onViewPartialClose(snapshot),
+                  ),
             ],
           ),
         ),
@@ -18607,31 +18762,40 @@ class _CajaMovementRow extends StatelessWidget {
 /// TASK 14.4 (Wave 2, Part F.4) — one persisted "Corte parcial" snapshot
 /// row, mirroring `_CajaMovementRow`'s own compact-row shape.
 class _PartialCloseRow extends StatelessWidget {
-  const _PartialCloseRow({required this.snapshot, required this.currencyCode});
+  const _PartialCloseRow({required this.snapshot, required this.currencyCode, required this.onTap});
   final PosCashSessionPartialClose snapshot;
   final String currencyCode;
+  // TASK 16.13 (§13) — opens the historical detail (financial +
+  // operational snapshot, exactly as persisted).
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    return Padding(
+    return InkWell(
       key: ValueKey('pos-caja-partial-close-row-${snapshot.id}'),
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Icon(Icons.receipt_long_outlined, size: 15, color: palette.textSecondary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              _formatCajaDate(snapshot.takenAt),
-              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Icon(Icons.receipt_long_outlined, size: 15, color: palette.textSecondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _formatCajaDate(snapshot.takenAt),
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+              ),
             ),
-          ),
-          Text(
-            'Esperado: ${_formatMoney(snapshot.expectedCash, currencyCode)}',
-            style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12),
-          ),
-        ],
+            Text(
+              'Esperado: ${_formatMoney(snapshot.expectedCash, currencyCode)}',
+              style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, size: 16, color: palette.textSecondary),
+          ],
+        ),
       ),
     );
   }
@@ -19737,42 +19901,50 @@ class _PartialCloseResultDialog extends StatelessWidget {
     required this.snapshot,
     required this.currencyCode,
     required this.onPrint,
+    this.title = 'Corte parcial registrado',
   });
   final PosCashSessionPartialClose snapshot;
   final String currencyCode;
   final VoidCallback onPrint;
+  final String title;
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Corte parcial registrado'),
+    title: Text(title),
     content: SizedBox(
       width: 360,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _CajaInfoRow(label: 'Registrado', value: _formatCajaDate(snapshot.takenAt)),
-          _CajaInfoRow(
-            label: 'Fondo inicial',
-            value: _formatMoney(snapshot.openingAmount, currencyCode),
-          ),
-          _CajaInfoRow(
-            label: 'Ventas en efectivo',
-            value: _formatMoney(snapshot.cashSalesTotal, currencyCode),
-          ),
-          _CajaInfoRow(label: 'Entradas', value: _formatMoney(snapshot.cashInTotal, currencyCode)),
-          _CajaInfoRow(label: 'Salidas', value: _formatMoney(snapshot.cashOutTotal, currencyCode)),
-          const Divider(height: 20),
-          _CajaInfoRow(
-            label: 'Efectivo esperado',
-            value: _formatMoney(snapshot.expectedCash, currencyCode),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'La caja permanece abierta — este corte es solo una fotografía '
-            'para historial/auditoría.',
-          ),
-        ],
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _CajaInfoRow(label: 'Registrado', value: _formatCajaDate(snapshot.takenAt)),
+            _CajaInfoRow(
+              label: 'Fondo inicial',
+              value: _formatMoney(snapshot.openingAmount, currencyCode),
+            ),
+            _CajaInfoRow(
+              label: 'Ventas en efectivo',
+              value: _formatMoney(snapshot.cashSalesTotal, currencyCode),
+            ),
+            _CajaInfoRow(label: 'Entradas', value: _formatMoney(snapshot.cashInTotal, currencyCode)),
+            _CajaInfoRow(label: 'Salidas', value: _formatMoney(snapshot.cashOutTotal, currencyCode)),
+            const Divider(height: 20),
+            _CajaInfoRow(
+              label: 'Efectivo esperado',
+              value: _formatMoney(snapshot.expectedCash, currencyCode),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'La caja permanece abierta — este corte es solo una fotografía '
+              'para historial/auditoría.',
+            ),
+            _OperationalSummarySection(
+              summary: snapshot.operationalSummary,
+              currencyCode: currencyCode,
+            ),
+          ],
+        ),
       ),
     ),
     actions: [

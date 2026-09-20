@@ -67,6 +67,55 @@ function movementValue(overrides?: Readonly<Record<string, unknown>>): Readonly<
     ...overrides,
   };
 }
+const partialCloseId = '00000000-0000-7000-8000-000000000009';
+// TASK 16.13 — a real, fully-populated operational summary (camelCase, the
+// service-layer shape) so the HTTP-layer test below can prove the route
+// actually converts every nested field to this API's snake_case wire
+// convention — this exact class of bug (nested fields silently staying
+// camelCase) is invisible to `cash-operational-summary.integration.
+// test.ts`, which calls the service directly and never exercises this
+// mapper.
+function operationalSummaryValue(): Readonly<Record<string, unknown>> {
+  return {
+    windowStart: '2026-09-01T09:00:00.000Z',
+    windowEnd: '2026-09-01T12:00:00.000Z',
+    pos: { grossSales: '450.0000', refundsTotal: '0.0000', netSales: '450.0000', ticketCount: 5 },
+    cafeteria: {
+      available: true,
+      grossSales: '150.0000',
+      refundsTotal: '0.0000',
+      netSales: '150.0000',
+      ticketCount: 3,
+      unitsSold: '3.000000',
+    },
+    events: {
+      reservationsCreated: 1,
+      contractedValue: '2000.0000',
+      collectedForNewReservations: '500.0000',
+      outstandingForNewReservations: '1500.0000',
+      depositsCollected: '500.0000',
+      totalCollected: '500.0000',
+      cancelledCount: 0,
+      reservationsOccurringToday: 0,
+    },
+  };
+}
+function partialCloseValue(overrides?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  return {
+    id: partialCloseId,
+    cashSessionId: sessionId,
+    takenAt: new Date('2026-09-01T12:00:00.000Z'),
+    openingAmount: '1000.0000',
+    cashSalesTotal: '450.0000',
+    cashInTotal: '500.0000',
+    cashOutTotal: '0.0000',
+    expectedCash: '1950.0000',
+    createdBy: userId,
+    createdAt: new Date('2026-09-01T12:00:00.000Z'),
+    operationalSummary: operationalSummaryValue(),
+    ...overrides,
+  };
+}
 const reversalMovementId = '00000000-0000-7000-8000-000000000007';
 function auditEntryValue(overrides?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
   return {
@@ -173,6 +222,8 @@ async function fixture(
         replayed: false,
       }),
     ),
+    partialClose: vi.fn(() => Promise.resolve({ value: partialCloseValue(), replayed: false })),
+    partialCloses: vi.fn(() => Promise.resolve([partialCloseValue()])),
   };
   registerCashRoutes(app, authentication, service as unknown as CashService);
   await app.ready();
@@ -879,6 +930,91 @@ describe('cash register HTTP routes (TASK 12.7)', () => {
       expect(service.createMovement).not.toHaveBeenCalled();
       expect(service.reverseMovement).not.toHaveBeenCalled();
       expect(service.closeSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /api/v1/cash-sessions/:id/partial-close — Resumen operativo (TASK 16.13)', () => {
+    // Regression test for a real bug caught during live browser
+    // verification: the nested `operational_summary` object was being
+    // passed through verbatim in its service-layer camelCase shape,
+    // never converted to this API's snake_case wire convention — a class
+    // of bug invisible to `cash-operational-summary.integration.test.ts`,
+    // which calls `CashService.partialClose` directly and never exercises
+    // this HTTP mapper.
+    it('converts every nested operational-summary field to snake_case on the wire', async () => {
+      const { app, service } = await fixture(['cash_movement.create']);
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/partial-close`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'partial-1' },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(201);
+      expect(service.partialClose).toHaveBeenCalledTimes(1);
+      expect(response.json()).toMatchObject({
+        data: {
+          expected_cash: '1950.0000',
+          operational_summary: {
+            window_start: '2026-09-01T09:00:00.000Z',
+            window_end: '2026-09-01T12:00:00.000Z',
+            pos: { gross_sales: '450.0000', refunds_total: '0.0000', net_sales: '450.0000', ticket_count: 5 },
+            cafeteria: {
+              available: true,
+              gross_sales: '150.0000',
+              refunds_total: '0.0000',
+              net_sales: '150.0000',
+              ticket_count: 3,
+              units_sold: '3.000000',
+            },
+            events: {
+              reservations_created: 1,
+              contracted_value: '2000.0000',
+              collected_for_new_reservations: '500.0000',
+              outstanding_for_new_reservations: '1500.0000',
+              deposits_collected: '500.0000',
+              total_collected: '500.0000',
+              cancelled_count: 0,
+              reservations_occurring_today: 0,
+            },
+          },
+        },
+      });
+      // None of the old camelCase field names leak onto the wire.
+      const raw = JSON.stringify(response.json());
+      expect(raw).not.toContain('grossSales');
+      expect(raw).not.toContain('ticketCount');
+      expect(raw).not.toContain('reservationsCreated');
+    });
+
+    it('renders operational_summary: null for a pre-TASK-16.13 partial close, never a crash', async () => {
+      const { app, service } = await fixture(['cash_movement.create']);
+      service.partialClose.mockResolvedValueOnce({
+        value: partialCloseValue({ operationalSummary: null }),
+        replayed: false,
+      });
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/partial-close`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'partial-2' },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ data: { operational_summary: null } });
+    });
+  });
+
+  describe('GET /api/v1/cash-sessions/:id/partial-closes (TASK 16.13)', () => {
+    it('also converts the nested operational summary to snake_case in the list response', async () => {
+      const { app, service } = await fixture(['cash_session.read']);
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/partial-closes`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(service.partialCloses).toHaveBeenCalledTimes(1);
+      const body = response.json() as { data: [{ operational_summary: { pos: { gross_sales: string } } }] };
+      expect(body.data[0]?.operational_summary?.pos.gross_sales).toBe('450.0000');
     });
   });
 });

@@ -288,6 +288,137 @@ class PosCashSessionSummary {
   final String externalIncomeTotal;
 }
 
+/// TASK 16.13 — "Ventas / Taquilla" within a partial cut's operational
+/// summary. Mirrors `cash.types.ts`'s `CashPartialCloseOperationalSummary
+/// ['pos']` field for field.
+class PosCashOperationalPosSummary {
+  const PosCashOperationalPosSummary({
+    required this.grossSales,
+    required this.refundsTotal,
+    required this.netSales,
+    required this.ticketCount,
+  });
+
+  factory PosCashOperationalPosSummary.fromJson(Map<String, Object?> json) =>
+      PosCashOperationalPosSummary(
+        grossSales: json['gross_sales']! as String,
+        refundsTotal: json['refunds_total']! as String,
+        netSales: json['net_sales']! as String,
+        ticketCount: json['ticket_count']! as int,
+      );
+
+  final String grossSales;
+  final String refundsTotal;
+  final String netSales;
+  final int ticketCount;
+}
+
+/// TASK 16.13 — "Cafetería / Snacks": an authoritatively-classified SUBSET
+/// of [PosCashOperationalPosSummary.netSales], never additive on top of
+/// it. [available] is `false` when the tenant has no
+/// `product_categories.operational_group = 'cafeteria'` category at all —
+/// the UI must show "no configurado", never a misleading `$0`.
+class PosCashOperationalCafeteriaSummary {
+  const PosCashOperationalCafeteriaSummary({
+    required this.available,
+    required this.grossSales,
+    required this.refundsTotal,
+    required this.netSales,
+    required this.ticketCount,
+    required this.unitsSold,
+  });
+
+  factory PosCashOperationalCafeteriaSummary.fromJson(Map<String, Object?> json) =>
+      PosCashOperationalCafeteriaSummary(
+        available: json['available']! as bool,
+        grossSales: json['gross_sales']! as String,
+        refundsTotal: json['refunds_total']! as String,
+        netSales: json['net_sales']! as String,
+        ticketCount: json['ticket_count']! as int,
+        unitsSold: json['units_sold']! as String,
+      );
+
+  final bool available;
+  final String grossSales;
+  final String refundsTotal;
+  final String netSales;
+  final int ticketCount;
+  final String unitsSold;
+}
+
+/// TASK 16.13 — "Eventos / Fiestas": genuinely independent of `pos`/
+/// `cafeteria` (party deposits never touch `sales`). [reservationsCreated]
+/// ("sold this shift") and [reservationsOccurringToday] ("hosting today")
+/// are deliberately different metrics — never conflate them. [contractedValue]
+/// is accounts-receivable-shaped, never presented as collected revenue.
+class PosCashOperationalEventsSummary {
+  const PosCashOperationalEventsSummary({
+    required this.reservationsCreated,
+    required this.contractedValue,
+    required this.collectedForNewReservations,
+    required this.outstandingForNewReservations,
+    required this.depositsCollected,
+    required this.totalCollected,
+    required this.cancelledCount,
+    required this.reservationsOccurringToday,
+  });
+
+  factory PosCashOperationalEventsSummary.fromJson(Map<String, Object?> json) =>
+      PosCashOperationalEventsSummary(
+        reservationsCreated: json['reservations_created']! as int,
+        contractedValue: json['contracted_value']! as String,
+        collectedForNewReservations: json['collected_for_new_reservations']! as String,
+        outstandingForNewReservations: json['outstanding_for_new_reservations']! as String,
+        depositsCollected: json['deposits_collected']! as String,
+        totalCollected: json['total_collected']! as String,
+        cancelledCount: json['cancelled_count']! as int,
+        reservationsOccurringToday: json['reservations_occurring_today']! as int,
+      );
+
+  final int reservationsCreated;
+  final String contractedValue;
+  final String collectedForNewReservations;
+  final String outstandingForNewReservations;
+  final String depositsCollected;
+  final String totalCollected;
+  final int cancelledCount;
+  final int reservationsOccurringToday;
+}
+
+/// TASK 16.13 — "Resumen operativo": reporting-only, never influences the
+/// cash-truth figures on [PosCashSessionPartialClose] alongside it. Mirrors
+/// `cash.types.ts`'s `CashPartialCloseOperationalSummary` exactly.
+class PosCashOperationalSummary {
+  const PosCashOperationalSummary({
+    required this.windowStart,
+    required this.windowEnd,
+    required this.pos,
+    required this.cafeteria,
+    required this.events,
+  });
+
+  factory PosCashOperationalSummary.fromJson(Map<String, Object?> json) =>
+      PosCashOperationalSummary(
+        windowStart: DateTime.parse(json['window_start']! as String),
+        windowEnd: DateTime.parse(json['window_end']! as String),
+        pos: PosCashOperationalPosSummary.fromJson(
+          json['pos']! as Map<String, Object?>,
+        ),
+        cafeteria: PosCashOperationalCafeteriaSummary.fromJson(
+          json['cafeteria']! as Map<String, Object?>,
+        ),
+        events: PosCashOperationalEventsSummary.fromJson(
+          json['events']! as Map<String, Object?>,
+        ),
+      );
+
+  final DateTime windowStart;
+  final DateTime windowEnd;
+  final PosCashOperationalPosSummary pos;
+  final PosCashOperationalCafeteriaSummary cafeteria;
+  final PosCashOperationalEventsSummary events;
+}
+
 /// TASK 14.4 (Wave 2, Part F.3) — "Corte parcial": a persisted, audited
 /// SNAPSHOT of exactly what [PosCashGateway.summary] said at [takenAt].
 /// Never a second drawer-balance source of truth — see
@@ -305,6 +436,7 @@ class PosCashSessionPartialClose {
     required this.expectedCash,
     required this.createdBy,
     required this.createdAt,
+    required this.operationalSummary,
   });
 
   factory PosCashSessionPartialClose.fromJson(Map<String, Object?> json) =>
@@ -319,6 +451,13 @@ class PosCashSessionPartialClose {
         expectedCash: json['expected_cash']! as String,
         createdBy: json['created_by']! as String,
         createdAt: DateTime.parse(json['created_at']! as String),
+        // TASK 16.13 — `null` for any partial close taken before this
+        // field existed (pre-TASK-16.13 history). Never synthesized.
+        operationalSummary: json['operational_summary'] == null
+            ? null
+            : PosCashOperationalSummary.fromJson(
+                json['operational_summary']! as Map<String, Object?>,
+              ),
       );
 
   final String id;
@@ -331,6 +470,7 @@ class PosCashSessionPartialClose {
   final String expectedCash;
   final String createdBy;
   final DateTime createdAt;
+  final PosCashOperationalSummary? operationalSummary;
 }
 
 class PosCashMovementPage {

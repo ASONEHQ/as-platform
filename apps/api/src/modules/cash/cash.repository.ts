@@ -10,6 +10,7 @@ import {
   type CashMovementRow,
   type CashMovementType,
   type CashMutationContext,
+  type CashPartialCloseOperationalSummary,
   type CashRegisterRow,
   type CashSessionPartialCloseRow,
   type CashSessionRow,
@@ -63,7 +64,7 @@ const SESSION_COLUMNS =
 const MOVEMENT_COLUMNS =
   'id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,reference_type,reference_id,occurred_at,created_by,device_id,reversal_of_id,created_at,category';
 const PARTIAL_CLOSE_COLUMNS =
-  'id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at';
+  'id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at,operational_summary';
 
 interface RegisterDb {
   id: string;
@@ -132,6 +133,7 @@ interface PartialCloseDb {
   expected_cash: string;
   created_by: string;
   created_at: Date | string;
+  operational_summary: CashPartialCloseOperationalSummary | null;
 }
 interface IdempotencyDb {
   request_hash: string;
@@ -221,6 +223,7 @@ function partialClose(row: PartialCloseDb): CashSessionPartialCloseRow {
     expectedCash: row.expected_cash,
     createdBy: row.created_by,
     createdAt: new Date(row.created_at),
+    operationalSummary: row.operational_summary ?? null,
   };
 }
 
@@ -942,13 +945,14 @@ export class CashRepository {
       cashOutTotal: string;
       expectedCash: string;
       createdBy: string;
+      operationalSummary: CashPartialCloseOperationalSummary | null;
     },
   ): Promise<CashSessionPartialCloseRow> {
     const row = result<PartialCloseDb>(
       await client.query(
         `insert into cash_session_partial_closes
-         (id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$5)
+         (id,company_id,branch_id,cash_session_id,taken_at,opening_amount,cash_sales_total,cash_in_total,cash_out_total,expected_cash,created_by,created_at,operational_summary)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$5,$12::jsonb)
          returning ${PARTIAL_CLOSE_COLUMNS}`,
         [
           input.id,
@@ -962,6 +966,7 @@ export class CashRepository {
           input.cashOutTotal,
           input.expectedCash,
           input.createdBy,
+          input.operationalSummary === null ? null : JSON.stringify(input.operationalSummary),
         ],
       ),
     ).rows[0];
@@ -984,6 +989,182 @@ export class CashRepository {
       ),
     ).rows;
     return rows.map(partialClose);
+  }
+
+  // --- Operational summary ("Resumen operativo") (TASK 16.13) --------------
+
+  /** Computes the reporting-only "how's the business doing" breakdown for
+   * a partial cut — Ventas/Taquilla, Cafetería/Snacks (an authoritatively-
+   * classified SUBSET of Taquilla, never additive on top of it), and
+   * Eventos/Fiestas (a genuinely separate domain — see below). Real SQL
+   * `sum`/`count`/`group by` throughout, mirroring
+   * `DashboardRepository.outstandingPartyBalances`'s own established
+   * cross-domain-read convention exactly (a repository reading another
+   * module's tables directly for a read-only aggregate report, never a
+   * new cross-service dependency). Called from inside `CashService.
+   * partialClose`'s transaction but — exactly like `movementsForSession`
+   * above — reads through the plain pool, not the transaction client;
+   * this mirrors that method's own precedent rather than inventing a
+   * stricter isolation guarantee the rest of this module doesn't have.
+   *
+   * Double-counting analysis (TASK 16.13 §4/§17):
+   *  - `pos` is every `sales` row for this branch, any payment method,
+   *    completed within the window — genuinely independent of the
+   *    session's own cash-only `expectedCash` fold above.
+   *  - `cafeteria` is computed from `sale_items` joined to a category
+   *    tagged `operational_group='cafeteria'` — a SUBSET of the exact
+   *    same `sales` rows `pos` already counted, at line-item
+   *    granularity. It is never summed into `pos`'s own total; the two
+   *    numbers are presented side by side, subset and superset.
+   *  - `events` is built entirely from `party_reservations`/
+   *    `party_reservation_payments`. A party deposit/payment is recorded
+   *    via `PartyReservationsService.recordPayment`, which posts directly
+   *    to `cash_movements` (`reference_type='party_reservation'`) and
+   *    NEVER inserts a `sales`/`sale_items` row — confirmed by schema
+   *    inspection, not assumed. `events` can therefore never double-count
+   *    against `pos`/`cafeteria`, and vice versa. */
+  public async operationalSummary(
+    companyId: string,
+    branchId: string,
+    windowStart: Date,
+    windowEnd: Date,
+    asOfDate: string,
+  ): Promise<CashPartialCloseOperationalSummary> {
+    const [
+      posResult,
+      cafeteriaAvailableResult,
+      cafeteriaResult,
+      eventsCreatedResult,
+      eventsCancelledResult,
+      eventsPaymentsResult,
+      eventsCollectedForNewResult,
+      eventsOccurringTodayResult,
+    ] = await Promise.all([
+      this.database.pool.query(
+        `select
+           (select count(*) from sales where company_id=$1 and branch_id=$2 and status='completed' and completed_at>=$3 and completed_at<=$4) as ticket_count,
+           (select coalesce(sum(total),0) from sales where company_id=$1 and branch_id=$2 and status='completed' and completed_at>=$3 and completed_at<=$4) as gross_sales,
+           (select coalesce(sum(total),0) from refunds where company_id=$1 and branch_id=$2 and status='completed' and completed_at>=$3 and completed_at<=$4) as refunds_total`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select exists(select 1 from product_categories where company_id=$1 and operational_group='cafeteria') as available`,
+        [companyId],
+      ),
+      this.database.pool.query(
+        `select
+           (select count(distinct si.sale_id)
+            from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
+            join products p on p.company_id=si.company_id and p.id=si.product_id
+            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
+            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+              and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as ticket_count,
+           (select coalesce(sum(si.quantity),0)
+            from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
+            join products p on p.company_id=si.company_id and p.id=si.product_id
+            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
+            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+              and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as units_sold,
+           (select coalesce(sum(si.line_total),0)
+            from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
+            join products p on p.company_id=si.company_id and p.id=si.product_id
+            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
+            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+              and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as gross_sales,
+           (select coalesce(sum(ri.line_total),0)
+            from refund_items ri join refunds r on r.company_id=ri.company_id and r.id=ri.refund_id
+            join sale_items si on si.company_id=ri.company_id and si.id=ri.sale_item_id
+            join products p on p.company_id=si.company_id and p.id=si.product_id
+            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
+            where ri.company_id=$1 and ri.branch_id=$2 and c.operational_group='cafeteria'
+              and r.status='completed' and r.completed_at>=$3 and r.completed_at<=$4) as refunds_total`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select count(*) as count, coalesce(sum(quoted_total),0) as contracted_value
+         from party_reservations
+         where company_id=$1 and branch_id=$2 and created_at>=$3 and created_at<=$4 and status<>'cancelled'`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select count(*) as count from party_reservations
+         where company_id=$1 and branch_id=$2 and cancelled_at>=$3 and cancelled_at<=$4`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select
+           coalesce(sum(amount_snapshot) filter (where purpose='deposit'),0) as deposits_collected,
+           coalesce(sum(amount_snapshot),0) as total_collected
+         from party_reservation_payments
+         where company_id=$1 and branch_id=$2 and created_at>=$3 and created_at<=$4`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select coalesce(sum(p.amount_snapshot),0) as collected
+         from party_reservation_payments p
+         join party_reservations r on r.company_id=p.company_id and r.id=p.reservation_id
+         where p.company_id=$1 and p.branch_id=$2
+           and r.created_at>=$3 and r.created_at<=$4 and p.created_at<=$4`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+      this.database.pool.query(
+        `select count(*) as count from party_reservations
+         where company_id=$1 and branch_id=$2 and event_date=$3::date and status<>'cancelled'`,
+        [companyId, branchId, asOfDate],
+      ),
+    ]);
+    const posRow = result<{ ticket_count: string; gross_sales: string; refunds_total: string }>(posResult).rows[0];
+    const cafeteriaAvailableRow = result<{ available: boolean }>(cafeteriaAvailableResult).rows[0];
+    const cafeteriaRow = result<{
+      ticket_count: string;
+      units_sold: string;
+      gross_sales: string;
+      refunds_total: string;
+    }>(cafeteriaResult).rows[0];
+    const eventsCreatedRow = result<{ count: string; contracted_value: string }>(eventsCreatedResult).rows[0];
+    const eventsCancelledRow = result<{ count: string }>(eventsCancelledResult).rows[0];
+    const eventsPaymentsRow = result<{ deposits_collected: string; total_collected: string }>(
+      eventsPaymentsResult,
+    ).rows[0];
+    const eventsCollectedForNewRow = result<{ collected: string }>(eventsCollectedForNewResult).rows[0];
+    const eventsOccurringTodayRow = result<{ count: string }>(eventsOccurringTodayResult).rows[0];
+
+    const posGross = moneyUnits(posRow?.gross_sales ?? '0');
+    const posRefunds = moneyUnits(posRow?.refunds_total ?? '0');
+    const cafeteriaGross = moneyUnits(cafeteriaRow?.gross_sales ?? '0');
+    const cafeteriaRefunds = moneyUnits(cafeteriaRow?.refunds_total ?? '0');
+    const contractedValue = moneyUnits(eventsCreatedRow?.contracted_value ?? '0');
+    const collectedForNew = moneyUnits(eventsCollectedForNewRow?.collected ?? '0');
+    const outstandingForNew = contractedValue - collectedForNew;
+
+    return {
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      pos: {
+        grossSales: formatMoney(posGross),
+        refundsTotal: formatMoney(posRefunds),
+        netSales: formatMoney(posGross - posRefunds),
+        ticketCount: Number(posRow?.ticket_count ?? '0'),
+      },
+      cafeteria: {
+        available: cafeteriaAvailableRow?.available ?? false,
+        grossSales: formatMoney(cafeteriaGross),
+        refundsTotal: formatMoney(cafeteriaRefunds),
+        netSales: formatMoney(cafeteriaGross - cafeteriaRefunds),
+        ticketCount: Number(cafeteriaRow?.ticket_count ?? '0'),
+        unitsSold: cafeteriaRow?.units_sold ?? '0',
+      },
+      events: {
+        reservationsCreated: Number(eventsCreatedRow?.count ?? '0'),
+        contractedValue: formatMoney(contractedValue),
+        collectedForNewReservations: formatMoney(collectedForNew),
+        outstandingForNewReservations: formatMoney(outstandingForNew < 0n ? 0n : outstandingForNew),
+        depositsCollected: eventsPaymentsRow?.deposits_collected ?? '0.0000',
+        totalCollected: eventsPaymentsRow?.total_collected ?? '0.0000',
+        cancelledCount: Number(eventsCancelledRow?.count ?? '0'),
+        reservationsOccurringToday: Number(eventsOccurringTodayRow?.count ?? '0'),
+      },
+    };
   }
 
   // --- Audit trail ("Bitácora") (TASK 16.11 §13) ---------------------------

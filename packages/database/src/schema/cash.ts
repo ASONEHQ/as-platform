@@ -385,6 +385,17 @@ export const cashSessionPartialCloses = pgTable(
     cashInTotal: numeric('cash_in_total', { precision: 19, scale: 4 }).notNull(),
     cashOutTotal: numeric('cash_out_total', { precision: 19, scale: 4 }).notNull(),
     expectedCash: numeric('expected_cash', { precision: 19, scale: 4 }).notNull(),
+    // TASK 16.13 — "Resumen operativo" (Ventas/Taquilla, Cafetería/Snacks,
+    // Eventos/Fiestas): a frozen SNAPSHOT of the operational-sales report
+    // computed at `taken_at`, mirroring every other column on this table
+    // exactly (never recalculated when a historical partial close is
+    // reopened later — see `CashRepository.operationalSummary`). Purely
+    // additive reporting alongside the pre-existing cash-truth columns
+    // above; never read by any expected-cash/discrepancy computation.
+    // Nullable so every pre-TASK-16.13 row (and any row inserted before
+    // this column existed) stays valid and readable — a `null` here means
+    // "no operational snapshot was taken," never "all zeros."
+    operationalSummary: jsonb('operational_summary').$type<Readonly<Record<string, unknown>>>(),
     createdBy: uuid('created_by').notNull(),
     createdAt: createdAtColumn(),
   },

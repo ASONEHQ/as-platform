@@ -1,5 +1,12 @@
 export type CatalogStatus = 'active' | 'inactive' | 'retired';
 
+// TASK 16.13 — the one approved value today. A structured, queryable
+// classification anchor for the partial cash-cut's "Cafetería / Snacks"
+// operational summary — see the schema column's own doc comment in
+// `packages/database/src/schema/catalog.ts`.
+export type CategoryOperationalGroup = 'cafeteria';
+export const categoryOperationalGroups: readonly CategoryOperationalGroup[] = ['cafeteria'];
+
 export interface Category {
   readonly id: string;
   readonly companyId: string;
@@ -14,6 +21,10 @@ export interface Category {
   // in `packages/database/src/schema/catalog.ts`. Purely a rendering
   // hint; carries no pricing/checkout/inventory meaning.
   readonly visualTile: boolean;
+  // TASK 16.13 — `null` means "not classified into any operational
+  // reporting group" (the overwhelming default for most categories);
+  // never inferred from `name`.
+  readonly operationalGroup: CategoryOperationalGroup | null;
   readonly version: bigint;
   readonly createdAt: Date;
   readonly updatedAt: Date;

@@ -28,7 +28,13 @@ import type {
   CategoryPatch,
   CatalogService,
 } from './catalog.service.js';
-import type { Brand, CatalogStatus, Category, MutationContext } from './catalog.types.js';
+import type {
+  Brand,
+  CatalogStatus,
+  Category,
+  CategoryOperationalGroup,
+  MutationContext,
+} from './catalog.types.js';
 
 interface ListQuery {
   readonly cursor?: string;
@@ -51,6 +57,7 @@ interface CategoryBody {
   readonly sort_order?: number;
   readonly status?: CatalogStatus;
   readonly visual_tile?: boolean;
+  readonly operational_group?: CategoryOperationalGroup | null;
 }
 interface CategoryPatchBody {
   readonly parent_id?: string | null;
@@ -59,6 +66,7 @@ interface CategoryPatchBody {
   readonly sort_order?: number;
   readonly status?: CatalogStatus;
   readonly visual_tile?: boolean;
+  readonly operational_group?: CategoryOperationalGroup | null;
 }
 interface BrandBody {
   readonly id?: string;
@@ -112,6 +120,7 @@ function categoryHttp(value: Category): Readonly<Record<string, unknown>> {
     sort_order: value.sortOrder,
     status: value.status,
     visual_tile: value.visualTile,
+    operational_group: value.operationalGroup,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -190,6 +199,7 @@ export function registerCatalogRoutes(
             'sort_order',
             'status',
             'visual_tile',
+            'operational_group',
           ]);
           done();
         } catch (error) {
@@ -214,6 +224,9 @@ export function registerCatalogRoutes(
           ...(request.body.visual_tile === undefined
             ? {}
             : { visualTile: request.body.visual_tile }),
+          ...(request.body.operational_group === undefined
+            ? {}
+            : { operationalGroup: request.body.operational_group }),
         };
         const result = await service.createCategory(
           mutationContext(request, context.companyId, context.userId),
@@ -269,6 +282,7 @@ export function registerCatalogRoutes(
             'sort_order',
             'status',
             'visual_tile',
+            'operational_group',
           ]);
           done();
         } catch (error) {
@@ -288,6 +302,7 @@ export function registerCatalogRoutes(
           ...(body.sort_order === undefined ? {} : { sortOrder: body.sort_order }),
           ...(body.status === undefined ? {} : { status: body.status }),
           ...(body.visual_tile === undefined ? {} : { visualTile: body.visual_tile }),
+          ...(body.operational_group === undefined ? {} : { operationalGroup: body.operational_group }),
         };
         const value = await service.patchCategory(
           mutationContext(request, context.companyId, context.userId),

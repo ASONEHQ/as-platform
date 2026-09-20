@@ -237,6 +237,37 @@ void main() {
       'Corte parcial calls the real endpoint, shows the returned snapshot, '
       'and never transitions the session UI to closed',
       (tester) async {
+        // TASK 16.13 — a real operational snapshot, so this test also
+        // proves the "RESUMEN OPERATIVO" section renders the backend's
+        // own figures verbatim, never a client recomputation.
+        final operationalSummary = PosCashOperationalSummary(
+          windowStart: DateTime.utc(2026, 9, 7, 9),
+          windowEnd: DateTime.utc(2026, 9, 7, 11),
+          pos: PosCashOperationalPosSummary(
+            grossSales: '450.0000',
+            refundsTotal: '0.0000',
+            netSales: '450.0000',
+            ticketCount: 5,
+          ),
+          cafeteria: PosCashOperationalCafeteriaSummary(
+            available: true,
+            grossSales: '150.0000',
+            refundsTotal: '0.0000',
+            netSales: '150.0000',
+            ticketCount: 3,
+            unitsSold: '3.000000',
+          ),
+          events: PosCashOperationalEventsSummary(
+            reservationsCreated: 1,
+            contractedValue: '2000.0000',
+            collectedForNewReservations: '500.0000',
+            outstandingForNewReservations: '1500.0000',
+            depositsCollected: '500.0000',
+            totalCollected: '500.0000',
+            cancelledCount: 0,
+            reservationsOccurringToday: 0,
+          ),
+        );
         final snapshot = PosCashSessionPartialClose(
           id: 'partial-1',
           cashSessionId: 'session-id',
@@ -248,6 +279,7 @@ void main() {
           expectedCash: '1031.0000',
           createdBy: 'user-id',
           createdAt: DateTime.utc(2026, 9, 7, 11),
+          operationalSummary: operationalSummary,
         );
         final gateway = _RecordingCashGateway(partialCloseResult: snapshot);
         await _pump(tester, cashGateway: gateway);
@@ -264,6 +296,19 @@ void main() {
         expect(gateway.partialCloseCalls, ['session-id']);
         // The real, returned snapshot figures — never fabricated.
         expect(find.text('\$1031.00'), findsWidgets);
+
+        // The operational section — Ventas/Taquilla, Cafetería/Snacks
+        // (labeled as part of Taquilla, never an additional total), and
+        // Eventos/Fiestas — all real backend figures.
+        expect(find.text('RESUMEN OPERATIVO'), findsOneWidget);
+        expect(find.text('VENTAS / TAQUILLA'), findsOneWidget);
+        expect(find.text('\$450.00'), findsWidgets); // pos.netSales
+        expect(find.text('CAFETERÍA / SNACKS (parte de Taquilla)'), findsOneWidget);
+        expect(find.text('\$150.00'), findsWidgets); // cafeteria.netSales
+        expect(find.text('EVENTOS / FIESTAS'), findsOneWidget);
+        expect(find.text('\$1500.00'), findsWidgets); // outstanding for new reservations
+        // No RenderFlex overflow from the new (longer) operational labels.
+        expect(tester.takeException(), isNull);
 
         await tester.tap(find.text('Entendido'));
         await tester.pumpAndSettle();
@@ -292,6 +337,7 @@ void main() {
             expectedCash: '1009.0000',
             createdBy: 'user-id',
             createdAt: DateTime.utc(2026, 9, 7, 8, 30),
+            operationalSummary: null,
           ),
         ],
       );
@@ -300,6 +346,18 @@ void main() {
 
       expect(find.byKey(const Key('pos-caja-partial-close-row-partial-1')), findsOneWidget);
       expect(find.textContaining('Esperado: \$1009.00'), findsOneWidget);
+
+      // TASK 16.13 (§13) — tapping an old (pre-16.13) partial close opens
+      // its detail honestly: no operational breakdown, never synthesized
+      // zeros or a crash.
+      await tester.tap(find.byKey(const Key('pos-caja-partial-close-row-partial-1')));
+      await tester.pumpAndSettle();
+      expect(find.text('RESUMEN OPERATIVO'), findsOneWidget);
+      expect(
+        find.text('Resumen operativo no disponible para este corte.'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
     });
   });
 }
@@ -546,6 +604,7 @@ class _RecordingCashGateway implements PosCashGateway {
           expectedCash: '1009.0000',
           createdBy: 'user-id',
           createdAt: DateTime.utc(2026, 9, 7, 11),
+          operationalSummary: null,
         );
   }
 

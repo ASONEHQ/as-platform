@@ -3,6 +3,11 @@ import { AppError } from '@asone/errors';
 const uuid = { type: 'string', format: 'uuid' } as const;
 const status = { type: 'string', enum: ['active', 'inactive', 'retired'] } as const;
 const nullableText = { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] } as const;
+// TASK 16.13 — the one approved value today (see `catalog.types.ts`'s
+// `CategoryOperationalGroup`). `null` means "not classified."
+const nullableOperationalGroup = {
+  anyOf: [{ type: 'string', enum: ['cafeteria'] }, { type: 'null' }],
+} as const;
 const categoryProperties = {
   id: uuid,
   parent_id: { anyOf: [uuid, { type: 'null' }] },
@@ -15,6 +20,9 @@ const categoryProperties = {
   // compact tile" display hint — see `catalog.types.ts`'s `Category.
   // visualTile` doc comment.
   visual_tile: { type: 'boolean' },
+  // TASK 16.13 — see `catalog.types.ts`'s `Category.operationalGroup` doc
+  // comment.
+  operational_group: nullableOperationalGroup,
   version: { type: 'integer', minimum: 1 },
   created_at: { type: 'string' },
   updated_at: { type: 'string' },
@@ -128,6 +136,7 @@ export const categoryCreateSchema = {
     sort_order: { type: 'integer', minimum: 0 },
     status,
     visual_tile: { type: 'boolean' },
+    operational_group: nullableOperationalGroup,
   },
 } as const;
 export const categoryPatchSchema = {
@@ -141,6 +150,7 @@ export const categoryPatchSchema = {
     sort_order: { type: 'integer', minimum: 0 },
     status,
     visual_tile: { type: 'boolean' },
+    operational_group: nullableOperationalGroup,
   },
 } as const;
 export const brandCreateSchema = {

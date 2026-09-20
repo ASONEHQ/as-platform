@@ -9070,6 +9070,7 @@ class _FakeCashGateway implements PosCashGateway {
         expectedCash: '1029.0000',
         createdBy: 'user-id',
         createdAt: DateTime.utc(2026, 9, 6, 11),
+        operationalSummary: null,
       );
 
   @override
