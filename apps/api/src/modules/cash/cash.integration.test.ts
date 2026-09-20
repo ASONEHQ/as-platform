@@ -157,6 +157,10 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
     await database.pool.query('delete from sale_items where company_id in ($1,$2)', [companyId, otherCompanyId]);
     await database.pool.query('delete from sales where company_id in ($1,$2)', [companyId, otherCompanyId]);
     await database.pool.query('delete from cash_movements where company_id in ($1,$2)', [companyId, otherCompanyId]);
+    await database.pool.query('delete from cash_session_partial_closes where company_id in ($1,$2)', [
+      companyId,
+      otherCompanyId,
+    ]);
     await database.pool.query('delete from cash_sessions where company_id in ($1,$2)', [companyId, otherCompanyId]);
     await database.pool.query('delete from cash_registers where company_id in ($1,$2)', [companyId, otherCompanyId]);
     await database.pool.query('delete from idempotency_keys where company_id in ($1,$2)', [companyId, otherCompanyId]);
@@ -396,6 +400,73 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
         }),
       ).rejects.toMatchObject({ code: 'validation_error' });
     });
+
+    // TASK 16.11 — `business.currency` already allows a tenant to be
+    // configured `'MXN' | 'USD'` (settings.catalog.ts); a USD session
+    // must validate its own real US bill/coin set, never the MXN one.
+    it('accepts a real USD denomination breakdown for a USD-currency session — never rejected against the MXN set', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-denom-usd-1', {
+        branchId,
+        code: 'REG-DENOM-USD',
+        name: 'Caja Denom USD',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-denom-usd-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+        currencyCode: 'USD',
+      });
+      // 1×$20 + 1×$5 + 3×$0.25 + 2×$0.10 = 25.95.
+      const closed = await cash.closeSession(context, branchIds, 'session-denom-usd-close-1', opened.value.id, {
+        declaredClosingAmount: '25.9500',
+        denominationCounts: [
+          { value: '20', quantity: 1 },
+          { value: '5', quantity: 1 },
+          { value: '0.25', quantity: 3 },
+          { value: '0.10', quantity: 2 },
+        ],
+      });
+      expect(closed.value.denominationCounts).toEqual([
+        { value: '20.0000', quantity: 1 },
+        { value: '5.0000', quantity: 1 },
+        { value: '0.2500', quantity: 3 },
+        { value: '0.1000', quantity: 2 },
+      ]);
+    });
+
+    it('rejects a real MXN-only denomination (e.g. $1000) against a USD session, and a USD-only denomination (e.g. a quarter) against an MXN session', async () => {
+      const usdRegister = await cash.createRegister(context, branchIds, 'reg-denom-usd-2', {
+        branchId,
+        code: 'REG-DENOM-USD-2',
+        name: 'Caja Denom USD 2',
+      });
+      const usdSession = await cash.openSession(context, branchIds, 'session-denom-usd-2', {
+        cashRegisterId: usdRegister.value.id,
+        openingAmount: '0',
+        currencyCode: 'USD',
+      });
+      await expect(
+        cash.closeSession(context, branchIds, 'session-denom-usd-close-2', usdSession.value.id, {
+          declaredClosingAmount: '1000.0000',
+          denominationCounts: [{ value: '1000', quantity: 1 }], // a real MXN bill, not a real US one.
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+
+      const mxnRegister = await cash.createRegister(context, branchIds, 'reg-denom-mxn-3', {
+        branchId,
+        code: 'REG-DENOM-MXN-3',
+        name: 'Caja Denom MXN 3',
+      });
+      const mxnSession = await cash.openSession(context, branchIds, 'session-denom-mxn-3', {
+        cashRegisterId: mxnRegister.value.id,
+        openingAmount: '0',
+      });
+      await expect(
+        cash.closeSession(context, branchIds, 'session-denom-mxn-close-3', mxnSession.value.id, {
+          declaredClosingAmount: '0.2500',
+          denominationCounts: [{ value: '0.25', quantity: 1 }], // a real US quarter, not a real MXN coin.
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
   });
 
   // --- Manual movements ------------------------------------------------------
@@ -486,6 +557,345 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
           reasonCode: 'test',
         }),
       ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+  });
+
+  // TASK 16.11 (§6) — "Never delete posted financial movements.
+  // Corrections must use reversal/compensating architecture."
+  describe('manual movement reversal', () => {
+    it('reverses a cash_out with an opposite cash_in movement, restoring expected cash exactly', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-1', {
+        branchId,
+        code: 'REG-REVERSE',
+        name: 'Caja Reverse',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      const withdrawal = await cash.createMovement(context, branchIds, 'reverse-movement-out-1', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '100.0000',
+        reasonCode: 'withdrawal',
+        category: 'withdrawal',
+      });
+      let summary = await cash.summary(companyId, branchIds, opened.value.id);
+      expect(summary.expectedCash).toBe('400.0000');
+
+      const reversal = await cash.reverseMovement(
+        context,
+        branchIds,
+        'reverse-1',
+        opened.value.id,
+        withdrawal.value.id,
+        { reasonCode: 'data_entry_error', note: 'Wrong amount typed' },
+      );
+      expect(reversal.replayed).toBe(false);
+      expect(reversal.value).toMatchObject({
+        movementType: 'cash_in',
+        amount: '100.0000',
+        reversalOfId: withdrawal.value.id,
+        category: null,
+      });
+
+      summary = await cash.summary(companyId, branchIds, opened.value.id);
+      // The withdrawal (-100) plus its own reversal (+100) net to zero —
+      // back to the 500 opening float, exactly as if the withdrawal had
+      // never happened, with BOTH rows still present in history.
+      expect(summary.expectedCash).toBe('500.0000');
+
+      const movements = await cash.listMovements(companyId, branchIds, opened.value.id, { limit: 50 });
+      expect(movements.items.filter((item) => item.id === withdrawal.value.id)).toHaveLength(1);
+      expect(movements.items.filter((item) => item.id === reversal.value.id)).toHaveLength(1);
+    });
+
+    it('reverses a cash_in with an opposite cash_out movement', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-2', {
+        branchId,
+        code: 'REG-REVERSE-2',
+        name: 'Caja Reverse 2',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-2', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const income = await cash.createMovement(context, branchIds, 'reverse-movement-in-2', opened.value.id, {
+        movementType: 'cash_in',
+        amount: '50.0000',
+        reasonCode: 'external_income',
+        category: 'external_income',
+      });
+      const reversal = await cash.reverseMovement(context, branchIds, 'reverse-2', opened.value.id, income.value.id, {
+        reasonCode: 'duplicate_entry',
+      });
+      expect(reversal.value.movementType).toBe('cash_out');
+      expect(reversal.value.amount).toBe('50.0000');
+      const summary = await cash.summary(companyId, branchIds, opened.value.id);
+      expect(summary.expectedCash).toBe('0.0000');
+    });
+
+    it('rejects a second reversal of the same movement (DB constraint backed)', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-3', {
+        branchId,
+        code: 'REG-REVERSE-3',
+        name: 'Caja Reverse 3',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-3', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const expense = await cash.createMovement(context, branchIds, 'reverse-movement-out-3', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '30.0000',
+        reasonCode: 'expense',
+        category: 'expense',
+      });
+      await cash.reverseMovement(context, branchIds, 'reverse-3-first', opened.value.id, expense.value.id, {
+        reasonCode: 'correction',
+      });
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-3-second', opened.value.id, expense.value.id, {
+          reasonCode: 'correction-again',
+        }),
+      ).rejects.toMatchObject({ code: 'cash_movement_already_reversed' });
+    });
+
+    it('rejects reversing a reversal itself', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-4', {
+        branchId,
+        code: 'REG-REVERSE-4',
+        name: 'Caja Reverse 4',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-4', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const original = await cash.createMovement(context, branchIds, 'reverse-movement-out-4', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '10.0000',
+        reasonCode: 'expense',
+      });
+      const reversal = await cash.reverseMovement(context, branchIds, 'reverse-4-first', opened.value.id, original.value.id, {
+        reasonCode: 'correction',
+      });
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-4-second', opened.value.id, reversal.value.id, {
+          reasonCode: 'undo-the-undo',
+        }),
+      ).rejects.toMatchObject({ code: 'cash_movement_not_reversible' });
+    });
+
+    it('rejects reversing a system-posted opening_float movement', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-5', {
+        branchId,
+        code: 'REG-REVERSE-5',
+        name: 'Caja Reverse 5',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-5', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      const movements = await cash.listMovements(companyId, branchIds, opened.value.id, { limit: 10 });
+      const openingMovement = movements.items.find((item) => item.movementType === 'opening_float');
+      expect(openingMovement).toBeDefined();
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-5-attempt', opened.value.id, openingMovement!.id, {
+          reasonCode: 'attempted',
+        }),
+      ).rejects.toMatchObject({ code: 'cash_movement_not_reversible' });
+    });
+
+    it('rejects reversing a movement after the session has closed', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-6', {
+        branchId,
+        code: 'REG-REVERSE-6',
+        name: 'Caja Reverse 6',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-6', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const expense = await cash.createMovement(context, branchIds, 'reverse-movement-out-6', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '10.0000',
+        reasonCode: 'expense',
+      });
+      await cash.closeSession(context, branchIds, 'session-reverse-6-close', opened.value.id, {
+        declaredClosingAmount: '0',
+      });
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-6-attempt', opened.value.id, expense.value.id, {
+          reasonCode: 'too_late',
+        }),
+      ).rejects.toMatchObject({ code: 'cash_session_closed' });
+    });
+
+    it('rejects reversing a movement for an unauthorized branch — tenant/branch isolation holds', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-7', {
+        branchId,
+        code: 'REG-REVERSE-7',
+        name: 'Caja Reverse 7',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-7', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const expense = await cash.createMovement(context, branchIds, 'reverse-movement-out-7', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '10.0000',
+        reasonCode: 'expense',
+      });
+      await expect(
+        cash.reverseMovement(context, [otherBranchId], 'reverse-7-attempt', opened.value.id, expense.value.id, {
+          reasonCode: 'cross_branch_attempt',
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+
+    it('replays an exact duplicate reversal request as a safe no-op — idempotent, never double-reverses', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-8', {
+        branchId,
+        code: 'REG-REVERSE-8',
+        name: 'Caja Reverse 8',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-8', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      const expense = await cash.createMovement(context, branchIds, 'reverse-movement-out-8', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '10.0000',
+        reasonCode: 'expense',
+      });
+      const first = await cash.reverseMovement(context, branchIds, 'reverse-8-key', opened.value.id, expense.value.id, {
+        reasonCode: 'correction',
+      });
+      const second = await cash.reverseMovement(context, branchIds, 'reverse-8-key', opened.value.id, expense.value.id, {
+        reasonCode: 'correction',
+      });
+      expect(second.replayed).toBe(true);
+      expect(second.value.id).toBe(first.value.id);
+      const summary = await cash.summary(companyId, branchIds, opened.value.id);
+      // -10 (expense) + 10 (one single reversal) = 0, never -10 + 20.
+      expect(summary.expectedCash).toBe('0.0000');
+    });
+
+    it('rejects reversing a movement that does not exist', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-reverse-9', {
+        branchId,
+        code: 'REG-REVERSE-9',
+        name: 'Caja Reverse 9',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-reverse-9', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      await expect(
+        cash.reverseMovement(context, branchIds, 'reverse-9-attempt', opened.value.id, randomUUID(), {
+          reasonCode: 'test',
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+  });
+
+  // TASK 16.11 (§13) — "Bitácora": a read-only projection of the existing
+  // `audit_log` rows this module already writes, scoped to one session.
+  describe('audit log ("bitácora")', () => {
+    it('records real evidence for open, a manual movement, a partial close, a reversal, and close — in order', async () => {
+      // Distinct, strictly increasing timestamps per step — this suite's
+      // shared `context` otherwise carries one fixed timestamp for every
+      // call, which would make every row in this test share one
+      // `occurred_at` and defeat the chronological-order assertion below
+      // (see the identical pattern at firstContext/secondContext further
+      // down this file).
+      const at = (offsetMinutes: number): typeof context => ({
+        ...context,
+        timestamp: new Date(context.timestamp.getTime() + offsetMinutes * 60_000),
+      });
+      const register = await cash.createRegister(at(0), branchIds, 'reg-audit-1', {
+        branchId,
+        code: 'REG-AUDIT',
+        name: 'Caja Audit',
+      });
+      const opened = await cash.openSession(at(1), branchIds, 'session-audit-1', {
+        cashRegisterId: register.value.id,
+        openingAmount: '500.0000',
+      });
+      const expense = await cash.createMovement(at(2), branchIds, 'audit-movement-1', opened.value.id, {
+        movementType: 'cash_out',
+        amount: '30.0000',
+        reasonCode: 'expense',
+        category: 'expense',
+      });
+      await cash.partialClose(at(3), branchIds, 'audit-partial-1', opened.value.id);
+      await cash.reverseMovement(at(4), branchIds, 'audit-reverse-1', opened.value.id, expense.value.id, {
+        reasonCode: 'correction',
+      });
+      await cash.closeSession(at(5), branchIds, 'audit-close-1', opened.value.id, {
+        declaredClosingAmount: '500.0000',
+      });
+
+      const log = await cash.auditLog(companyId, branchIds, opened.value.id, 100);
+      const actions = log.map((entry) => entry.action);
+      expect(actions).toEqual([
+        'cash_session.opened',
+        'cash_movement.created',
+        'cash_session.partial_closed',
+        'cash_movement.reversed',
+        'cash_session.closed',
+      ]);
+      // Never a second, parallel log — every entry is real evidence
+      // already written by auditAndPublish, occurring in strict
+      // chronological order and carrying a real actor/entity identity.
+      for (const entry of log) {
+        expect(entry.actorId).toBe(userId);
+        expect(entry.entityId).not.toBeNull();
+      }
+    });
+
+    it('never leaks another session\'s (or another company\'s) audit rows into this session\'s bitácora', async () => {
+      const at = (offsetMinutes: number): typeof context => ({
+        ...context,
+        timestamp: new Date(context.timestamp.getTime() + offsetMinutes * 60_000),
+      });
+      const register = await cash.createRegister(at(0), branchIds, 'reg-audit-2', {
+        branchId,
+        code: 'REG-AUDIT-2',
+        name: 'Caja Audit 2',
+      });
+      const sessionA = await cash.openSession(at(1), branchIds, 'session-audit-2a', {
+        cashRegisterId: register.value.id,
+        openingAmount: '100.0000',
+      });
+      await cash.closeSession(at(2), branchIds, 'session-audit-2a-close', sessionA.value.id, {
+        declaredClosingAmount: '100.0000',
+      });
+      const sessionB = await cash.openSession(at(3), branchIds, 'session-audit-2b', {
+        cashRegisterId: register.value.id,
+        openingAmount: '200.0000',
+      });
+      const logA = await cash.auditLog(companyId, branchIds, sessionA.value.id, 100);
+      expect(logA.map((entry) => entry.action)).toEqual(['cash_session.opened', 'cash_session.closed']);
+      const logB = await cash.auditLog(companyId, branchIds, sessionB.value.id, 100);
+      expect(logB.map((entry) => entry.action)).toEqual(['cash_session.opened']);
+    });
+
+    it('rejects reading the audit log for an unauthorized branch or a foreign company', async () => {
+      const register = await cash.createRegister(context, branchIds, 'reg-audit-3', {
+        branchId,
+        code: 'REG-AUDIT-3',
+        name: 'Caja Audit 3',
+      });
+      const opened = await cash.openSession(context, branchIds, 'session-audit-3', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      await expect(cash.auditLog(companyId, [otherBranchId], opened.value.id, 100)).rejects.toMatchObject({
+        code: 'resource_not_found',
+      });
+      await expect(cash.auditLog(otherCompanyId, branchIds, opened.value.id, 100)).rejects.toMatchObject({
+        code: 'resource_not_found',
+      });
     });
   });
 

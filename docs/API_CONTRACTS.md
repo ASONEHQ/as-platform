@@ -140,6 +140,8 @@ Commands return `200` for an established/updated result, `201` for creation, `20
 | `cash_session_already_open` | 409 | Register already has an open session |
 | `cash_session_not_open` | 409 | Mutation requires an open session but the session is absent or closed |
 | `cash_session_closed` | 409 | Mutation attempted after cash-session closure |
+| `cash_movement_not_reversible` | 409 | Movement is system-posted (`opening_float`/`cash_sale`/`cash_refund`) or is itself already a reversal |
+| `cash_movement_already_reversed` | 409 | Movement already has a reversal posted against it |
 | `price_conflict` | 409 | Submitted price snapshot is invalid/stale |
 | `inventory_insufficient` | 409 | Movement would violate initial no-negative policy |
 | `insufficient_inventory` | 409 | Inventory command would violate the no-negative policy |
@@ -319,6 +321,7 @@ Administrative company/branch routes are separate from `/context/*`, which only 
 | E044 | `GET /cash-sessions/{session_id}`; session detail | `cash_session.read`; branch | `Q`; optional include summary | `200 session`; Common | ETag; — / — |
 | E045 | `POST /cash-sessions/{session_id}/movements`; cash in/out | `cash_movement.create`; session branch | `C`; body client UUID*, `movement_type*`, positive `amount*`, `currency*`, `reason_code*`, note, device, occurred_at, offline metadata | `201 movement` and session summary; session closed, IC, insufficient policy, scope | Immutable command; offline allowed only for registered session/device; `cash_movement.created` / same |
 | E046 | `GET /cash-sessions/{session_id}/movements`; movement history | `cash_session.read`; branch | `S`; cursor, limit, type, occurred_from/to | `200 movements`; Common | Stable `(occurred_at,id)` cursor; — / — |
+| E165 | `POST /cash-sessions/{session_id}/movements/{movement_id}/reverse`; reverse a manual movement (TASK 16.11) | `cash_movement.create`; session branch | `C`; body `reason_code*`, note | `201` new opposite-direction movement referencing the original via `reversal_of_id`; movement not found, `cash_movement_not_reversible` (system-posted or already a reversal), `cash_movement_already_reversed`, session closed, IC, scope | §13.1's own "correction creates a reversal/compensating movement" rule, finally implemented; original row is never mutated or deleted; DB `cash_movements_reversal_of_uq` is the durable one-reversal-per-movement boundary; `cash_movement.reversed` / same |
 | E047 | `POST /cash-sessions/{session_id}/closures`; close session | `cash_session.close`; branch | `C`; body `declared_closing_amount*`, currency*, denomination summary optional, reason/note, occurred_at*, expected `base_version*` | `201` closure result and closed session; session closed, version, IC | Server calculates expected/discrepancy; no reopen in v1; `cash_session.closed` / same |
 | E048 | `GET /cash-sessions/{session_id}/summary`; totals/discrepancy | `cash_session.read`; branch | `S`; no query except optional `as_of` for open session | `200` exact totals by payment/movement, expected, declared, discrepancy, freshness; Common | Query from authoritative facts; — / — |
 

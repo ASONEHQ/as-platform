@@ -46,12 +46,13 @@ integration('durable inventory count physical foundation', () => {
   // never updated as later waves (through migration 0028) grew it; the
   // table-shape assertions below, which are this test's real intent, are
   // unaffected and unchanged. TASK 16.10B: corrected again, 29 -> 33
-  // (0000-0032), same drift, same fix, same precedent.
+  // (0000-0032), same drift, same fix, same precedent. TASK 16.11:
+  // corrected again, 33 -> 34 (0000-0033), same drift, same fix.
   it('applies all thirty-three migrations and creates exactly two count tables', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('33');
+    expect(journal.rows[0]?.count).toBe('34');
     const tables = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema='public' and table_name like 'inventory_count%'

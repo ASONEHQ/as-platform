@@ -552,6 +552,20 @@ class _RecordingCashGateway implements PosCashGateway {
   @override
   Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async =>
       partialClosesResult;
+
+  @override
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  }) => Future.error(StateError('not used'));
+
+  @override
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  }) async => const [];
 }
 
 final _context = AuthenticatedContext(

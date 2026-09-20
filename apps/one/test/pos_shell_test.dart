@@ -4501,6 +4501,245 @@ void main() {
     );
 
     testWidgets(
+      'the close-shift denomination breakdown is currency-aware — a USD session shows '
+      'US bills/coins, never Mexican pesos (TASK 16.11)',
+      (tester) async {
+        final usdSession = PosCashSession(
+          id: 'session-id',
+          branchId: 'branch-id',
+          cashRegisterId: 'register-id',
+          openedBy: 'user-id',
+          openedAt: DateTime.utc(2026, 9, 6, 9),
+          openingAmount: '1000.0000',
+          currencyCode: 'USD',
+          status: 'open',
+        );
+        final cashGateway = _FakeCashGateway(openSessionFixture: usdSession);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('pos-caja-denominations-toggle')),
+        );
+        await tester.pumpAndSettle();
+        // The real US set (canonicalCashDenominationsUSD) — never the MXN
+        // set's $1000/$500/$200 notes or 50-centavo coin.
+        expect(find.byKey(const Key('pos-caja-denom-100')), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-denom-0.25')), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-denom-0.01')), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-denom-1000')), findsNothing);
+        expect(find.byKey(const Key('pos-caja-denom-0.50')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a client-postable movement can be reversed, and the drawer reloads with the '
+      'reversal visible (TASK 16.11 §6)',
+      (tester) async {
+        final withdrawal = PosCashMovement(
+          id: 'movement-1',
+          cashSessionId: 'session-id',
+          movementType: 'cash_out',
+          amount: '50.0000',
+          currencyCode: 'MXN',
+          reasonCode: 'safe_drop',
+          occurredAt: DateTime.utc(2026, 9, 6, 10),
+          createdBy: 'user-id',
+        );
+        final cashGateway = _FakeCashGateway(movements: [withdrawal]);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        expect(
+          find.byKey(const Key('pos-caja-reverse-movement-movement-1')),
+          findsOneWidget,
+        );
+        await tester.tap(
+          find.byKey(const Key('pos-caja-reverse-movement-movement-1')),
+        );
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-reverse-reason')),
+          'Monto incorrecto',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-reverse')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.reverseCalls.single, (
+          cashSessionId: 'session-id',
+          movementId: 'movement-1',
+          reasonCode: 'Monto incorrecto',
+        ));
+      },
+    );
+
+    testWidgets(
+      'a rejected reversal (already reversed) keeps the dialog open and shows the '
+      'real backend error — never a fake success (TASK 16.11 §6)',
+      (tester) async {
+        final withdrawal = PosCashMovement(
+          id: 'movement-1',
+          cashSessionId: 'session-id',
+          movementType: 'cash_out',
+          amount: '50.0000',
+          currencyCode: 'MXN',
+          reasonCode: 'safe_drop',
+          occurredAt: DateTime.utc(2026, 9, 6, 10),
+          createdBy: 'user-id',
+        );
+        final cashGateway = _FakeCashGateway(
+          movements: [withdrawal],
+          reverseFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'Este movimiento ya fue revertido.'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(
+          find.byKey(const Key('pos-caja-reverse-movement-movement-1')),
+        );
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-reverse-reason')),
+          'Corrección',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-reverse')));
+        await tester.pumpAndSettle();
+        expect(find.text('Este movimiento ya fue revertido.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-reverse-reason')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'never offers "Revertir" on a movement that is itself a reversal, or on one '
+      'already reversed (TASK 16.11 §6)',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          movements: [
+            PosCashMovement(
+              id: 'movement-original',
+              cashSessionId: 'session-id',
+              movementType: 'cash_out',
+              amount: '50.0000',
+              currencyCode: 'MXN',
+              reasonCode: 'safe_drop',
+              occurredAt: DateTime.utc(2026, 9, 6, 10),
+              createdBy: 'user-id',
+            ),
+            PosCashMovement(
+              id: 'movement-reversal',
+              cashSessionId: 'session-id',
+              movementType: 'cash_in',
+              amount: '50.0000',
+              currencyCode: 'MXN',
+              reasonCode: 'correction',
+              occurredAt: DateTime.utc(2026, 9, 6, 11),
+              createdBy: 'user-id',
+              reversalOfId: 'movement-original',
+            ),
+          ],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        expect(
+          find.byKey(const Key('pos-caja-reverse-movement-movement-original')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('pos-caja-reverse-movement-movement-reversal')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'the Bitácora button is gated by audit.read and shows real evidence — never a '
+      'fake or cached log (TASK 16.11 §13)',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          auditLogResult: [
+            PosCashAuditEntry(
+              id: 'entry-1',
+              actorType: 'user',
+              actorId: 'user-id',
+              action: 'cash_session.opened',
+              entityType: 'cash_session',
+              entityId: 'session-id',
+              metadata: const {},
+              occurredAt: DateTime.utc(2026, 9, 6, 9),
+            ),
+            PosCashAuditEntry(
+              id: 'entry-2',
+              actorType: 'user',
+              actorId: 'user-id',
+              action: 'cash_movement.created',
+              entityType: 'cash_movement',
+              entityId: 'movement-1',
+              metadata: const {},
+              occurredAt: DateTime.utc(2026, 9, 6, 10),
+            ),
+          ],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        expect(find.byKey(const Key('pos-caja-audit-log-button')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('pos-caja-audit-log-button')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.auditLogCalls, ['session-id']);
+        expect(find.text('Caja abierta'), findsOneWidget);
+        expect(find.text('Movimiento registrado'), findsOneWidget);
+        await tester.tap(find.text('Cerrar'));
+        await tester.pumpAndSettle();
+
+        // Without audit.read, no Bitácora button at all — the higher-trust
+        // grant, deliberately separate from cash_session.read.
+        final withoutAuditRead = AuthenticatedContext(
+          session: _contextWithCashPermissions.session,
+          user: _contextWithCashPermissions.user,
+          companies: _contextWithCashPermissions.companies,
+          branches: _contextWithCashPermissions.branches,
+          companyWideAccess: false,
+          permissions: [
+            for (final permission in _contextWithCashPermissions.permissions)
+              if (permission != 'audit.read') permission,
+          ],
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: withoutAuditRead,
+          cashGateway: _FakeCashGateway(),
+        );
+        await _navigateToCaja(tester);
+        expect(find.byKey(const Key('pos-caja-audit-log-button')), findsNothing);
+      },
+    );
+
+    testWidgets(
       'Cortes de caja lists sessions and opening a row shows the full detail',
       (tester) async {
         final cashGateway = _FakeCashGateway(
@@ -7808,6 +8047,11 @@ final _contextWithCashPermissions = AuthenticatedContext(
     'cash_session.open',
     'cash_movement.create',
     'cash_session.close',
+    // TASK 16.11 (§13) — "Bitácora": deliberately included here (a
+    // full-access cash-capable context), not folded into the base
+    // `cash_movement.create`/`cash_session.close` set, mirroring the real
+    // backend's own separate `audit.read` gate.
+    'audit.read',
   ],
 );
 
@@ -8548,6 +8792,9 @@ class _FakeCashGateway implements PosCashGateway {
     this.closeResult,
     this.closeFailure,
     this.historyResult,
+    this.reverseResult,
+    this.reverseFailure,
+    this.auditLogResult = const [],
   }) : registers = registers ?? [_fixtureRegister],
        _current = identical(openSessionFixture, _unset)
            ? _fixtureSession
@@ -8584,6 +8831,13 @@ class _FakeCashGateway implements PosCashGateway {
   final PosCashSession? closeResult;
   final ApiException? closeFailure;
   final PosCashSessionHistoryPage? historyResult;
+  final PosCashMovement? reverseResult;
+  final ApiException? reverseFailure;
+  final List<PosCashAuditEntry> auditLogResult;
+
+  final List<({String cashSessionId, String movementId, String reasonCode})>
+  reverseCalls = [];
+  final List<String> auditLogCalls = [];
 
   final List<String> openSessionForBranchCalls = [];
   final List<({String cashRegisterId, String openingAmount})> openSessionCalls =
@@ -8764,6 +9018,43 @@ class _FakeCashGateway implements PosCashGateway {
 
   @override
   Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
+
+  @override
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  }) async {
+    reverseCalls.add((
+      cashSessionId: cashSessionId,
+      movementId: movementId,
+      reasonCode: reasonCode,
+    ));
+    if (reverseFailure != null) throw reverseFailure!;
+    return reverseResult ??
+        PosCashMovement(
+          id: 'reversal-id',
+          cashSessionId: cashSessionId,
+          movementType: 'cash_in',
+          amount: '10.0000',
+          currencyCode: 'MXN',
+          reasonCode: reasonCode,
+          note: note,
+          occurredAt: DateTime.utc(2026, 9, 6, 12),
+          createdBy: 'user-id',
+          reversalOfId: movementId,
+        );
+  }
+
+  @override
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  }) async {
+    auditLogCalls.add(cashSessionId);
+    return auditLogResult;
+  }
 }
 
 /// TASK 12.7 Part S: a network/backend failure while checking session
@@ -8829,6 +9120,18 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
       Future.error(StateError('not used'));
   @override
   Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
+  @override
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  }) => Future.error(StateError('not used'));
+  @override
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  }) async => const [];
 }
 
 class _FakeReadGateway implements PosReadGateway {

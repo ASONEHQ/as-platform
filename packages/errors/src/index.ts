@@ -219,6 +219,17 @@ export const infrastructureErrorCodes = [
   'purchase_order_over_receipt',
   'purchase_order_empty_receipt',
   'purchase_order_invalid_transition',
+  // TASK 16.11 (§6): cash-movement reversal — "Never delete posted
+  // financial movements. Corrections must use reversal/compensating
+  // architecture." Two genuinely new semantic concepts, mirroring the
+  // TASK 12.8 `payment_not_reversible` precedent immediately above rather
+  // than reusing a generic code: `cash_movement_not_reversible` (the
+  // target movement is system-posted, e.g. `cash_sale`/`opening_float`/
+  // `cash_refund`, or is itself already a reversal); `cash_movement_
+  // already_reversed` (the target already has a reversal — the app-level
+  // mirror of `cash_movements_reversal_of_uq`'s own DB-level guarantee).
+  'cash_movement_not_reversible',
+  'cash_movement_already_reversed',
   'not_found',
   'method_not_allowed',
   'payload_too_large',

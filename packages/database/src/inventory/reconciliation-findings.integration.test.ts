@@ -51,12 +51,14 @@ integration('inventory reconciliation findings physical foundation', () => {
   // never updated as later waves (through migration 0028) grew it; the
   // column/index assertions below, which are this test's real intent, are
   // unaffected and unchanged. TASK 16.10B: corrected again, 29 -> 33
-  // (0000-0032), same drift, same fix, same precedent.
+  // (0000-0032), same drift, same fix, same precedent. TASK 16.11:
+  // corrected again, 33 -> 34 (0000-0033, migration 0033 adds the cash
+  // reversal unique index), same drift, same fix.
   it('applies thirty-three migrations and exposes exactly the approved table, columns and indexes', async () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('33');
+    expect(journal.rows[0]?.count).toBe('34');
 
     const columns = await client.pool.query<{ column_name: string; data_type: string }>(
       `select column_name,data_type from information_schema.columns

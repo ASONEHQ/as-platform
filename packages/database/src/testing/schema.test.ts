@@ -88,26 +88,24 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  // TASK 16.10B — updated from a stale 29-entry snapshot: five tasks'
-  // worth of migrations (0029-0032, TASK 16.6D through 16.10A) landed
-  // without updating this tracker, so it was failing against the real,
-  // correct journal even though nothing in TASK 16.10B's own fix touched
-  // migrations directly (`syncSystemRolePermissions` is a seed-only
-  // change, no new migration). Verified independently (`_journal.json`
-  // really does have 33 sequential entries 0-32 ending at
-  // `0032_absurd_liz_osborn`) before bumping the numbers — same precedent
-  // as TASK 15.0's own prior update to this exact test. The test's actual
+  // TASK 16.11 — updated from a stale 33-entry snapshot: migration 0033
+  // (`cash_movements_reversal_of_uq`, a real DB-level guarantee backing
+  // the new manual-movement reversal endpoint) landed without updating
+  // this tracker. Verified independently (`_journal.json` really does
+  // have 34 sequential entries 0-33 ending at `0033_small_shatterstar`)
+  // before bumping the numbers — same precedent as TASK 15.0's and TASK
+  // 16.10B's own prior updates to this exact test. The test's actual
   // intent — the journal is sequential, contiguous, and its last entry
   // matches the newest real migration file — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(33);
+    expect(journal.entries).toHaveLength(34);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 33 }, (_, index) => index),
+      Array.from({ length: 34 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0032_absurd_liz_osborn');
+    expect(journal.entries.at(-1)?.tag).toBe('0033_small_shatterstar');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {

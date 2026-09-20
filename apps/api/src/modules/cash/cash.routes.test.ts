@@ -49,7 +49,7 @@ function sessionValue(overrides?: Readonly<Record<string, unknown>>): Readonly<R
     ...overrides,
   };
 }
-function movementValue(): Readonly<Record<string, unknown>> {
+function movementValue(overrides?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
   return {
     id: movementId,
     cashSessionId: sessionId,
@@ -63,6 +63,23 @@ function movementValue(): Readonly<Record<string, unknown>> {
     occurredAt: new Date('2026-09-01T09:30:00.000Z'),
     createdBy: userId,
     reversalOfId: null,
+    category: null,
+    ...overrides,
+  };
+}
+const reversalMovementId = '00000000-0000-7000-8000-000000000007';
+function auditEntryValue(overrides?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  return {
+    id: '00000000-0000-7000-8000-000000000008',
+    branchId,
+    actorType: 'user',
+    actorId: userId,
+    action: 'cash_session.opened',
+    entityType: 'cash_session',
+    entityId: sessionId,
+    metadata: {},
+    occurredAt: new Date('2026-09-01T09:00:00.000Z'),
+    ...overrides,
   };
 }
 
@@ -135,6 +152,13 @@ async function fixture(
     ),
     createMovement: vi.fn(() => Promise.resolve({ value: movementValue(), replayed: false })),
     listMovements: vi.fn(() => Promise.resolve({ items: [movementValue()], nextCursor: null })),
+    reverseMovement: vi.fn(() =>
+      Promise.resolve({
+        value: movementValue({ id: reversalMovementId, movementType: 'cash_out', reversalOfId: movementId }),
+        replayed: false,
+      }),
+    ),
+    auditLog: vi.fn(() => Promise.resolve([auditEntryValue()])),
     closeSession: vi.fn(() =>
       Promise.resolve({
         value: sessionValue({
@@ -607,6 +631,73 @@ describe('cash register HTTP routes (TASK 12.7)', () => {
     });
   });
 
+  // TASK 16.11 (§6) — reversal/compensating architecture for manual movements.
+  describe('POST /api/v1/cash-sessions/:id/movements/:movementId/reverse', () => {
+    it('reverses under cash_movement.create and rejects without it', async () => {
+      const allowed = await fixture(['cash_movement.create']);
+      const ok = await allowed.app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/movements/${movementId}/reverse`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'reverse-1' },
+        payload: { reason_code: 'data_entry_error' },
+      });
+      expect(ok.statusCode).toBe(201);
+      expect(allowed.service.reverseMovement).toHaveBeenCalledTimes(1);
+      expect(ok.json()).toMatchObject({
+        data: { id: reversalMovementId, movement_type: 'cash_out', reversal_of_id: movementId },
+      });
+
+      const denied = await fixture(['cash_session.read']);
+      const rejected = await denied.app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/movements/${movementId}/reverse`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'reverse-1' },
+        payload: { reason_code: 'data_entry_error' },
+      });
+      expect(rejected.statusCode).toBe(403);
+      expect(denied.service.reverseMovement).not.toHaveBeenCalled();
+    });
+
+    it('requires an Idempotency-Key header', async () => {
+      const { app } = await fixture(['cash_movement.create']);
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/movements/${movementId}/reverse`,
+        headers: { authorization: 'Bearer token' },
+        payload: { reason_code: 'data_entry_error' },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('requires reason_code at the schema boundary', async () => {
+      const { app, service } = await fixture(['cash_movement.create']);
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/movements/${movementId}/reverse`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'reverse-noreason' },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(400);
+      expect(service.reverseMovement).not.toHaveBeenCalled();
+    });
+
+    it('reports idempotency replay via response header', async () => {
+      const { app, service } = await fixture(['cash_movement.create']);
+      service.reverseMovement?.mockResolvedValueOnce({
+        value: movementValue({ id: reversalMovementId, movementType: 'cash_out', reversalOfId: movementId }),
+        replayed: true,
+      });
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/cash-sessions/${sessionId}/movements/${movementId}/reverse`,
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'reverse-replay' },
+        payload: { reason_code: 'data_entry_error' },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.headers['idempotency-replayed']).toBe('true');
+    });
+  });
+
   describe('POST /api/v1/cash-sessions/:id/closures (E047)', () => {
     it('closes under cash_session.close and rejects without it', async () => {
       const allowed = await fixture(['cash_session.close']);
@@ -719,6 +810,74 @@ describe('cash register HTTP routes (TASK 12.7)', () => {
       });
       // additionalProperties: false rejects the extraneous field outright.
       expect(response.statusCode).toBe(400);
+      expect(service.closeSession).not.toHaveBeenCalled();
+    });
+  });
+
+  // TASK 16.11 (§13) — "Bitácora": read-only projection of `audit_log`,
+  // gated by `audit.read` specifically — deliberately NOT `cash_session.read`
+  // (a cashier who can view the shift shouldn't automatically see the
+  // audit trail; that's a separate, higher-trust grant).
+  describe('GET /api/v1/cash-sessions/:id/audit-log', () => {
+    it('reads under audit.read and rejects without it — including with cash_session.read alone', async () => {
+      const allowed = await fixture(['audit.read']);
+      const ok = await allowed.app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toMatchObject({
+        data: [expect.objectContaining({ action: 'cash_session.opened', entity_id: sessionId })],
+      });
+
+      const denied = await fixture(['cash_session.read']);
+      const rejected = await denied.app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(rejected.statusCode).toBe(403);
+      expect(denied.service.auditLog).not.toHaveBeenCalled();
+    });
+
+    it('defaults limit to 100 and passes an explicit limit through to the service', async () => {
+      const { app, service } = await fixture(['audit.read']);
+      await app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(service.auditLog).toHaveBeenCalledWith(companyId, [branchId], sessionId, 100);
+
+      await app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log?limit=25`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(service.auditLog).toHaveBeenCalledWith(companyId, [branchId], sessionId, 25);
+    });
+
+    it('rejects an out-of-range limit at the schema boundary', async () => {
+      const { app, service } = await fixture(['audit.read']);
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log?limit=500`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(service.auditLog).not.toHaveBeenCalled();
+    });
+
+    it('is read-only — never calls a mutation method on the service', async () => {
+      const { app, service } = await fixture(['audit.read']);
+      await app.inject({
+        method: 'GET',
+        url: `/api/v1/cash-sessions/${sessionId}/audit-log`,
+        headers: { authorization: 'Bearer token' },
+      });
+      expect(service.createMovement).not.toHaveBeenCalled();
+      expect(service.reverseMovement).not.toHaveBeenCalled();
       expect(service.closeSession).not.toHaveBeenCalled();
     });
   });

@@ -5,8 +5,9 @@ import { normalizeCurrencyCode } from '@asone/database';
 
 import type { CashRepository } from './cash.repository.js';
 import {
-  canonicalCashDenominationsMXN,
+  canonicalCashDenominationsForCurrency,
   CashError,
+  type CashAuditLogEntry,
   type CashMovementCategory,
   cashMovementCategories,
   cashMovementCategoryDirection,
@@ -57,18 +58,23 @@ function nonBlank(value: string, field: string): string {
 function validateDenominationCounts(
   input: readonly { value: string; quantity: number }[] | undefined,
   declaredClosingAmount: string,
+  currencyCode: string,
 ): readonly DenominationCount[] | null {
   if (input === undefined) return null;
   if (input.length === 0) throw new CashError('validation_error', 'denomination_counts cannot be empty.');
+  const denominations = canonicalCashDenominationsForCurrency(currencyCode);
   const seen = new Set<string>();
   let totalUnits = 0n;
   const normalized: DenominationCount[] = [];
   for (const line of input) {
-    const canonicalValue = canonicalCashDenominationsMXN.find(
+    const canonicalValue = denominations.find(
       (candidate) => moneyUnits(candidate) === moneyUnits(line.value),
     );
     if (canonicalValue === undefined)
-      throw new CashError('validation_error', `${line.value} is not a recognized MXN denomination.`);
+      throw new CashError(
+        'validation_error',
+        `${line.value} is not a recognized ${currencyCode} denomination.`,
+      );
     if (seen.has(canonicalValue))
       throw new CashError('validation_error', `Denomination ${canonicalValue} was listed more than once.`);
     seen.add(canonicalValue);
@@ -461,6 +467,92 @@ export class CashService {
     );
   }
 
+  /** TASK 16.11 (§6) — "Never delete posted financial movements.
+   * Corrections must use reversal/compensating architecture." Posts a new
+   * movement of the OPPOSITE direction/type for the SAME amount, with
+   * `reversalOfId` pointing at the original — never mutates or deletes the
+   * original row. Only a client-postable `cash_in`/`cash_out` movement can
+   * be reversed; `opening_float`/`cash_sale`/`cash_refund` are
+   * system-posted and have their own correction paths elsewhere (e.g. the
+   * sale/refund they mirror) — reversing those here would let a drawer
+   * count silently diverge from the sale/refund ledger it's supposed to
+   * mirror. */
+  public async reverseMovement(
+    context: CashMutationContext,
+    branchIds: readonly string[],
+    key: string,
+    cashSessionId: string,
+    movementId: string,
+    input: { reasonCode: string; note?: string },
+  ): Promise<{ value: CashMovementRow; replayed: boolean }> {
+    const reasonCode = nonBlank(input.reasonCode, 'reason_code');
+    const requestHash = hash({ cashSessionId, movementId, reasonCode, note: input.note ?? null });
+    return this.repository.transaction((client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'cash_movement.reverse',
+        key,
+        requestHash,
+        'cash_movement',
+        decodeMovement,
+        async () => {
+          const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
+          if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
+            throw new CashError('resource_not_found', 'The session was not found.');
+          if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
+          const original = await this.repository.lockMovement(client, context.companyId, sessionRow.id, movementId);
+          if (original === null) throw new CashError('resource_not_found', 'The movement was not found.');
+          if (original.movementType !== 'cash_in' && original.movementType !== 'cash_out')
+            throw new CashError(
+              'cash_movement_not_reversible',
+              `A ${original.movementType} movement cannot be reversed here; it is system-posted and corrected through the record it mirrors.`,
+            );
+          if (original.reversalOfId !== null)
+            throw new CashError('cash_movement_not_reversible', 'A reversal itself cannot be reversed.');
+          if (await this.repository.hasReversal(client, context.companyId, original.id))
+            throw new CashError('cash_movement_already_reversed', 'This movement was already reversed.');
+          const reversedType: 'cash_in' | 'cash_out' = original.movementType === 'cash_in' ? 'cash_out' : 'cash_in';
+          const created = await this.repository.insertMovement(client, {
+            id: randomUUID(),
+            companyId: context.companyId,
+            branchId: sessionRow.branchId,
+            cashSessionId: sessionRow.id,
+            movementType: reversedType,
+            amount: original.amount,
+            currencyCode: sessionRow.currencyCode,
+            reasonCode,
+            note: input.note === undefined ? null : nonBlank(input.note, 'note'),
+            referenceType: null,
+            referenceId: null,
+            occurredAt: context.timestamp,
+            createdBy: context.actorId,
+            deviceId: context.deviceId ?? null,
+            category: null,
+            reversalOfId: original.id,
+          });
+          await this.repository.auditAndPublish(client, context, {
+            action: 'cash_movement.reversed',
+            resourceType: 'cash_movement',
+            resourceId: created.id,
+            eventType: 'cash_movement.reversed',
+            branchId: created.branchId,
+            version: 1n,
+            payload: {
+              movement_id: created.id,
+              reversal_of_id: original.id,
+              cash_session_id: created.cashSessionId,
+              movement_type: created.movementType,
+              amount: created.amount,
+              reason_code: created.reasonCode,
+            },
+          });
+          return created;
+        },
+      ),
+    );
+  }
+
   public async listMovements(
     companyId: string,
     branchIds: readonly string[],
@@ -539,8 +631,14 @@ export class CashService {
     },
   ): Promise<{ value: CashSessionRow; replayed: boolean }> {
     const declaredClosingAmount = nonNegativeAmount(input.declaredClosingAmount, 'declared_closing_amount');
-    const denominationCounts = validateDenominationCounts(input.denominationCounts, declaredClosingAmount);
-    const requestHash = hash({ cashSessionId, declaredClosingAmount, denominationCounts });
+    // TASK 16.11 — the denomination set depends on the SESSION's own
+    // currency (see `canonicalCashDenominationsForCurrency`'s own doc
+    // comment), which is only known once the session row is loaded
+    // below, inside the transaction — never validated here against a
+    // blind MXN assumption. The idempotency request hash therefore
+    // covers the RAW input, not a pre-validated/normalized shape (still
+    // fully deterministic per distinct request).
+    const requestHash = hash({ cashSessionId, declaredClosingAmount, denominationCounts: input.denominationCounts });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -556,6 +654,11 @@ export class CashService {
             throw new CashError('resource_not_found', 'The session was not found.');
           if (sessionRow.status === 'closed')
             throw new CashError('cash_session_closed', 'The session is already closed.');
+          const denominationCounts = validateDenominationCounts(
+            input.denominationCounts,
+            declaredClosingAmount,
+            sessionRow.currencyCode,
+          );
           // Formal `open -> closing` transition (§21.1) — real inside
           // this one transaction, not merely conceptual.
           const closingRow = await this.repository.transitionSessionStatus(
@@ -699,6 +802,18 @@ export class CashService {
   ): Promise<readonly CashSessionPartialCloseRow[]> {
     const sessionRow = await this.session(companyId, branchIds, cashSessionId);
     return this.repository.partialClosesForSession(companyId, sessionRow.id);
+  }
+
+  // --- Audit trail ("Bitácora") (TASK 16.11 §13) ----------------------------
+
+  public async auditLog(
+    companyId: string,
+    branchIds: readonly string[],
+    cashSessionId: string,
+    limit: number,
+  ): Promise<readonly CashAuditLogEntry[]> {
+    const sessionRow = await this.session(companyId, branchIds, cashSessionId);
+    return this.repository.auditLogForSession(companyId, sessionRow.id, limit);
   }
 }
 

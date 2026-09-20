@@ -11,6 +11,8 @@ const statusCodeByCode: Readonly<Record<string, number>> = {
   cash_session_already_open: 409,
   cash_session_not_open: 409,
   cash_session_closed: 409,
+  cash_movement_not_reversible: 409,
+  cash_movement_already_reversed: 409,
 };
 
 export function mapCashError(error: unknown): Error {

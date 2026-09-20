@@ -5,6 +5,7 @@ import type { DatabaseClient } from '@asone/database';
 import {
   CashError,
   cashMovementDirection,
+  type CashAuditLogEntry,
   type CashMovementCategory,
   type CashMovementRow,
   type CashMovementType,
@@ -698,14 +699,17 @@ export class CashRepository {
        * behaves exactly like `null` (system-posted movements and
        * uncategorized manual movements never pass this). */
       category?: CashMovementCategory | null;
+      /** TASK 16.11 (§6) — set only by `reverseMovement`'s own compensating
+       * insert; every other caller omits it (`null`). */
+      reversalOfId?: string | null;
     },
   ): Promise<CashMovementRow> {
     const row = result<MovementDb>(
       await client.query(
         `insert into cash_movements
          (id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,
-          reference_type,reference_id,occurred_at,created_by,device_id,created_at,category)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12,$15)
+          reference_type,reference_id,occurred_at,created_by,device_id,created_at,category,reversal_of_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12,$15,$16)
          returning ${MOVEMENT_COLUMNS}`,
         [
           input.id,
@@ -723,11 +727,45 @@ export class CashRepository {
           input.createdBy,
           input.deviceId,
           input.category ?? null,
+          input.reversalOfId ?? null,
         ],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Movement insertion did not return a row.');
     return movement(row);
+  }
+
+  /** TASK 16.11 (§6) — loads and locks one movement for a same-transaction
+   * reversal, scoped to both company and session (never a bare id lookup)
+   * so a reversal can never reach across a tenant or session boundary. */
+  public async lockMovement(
+    client: CashTransaction,
+    companyId: string,
+    cashSessionId: string,
+    id: string,
+  ): Promise<CashMovementRow | null> {
+    const row = result<MovementDb>(
+      await client.query(
+        `select ${MOVEMENT_COLUMNS} from cash_movements
+         where company_id=$1 and cash_session_id=$2 and id=$3 for update`,
+        [companyId, cashSessionId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : movement(row);
+  }
+
+  /** True if any movement already reverses `movementId` — the app-level
+   * pre-check backing `cash_movements_reversal_of_uq`'s own DB-level
+   * guarantee (see `mapDatabaseError`), so a second reversal attempt gets
+   * a clean domain error instead of a raw constraint violation. */
+  public async hasReversal(client: CashTransaction, companyId: string, movementId: string): Promise<boolean> {
+    const row = result<{ exists: boolean }>(
+      await client.query(
+        `select exists(select 1 from cash_movements where company_id=$1 and reversal_of_id=$2) as exists`,
+        [companyId, movementId],
+      ),
+    ).rows[0];
+    return row?.exists === true;
   }
 
   /** ADR-0013's exact same pattern applied to cash: posts one `cash_sale`
@@ -929,6 +967,61 @@ export class CashRepository {
     return rows.map(partialClose);
   }
 
+  // --- Audit trail ("Bitácora") (TASK 16.11 §13) ---------------------------
+
+  /** Projects the existing `audit_log` table down to one cash session's own
+   * lifecycle — its own `cash_session` row, plus every `cash_movement`/
+   * `cash_session_partial_close` row that belongs to it (joined by id,
+   * since `audit_log` itself only ever carries the mutated entity's own id,
+   * never a session id for those two entity types). Never a second write
+   * path: this only ever reads rows `auditAndPublish` already wrote. */
+  public async auditLogForSession(
+    companyId: string,
+    cashSessionId: string,
+    limit: number,
+  ): Promise<CashAuditLogEntry[]> {
+    const rows = result<{
+      id: string;
+      branch_id: string | null;
+      actor_type: string;
+      actor_id: string | null;
+      action: string;
+      entity_type: string;
+      entity_id: string | null;
+      metadata: Readonly<Record<string, unknown>>;
+      occurred_at: string;
+    }>(
+      await this.database.pool.query(
+        `select id,branch_id,actor_type,actor_id,action,entity_type,entity_id,metadata,occurred_at
+         from audit_log
+         where company_id=$1
+           and (
+             (entity_type='cash_session' and entity_id=$2)
+             or (entity_type='cash_movement' and entity_id in (
+               select id from cash_movements where company_id=$1 and cash_session_id=$2
+             ))
+             or (entity_type='cash_session_partial_close' and entity_id in (
+               select id from cash_session_partial_closes where company_id=$1 and cash_session_id=$2
+             ))
+           )
+         order by occurred_at asc, id asc
+         limit $3`,
+        [companyId, cashSessionId, limit],
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      id: row.id,
+      branchId: row.branch_id,
+      actorType: row.actor_type,
+      actorId: row.actor_id,
+      action: row.action,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      metadata: row.metadata,
+      occurredAt: new Date(row.occurred_at),
+    }));
+  }
+
   private mapDatabaseError(error: unknown): unknown {
     switch (constraint(error)) {
       case 'cash_registers_company_branch_code_active_uq':
@@ -937,6 +1030,13 @@ export class CashRepository {
         return new CashError('cash_session_already_open', 'The register already has an open session.');
       case 'cash_movements_payment_reference_uq':
         return new CashError('validation_error', 'A cash movement for this payment was already recorded.');
+      // Defense in depth only — `CashService.reverseMovement` already
+      // checks `hasReversal` server-side before this insert is ever
+      // attempted, so a real request should never reach this constraint
+      // (only a genuine race between two concurrent reversal attempts
+      // would, and that race is exactly what this index exists to close).
+      case 'cash_movements_reversal_of_uq':
+        return new CashError('cash_movement_already_reversed', 'This movement was already reversed.');
       // Defense in depth only — `CashService.createMovement` already
       // validates the exact same rule server-side before this insert is
       // ever attempted (see `validateMovementCategory`), so a real

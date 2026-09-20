@@ -2420,6 +2420,85 @@ instruction) and the "Purchase orders"/"Purchase history"/"Supplier price
 comparison" rows in `## 5` above are now superseded by this section — the
 formal PO workflow was built in TASK 16.10, per the sections above.
 
+## TASK 16.11 — Caja / Corte de Caja: currency-aware denominations, movement reversal, and a real Bitácora viewing surface (2026-09-19)
+
+TASK 16.8 (above) already forensically audited the legacy Corte de Caja
+module and certified the modern cash-register implementation commercially
+GREEN, closing two real gaps (printing, concurrent-race proof) and one
+E2E certification. This task re-opened that certification specifically to
+verify three claims TASK 16.8's own A/H/G matrix made that turned out, on
+direct re-audit, to be true of the *data* but not of the *surface*: (1)
+denomination counting was hardcoded to a single MXN set even though the
+platform's own `business.currency` setting already allows `MXN`/`USD`;
+(2) `cash_movements.reversal_of_id` was a real schema column with zero
+writers anywhere in the codebase, meaning §6's own "corrections must use
+reversal/compensating architecture" instruction was not actually
+implemented; (3) TASK 16.8 correctly said Bitácora "reuses the existing
+`audit_log` table directly" — true of the data, but no `audit.read`-gated
+HTTP route or Flutter screen existed anywhere to actually view it. No new
+capability outside these three was needed: the authoritative cash
+invariant, register/shift lifecycle, sale/refund integration, manual
+movement semantics, partial-close semantics, close-shift semantics, and
+history were all re-confirmed still correct and were not touched.
+
+### §1 — What this task closed
+
+| Legacy feature | Legacy classification | Modern implementation | Backend authority | Persistence | Permissions | Test evidence | Status |
+|---|---|---|---|---|---|---|---|
+| Cierre de caja — denomination set | **A** (TASK 16.8), but MXN-only | `canonicalCashDenominationsForCurrency(currencyCode)` selects the real MXN or USD bill/coin set from the session's own `currency_code` — never a blind MXN default, never merging the two sets. Flutter's `_CloseCajaDialog` builds its denomination-entry rows from the same currency-aware selector (moved from a field initializer into `initState`, since `widget` isn't attached yet when field initializers run) | `cash.types.ts` (`canonicalCashDenominationsForCurrency`), `cash.service.ts` (`validateDenominationCounts` now takes `currencyCode`) | No new column — `cash_sessions.currency_code` already existed and is already the session's own authoritative currency | `cash_movement.create`/`cash_session.close` (unchanged — no new permission needed) | 2 new backend integration tests (accepts a real USD breakdown for a USD session; rejects an MXN-only denomination against a USD session and vice versa) + 1 new Flutter widget test (a USD session's close dialog shows US bills/coins, never pesos) | **Closed** |
+| Manual movement correction | **G** (schema column existed, zero writers anywhere — confirmed by grep) | `POST /cash-sessions/{id}/movements/{movementId}/reverse` — posts a NEW movement of the opposite `movementType` for the identical amount, with `reversal_of_id` set to the original; the original row is never mutated or deleted. Only a client-postable `cash_in`/`cash_out` can be reversed — never `opening_float`/`cash_sale`/`cash_refund` (system-posted, corrected through the record they mirror) and never a reversal of a reversal. Flutter: an "Revertir" icon on each reversible movement row, gated identically to the server-side check, requiring a reason | `cash.service.ts` (`reverseMovement`), `cash.repository.ts` (`lockMovement`, `hasReversal`, `insertMovement`'s new `reversalOfId` param) | New partial unique index `cash_movements_reversal_of_uq` on `(company_id, reversal_of_id) WHERE reversal_of_id IS NOT NULL` (migration `0033_small_shatterstar.sql`) — the durable, database-level "a movement can be reversed at most once" guarantee, with an app-level pre-check (`hasReversal`) surfacing a friendly error before the constraint would otherwise fire | `cash_movement.create` (reused — a reversal is itself a new movement, posted by the same operator role that already posts manual movements, never a privileged "undo") | 9 new backend integration tests (successful reversal restores expected cash exactly; reverses in both directions; rejects a second reversal via the DB constraint; rejects reversing a reversal; rejects reversing a system-posted movement; rejects after session close; rejects cross-branch; idempotent replay never double-reverses; reversing a nonexistent movement) + 4 new HTTP-layer tests (permission gate, idempotency-key required, reason_code required, replay header) + 3 new Flutter widget tests (button reverses and reloads; rejected-reversal keeps the dialog open with the real error; the button never renders on a reversal or an already-reversed movement) | **Closed** |
+| Bitácora | **A** (TASK 16.8) for the data; no viewing surface existed | `GET /cash-sessions/{id}/audit-log` — a read-only projection of the SAME `audit_log` rows this module already wrote on every open/movement/reversal/partial-close/close (joined by entity id, since a movement/partial-close audit row only ever carries its own id, never a session id). Never a second, parallel log. Flutter: a "Bitácora" icon on the current-shift card opens a dialog listing real evidence in chronological order, with Spanish action labels | `cash.repository.ts` (`auditLogForSession`), `cash.service.ts` (`auditLog`) | None — reads the existing `audit_log` table exactly as written; no new table | `audit.read` — a real permission that has existed in the technical-permissions catalog since TASK 12.7/13.x (granted to every system/Owner role via the TASK 16.10B sync) but, until this task, was never enforced by any route anywhere in this codebase (confirmed by grep: only referenced in `development/bootstrap-owner.*`). Deliberately NOT `cash_session.read` — a cashier who can view the shift shouldn't automatically see the audit trail; this is a separate, higher-trust grant | 3 new backend integration tests (real evidence in chronological order for open/movement/partial-close/reversal/close; never leaks another session's or another company's rows; branch/company isolation) + 4 new HTTP-layer tests (permission gate — specifically proving `cash_session.read` alone is NOT enough; limit default/override; out-of-range limit rejected; read-only) + 1 new Flutter widget test (button gated by `audit.read`, shows real translated evidence, absent without the permission) | **Closed** |
+
+### §2 — Why these are the only three gaps (re-audit method)
+
+Before writing any code, the canonical `AS POS V1.html` was re-read
+directly (not just this doc) for every Corte de Caja-adjacent function,
+confirming two additional legacy defects worth recording since they were
+not previously documented anywhere in this file: (1) the legacy's own
+`efectivoEsperado()` never actually subtracted `DB.turnoActual.devoluciones`
+from expected cash, despite cosmetically tracking refunds in the
+Movimientos table — a real legacy bug, correctly NOT reproduced by the
+modern `cash_refund` movement's `-1` direction; (2) the legacy's payment-
+method fallback (`else`) incorrectly defaulted any unrecognized payment
+method to cash — also correctly not reproduced. Separately, the current
+modern implementation was independently re-audited end to end (register/
+session lifecycle, the authoritative `expectedCash` fold, tender/change
+handling, card/transfer drawer exclusion, cash-only refund handling, the
+DB-level one-open-session-per-register constraint, the partial-close
+snapshot mechanism, existing concurrency/idempotency coverage) and
+confirmed still correct and unchanged — 90/90 pre-existing cash tests were
+passing before this task began, and all 112 (90 pre-existing + 22 new)
+pass after it, with zero modifications to any pre-existing test's
+assertions.
+
+### §3 — Files modified
+
+`apps/api/src/modules/cash/cash.types.ts`, `cash.repository.ts`,
+`cash.service.ts`, `cash.routes.ts`, `cash.http-errors.ts`,
+`cash.integration.test.ts`, `cash.routes.test.ts`,
+`packages/database/src/schema/cash.ts`,
+`packages/database/drizzle/0033_small_shatterstar.sql` (new),
+`packages/errors/src/index.ts` (two new error codes,
+`cash_movement_not_reversible`/`cash_movement_already_reversed`, added to
+the shared `AppError` code union alongside the existing TASK 12.8
+`payment_not_reversible` precedent), `apps/one/lib/features/pos/
+pos_cash_gateway.dart`, `apps/one/lib/features/pos/pos_shell.dart`,
+`apps/one/test/pos_shell_test.dart`,
+`apps/one/test/pos_shell_wave2_recovery_cash_test.dart`,
+`docs/API_CONTRACTS.md` (two new error codes documented in §5's table,
+one new endpoint `E165` documented in §13's table), this section.
+
+### §4 — Known, honest, non-blocking gaps
+
+- The reversal endpoint reuses `cash_movement.create` rather than a
+  dedicated `cash_movement.reverse` permission — deliberate, mirroring the
+  exact precedent TASK 14.4 already set for "corte parcial" (a related-but-
+  distinct action reusing the same permission rather than fragmenting the
+  permission catalog for every new action a cash operator can take).
+- A reversal's `reasonCode` is free text, not a constrained enum — matches
+  every other manual movement's own `reasonCode` field exactly; no
+  narrower validation exists for any `reasonCode` anywhere in this module.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

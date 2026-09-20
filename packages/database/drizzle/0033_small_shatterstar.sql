@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "cash_movements_reversal_of_uq" ON "cash_movements" USING btree ("company_id","reversal_of_id") WHERE "cash_movements"."reversal_of_id" is not null;

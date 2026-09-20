@@ -18076,6 +18076,37 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     await _loadSessionForSelectedRegister();
   }
 
+  /// TASK 16.11 (§6) — "Never delete posted financial movements.
+  /// Corrections must use reversal/compensating architecture."
+  Future<void> _reverseMovement(PosCashMovement movement) async {
+    final session = _session;
+    if (session == null) return;
+    final reversed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _ReverseMovementDialog(
+        cashSessionId: session.id,
+        movement: movement,
+        currencyCode: session.currencyCode,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+    if (reversed == true) await _loadSessionForSelectedRegister();
+  }
+
+  /// TASK 16.11 (§13) — "Bitácora": opens the read-only audit trail for
+  /// the current session.
+  Future<void> _showAuditLog() async {
+    final session = _session;
+    if (session == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _CashAuditLogDialog(
+        cashSessionId: session.id,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     switch (_phase) {
@@ -18180,6 +18211,8 @@ class _CajaCurrentState extends State<_CajaCurrent> {
           onCashOut: () => unawaited(_postMovement('cash_out')),
           onClose: _closeRegister,
           onPartialClose: () => unawaited(_postPartialClose()),
+          onReverseMovement: (movement) => unawaited(_reverseMovement(movement)),
+          onShowAuditLog: () => unawaited(_showAuditLog()),
           onRefresh: () => unawaited(_loadSessionForSelectedRegister()),
         );
     }
@@ -18198,6 +18231,8 @@ class _CajaOpenView extends StatelessWidget {
     required this.onCashOut,
     required this.onClose,
     required this.onPartialClose,
+    required this.onReverseMovement,
+    required this.onShowAuditLog,
     required this.onRefresh,
   });
 
@@ -18216,6 +18251,10 @@ class _CajaOpenView extends StatelessWidget {
   final VoidCallback onCashOut;
   final VoidCallback onClose;
   final VoidCallback onPartialClose;
+  // TASK 16.11 (§6) — reverses one client-postable movement.
+  final ValueChanged<PosCashMovement> onReverseMovement;
+  // TASK 16.11 (§13) — opens the read-only "Bitácora" for this session.
+  final VoidCallback onShowAuditLog;
   final VoidCallback onRefresh;
 
   @override
@@ -18226,6 +18265,21 @@ class _CajaOpenView extends StatelessWidget {
     final canMovement = this.context.permissions.contains(
       'cash_movement.create',
     );
+    final canReadAuditLog = this.context.permissions.contains('audit.read');
+    // A movement is reversible only if it's still client-postable
+    // (cash_in/cash_out — never opening_float/cash_sale/cash_refund/a
+    // reversal itself) AND nothing already reverses it — mirrors
+    // `CashService.reverseMovement`'s own server-side guard exactly, so
+    // the button never offers an action the backend would reject.
+    final reversedIds = {
+      for (final movement in movements)
+        if (movement.reversalOfId != null) movement.reversalOfId,
+    };
+    bool isReversible(PosCashMovement movement) =>
+        (movement.movementType == 'cash_in' ||
+            movement.movementType == 'cash_out') &&
+        movement.reversalOfId == null &&
+        !reversedIds.contains(movement.id);
     final canClose = this.context.permissions.contains('cash_session.close');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -18245,6 +18299,13 @@ class _CajaOpenView extends StatelessWidget {
                     ),
                   ),
                   const _StatusChip(label: 'active'),
+                  if (canReadAuditLog)
+                    IconButton(
+                      key: const Key('pos-caja-audit-log-button'),
+                      tooltip: 'Bitácora',
+                      onPressed: onShowAuditLog,
+                      icon: const Icon(Icons.history_outlined),
+                    ),
                   IconButton(
                     tooltip: 'Actualizar',
                     onPressed: onRefresh,
@@ -18388,6 +18449,8 @@ class _CajaOpenView extends StatelessWidget {
                   _CajaMovementRow(
                     movement: movement,
                     currencyCode: session.currencyCode,
+                    canReverse: canMovement && isReversible(movement),
+                    onReverse: () => onReverseMovement(movement),
                   ),
             ],
           ),
@@ -18476,15 +18539,25 @@ const _movementCategoryLabels = <String, String>{
 };
 
 class _CajaMovementRow extends StatelessWidget {
-  const _CajaMovementRow({required this.movement, required this.currencyCode});
+  const _CajaMovementRow({
+    required this.movement,
+    required this.currencyCode,
+    this.canReverse = false,
+    this.onReverse,
+  });
   final PosCashMovement movement;
   final String currencyCode;
+  // TASK 16.11 (§6) — only ever true for a client-postable movement that
+  // hasn't already been reversed; see `_CajaOpenView.isReversible`.
+  final bool canReverse;
+  final VoidCallback? onReverse;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     final negative = movement.movementType == 'cash_out';
     return Padding(
+      key: ValueKey('pos-caja-movement-row-${movement.id}'),
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
@@ -18511,7 +18584,8 @@ class _CajaMovementRow extends StatelessWidget {
                 ),
                 Text(
                   '${movement.reasonCode}${movement.note == null ? '' : ' — ${movement.note}'} · '
-                  '${_formatClockTime(movement.occurredAt)}',
+                  '${_formatClockTime(movement.occurredAt)}'
+                  '${movement.reversalOfId == null ? '' : ' · Reversión'}',
                   style: TextStyle(color: palette.textSecondary, fontSize: 11),
                 ),
               ],
@@ -18525,6 +18599,15 @@ class _CajaMovementRow extends StatelessWidget {
               fontSize: 12,
             ),
           ),
+          if (canReverse)
+            IconButton(
+              key: ValueKey('pos-caja-reverse-movement-${movement.id}'),
+              tooltip: 'Revertir movimiento',
+              iconSize: 16,
+              visualDensity: VisualDensity.compact,
+              onPressed: onReverse,
+              icon: const Icon(Icons.undo),
+            ),
         ],
       ),
     );
@@ -18991,6 +19074,257 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
   }
 }
 
+/// TASK 16.11 (§6) — "Never delete posted financial movements.
+/// Corrections must use reversal/compensating architecture." Requires a
+/// reason (mirrors `_CashMovementDialog`'s own required-reason rule);
+/// posts through `PosCashGateway.reverseMovement`, never a client-side
+/// undo of the original row.
+class _ReverseMovementDialog extends StatefulWidget {
+  const _ReverseMovementDialog({
+    required this.cashSessionId,
+    required this.movement,
+    required this.currencyCode,
+    required this.cashGateway,
+  });
+  final String cashSessionId;
+  final PosCashMovement movement;
+  final String currencyCode;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_ReverseMovementDialog> createState() => _ReverseMovementDialogState();
+}
+
+class _ReverseMovementDialogState extends State<_ReverseMovementDialog> {
+  final _reasonController = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty) {
+      setState(() => _error = 'Ingresa un motivo.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.cashGateway.reverseMovement(
+        cashSessionId: widget.cashSessionId,
+        movementId: widget.movement.id,
+        reasonCode: reason,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible revertir el movimiento.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final movement = widget.movement;
+    final label = _movementTypeLabels[movement.movementType] ?? movement.movementType;
+    return AlertDialog(
+      title: const Text('Revertir movimiento'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '$label — ${_formatMoney(movement.amount, widget.currencyCode)}\n'
+              '${movement.reasonCode}${movement.note == null ? '' : ' — ${movement.note}'}',
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Se registrará un nuevo movimiento de signo contrario por el mismo '
+              'monto. El movimiento original nunca se elimina.',
+              style: TextStyle(color: PosPalette.of(context).textSecondary, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-caja-reverse-reason'),
+              controller: _reasonController,
+              enabled: !_busy,
+              decoration: const InputDecoration(labelText: 'Motivo de la reversión'),
+              autofocus: true,
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          key: const Key('pos-caja-confirm-reverse'),
+          onPressed: _busy ? null : _confirm,
+          child: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Revertir'),
+        ),
+      ],
+    );
+  }
+}
+
+/// TASK 16.11 (§13) — "Bitácora": a read-only view of this session's own
+/// real `audit_log` evidence (open/movement/reversal/partial-close/
+/// close), fetched fresh every time the dialog opens — never cached,
+/// never a second logging mechanism.
+const _auditActionLabels = <String, String>{
+  'cash_register.created': 'Caja creada',
+  'cash_register.device_assigned': 'Dispositivo asignado',
+  'cash_session.opened': 'Caja abierta',
+  'cash_movement.created': 'Movimiento registrado',
+  'cash_movement.reversed': 'Movimiento revertido',
+  'cash_session.partial_closed': 'Corte parcial',
+  'cash_session.closed': 'Caja cerrada',
+};
+
+class _CashAuditLogDialog extends StatefulWidget {
+  const _CashAuditLogDialog({
+    required this.cashSessionId,
+    required this.cashGateway,
+  });
+  final String cashSessionId;
+  final PosCashGateway cashGateway;
+
+  @override
+  State<_CashAuditLogDialog> createState() => _CashAuditLogDialogState();
+}
+
+class _CashAuditLogDialogState extends State<_CashAuditLogDialog> {
+  bool _loading = true;
+  String? _error;
+  List<PosCashAuditEntry> _entries = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final entries = await widget.cashGateway.auditLog(widget.cashSessionId);
+      if (!mounted) return;
+      setState(() {
+        _entries = entries;
+        _loading = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'No fue posible cargar la bitácora.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return AlertDialog(
+      title: const Text('Bitácora'),
+      content: SizedBox(
+        width: 420,
+        height: 420,
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _error != null
+                ? _FailureState(message: _error!, onRetry: () => unawaited(_load()))
+                : _entries.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Sin actividad registrada todavía.',
+                          style: TextStyle(color: palette.textSecondary),
+                        ),
+                      )
+                    : ListView.separated(
+                        key: const Key('pos-caja-audit-log-list'),
+                        itemCount: _entries.length,
+                        separatorBuilder: (_, _) => const Divider(height: 16),
+                        itemBuilder: (context, index) {
+                          final entry = _entries[index];
+                          return Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.circle, size: 8, color: palette.action),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _auditActionLabels[entry.action] ?? entry.action,
+                                      style: TextStyle(
+                                        color: palette.text,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    Text(
+                                      _formatClockTime(entry.occurredAt),
+                                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ],
+    );
+  }
+}
+
 /// Part I/J — cash count and close. Shows the backend's own expected cash
 /// (never recomputed here), takes the cashier's counted total, and offers
 /// the optional Part J bills/coins breakdown AS POS V1 itself supports —
@@ -19016,12 +19350,23 @@ class _CloseCajaDialog extends StatefulWidget {
 class _CloseCajaDialogState extends State<_CloseCajaDialog> {
   final _countedController = TextEditingController();
   bool _useDenominations = false;
-  final Map<String, TextEditingController> _denominationControllers = {
-    for (final value in canonicalCashDenominationsMXN)
-      value: TextEditingController(),
-  };
+  // TASK 16.11 — currency-aware (mirrors the backend's own
+  // canonicalCashDenominationsForCurrency): built in initState, not a
+  // field initializer, because `widget` isn't attached yet when field
+  // initializers run.
+  late final List<String> _denominations;
+  late final Map<String, TextEditingController> _denominationControllers;
   bool _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _denominations = canonicalCashDenominationsForCurrency(widget.currencyCode);
+    _denominationControllers = {
+      for (final value in _denominations) value: TextEditingController(),
+    };
+  }
 
   @override
   void dispose() {
@@ -19139,7 +19484,7 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
                     },
             ),
             if (_useDenominations)
-              for (final value in canonicalCashDenominationsMXN)
+              for (final value in _denominations)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Row(

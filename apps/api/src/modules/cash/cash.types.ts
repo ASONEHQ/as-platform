@@ -92,6 +92,51 @@ export const canonicalCashDenominationsMXN: readonly string[] = [
   '0.5000',
 ];
 
+/** TASK 16.11 — the real, standard US cash-drawer bill/coin set (bills
+ * $100 down to $1, coins quarter/dime/nickel/penny). AS Platform is a
+ * multi-tenant SaaS whose own `business.currency` company setting
+ * already allows `'MXN' | 'USD'` (see `settings.catalog.ts`) — a USD
+ * tenant closing a cash session was, before this task, unconditionally
+ * rejected against the MXN set (every real US bill/coin would fail
+ * `validateDenominationCounts`'s "is not a recognized MXN denomination"
+ * check). Never merged with the MXN set — a real till only ever counts
+ * one currency's physical notes/coins at a time. */
+export const canonicalCashDenominationsUSD: readonly string[] = [
+  '100.0000',
+  '50.0000',
+  '20.0000',
+  '10.0000',
+  '5.0000',
+  '1.0000',
+  '0.2500',
+  '0.1000',
+  '0.0500',
+  '0.0100',
+];
+
+/** Selects the real, closed denomination set for a session's own
+ * `currency_code` — never a blind MXN default. Only `MXN`/`USD` are
+ * approved anywhere in this platform today (`business.currency`'s own
+ * catalog allowlist); an unsupported currency is refused with a clear
+ * validation error rather than silently falling back to the wrong
+ * country's bills/coins. Smallest-sensible, in-code lookup — no new
+ * settings key or migration: the session's `currency_code` (itself
+ * already resolved from the tenant's own configured currency at
+ * session-open time) is the sole, already-authoritative input. */
+export function canonicalCashDenominationsForCurrency(currencyCode: string): readonly string[] {
+  switch (currencyCode) {
+    case 'MXN':
+      return canonicalCashDenominationsMXN;
+    case 'USD':
+      return canonicalCashDenominationsUSD;
+    default:
+      throw new CashError(
+        'validation_error',
+        `No approved cash-denomination set exists for currency "${currencyCode}".`,
+      );
+  }
+}
+
 export interface CashSessionRow {
   id: string;
   companyId: string;
@@ -157,6 +202,23 @@ export interface CashSessionPartialCloseRow {
   createdAt: Date;
 }
 
+/** TASK 16.11 (§13) — "Bitácora": one already-real `audit_log` row
+ * (written by every `auditAndPublish` call this module already makes),
+ * surfaced read-only and scoped to a single cash session's own lifecycle.
+ * Never a second, parallel logging mechanism — this is a projection of
+ * the existing table, not a new source of truth. */
+export interface CashAuditLogEntry {
+  id: string;
+  branchId: string | null;
+  actorType: string;
+  actorId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  metadata: Readonly<Record<string, unknown>>;
+  occurredAt: Date;
+}
+
 export interface CashMutationContext {
   companyId: string;
   actorId: string;
@@ -174,7 +236,17 @@ export type CashErrorCode =
   | 'cash_session_required'
   | 'cash_session_already_open'
   | 'cash_session_not_open'
-  | 'cash_session_closed';
+  | 'cash_session_closed'
+  // TASK 16.11 (§6) — "Never delete posted financial movements.
+  // Corrections must use reversal/compensating architecture." A manual
+  // cash_in/cash_out can be reversed; a system-posted movement
+  // (opening_float/cash_sale/cash_refund) cannot — its own correction
+  // path lives elsewhere (e.g. the sale/refund it mirrors), never here.
+  | 'cash_movement_not_reversible'
+  // The DB's own cash_movements_reversal_of_uq partial unique index is
+  // the durable boundary; this code is the friendly pre-check surfaced
+  // before that constraint would otherwise fire.
+  | 'cash_movement_already_reversed';
 
 export class CashError extends Error {
   constructor(

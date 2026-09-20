@@ -285,6 +285,15 @@ export const cashMovements = pgTable(
     uniqueIndex('cash_movements_refund_reference_uq')
       .on(table.companyId, table.referenceId)
       .where(sql`${table.referenceType} = 'refund'`),
+    // TASK 16.11 — the database-level guarantee that a given manual
+    // movement can never be reversed twice (`reversal_of_id` was already
+    // a real column, but nothing previously stopped two separate
+    // compensating rows from both pointing at the same original
+    // movement). Mirrors the payment/refund reference-uniqueness indexes
+    // immediately above exactly.
+    uniqueIndex('cash_movements_reversal_of_uq')
+      .on(table.companyId, table.reversalOfId)
+      .where(sql`${table.reversalOfId} is not null`),
     foreignKey({
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],

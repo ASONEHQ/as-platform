@@ -152,6 +152,7 @@ class PosCashMovement {
     required this.occurredAt,
     required this.createdBy,
     this.category,
+    this.reversalOfId,
   });
 
   factory PosCashMovement.fromJson(Map<String, Object?> json) =>
@@ -168,6 +169,9 @@ class PosCashMovement {
         // TASK 14.4 (Wave 2, Part F.1) — orthogonal to movement_type; null
         // for system-posted movements and any uncategorized cash_in/cash_out.
         category: json['category'] as String?,
+        // TASK 16.11 (§6) — set only on a compensating movement created by
+        // `PosCashGateway.reverseMovement`; null for every other row.
+        reversalOfId: json['reversal_of_id'] as String?,
       );
 
   final String id;
@@ -180,6 +184,47 @@ class PosCashMovement {
   final DateTime occurredAt;
   final String createdBy;
   final String? category;
+  final String? reversalOfId;
+}
+
+/// TASK 16.11 (§13) — "Bitácora": one real `audit_log` row, read-only,
+/// scoped to a single cash session's own lifecycle.
+class PosCashAuditEntry {
+  const PosCashAuditEntry({
+    required this.id,
+    required this.actorType,
+    this.actorId,
+    required this.action,
+    required this.entityType,
+    this.entityId,
+    required this.metadata,
+    required this.occurredAt,
+  });
+
+  factory PosCashAuditEntry.fromJson(Map<String, Object?> json) {
+    final rawMetadata = json['metadata'];
+    return PosCashAuditEntry(
+      id: json['id']! as String,
+      actorType: json['actor_type']! as String,
+      actorId: json['actor_id'] as String?,
+      action: json['action']! as String,
+      entityType: json['entity_type']! as String,
+      entityId: json['entity_id'] as String?,
+      metadata: rawMetadata is Map<String, Object?>
+          ? rawMetadata
+          : const <String, Object?>{},
+      occurredAt: DateTime.parse(json['occurred_at']! as String),
+    );
+  }
+
+  final String id;
+  final String actorType;
+  final String? actorId;
+  final String action;
+  final String entityType;
+  final String? entityId;
+  final Map<String, Object?> metadata;
+  final DateTime occurredAt;
 }
 
 /// E048 — the cash-cut summary (Part K). Every total here comes straight
@@ -339,6 +384,41 @@ const List<String> canonicalCashDenominationsMXN = [
   '0.50',
 ];
 
+/// TASK 16.11 — the real US bill/coin set, mirroring the backend's own
+/// `canonicalCashDenominationsUSD` exactly (`cash.types.ts`). Never
+/// merged with the MXN set — a real till only ever counts one currency's
+/// physical notes/coins at a time.
+const List<String> canonicalCashDenominationsUSD = [
+  '100',
+  '50',
+  '20',
+  '10',
+  '5',
+  '1',
+  '0.25',
+  '0.10',
+  '0.05',
+  '0.01',
+];
+
+/// Selects the real, closed denomination set for a session's own
+/// `currencyCode` — never a blind MXN default. Mirrors the backend's own
+/// `canonicalCashDenominationsForCurrency` exactly so the close-shift UI
+/// never shows a USD tenant's cashier a wad of Mexican banknotes (or vice
+/// versa). Falls back to MXN only as a last resort for a currency this
+/// platform doesn't (yet) approve, so the UI still renders something
+/// rather than crashing — the backend itself is the authoritative
+/// validator and will reject a genuinely unsupported currency outright.
+List<String> canonicalCashDenominationsForCurrency(String currencyCode) {
+  switch (currencyCode) {
+    case 'USD':
+      return canonicalCashDenominationsUSD;
+    case 'MXN':
+    default:
+      return canonicalCashDenominationsMXN;
+  }
+}
+
 abstract interface class PosCashGateway {
   /// `GET /api/v1/cash-registers?branch_id=...` — the branch/register
   /// selection step of "Abrir caja" (Part C).
@@ -440,6 +520,28 @@ abstract interface class PosCashGateway {
   /// Part F.3 requires; read-only, never mutates. The backend returns the
   /// full list in one response (no pagination on this route).
   Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId);
+
+  /// `POST /api/v1/cash-sessions/{id}/movements/{movementId}/reverse`
+  /// (TASK 16.11 §6) — "Never delete posted financial movements.
+  /// Corrections must use reversal/compensating architecture." Posts a
+  /// new, opposite-direction movement referencing the original via
+  /// `reversal_of_id`; the original row is never mutated or deleted.
+  /// Only a manual `cash_in`/`cash_out` movement can be reversed.
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  });
+
+  /// `GET /api/v1/cash-sessions/{id}/audit-log` (TASK 16.11 §13) —
+  /// "Bitácora": a read-only projection of the existing `audit_log` rows
+  /// this session's own open/movement/reversal/partial-close/close
+  /// already wrote. Gated by `audit.read`, not `cash_session.read`.
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  });
 }
 
 class ApiPosCashGateway implements PosCashGateway {
@@ -691,6 +793,46 @@ class ApiPosCashGateway implements PosCashGateway {
         .toList(growable: false);
   }
 
+  @override
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/cash-sessions/$cashSessionId/movements/$movementId/reverse',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'reason_code': reasonCode,
+        if (note != null && note.isNotEmpty) 'note': note,
+      },
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash movement reversal data.');
+    }
+    return PosCashMovement.fromJson(data);
+  }
+
+  @override
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  }) async {
+    final envelope = await _client.getJson(
+      '/api/v1/cash-sessions/$cashSessionId/audit-log?limit=$limit',
+    );
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing cash audit log data.');
+    }
+    return data
+        .whereType<Map<String, Object?>>()
+        .map(PosCashAuditEntry.fromJson)
+        .toList(growable: false);
+  }
+
   PosCashSession _decodeSession(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -771,4 +913,18 @@ class EmptyPosCashGateway implements PosCashGateway {
 
   @override
   Future<List<PosCashSessionPartialClose>> listPartialCloses(String cashSessionId) async => const [];
+
+  @override
+  Future<PosCashMovement> reverseMovement({
+    required String cashSessionId,
+    required String movementId,
+    required String reasonCode,
+    String? note,
+  }) => Future.error(StateError('No cash gateway is configured.'));
+
+  @override
+  Future<List<PosCashAuditEntry>> auditLog(
+    String cashSessionId, {
+    int limit = 100,
+  }) async => const [];
 }

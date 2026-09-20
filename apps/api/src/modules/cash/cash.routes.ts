@@ -511,6 +511,54 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       }),
   );
 
+  // TASK 16.11 (§6) — "Never delete posted financial movements.
+  // Corrections must use reversal/compensating architecture." Same
+  // permission as posting the manual movement being corrected
+  // (`cash_movement.create`) — a reversal is itself a new movement, posted
+  // by the same operator role, never a privileged "undo".
+  app.post<{ Params: { id: string; movementId: string }; Body: { reason_code: string; note?: string } }>(
+    '/api/v1/cash-sessions/:id/movements/:movementId/reverse',
+    {
+      schema: {
+        tags: ['cash'],
+        params: {
+          type: 'object',
+          required: ['id', 'movementId'],
+          properties: { id: { type: 'string' }, movementId: { type: 'string' } },
+        },
+        headers: idempotencyHeaders,
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['reason_code'],
+          properties: {
+            reason_code: { type: 'string', minLength: 1, maxLength: 200 },
+            note: { type: 'string', maxLength: 500 },
+          },
+        },
+        response: { 201: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withCashErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'cash_movement.create');
+        const reversed = await service.reverseMovement(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.params.id,
+          request.params.movementId,
+          {
+            reasonCode: request.body.reason_code,
+            ...(request.body.note === undefined ? {} : { note: request.body.note }),
+          },
+        );
+        if (reversed.replayed) reply.header('idempotency-replayed', 'true');
+        return reply.code(201).send(successResponse(movementHttp(reversed.value), request.requestContext));
+      }),
+  );
+
   // E046.
   app.get<{ Params: Params; Querystring: { cursor?: string; limit?: number; type?: string } }>(
     '/api/v1/cash-sessions/:id/movements',
@@ -664,6 +712,52 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
         const items = await service.partialCloses(auth.companyId, auth.permittedBranchIds, request.params.id);
         return reply.send({
           data: items.map(partialCloseHttp),
+          meta: responseMeta(request.requestContext),
+        });
+      }),
+  );
+
+  // TASK 16.11 (§13) — "Bitácora": a real, read-only view over the
+  // `audit_log` rows this module already writes on every mutation (open/
+  // movement/reversal/partial-close/close), scoped to one session. Gated
+  // by `audit.read` — already granted to every system role by the TASK
+  // 16.10B sync, never before enforced by any route in this codebase.
+  app.get<{ Params: Params; Querystring: { limit?: number } }>(
+    '/api/v1/cash-sessions/:id/audit-log',
+    {
+      schema: {
+        tags: ['cash'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { limit: { type: 'integer', minimum: 1, maximum: 200 } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withCashErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'audit.read');
+        const items = await service.auditLog(
+          auth.companyId,
+          auth.permittedBranchIds,
+          request.params.id,
+          request.query.limit ?? 100,
+        );
+        return reply.send({
+          data: items.map((item) => ({
+            id: item.id,
+            branch_id: item.branchId,
+            actor_type: item.actorType,
+            actor_id: item.actorId,
+            action: item.action,
+            entity_type: item.entityType,
+            entity_id: item.entityId,
+            metadata: item.metadata,
+            occurred_at: item.occurredAt.toISOString(),
+          })),
           meta: responseMeta(request.requestContext),
         });
       }),
