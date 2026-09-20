@@ -185,22 +185,38 @@ class _StartupCardEntranceState extends State<StartupCardEntrance>
 /// for the old solid-icon mark and would render as an ugly box around a
 /// mostly-transparent wordmark image, not a design the official asset
 /// supports.
+///
+/// [white] (TASK 16.12A) swaps in `access_go_logo_white.png` — the same
+/// artwork with every visible pixel recolored pure white, generated
+/// deterministically from the official source (see
+/// `generate_white_logo.py`'s trail in the TASK 16.12A commit) — for use
+/// on the strong blue/dark splash background, where the normal blue/cyan
+/// mark loses contrast. Every other surface (light backgrounds: login,
+/// sidebar, topbar) keeps the normal mark. `filterQuality: high` avoids
+/// the soft/blurry look a lower quality filter gives this asset when
+/// downscaled from its native 400×219 to the small on-screen sizes chrome
+/// needs.
 class StartupLogoMark extends StatelessWidget {
   const StartupLogoMark({
     this.size = 72,
     this.rounded = true,
     this.shadow = true,
+    this.white = false,
     super.key,
   });
   final double size;
   final bool rounded;
   final bool shadow;
+  final bool white;
 
   @override
   Widget build(BuildContext context) => Image.asset(
-    'assets/branding/access_go_logo.png',
+    white
+        ? 'assets/branding/access_go_logo_white.png'
+        : 'assets/branding/access_go_logo.png',
     height: size,
     fit: BoxFit.contain,
+    filterQuality: FilterQuality.high,
     semanticLabel: 'ACCESS GO',
   );
 }

@@ -1,5 +1,6 @@
 import 'package:as_one/app/app.dart';
 import 'package:as_one/core/config/app_config.dart';
+import 'package:as_one/features/authentication/screens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -136,6 +137,36 @@ void main() {
         await tester.tap(find.text('Entrar'));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('pos-topbar')), findsOneWidget);
+      },
+    );
+  });
+
+  group('ACCESS GO logo contrast (TASK 16.12A)', () {
+    testWidgets(
+      'splash renders the WHITE mark against the strong blue background',
+      (tester) async {
+        // Not pumpLogin/pumpAndSettle: the splash's own loading spinner is
+        // an indeterminate animation that never settles.
+        await tester.pumpWidget(const MaterialApp(home: BootstrapScreen()));
+        await tester.pump();
+        final logo = tester.widget<Image>(find.byType(Image).first);
+        expect(
+          (logo.image as AssetImage).assetName,
+          'assets/branding/access_go_logo_white.png',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'login card keeps the NORMAL (blue/cyan) mark on its light surface',
+      (tester) async {
+        await pumpLogin(tester);
+        final logo = tester.widget<Image>(find.byType(Image).first);
+        expect(
+          (logo.image as AssetImage).assetName,
+          'assets/branding/access_go_logo.png',
+        );
       },
     );
   });

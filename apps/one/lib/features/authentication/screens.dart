@@ -12,7 +12,10 @@ import 'startup_visuals.dart';
 /// The splash state — ported from V1's `#pos-splash`: the same deep-blue
 /// radial gradient, the official ACCESS GO mark (TASK 16.12), and a
 /// letter-spaced "PUNTO DE VENTA" label, with a light fade/scale entrance
-/// (TASK 12.2F).
+/// (TASK 12.2F). Uses the WHITE rendition of the mark (TASK 16.12A) — the
+/// normal blue/cyan artwork loses contrast against this same strong blue
+/// background; every other (light-background) startup surface keeps the
+/// normal mark.
 class BootstrapScreen extends StatefulWidget {
   const BootstrapScreen({super.key});
 
@@ -43,7 +46,7 @@ class _BootstrapScreenState extends State<BootstrapScreen>
   Widget build(BuildContext context) {
     final reducedMotion =
         MediaQuery.maybeOf(context)?.disableAnimations ?? false;
-    final logo = const StartupLogoMark(size: 96);
+    final logo = const StartupLogoMark(size: 96, white: true);
     final label = const Text('PUNTO DE VENTA', style: _splashTextStyle);
     return Scaffold(
       body: StartupBackground(

@@ -85,9 +85,16 @@ flutter:
   # default-mark handling reads it independently (a tenant's own uploaded
   # logo takes priority there regardless — see `receipt_html.dart`) and
   # this task does not touch receipt/merchant branding.
+  #
+  # `access_go_logo_white.png` (TASK 16.12A): a white monochrome rendition
+  # of the same artwork (same geometry/alpha mask, every visible pixel
+  # recolored pure white), generated deterministically from
+  # `access_go_logo.png` — used only on the strong blue/dark splash
+  # background where the normal blue/cyan mark loses contrast.
   assets:
     - assets/branding/as_logo_mark.png
     - assets/branding/access_go_logo.png
+    - assets/branding/access_go_logo_white.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

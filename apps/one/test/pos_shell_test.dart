@@ -4116,9 +4116,54 @@ void main() {
       // states) is the real collapsed-vs-expanded signal: only shown
       // alongside the brand mark once the rail is expanded.
       expect(find.text('En línea'), findsNothing);
+
+      // TASK 16.12A: the collapsed rail's up-sized mark still fits with
+      // no `RenderFlex` overflow, and — since the sidebar sits on a light
+      // surface, not the blue splash background — it's still the normal
+      // (not white) asset.
+      expect(tester.takeException(), isNull);
+      final collapsedLogo = tester.widget<Image>(
+        find.descendant(
+          of: find.byKey(const Key('pos-sidebar')),
+          matching: find.byType(Image),
+        ),
+      );
+      expect(
+        (collapsedLogo.image as AssetImage).assetName,
+        'assets/branding/access_go_logo.png',
+      );
+
       await tester.tap(find.byKey(const Key('pos-hamburger')));
       await tester.pumpAndSettle();
       expect(find.text('En línea'), findsOneWidget);
+
+      // Expanded rail: still no overflow with the larger mark, still the
+      // normal asset, and the tenant/company name keeps rendering
+      // independently of the ACCESS GO software brand.
+      expect(tester.takeException(), isNull);
+      expect(find.text('Empresa AS'), findsWidgets);
+      final expandedLogo = tester.widget<Image>(
+        find.descendant(
+          of: find.byKey(const Key('pos-sidebar')),
+          matching: find.byType(Image),
+        ),
+      );
+      expect(
+        (expandedLogo.image as AssetImage).assetName,
+        'assets/branding/access_go_logo.png',
+      );
+
+      // Topbar mark: same rule — normal asset on this light surface.
+      final topbarLogo = tester.widget<Image>(
+        find.descendant(
+          of: find.byKey(const Key('pos-topbar')),
+          matching: find.byType(Image),
+        ),
+      );
+      expect(
+        (topbarLogo.image as AssetImage).assetName,
+        'assets/branding/access_go_logo.png',
+      );
     });
   });
 

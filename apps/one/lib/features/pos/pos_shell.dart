@@ -577,6 +577,14 @@ class _Sidebar extends StatelessWidget {
           // slot the icon-only mark used) — and, only when expanded, an
           // inline online indicator pushed to the right
           // (`.sb-online{margin-left:auto}`), not a footer element.
+          //
+          // TASK 16.12A — the original 26px/24px heights rendered the
+          // "access go" wordmark too small to read (its text portion is
+          // only a fraction of the mark's own height). Sized back up
+          // against the actual available room: the 224px expanded rail
+          // has ~198px free after padding, comfortably fitting a 38px
+          // mark (~69px wide) alongside the online indicator; the 68px
+          // collapsed rail comfortably fits a 32px mark (~58px wide).
           Padding(
             padding: expanded
                 ? const EdgeInsets.fromLTRB(14, 14, 12, 14)
@@ -591,9 +599,9 @@ class _Sidebar extends StatelessWidget {
                   // the trailing online indicator instead of assuming it
                   // always fits — shrinks via `BoxFit.contain` rather
                   // than ever overflowing the 224px rail.
-                  Flexible(child: StartupLogoMark(size: 26))
+                  Flexible(child: StartupLogoMark(size: 38))
                 else
-                  const StartupLogoMark(size: 24),
+                  const StartupLogoMark(size: 32),
                 if (expanded) ...[
                   const Spacer(),
                   // `Flexible` + `FittedBox` guarantee this never overflows
@@ -1148,13 +1156,16 @@ class _HamburgerButton extends StatelessWidget {
 
 /// Matches `.logo-img{height:28px;width:auto}` — the same real `#sb-brand`
 /// mark reused in the topbar, at its literal plain treatment: no
-/// rounding, no shadow, natural aspect ratio.
+/// rounding, no shadow, natural aspect ratio. TASK 16.12A: sized up from
+/// V1's literal 28px (a value tuned for the old square icon) to 34px —
+/// the 56px-tall topbar has ample headroom, and the wordmark needs the
+/// extra height to stay legible.
 class _TopbarBrandMark extends StatelessWidget {
   const _TopbarBrandMark();
 
   @override
   Widget build(BuildContext context) =>
-      const StartupLogoMark(size: 28, rounded: false, shadow: false);
+      const StartupLogoMark(size: 34, rounded: false, shadow: false);
 }
 
 /// Matches `actualizarRelojTopbar()` — the exact same function drives
