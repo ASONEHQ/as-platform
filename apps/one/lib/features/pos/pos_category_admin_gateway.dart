@@ -44,6 +44,7 @@ class PosCatalogCategory {
     required this.sortOrder,
     required this.status,
     required this.visualTile,
+    required this.operationalGroup,
     required this.version,
     required this.createdAt,
     required this.updatedAt,
@@ -58,6 +59,7 @@ class PosCatalogCategory {
     sortOrder: json['sort_order']! as int,
     status: json['status']! as String,
     visualTile: json['visual_tile']! as bool,
+    operationalGroup: json['operational_group'] as String?,
     version: json['version']! as int,
     createdAt: DateTime.parse(json['created_at']! as String),
     updatedAt: DateTime.parse(json['updated_at']! as String),
@@ -73,6 +75,14 @@ class PosCatalogCategory {
   /// `active` | `inactive` | `retired`.
   final String status;
   final bool visualTile;
+
+  /// The authoritative business classification driving both the POS
+  /// "VENTAS → Cafetería" screen and Corte Parcial's "Cafetería/Snacks"
+  /// reporting subset (TASK 16.13A). `null` | `'cafeteria'` — mirrors
+  /// `product_categories_operational_group_ck` exactly. Deliberately the
+  /// SAME field the backend already exposes since TASK 16.13; this is not a
+  /// new classification concept, only its first Flutter admin surface.
+  final String? operationalGroup;
   final int version;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -99,6 +109,8 @@ class PosCategoryInput {
     this.sortOrder,
     this.status,
     this.visualTile,
+    this.operationalGroup,
+    this.clearOperationalGroup = false,
   });
 
   final String? code;
@@ -111,6 +123,17 @@ class PosCategoryInput {
   final String? status;
   final bool? visualTile;
 
+  /// `null` | `'cafeteria'`. See [PosCatalogCategory.operationalGroup].
+  final String? operationalGroup;
+
+  /// Explicitly send `operational_group: null` to clear a previously-set
+  /// classification back to "General/Taquilla" — the field-omission
+  /// convention this class otherwise follows can't express "clear this",
+  /// only "leave the existing value alone". Mirrors the same explicit-clear
+  /// capability `catalog.schemas.ts`'s nullable field already supports
+  /// server-side.
+  final bool clearOperationalGroup;
+
   Map<String, Object?> toJson() => {
     if (code != null) 'code': code,
     if (name != null) 'name': name,
@@ -119,6 +142,10 @@ class PosCategoryInput {
     if (sortOrder != null) 'sort_order': sortOrder,
     if (status != null) 'status': status,
     if (visualTile != null) 'visual_tile': visualTile,
+    if (operationalGroup != null)
+      'operational_group': operationalGroup
+    else if (clearOperationalGroup)
+      'operational_group': null,
   };
 }
 

@@ -176,6 +176,30 @@ export function localWeekdayAndTime(instant: Date, timezone: string): { weekday:
   return { weekday: isoWeekdayByShort[weekdayShort] ?? 1, time: `${hour}:${minute}` };
 }
 
+/** TASK 16.13A — the calendar date (`YYYY-MM-DD`) `instant` falls on AS
+ * OBSERVED IN `timezone`, mirroring `localWeekdayAndTime`'s exact
+ * `Intl.DateTimeFormat` + `formatToParts` shape (never a hand-rolled
+ * UTC-offset table, never locale-format-string parsing). Used by
+ * `CashService.partialClose` so "Eventos de hoy" compares against the
+ * BRANCH's own local day, not a blind UTC one — a branch in, say,
+ * `America/Mexico_City` observing 11pm local time is still "today" there
+ * even though UTC has already rolled to the next calendar day. Throws if
+ * `timezone` is not a real IANA zone, for the exact same reason
+ * `localWeekdayAndTime` does — callers must gate with
+ * `isValidIanaTimezone` first. */
+export function localDateString(instant: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(instant);
+  const year = parts.find((p) => p.type === 'year')?.value ?? '1970';
+  const month = parts.find((p) => p.type === 'month')?.value ?? '01';
+  const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+  return `${year}-${month}-${day}`;
+}
+
 function isPromotionScheduleEligible(
   promotion: PromotionRow,
   now: Date,

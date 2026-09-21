@@ -228,7 +228,9 @@ void main() {
     });
 
     testWidgets('Cafetería ("Acceso rápido") is a real screen now — the '
-        'exact same sale surface, scoped to only visual-tile categories', (
+        'exact same sale surface, scoped to only categories classified as '
+        'Cafetería (operational_group), never by the cosmetic visual-tile '
+        'flag (TASK 16.13A)', (
       tester,
     ) async {
       await _pump(
@@ -236,7 +238,12 @@ void main() {
         readGateway: const _FixtureReadGateway(
           categories: [
             PosCategory(id: 'cat-1', name: 'General', status: 'active'),
-            PosCategory(id: 'cat-2', name: 'Rápido', status: 'active', visualTile: true),
+            PosCategory(
+              id: 'cat-2',
+              name: 'Rápido',
+              status: 'active',
+              operationalGroup: 'cafeteria',
+            ),
           ],
         ),
       );
@@ -245,15 +252,15 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Coming soon'), findsNothing);
-      // Only the visual-tile category shows — "General" is scoped out.
+      // Only the Cafetería-classified category shows — "General" is scoped out.
       expect(find.byKey(const Key('pos-category-cat-2')), findsOneWidget);
       expect(find.byKey(const Key('pos-category-cat-1')), findsNothing);
       // It is the real, same ticket/cart surface — not a disconnected one.
       expect(find.byKey(const Key('pos-ticket-panel')), findsOneWidget);
     });
 
-    testWidgets('Cafetería shows an honest empty state when no category '
-        'opted into visual-tile — never a fabricated demo category', (
+    testWidgets('Cafetería shows an honest empty state when no category is '
+        'classified as Cafetería — never a fabricated demo category', (
       tester,
     ) async {
       await _pump(

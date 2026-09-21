@@ -1,0 +1,2 @@
+ALTER TABLE "sale_items" ADD COLUMN "operational_group_snapshot" text;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "sale_items_operational_group_snapshot_ck" CHECK ("sale_items"."operational_group_snapshot" is null or "sale_items"."operational_group_snapshot" in ('cafeteria'));

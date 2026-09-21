@@ -315,6 +315,7 @@ class PosCategory {
     required this.name,
     required this.status,
     this.visualTile = false,
+    this.operationalGroup,
   });
 
   factory PosCategory.fromJson(Map<String, Object?> json) => PosCategory(
@@ -327,14 +328,30 @@ class PosCategory {
     // own `estiloCafe` flag, forensically confirmed to be purely visual/
     // reporting, never a checkout/validation difference (see
     // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1). Defaults `false` for any
-    // response that predates this field.
+    // response that predates this field. TASK 16.13A: this flag is NOT
+    // what scopes the Cafetería POS mode below — see [operationalGroup].
     visualTile: json['visual_tile'] == true,
+    // TASK 16.13A — the ONE authoritative "is this category Cafetería"
+    // classification, shared verbatim with the partial cash-cut's own
+    // Cafetería/Snacks reporting (`CashRepository.operationalSummary`).
+    // Before this task, "VENTAS → Cafetería" scoped itself by
+    // [visualTile] instead — a generic, unrelated display flag, forensic
+    // root cause of that screen showing empty in production even for a
+    // tenant that had never touched `operational_group` at all. `null`
+    // means "not classified" (the overwhelming default).
+    operationalGroup: json['operational_group'] as String?,
   );
 
   final String id;
   final String name;
   final String status;
   final bool visualTile;
+  final String? operationalGroup;
+
+  /// TASK 16.13A — the single predicate every Cafetería-scoped surface
+  /// (POS product filter, category admin badge) must use. Never a name
+  /// match, never [visualTile].
+  bool get isCafeteria => operationalGroup == 'cafeteria';
 }
 
 class PosInventoryBalance {

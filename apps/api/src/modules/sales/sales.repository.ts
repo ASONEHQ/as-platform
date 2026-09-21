@@ -120,6 +120,7 @@ interface SaleItemDb {
   tax_total: string;
   line_total: string;
   tax_snapshot: Readonly<Record<string, unknown>> | null;
+  operational_group_snapshot: string | null;
   created_at: Date | string;
 }
 interface IdempotencyDb {
@@ -129,6 +130,11 @@ interface IdempotencyDb {
 interface ProductLookupDb {
   product_id: string;
   category_id: string | null;
+  // TASK 16.13A — the product's category's own `operational_group`, read
+  // in the SAME query (never a second round trip) so `createSale` can
+  // freeze it onto `sale_items.operational_group_snapshot` at THIS exact
+  // moment.
+  operational_group: string | null;
   variant_id: string | null;
   tax_code: ProductTaxCode;
   status: string;
@@ -145,7 +151,7 @@ interface PriceLookupDb {
 const SALE_COLUMNS =
   'id,company_id,branch_id,cash_register_id,cash_session_id,device_id,sync_operation_id,customer_id,customer_display_name,sale_number,status,currency_code,subtotal,discount_total,tax_total,total,paid_total,change_total,occurred_at,completed_at,cancelled_at,cancelled_by,reason_code,note,created_by,version,created_at,updated_at';
 const SALE_ITEM_COLUMNS =
-  'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,tax_total,line_total,tax_snapshot,created_at';
+  'id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,tax_total,line_total,tax_snapshot,operational_group_snapshot,created_at';
 
 function sale(row: SaleDb): SaleRow {
   return {
@@ -199,6 +205,7 @@ function saleItem(row: SaleItemDb): SaleItemRow {
     taxTotal: row.tax_total,
     lineTotal: row.line_total,
     taxSnapshot: row.tax_snapshot,
+    operationalGroupSnapshot: row.operational_group_snapshot,
     createdAt: new Date(row.created_at),
   };
 }
@@ -210,6 +217,13 @@ export interface ResolvedProductLine {
   // itself (`sale_items` has no `category_id` column — a later category
   // reassignment never rewrites history).
   categoryId: string | null;
+  // TASK 16.13A — the resolved category's own `operational_group` AT
+  // THIS MOMENT, frozen onto `sale_items.operational_group_snapshot` by
+  // `SalesService.createSale`. Unlike `categoryId` above, this one DOES
+  // get persisted — not as a live-rejoinable FK, but as the already-
+  // derived classification value itself (the same "freeze the fact, not
+  // the reference" pattern `taxSnapshot`/`skuSnapshot` already use).
+  operationalGroup: string | null;
   // TASK 12.6: the default variant resolved *at sale-creation time* —
   // see sales.ts's `saleItems.productVariantId` doc comment for why this
   // is captured now rather than re-derived later. `null` only when the
@@ -361,12 +375,14 @@ export class SalesRepository {
     // only look parallel).
     const [productsResult, pricesResult] = await Promise.all([
       client.query(
-        `select p.id as product_id, p.category_id, p.tax_code, p.status, p.version, p.name,
+        `select p.id as product_id, p.category_id, pc.operational_group, p.tax_code, p.status, p.version, p.name,
                 pv.id as variant_id, pv.sku as variant_sku
          from products p
          left join product_variants pv
            on pv.company_id=p.company_id and pv.product_id=p.id
               and pv.is_default=true and pv.status<>'retired'
+         left join product_categories pc
+           on pc.company_id=p.company_id and pc.id=p.category_id
          where p.company_id=$1 and p.id=any($2::uuid[])`,
         [companyId, productIds],
       ),
@@ -394,6 +410,7 @@ export class SalesRepository {
         {
           productId: row.product_id,
           categoryId: row.category_id,
+          operationalGroup: row.operational_group,
           variantId: row.variant_id,
           productVersion: BigInt(row.version),
           name: row.name,
@@ -486,6 +503,12 @@ export class SalesRepository {
       taxTotal: string;
       lineTotal: string;
       taxSnapshot: Readonly<Record<string, unknown>> | null;
+      // TASK 16.13A — frozen at THIS moment from `ResolvedProductLine.
+      // operationalGroup`; optional (defaults to `null`) so every pre-
+      // existing call site (there is exactly one, `SalesService.
+      // createSale`, but this mirrors `discountTotal`/`discountBasisPoints`'s
+      // own optional-additive convention above) keeps compiling.
+      operationalGroupSnapshot?: string | null;
       timestamp: Date;
     },
   ): Promise<SaleItemRow> {
@@ -494,8 +517,8 @@ export class SalesRepository {
         `insert into sale_items
          (id,company_id,branch_id,sale_id,line_number,product_id,product_variant_id,product_version,
           sku_snapshot,name_snapshot,quantity,unit_price,subtotal,discount_total,discount_basis_points,
-          tax_total,line_total,tax_snapshot,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)
+          tax_total,line_total,tax_snapshot,operational_group_snapshot,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20)
          returning ${SALE_ITEM_COLUMNS}`,
         [
           input.id,
@@ -516,6 +539,7 @@ export class SalesRepository {
           input.taxTotal,
           input.lineTotal,
           input.taxSnapshot === null ? null : JSON.stringify(input.taxSnapshot),
+          input.operationalGroupSnapshot ?? null,
           input.timestamp,
         ],
       ),

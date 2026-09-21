@@ -421,6 +421,12 @@ export class SalesService {
               taxTotal: formatMoney(line.taxUnits),
               lineTotal: formatMoney(line.lineTotalUnits),
               taxSnapshot: { tax_code: line.taxCode, basis_points: line.taxBasisPoints },
+              // TASK 16.13A — looked up from the SAME `resolved` map
+              // `resolveProductLines` already built above (never a
+              // second query, never threaded through `evaluatePricing`'s
+              // own pricing-engine line shape, which has no need to know
+              // about it).
+              operationalGroupSnapshot: resolved.get(line.productId)?.operationalGroup ?? null,
               timestamp: context.timestamp,
             });
             items.push(item);

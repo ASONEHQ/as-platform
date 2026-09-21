@@ -251,6 +251,18 @@ export const saleItems = pgTable(
     taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull(),
     lineTotal: numeric('line_total', { precision: 19, scale: 4 }).notNull(),
     taxSnapshot: jsonb('tax_snapshot').$type<Readonly<Record<string, unknown>>>(),
+    // TASK 16.13A — the product's category's `operational_group`
+    // (`product_categories.operational_group`), frozen at THIS line's own
+    // creation moment, mirroring `sku_snapshot`/`name_snapshot`'s exact
+    // "never re-read a mutable record later" convention (never a raw
+    // `category_id` FK, which the `category_id`-omission doc comment on
+    // `ResolvedProductLine` above already explains this table
+    // deliberately avoids). A later admin reassignment of the product's
+    // category — or of that category's own `operational_group` — can
+    // never rewrite this line's own historical classification. `null`
+    // when the product had no category, or that category was not tagged,
+    // at sale time.
+    operationalGroupSnapshot: text('operational_group_snapshot'),
     createdAt: createdAtColumn(),
   },
   (table) => [
@@ -298,6 +310,14 @@ export const saleItems = pgTable(
     check(
       'sale_items_line_arithmetic_ck',
       sql`${table.lineTotal} = ${table.subtotal} - ${table.discountTotal} + ${table.taxTotal}`,
+    ),
+    // TASK 16.13A — mirrors `product_categories_operational_group_ck`
+    // exactly (same approved value set); the two must never drift apart
+    // since this column's only valid values are ones ever actually
+    // resolved from that one.
+    check(
+      'sale_items_operational_group_snapshot_ck',
+      sql`${table.operationalGroupSnapshot} is null or ${table.operationalGroupSnapshot} in ('cafeteria')`,
     ),
   ],
 );

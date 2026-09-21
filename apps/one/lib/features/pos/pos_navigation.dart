@@ -134,11 +134,13 @@ enum PosModule {
     PosModule.productVariants,
     // TASK 14.5 (Wave 3, Phase 6): Cafetería ("Acceso rápido") — the same
     // real `_PosSale` sale surface as `PosModule.pos`, scoped to whatever
-    // categories a company opted into the generic `visualTile` display
-    // hint (forensically confirmed to be the legacy's own `estiloCafe`
-    // flag's real, purely-visual scope — see
-    // `docs/LEGACY_FUNCTIONAL_PARITY.md` §1) — never a second,
-    // disconnected sale screen.
+    // categories are classified `operational_group='cafeteria'` (TASK
+    // 16.13A) — the SAME authoritative classification Corte Parcial's
+    // own Cafetería/Snacks reporting reads, never the unrelated
+    // `visualTile` display hint this screen incorrectly used before
+    // TASK 16.13A unified the two — see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.13A section — and
+    // never a second, disconnected sale screen.
     PosModule.cafeteria,
     // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI closing
     // the "functional completeness" YELLOW — see each screen's own file

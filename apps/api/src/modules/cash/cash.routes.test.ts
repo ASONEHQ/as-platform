@@ -988,7 +988,7 @@ describe('cash register HTTP routes (TASK 12.7)', () => {
 
     it('renders operational_summary: null for a pre-TASK-16.13 partial close, never a crash', async () => {
       const { app, service } = await fixture(['cash_movement.create']);
-      service.partialClose.mockResolvedValueOnce({
+      service.partialClose!.mockResolvedValueOnce({
         value: partialCloseValue({ operationalSummary: null }),
         replayed: false,
       });

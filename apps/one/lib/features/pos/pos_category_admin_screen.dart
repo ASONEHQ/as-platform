@@ -313,6 +313,10 @@ class _CategoryRow extends StatelessWidget {
                           const SizedBox(width: 8),
                           _VisualTileBadge(),
                         ],
+                        if (category.operationalGroup == 'cafeteria') ...[
+                          const SizedBox(width: 8),
+                          _CafeteriaBadge(),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 2),
@@ -351,6 +355,25 @@ class _VisualTileBadge extends StatelessWidget {
       child: Text(
         'Mosaico visual',
         style: TextStyle(color: palette.blueDeep, fontWeight: FontWeight.w700, fontSize: 10),
+      ),
+    );
+  }
+}
+
+/// Marks a category as classified "Cafetería/Snacks" — the SAME
+/// `operational_group` value that both the "VENTAS → Cafetería" POS screen
+/// and Corte Parcial's "Cafetería/Snacks" reporting subset read (TASK
+/// 16.13A). Never a second, independent Cafetería flag.
+class _CafeteriaBadge extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(color: palette.success.withValues(alpha: .14), borderRadius: BorderRadius.circular(20)),
+      child: Text(
+        'Cafetería / Snacks',
+        style: TextStyle(color: palette.success, fontWeight: FontWeight.w700, fontSize: 10),
       ),
     );
   }
@@ -409,6 +432,10 @@ class _CategoryFormDialogState extends State<_CategoryFormDialog> {
   late String? _parentId = widget.existing?.parentId;
   late bool _visualTile = widget.existing?.visualTile ?? false;
   late String _status = widget.existing?.status ?? 'active';
+
+  /// `null` = "General/Taquilla" (unclassified), `'cafeteria'` =
+  /// "Cafetería/Snacks" — see [PosCatalogCategory.operationalGroup].
+  late String? _operationalGroup = widget.existing?.operationalGroup;
   bool _busy = false;
   String? _error;
 
@@ -456,6 +483,8 @@ class _CategoryFormDialogState extends State<_CategoryFormDialog> {
       sortOrder: sortOrder,
       status: _isEdit ? _status : null,
       visualTile: _visualTile,
+      operationalGroup: _operationalGroup,
+      clearOperationalGroup: _isEdit && _operationalGroup == null,
     );
     try {
       if (_isEdit) {
@@ -551,6 +580,18 @@ class _CategoryFormDialogState extends State<_CategoryFormDialog> {
                   value: _visualTile,
                   onChanged: (value) => setState(() => _visualTile = value ?? false),
                   title: const Text('Mostrar como mosaico visual'),
+                ),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-category-admin-form-operational-group'),
+                  initialValue: _operationalGroup,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Uso operativo'),
+                  items: const [
+                    DropdownMenuItem(value: null, child: Text('General / Taquilla')),
+                    DropdownMenuItem(value: 'cafeteria', child: Text('Cafetería / Snacks')),
+                  ],
+                  onChanged: (value) => setState(() => _operationalGroup = value),
                 ),
                 if (_isEdit) ...[
                   const SizedBox(height: 4),

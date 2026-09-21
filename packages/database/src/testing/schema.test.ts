@@ -92,8 +92,8 @@ describe('database foundation schema', () => {
   // (`product_categories.operational_group` + `cash_session_partial_
   // closes.operational_summary`, backing the partial cut's operational
   // summary) landed without updating this tracker. Verified independently
-  // (`_journal.json` really does have 35 sequential entries 0-34 ending at
-  // `0034_bored_hydra`) before bumping the numbers — same precedent as
+  // (`_journal.json` really does have 36 sequential entries 0-35 ending at
+  // `0035_icy_network`) before bumping the numbers — same precedent as
   // TASK 15.0's/16.10B's/16.11's own prior updates to this exact test.
   // The test's actual intent — the journal is sequential, contiguous, and
   // its last entry matches the newest real migration file — is unchanged.
@@ -101,11 +101,11 @@ describe('database foundation schema', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(35);
+    expect(journal.entries).toHaveLength(36);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 35 }, (_, index) => index),
+      Array.from({ length: 36 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0034_bored_hydra');
+    expect(journal.entries.at(-1)?.tag).toBe('0035_icy_network');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {

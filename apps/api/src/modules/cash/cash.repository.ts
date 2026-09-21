@@ -249,6 +249,28 @@ export class CashRepository {
     return row.currency_code;
   }
 
+  /** TASK 16.13A — the branch's own real, configured IANA timezone
+   * (`branches.timezone`), used so `reservationsOccurringToday` compares
+   * `party_reservations.event_date` against the calendar day AS THE
+   * BRANCH ITSELF OBSERVES IT, never a blind UTC day boundary. Read
+   * directly (not through a settings resolver — a branch's timezone is
+   * its own column, not a resolved setting). The column is only ever
+   * checked non-blank at the DB level (`branches_timezone_nonblank_ck`)
+   * — never assumed to already be a valid IANA zone here; the caller
+   * (`CashService.partialClose`) re-validates with `isValidIanaTimezone`
+   * before use, exactly like `SalesService.createSale` already does for
+   * the same reason (see that function's own doc comment history). */
+  public async branchTimezone(companyId: string, branchId: string): Promise<string> {
+    const row = result<{ timezone: string }>(
+      await this.database.pool.query('select timezone from branches where company_id=$1 and id=$2', [
+        companyId,
+        branchId,
+      ]),
+    ).rows[0];
+    if (row === undefined) throw new CashError('resource_not_found', 'The branch was not found.');
+    return row.timezone;
+  }
+
   public async transaction<T>(callback: (client: CashTransaction) => Promise<T>): Promise<T> {
     const client = await this.database.pool.connect();
     try {
@@ -1011,18 +1033,33 @@ export class CashRepository {
    *  - `pos` is every `sales` row for this branch, any payment method,
    *    completed within the window — genuinely independent of the
    *    session's own cash-only `expectedCash` fold above.
-   *  - `cafeteria` is computed from `sale_items` joined to a category
-   *    tagged `operational_group='cafeteria'` — a SUBSET of the exact
-   *    same `sales` rows `pos` already counted, at line-item
-   *    granularity. It is never summed into `pos`'s own total; the two
-   *    numbers are presented side by side, subset and superset.
+   *  - `cafeteria` is computed from `sale_items.operational_group_
+   *    snapshot='cafeteria'` — a SUBSET of the exact same `sales` rows
+   *    `pos` already counted, at line-item granularity. It is never
+   *    summed into `pos`'s own total; the two numbers are presented
+   *    side by side, subset and superset. TASK 16.13A: this now reads
+   *    the FROZEN per-line snapshot recorded at sale-creation time
+   *    (`SalesService.createSale`), never a live join to
+   *    `products`/`product_categories` — a later admin reassignment of
+   *    a product's category can never rewrite a historical report. The
+   *    one exception is `cafeteria.available` below, which intentionally
+   *    DOES read the LIVE `product_categories` table — it answers "is
+   *    Cafetería configured at all right now," a present-tense
+   *    configuration question, not a historical-classification one.
    *  - `events` is built entirely from `party_reservations`/
    *    `party_reservation_payments`. A party deposit/payment is recorded
    *    via `PartyReservationsService.recordPayment`, which posts directly
    *    to `cash_movements` (`reference_type='party_reservation'`) and
    *    NEVER inserts a `sales`/`sale_items` row — confirmed by schema
    *    inspection, not assumed. `events` can therefore never double-count
-   *    against `pos`/`cafeteria`, and vice versa. */
+   *    against `pos`/`cafeteria`, and vice versa.
+   *
+   * `asOfDate` (used for `reservationsOccurringToday`) is the caller's
+   * own pre-computed branch-LOCAL calendar date string — TASK 16.13A
+   * fixed a UTC-day-boundary bug by moving that computation to
+   * `CashService.partialClose`, which resolves the branch's own IANA
+   * `timezone` first; this method itself stays timezone-agnostic, just
+   * comparing `event_date` to whatever date string it's given. */
   public async operationalSummary(
     companyId: string,
     branchId: string,
@@ -1052,31 +1089,31 @@ export class CashRepository {
         [companyId],
       ),
       this.database.pool.query(
+        // TASK 16.13A — classification now reads `sale_items.
+        // operational_group_snapshot` directly, the FROZEN fact
+        // recorded at sale-creation time — never a live join back to
+        // `products`/`product_categories`, which drifts the moment an
+        // admin later reassigns a product's category. This also removes
+        // TASK 16.13's own previously-documented limitation (§13 of its
+        // report) about category reassignment affecting historical
+        // reports.
         `select
            (select count(distinct si.sale_id)
             from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
-            join products p on p.company_id=si.company_id and p.id=si.product_id
-            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
-            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+            where si.company_id=$1 and si.branch_id=$2 and si.operational_group_snapshot='cafeteria'
               and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as ticket_count,
            (select coalesce(sum(si.quantity),0)
             from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
-            join products p on p.company_id=si.company_id and p.id=si.product_id
-            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
-            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+            where si.company_id=$1 and si.branch_id=$2 and si.operational_group_snapshot='cafeteria'
               and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as units_sold,
            (select coalesce(sum(si.line_total),0)
             from sale_items si join sales s on s.company_id=si.company_id and s.id=si.sale_id
-            join products p on p.company_id=si.company_id and p.id=si.product_id
-            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
-            where si.company_id=$1 and si.branch_id=$2 and c.operational_group='cafeteria'
+            where si.company_id=$1 and si.branch_id=$2 and si.operational_group_snapshot='cafeteria'
               and s.status='completed' and s.completed_at>=$3 and s.completed_at<=$4) as gross_sales,
            (select coalesce(sum(ri.line_total),0)
             from refund_items ri join refunds r on r.company_id=ri.company_id and r.id=ri.refund_id
             join sale_items si on si.company_id=ri.company_id and si.id=ri.sale_item_id
-            join products p on p.company_id=si.company_id and p.id=si.product_id
-            join product_categories c on c.company_id=p.company_id and c.id=p.category_id
-            where ri.company_id=$1 and ri.branch_id=$2 and c.operational_group='cafeteria'
+            where ri.company_id=$1 and ri.branch_id=$2 and si.operational_group_snapshot='cafeteria'
               and r.status='completed' and r.completed_at>=$3 and r.completed_at<=$4) as refunds_total`,
         [companyId, branchId, windowStart, windowEnd],
       ),

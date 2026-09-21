@@ -3,6 +3,14 @@ import { createHash } from 'node:crypto';
 
 import { normalizeCurrencyCode } from '@asone/database';
 
+// TASK 16.13A — reused, never reimplemented: the exact same real-IANA-
+// timezone validator and `Intl`-based local-date derivation
+// `SalesService`/the pricing engine already established and tested for
+// the identical "branch observes its own local day, not UTC" need (see
+// `pricing.service.ts`'s own `localWeekdayAndTime`/`isValidIanaTimezone`
+// doc comments for the production incident that made this validation
+// mandatory).
+import { isValidIanaTimezone, localDateString } from '../promotions/pricing.service.js';
 import type { CashRepository } from './cash.repository.js';
 import {
   canonicalCashDenominationsForCurrency,
@@ -772,12 +780,24 @@ export class CashService {
           // `CashRepository.operationalSummary`'s own doc comment for the
           // double-counting analysis). Never influences `expectedUnits`/
           // `cashSalesUnits`/etc. above in any way.
+          //
+          // TASK 16.13A — "today" (for `reservationsOccurringToday`) is
+          // now the BRANCH's own local calendar day, not a blind UTC
+          // one: `branches.timezone` is only ever checked non-blank at
+          // the DB level, so `isValidIanaTimezone` re-validates it here
+          // exactly like `SalesService.createSale` already does for the
+          // identical reason (a real production branch was once created
+          // with the non-IANA value `"Mexico_City"` through the admin
+          // UI) — an invalid zone falls back to UTC rather than crashing
+          // the whole partial-close request over a display-only date.
+          const rawBranchTimezone = await this.repository.branchTimezone(context.companyId, sessionRow.branchId);
+          const branchTimezone = isValidIanaTimezone(rawBranchTimezone) ? rawBranchTimezone : 'UTC';
           const operationalSummary = await this.repository.operationalSummary(
             context.companyId,
             sessionRow.branchId,
             sessionRow.openedAt,
             context.timestamp,
-            context.timestamp.toISOString().slice(0, 10),
+            localDateString(context.timestamp, branchTimezone),
           );
           const created = await this.repository.insertPartialClose(client, {
             id: randomUUID(),

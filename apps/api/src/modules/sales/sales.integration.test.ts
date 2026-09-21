@@ -1707,4 +1707,94 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
     ]);
     await database.pool.query('delete from products where company_id=$1 and id=$2', [companyId, taxHistoryProductId]);
   });
+
+  it(
+    "freezes the product's category operational_group onto sale_items.operational_group_snapshot at sale-creation time, " +
+      'and a later category reassignment never rewrites that historical fact (TASK 16.13A)',
+    async () => {
+      const opGroupCategoryId = randomUUID();
+      await database.pool.query(
+        `insert into product_categories
+         (id,company_id,code,normalized_code,name,status,operational_group,created_by,updated_by)
+         values ($1,$2,'SALES-CAFETERIA','sales-cafeteria','Cafetería (sales test)','active','cafeteria',$3,$3)`,
+        [opGroupCategoryId, companyId, userId],
+      );
+      const products = new ProductCatalogService(new ProductCatalogRepository(database));
+      const created = await products.createProduct(context, 'opgroup-snapshot-product', {
+        code: 'opgroup-snapshot',
+        name: 'OpGroup Snapshot Product',
+        productType: 'simple',
+        tracksInventory: false,
+        taxCode: 'IVA_EXEMPT',
+        status: 'active',
+        categoryId: opGroupCategoryId,
+        defaultVariant: {
+          sku: 'opgroup-snapshot',
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          standardCost: '0',
+          currencyCode: 'MXN',
+        },
+      });
+      const opGroupProductId = created.value.id;
+      await products.createProductPrice(context, opGroupProductId, 'opgroup-snapshot-price', {
+        amount: '50.00',
+        currencyCode: 'MXN',
+      });
+
+      // A real sale, recorded while the category is still tagged Cafetería.
+      const cafeteriaSale = await sales.createSale(context, branchIds, 'opgroup-cafeteria-sale', {
+        branchId,
+        items: [{ productId: opGroupProductId, quantity: '1' }],
+      });
+      expect(cafeteriaSale.value.items[0]).toMatchObject({ operationalGroupSnapshot: 'cafeteria' });
+
+      // The category is reclassified AFTER the sale — no longer Cafetería.
+      await database.pool.query('update product_categories set operational_group=null where id=$1', [
+        opGroupCategoryId,
+      ]);
+
+      // A new sale, created AFTER the reclassification, correctly gets
+      // no classification at all — never the stale 'cafeteria' value.
+      const laterContext = { ...context, timestamp: new Date(context.timestamp.getTime() + 60_000) };
+      const generalSale = await sales.createSale(laterContext, branchIds, 'opgroup-general-sale', {
+        branchId,
+        items: [{ productId: opGroupProductId, quantity: '1' }],
+      });
+      expect(generalSale.value.items[0]).toMatchObject({ operationalGroupSnapshot: null });
+
+      // The FIRST sale's own line, re-read fresh from the database, is
+      // untouched — still 'cafeteria', exactly as recorded at the time.
+      const reread = await database.pool.query<{ operational_group_snapshot: string | null }>(
+        'select operational_group_snapshot from sale_items where company_id=$1 and sale_id=$2',
+        [companyId, cafeteriaSale.value.sale.id],
+      );
+      expect(reread.rows[0]?.operational_group_snapshot).toBe('cafeteria');
+
+      // Cleanup — this test creates its own product/category outside the
+      // shared beforeAll/afterAll fixtures.
+      await database.pool.query('delete from sale_items where company_id=$1 and sale_id=any($2::uuid[])', [
+        companyId,
+        [cafeteriaSale.value.sale.id, generalSale.value.sale.id],
+      ]);
+      await database.pool.query('delete from sales where company_id=$1 and id=any($2::uuid[])', [
+        companyId,
+        [cafeteriaSale.value.sale.id, generalSale.value.sale.id],
+      ]);
+      await database.pool.query('delete from product_prices where company_id=$1 and product_id=$2', [
+        companyId,
+        opGroupProductId,
+      ]);
+      await database.pool.query('delete from product_variants where company_id=$1 and product_id=$2', [
+        companyId,
+        opGroupProductId,
+      ]);
+      await database.pool.query('delete from idempotency_keys where company_id=$1 and key like $2', [
+        companyId,
+        'opgroup-%',
+      ]);
+      await database.pool.query('delete from products where company_id=$1 and id=$2', [companyId, opGroupProductId]);
+      await database.pool.query('delete from product_categories where id=$1', [opGroupCategoryId]);
+    },
+  );
 });

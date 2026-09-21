@@ -710,4 +710,238 @@ integration('PostgreSQL cash partial-close operational summary (TASK 16.13)', { 
       expect(legacyRow?.operationalSummary).toBeNull();
     });
   });
+
+  describe('historical classification stability (TASK 16.13A)', () => {
+    it('a sale made while its category was tagged Cafetería stays Cafetería historically, even after the category is later reclassified', async () => {
+      const register = await cash.createRegister(cashContext(new Date('2026-09-22T07:00:00.000Z')), branchIds, `reg-${randomUUID()}`, {
+        branchId,
+        code: `OPSUM-HIST-REG-${randomUUID().slice(0, 8)}`,
+        name: 'Caja Historial',
+      });
+      const opened = await cash.openSession(cashContext(new Date('2026-09-22T08:00:00.000Z')), branchIds, `open-${randomUUID()}`, {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+      });
+      await completedCashSale(new Date('2026-09-22T09:00:00.000Z'), cafeteriaProductId, register.value.id);
+
+      // An admin reassigns the category AFTER the sale was made — it no
+      // longer belongs to Cafetería going forward.
+      await database.pool.query('update product_categories set operational_group=null where id=$1', [
+        cafeteriaCategoryId,
+      ]);
+      try {
+        const cut = await cash.partialClose(
+          cashContext(new Date('2026-09-22T09:30:00.000Z')),
+          branchIds,
+          `cut-${randomUUID()}`,
+          opened.value.id,
+        );
+        // The sale_item's own FROZEN snapshot still says 'cafeteria' —
+        // the report reflects the fact as it was at sale time, never the
+        // category's current (now unclassified) state.
+        expect(cut.value.operationalSummary?.cafeteria.netSales).toBe('50.0000');
+        expect(cut.value.operationalSummary?.cafeteria.ticketCount).toBe(1);
+      } finally {
+        // Restore for every other test in this file that relies on
+        // `cafeteriaCategoryId` still being tagged.
+        await database.pool.query("update product_categories set operational_group='cafeteria' where id=$1", [
+          cafeteriaCategoryId,
+        ]);
+      }
+    });
+
+    it('a sale made AFTER a category is reclassified reflects the NEW classification, never the old one — POS still counts it either way', async () => {
+      await database.pool.query('update product_categories set operational_group=null where id=$1', [
+        cafeteriaCategoryId,
+      ]);
+      try {
+        const register = await cash.createRegister(cashContext(new Date('2026-09-23T07:00:00.000Z')), branchIds, `reg-${randomUUID()}`, {
+          branchId,
+          code: `OPSUM-RECLASS-REG-${randomUUID().slice(0, 8)}`,
+          name: 'Caja Reclasificación',
+        });
+        const opened = await cash.openSession(cashContext(new Date('2026-09-23T08:00:00.000Z')), branchIds, `open-${randomUUID()}`, {
+          cashRegisterId: register.value.id,
+          openingAmount: '0',
+        });
+        await completedCashSale(new Date('2026-09-23T09:00:00.000Z'), cafeteriaProductId, register.value.id);
+
+        const cut = await cash.partialClose(
+          cashContext(new Date('2026-09-23T09:30:00.000Z')),
+          branchIds,
+          `cut-${randomUUID()}`,
+          opened.value.id,
+        );
+        expect(cut.value.operationalSummary?.cafeteria.netSales).toBe('0.0000');
+        expect(cut.value.operationalSummary?.cafeteria.ticketCount).toBe(0);
+        // The sale is still real POS revenue — reclassifying Cafetería
+        // never makes a real sale disappear from Taquilla.
+        expect(cut.value.operationalSummary?.pos.grossSales).toBe('50.0000');
+      } finally {
+        await database.pool.query("update product_categories set operational_group='cafeteria' where id=$1", [
+          cafeteriaCategoryId,
+        ]);
+      }
+    });
+  });
+
+  describe('"Eventos de hoy" uses the branch-local calendar day (TASK 16.13A §12)', () => {
+    it('a reservation whose event_date is "today" in the branch-local timezone counts, even when UTC has already rolled to a different day', async () => {
+      // A dedicated branch in a real, non-UTC IANA timezone (never
+      // hardcoded into production code — this is a test fixture value
+      // only) so the fix can be proven against a genuine UTC/local-day
+      // mismatch. America/Mexico_City is UTC-6 with no DST as of this
+      // task; 2026-09-23T04:00:00Z is 2026-09-22 22:00 local — a
+      // different calendar day than UTC's.
+      const tzBranchId = randomUUID();
+      await database.pool.query(
+        `insert into branches(id,company_id,name,code,status,timezone)
+         values($1,$2,'OpSummary TZ','OTZ','active','America/Mexico_City')`,
+        [tzBranchId, companyId],
+      );
+      const tzBranchIds = [tzBranchId];
+      const roomResult = await rooms.createRoom(partyContext(new Date('2026-09-01T00:00:00.000Z')), tzBranchIds, `room-tz-${randomUUID()}`, {
+        branchId: tzBranchId,
+        code: 'SALON-TZ',
+        name: 'Salón TZ',
+        capacityChildren: 10,
+      });
+      const packageResult = await packages.createPackage(
+        partyContext(new Date('2026-09-01T00:00:00.000Z')),
+        tzBranchIds,
+        `pkg-tz-${randomUUID()}`,
+        {
+          branchId: tzBranchId,
+          code: 'TZ-PKG',
+          name: 'Paquete TZ',
+          price: '1000.0000',
+          durationMinutes: 60,
+          childrenIncluded: 5,
+          adultsIncluded: 2,
+          childExtraCost: '50.0000',
+          adultExtraCost: '30.0000',
+          extraHalfHourCost: '100.0000',
+        },
+      );
+      // Booked well before the shift, with event_date = the LOCAL day
+      // (2026-09-22) that the UTC cut timestamp below has already
+      // rolled past.
+      await reservations.createReservation(partyContext(new Date('2026-09-10T08:00:00.000Z')), tzBranchIds, `res-tz-${randomUUID()}`, {
+        branchId: tzBranchId,
+        celebrantName: 'TZ Boundary Party',
+        roomId: roomResult.value.id,
+        packageId: packageResult.value.id,
+        eventDate: '2026-09-22',
+        startTime: '10:00',
+        endTime: '12:00',
+        childrenCount: 4,
+      });
+
+      const register = await cash.createRegister(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-23T03:00:00.000Z') },
+        tzBranchIds,
+        `reg-${randomUUID()}`,
+        { branchId: tzBranchId, code: `OPSUM-TZ-REG-${randomUUID().slice(0, 8)}`, name: 'Caja TZ' },
+      );
+      const opened = await cash.openSession(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-23T03:30:00.000Z') },
+        tzBranchIds,
+        `open-${randomUUID()}`,
+        { cashRegisterId: register.value.id, openingAmount: '0' },
+      );
+      // The cut's own instant is UTC 2026-09-23T04:00 — already the
+      // NEXT calendar day in UTC, but still 2026-09-22 in
+      // America/Mexico_City.
+      const cut = await cash.partialClose(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-23T04:00:00.000Z') },
+        tzBranchIds,
+        `cut-${randomUUID()}`,
+        opened.value.id,
+      );
+      expect(cut.value.operationalSummary?.events.reservationsOccurringToday).toBe(1);
+
+      await database.pool.query('delete from party_reservations where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from party_packages where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from party_rooms where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_session_partial_closes where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_sessions where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from outbox_events where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_registers where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from branches where id=$1', [tzBranchId]);
+    });
+
+    it('the SAME reservation is correctly excluded once the branch-local day has moved past it', async () => {
+      const tzBranchId = randomUUID();
+      await database.pool.query(
+        `insert into branches(id,company_id,name,code,status,timezone)
+         values($1,$2,'OpSummary TZ 2','OTZ2','active','America/Mexico_City')`,
+        [tzBranchId, companyId],
+      );
+      const tzBranchIds = [tzBranchId];
+      const roomResult = await rooms.createRoom(partyContext(new Date('2026-09-01T00:00:00.000Z')), tzBranchIds, `room-tz2-${randomUUID()}`, {
+        branchId: tzBranchId,
+        code: 'SALON-TZ2',
+        name: 'Salón TZ 2',
+        capacityChildren: 10,
+      });
+      const packageResult = await packages.createPackage(
+        partyContext(new Date('2026-09-01T00:00:00.000Z')),
+        tzBranchIds,
+        `pkg-tz2-${randomUUID()}`,
+        {
+          branchId: tzBranchId,
+          code: 'TZ2-PKG',
+          name: 'Paquete TZ 2',
+          price: '1000.0000',
+          durationMinutes: 60,
+          childrenIncluded: 5,
+          adultsIncluded: 2,
+          childExtraCost: '50.0000',
+          adultExtraCost: '30.0000',
+          extraHalfHourCost: '100.0000',
+        },
+      );
+      await reservations.createReservation(partyContext(new Date('2026-09-10T08:00:00.000Z')), tzBranchIds, `res-tz2-${randomUUID()}`, {
+        branchId: tzBranchId,
+        celebrantName: 'TZ Boundary Party 2',
+        roomId: roomResult.value.id,
+        packageId: packageResult.value.id,
+        eventDate: '2026-09-22',
+        startTime: '10:00',
+        endTime: '12:00',
+        childrenCount: 4,
+      });
+      const register = await cash.createRegister(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-24T03:00:00.000Z') },
+        tzBranchIds,
+        `reg-${randomUUID()}`,
+        { branchId: tzBranchId, code: `OPSUM-TZ2-REG-${randomUUID().slice(0, 8)}`, name: 'Caja TZ 2' },
+      );
+      const opened = await cash.openSession(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-24T03:30:00.000Z') },
+        tzBranchIds,
+        `open-${randomUUID()}`,
+        { cashRegisterId: register.value.id, openingAmount: '0' },
+      );
+      // A full LOCAL day later than the reservation's own event_date —
+      // 2026-09-24T04:00 UTC is 2026-09-23 22:00 in Mexico City, the day
+      // AFTER the party.
+      const cut = await cash.partialClose(
+        { companyId, actorId: userId, requestId: `req-${randomUUID()}`, correlationId: `corr-${randomUUID()}`, timestamp: new Date('2026-09-24T04:00:00.000Z') },
+        tzBranchIds,
+        `cut-${randomUUID()}`,
+        opened.value.id,
+      );
+      expect(cut.value.operationalSummary?.events.reservationsOccurringToday).toBe(0);
+
+      await database.pool.query('delete from party_reservations where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from party_packages where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from party_rooms where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_session_partial_closes where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_sessions where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from outbox_events where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from cash_registers where branch_id=$1', [tzBranchId]);
+      await database.pool.query('delete from branches where id=$1', [tzBranchId]);
+    });
+  });
 });

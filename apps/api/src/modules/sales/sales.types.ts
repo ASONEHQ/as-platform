@@ -77,6 +77,10 @@ export interface SaleItemRow {
   taxTotal: string;
   lineTotal: string;
   taxSnapshot: Readonly<Record<string, unknown>> | null;
+  // TASK 16.13A — the product's category's `operational_group`, frozen
+  // at sale-creation time (see the schema column's own doc comment).
+  // Never re-derived from the product's CURRENT category later.
+  operationalGroupSnapshot: string | null;
   createdAt: Date;
 }
 

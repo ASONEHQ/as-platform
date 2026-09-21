@@ -2728,6 +2728,270 @@ mapper is now defensive against both `null` and `undefined`.
   follows the identical CSS/table structure but was only verified via
   browser print-preview, not a physical thermal printer).
 
+## TASK 16.13A — Unify Cafetería source of truth: VENTAS → Cafetería and Corte Parcial now read the SAME classification (2026-09-20)
+
+TASK 16.13 (above) shipped Corte Parcial's "Cafetería/Snacks" reporting
+subset, reading `product_categories.operational_group`. Production then
+showed Ventas/Taquilla and Eventos/Fiestas reporting correctly, but
+Cafetería always said "No configurado — ninguna categoría está marcada
+como Cafetería." Separately, the ACCESS GO app already had a real
+"VENTAS → Cafetería" POS screen (`PosModule.cafeteria`), and it always
+showed empty, even for a tenant that had genuinely tagged a category. This
+task is a forensic-first unification of those two symptoms into ONE
+authoritative Cafetería concept — never a second, parallel one.
+
+### §1 — Forensic audit of the existing "VENTAS → Cafetería" screen
+
+`PosModule.cafeteria` (`pos_shell.dart`) renders the exact same sale
+surface as regular Punto de Venta, scoped by a boolean the caller passed
+as `visualTileOnly`, which `_CategoryStrip` used to filter categories:
+`category.status=='active' && (!visualTileOnly || category.visualTile)`.
+`PosCategory.visualTile` decodes `product_categories.is_visual_tile` — a
+column whose OWN doc comment (TASK 14.5, Wave 3, Phase 6) states it is a
+generic "compact/prominent tile display" cosmetic hint, "never wired into
+any pricing/checkout/inventory logic," and "deliberately NOT named/scoped
+to coffee/café." The Cafetería screen was gating on the wrong column: a
+column that is not a business classification at all, and that TASK
+16.13's own `operational_group` (the REAL classification) never touched.
+Nothing in the legacy-V1 or modern schema derives the distinction from a
+sales channel, hardcoded id, or product/category name — before this task,
+the only structured signal was this cosmetic flag, which the screen
+happened to read; a completed sale carried no classification of its own
+at all (`sale_items` had no such column).
+
+**Legacy comparison**: `AS POS V1.html`'s own `categoriasPOS[].estiloCafe`
+(a structured per-category boolean that DID drive its own café-screen
+filtering) was itself a SEPARATE mechanism from the free-text
+`.cat==="Cafetería"` string match that drove the `ventas.alimentos`
+reporting bucket (documented in TASK 16.13's own §1 above). The modern
+codebase, before this task, had unknowingly reproduced the identical
+two-parallel-classification-systems anti-pattern in a new form:
+`is_visual_tile` scoping the POS screen, `operational_group` scoping the
+report, never coordinated.
+
+### §2 — Root cause: precise, not guessed
+
+The two production symptoms are **not literally the same root cause**,
+but they are **the same architectural flaw** viewed from two ends:
+
+- "Cafetería POS empty" — the screen filters on `is_visual_tile`, a
+  column nothing in this codebase ever asks an admin to set for a
+  business reason (it's a display hint) and that INFLAPARK's real
+  categories had never set for Cafetería specifically. Empty because the
+  gate is wired to the wrong, effectively-unset column.
+- "Corte Parcial: No configurado" — correctly gated on
+  `operational_group`, a column that (before this task) had **no Flutter
+  admin UI at all** — only reachable by direct SQL. Empty because the
+  right column had no way to be set.
+
+One flaw, two symptoms: **two independent, uncoordinated classification
+mechanisms for a single business concept**, neither of which the admin
+could actually configure end-to-end through the app. Unifying onto one
+column AND giving that column a real admin UI (§4/§5 below) resolves
+both symptoms from their respective, distinct causes.
+
+### §3/§4 — Single source of truth: `product_categories.operational_group`
+
+`operational_group` (TASK 16.13's own column) is now the ONE authoritative
+classification, consumed identically by both ends:
+
+- **POS scoping**: `PosCategory` gains an `operationalGroup` field
+  (parsed from `operational_group`) and a getter `isCafeteria =>
+  operationalGroup == 'cafeteria'`. `_CategoryStrip`'s parameter is
+  renamed `visualTileOnly` → `cafeteriaOnly`, and its filter now reads
+  `category.isCafeteria` instead of `category.visualTile`.
+  `PosModule.cafeteria`'s call site is otherwise unchanged — same sale
+  surface, same ticket/cart, only the scoping predicate changed.
+- **Reporting**: unchanged column, now read from a frozen per-line
+  snapshot instead of a live join (§6 below).
+
+`is_visual_tile` is untouched and remains a legitimate, separate cosmetic
+concept — `_CategoryChip`'s own `visualTile` parameter (chip visual
+treatment) is unaffected; a category can independently be a "mosaico
+visual" AND/OR "Cafetería/Snacks," or neither, or both.
+
+### §5 — Configuration UX: the existing category admin screen, no SQL
+
+No new screen. `pos_category_admin_gateway.dart`'s `PosCatalogCategory`/
+`PosCategoryInput` gain an `operationalGroup` field (wire name
+`operational_group`, matching the catalog API's existing PATCH/POST
+contract — this was already accepted server-side since TASK 16.13, just
+never exposed in Flutter). `pos_category_admin_screen.dart`'s create/edit
+dialog gains a "Uso operativo" dropdown next to the existing "Mostrar
+como mosaico visual" checkbox, with exactly two options: "General /
+Taquilla" (`null`) and "Cafetería / Snacks" (`'cafeteria'`) — the internal
+enum value `'cafeteria'` is never shown to the user. The category list
+row shows a "Cafetería / Snacks" badge (mirroring the existing "Mosaico
+visual" badge) when set. Clearing the classification back to General
+sends an explicit `operational_group: null` PATCH (a new
+`PosCategoryInput.clearOperationalGroup` flag), since this gateway's
+field-omission convention otherwise means "leave unchanged," not "clear."
+
+### §6 — No name/string heuristics; historical freeze at sale time
+
+Classification is read exclusively from `operational_group` — never a
+product/category name match. To satisfy "a sale made today as Cafetería
+stays historically Cafetería even if the category is later reassigned,"
+a new column `sale_items.operational_group_snapshot` (nullable `text`,
+`CHECK (... in ('cafeteria'))`, mirroring `product_categories_
+operational_group_ck` exactly) freezes the DERIVED VALUE at sale-creation
+time — mirroring the established `sku_snapshot`/`name_snapshot`/
+`tax_snapshot` "freeze the fact, not a live FK" convention already used
+throughout `sale_items` (deliberately not a raw `category_id` FK, which
+that table's own existing doc comment already explains would let a later
+reassignment rewrite history). `SalesRepository.resolveProductLines`
+extends its existing per-line lookup query with one additional
+`LEFT JOIN product_categories`, and `SalesService.createSale`'s existing
+line-insertion loop reads `operationalGroup` off the SAME already-fetched
+`resolved` map — never a second query, never threaded through the
+pricing/promotions engine. `CashRepository.operationalSummary`'s four
+Cafetería subqueries now filter on `sale_items.operational_group_
+snapshot='cafeteria'` directly (dropping their prior joins to
+`products`/`product_categories` entirely) — a later admin reassignment of
+a category can now never retroactively change a past report. Migration:
+`packages/database/drizzle/0035_icy_network.sql` (additive-only: one
+`ADD COLUMN`, one `CHECK`).
+
+One deliberate exception: `cafeteria.available` (Corte Parcial's "is
+Cafetería configured at all" flag) intentionally keeps reading the LIVE
+`product_categories` table — it answers a present-tense admin-
+configuration question ("has anyone set this up"), not a historical one,
+so it must reflect the CURRENT state, not a frozen one.
+
+### §7 — Subset semantics: unchanged from TASK 16.13
+
+Cafetería remains a labeled SUBSET of Taquilla, never additive — the
+$100 park + $50 cafetería example from TASK 16.13's own spec still
+resolves to Taquilla $150 (net), Cafetería $50 (subset, "parte de
+Taquilla"), never $200. Only the underlying query source changed (frozen
+snapshot vs. live join); the UI/print subset labeling and the
+double-counting model (§4 of TASK 16.13's section above) are untouched.
+
+### §8 — "Eventos de hoy": branch-local timezone fix
+
+TASK 16.13's own known limitation (§13 above) was that
+`reservationsOccurringToday` compared `party_reservations.event_date`
+against `context.timestamp.toISOString().slice(0,10)` — a blind UTC
+calendar day, not the branch's own. Fixed: `CashRepository.branchTimezone`
+reads `branches.timezone` for the session's branch; `CashService.
+partialClose` validates it with the pricing engine's already-established
+`isValidIanaTimezone` (falling back to `'UTC'` on an invalid value — the
+same defensive posture `SalesService.createSale` already uses, informed
+by a real production incident where a branch was created via the admin
+UI with the non-IANA value `"Mexico_City"`); a new sibling function
+`localDateString(instant, timezone)` (`pricing.service.ts`, mirroring
+`localWeekdayAndTime`'s exact `Intl.DateTimeFormat`/`formatToParts`
+shape) replaces the raw UTC slice. No tenant timezone is ever hardcoded.
+
+### §9 — Files changed
+
+`packages/database/src/schema/sales.ts`,
+`packages/database/drizzle/0035_icy_network.sql` (new),
+`packages/database/src/testing/schema.test.ts` (journal length 35 → 36),
+`apps/api/src/modules/sales/sales.repository.ts`, `sales.service.ts`,
+`sales.routes.ts`, `sales.types.ts`, `sales.integration.test.ts`,
+`apps/api/src/modules/cash/cash.repository.ts`, `cash.service.ts`,
+`cash-operational-summary.integration.test.ts`,
+`apps/api/src/modules/promotions/pricing.service.ts`,
+`apps/one/lib/features/pos/pos_models.dart`, `pos_shell.dart`,
+`pos_category_admin_gateway.dart`, `pos_category_admin_screen.dart`,
+`apps/one/test/pos_shell_wave3_cashier_experience_test.dart`,
+`apps/one/test/pos_category_admin_test.dart`, this section.
+
+### §10 — Test evidence
+
+- Database: `schema.test.ts` journal-length check (36 entries), full
+  suite re-run.
+- Backend: two new `describe` blocks in `cash-operational-summary.
+  integration.test.ts` — "historical classification stability" (a sale's
+  `operational_group_snapshot` survives a later category reassignment,
+  proven against the live summary re-read) and "'Eventos de hoy' uses the
+  branch-local calendar day" (two tests against a dedicated
+  `America/Mexico_City` branch, proving a reservation near UTC midnight
+  buckets correctly). One new test in `sales.integration.test.ts` proving
+  the freeze-at-creation-time behavior directly on `sale_items`. Full
+  backend suite re-run sequentially (`--no-file-parallelism`).
+- Flutter: `pos_shell_wave3_cashier_experience_test.dart`'s Cafetería-
+  scoping test updated to classify via `operationalGroup: 'cafeteria'`
+  instead of the now-unrelated `visualTile: true`; three new tests in
+  `pos_category_admin_test.dart` covering classify-on-create (sends
+  `operational_group`, badge renders), classify-persists-on-edit-open
+  (dropdown pre-fills, scoped to the dropdown's own subtree to avoid a
+  false match against the list-row badge), and explicit-clear-on-revert
+  (`clearOperationalGroup: true`, never a bare omission). `flutter
+  analyze` (156 pre-existing issues, 0 new) and the full `flutter test`
+  suite re-run: **653/653 passing** (650 pre-existing + 3 new).
+- Full regression, all re-run after every code change in this task:
+  database **42/42**; backend **1265 passed, 15 skipped (pre-existing,
+  unrelated), 0 failed** (`vitest run --no-file-parallelism`, real
+  `DATABASE_TEST_URL`); `flutter build web --release` succeeds.
+
+### §11 — Live verification (local INFLAPARK tenant, Campeche branch, 2026-09-20)
+
+Performed against the real local stack (`ceo@inflapark.local`), after the
+freshly rebuilt web app, exercising the exact 11-step flow this task's
+own spec required:
+
+1. Catálogo → Categorías → edited the real "Cafetería" category (code
+   `CAFETERIA-DEMO`) → set "Uso operativo" to "Cafetería / Snacks" → the
+   list row immediately showed the new green "Cafetería / Snacks" badge.
+2. VENTAS → Cafetería (Campeche branch) → the category strip showed
+   **only** "Cafetería" (plus "Todas") — "Extras"/"Membresías"/
+   "Entradas"/"Tienda" (all visible seconds earlier in the regular Punto
+   de Venta strip) did **not** leak in.
+3. Only one product rendered: "Palomitas $45.00" — every other product
+   (Agua, Membresía mensual, Entrada 90 minutos, Refresco, Family Pack,
+   Garra humana, Locker, Day Pass, …) correctly did not appear.
+4. Added Palomitas, paid $50.00 cash through the real payment dialog —
+   the exact same `_PaymentDialog`/`PosSalesGateway.createSale` path
+   Punto de Venta uses. Real confirmation: "¡Venta completada!
+   SALE-62E3BDAE, $45.00, Efectivo, Cambio: $5.00."
+5. CAJA → Corte de Caja → "Corte parcial" → the real registered snapshot
+   showed:
+   - VENTAS/TAQUILLA: $859.32 netas, 3 tickets (the branch's full cash
+     session total, cafeteria sale included)
+   - **CAFETERÍA/SNACKS (parte de Taquilla): $45.00 netas, 1 ticket, 1
+     unidad** — the exact sale, exactly labeled as a subset, never
+     summed into a $904.32 total.
+6. Print (`Imprimir`) attempted a new tab with the same HTML the
+   passing `cash_cut_html_test.dart` suite already verifies contains
+   this section; the browser-automation harness blocked the popup
+   (`El navegador bloqueó la ventana de impresión`) — a tooling
+   limitation of this one verification session, not a code path
+   difference, since print and the on-screen dialog both read the exact
+   same persisted `operational_summary` snapshot.
+7. **Historical stability, live**: reopened Catálogo → Categorías →
+   edited "Cafetería" → changed "Uso operativo" back to "General /
+   Taquilla" → saved (badge disappeared from the row). Returned to CAJA
+   → Corte de Caja → "Cortes parciales de esta sesión" → reopened the
+   *same* 20/09/2026 21:51 corte → **Cafetería/Snacks still showed
+   $45.00 / 1 ticket / 1 unidad, byte-for-byte unchanged** — proving the
+   snapshot is genuinely frozen, not a live re-join, exactly mirroring
+   the automated `sales.integration.test.ts`/`cash-operational-summary.
+   integration.test.ts` assertions of the same fact.
+
+### §12 — Genuine, honest remaining limitations
+
+- No existing INFLAPARK (or any tenant's) category is auto-marked
+  Cafetería by this task — per its own explicit instruction, an
+  unconfigured-after-deploy state is acceptable and expected; an admin
+  must classify at least one category through Catálogo → Categorías
+  before either the POS screen or the report show anything.
+- `cafeteria.available`'s live-query semantics mean the honest "not
+  configured" message can flip to configured (or back) mid-session if an
+  admin changes a category while a cash session is open — a deliberate
+  choice (§6 above), not an oversight, but worth naming: unlike the
+  historical totals, this ONE flag is not frozen.
+- Physical 80mm printer certification of the print block is unchanged
+  from TASK 16.13's own §13 note — still pending real hardware.
+- This task's own live print-preview check (§11 step 6) was blocked by
+  the verification browser's popup blocker rather than actually
+  rendered — the print HTML content itself is covered by the passing
+  `cash_cut_html_test.dart` suite (unchanged by this task, since the
+  print template reads the same `operational_summary` structure as
+  before), but a from-the-live-app print render specifically was not
+  re-confirmed visually in this task's own session.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

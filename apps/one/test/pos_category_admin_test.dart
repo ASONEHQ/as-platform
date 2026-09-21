@@ -115,6 +115,79 @@ void main() {
     });
   });
 
+  group('TASK 16.13A — "Uso operativo" (Cafetería) classification', () {
+    testWidgets(
+      'classifying a new category as Cafetería/Snacks sends operational_group '
+      'and the saved category shows the Cafetería badge — the same '
+      'authoritative field VENTAS → Cafetería and Corte Parcial both read',
+      (tester) async {
+        final gateway = _RecordingCategoryAdminGateway(categories: const []);
+        await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+        await tester.tap(find.byKey(const Key('pos-category-admin-new')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-category-admin-form-code')), 'CAF');
+        await tester.enterText(find.byKey(const Key('pos-category-admin-form-name')), 'Café');
+        await tester.tap(find.byKey(const Key('pos-category-admin-form-operational-group')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cafetería / Snacks').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-category-admin-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.createCalls.single.operationalGroup, 'cafeteria');
+        expect(find.text('Cafetería / Snacks'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a category already classified as Cafetería opens for edit with that '
+      'selection pre-filled, never a blank/reset dropdown',
+      (tester) async {
+        final gateway = _RecordingCategoryAdminGateway(
+          categories: [_category(id: 'c-1', code: 'CAF', name: 'Café', operationalGroup: 'cafeteria')],
+        );
+        await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+        await tester.tap(find.byKey(const Key('pos-category-admin-edit-c-1')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('pos-category-admin-form-operational-group')),
+            matching: find.text('Cafetería / Snacks'),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'reverting a category from Cafetería back to General explicitly clears '
+      'operational_group (never merely omits it) so the backend actually '
+      'unclassifies it',
+      (tester) async {
+        final gateway = _RecordingCategoryAdminGateway(
+          categories: [_category(id: 'c-1', code: 'CAF', name: 'Café', operationalGroup: 'cafeteria')],
+        );
+        await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+        await tester.tap(find.byKey(const Key('pos-category-admin-edit-c-1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-category-admin-form-operational-group')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('General / Taquilla').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-category-admin-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.updateCalls.single.input.operationalGroup, isNull);
+        expect(gateway.updateCalls.single.input.clearOperationalGroup, isTrue);
+      },
+    );
+  });
+
   group('TASK 15.1 Phase 4 — permission gating', () {
     testWidgets('no catalog.read at all shows the honest permission state, no search/list', (tester) async {
       final gateway = _RecordingCategoryAdminGateway(categories: [_category(id: 'c-1', code: 'BEB', name: 'Bebidas')]);
@@ -158,6 +231,7 @@ PosCatalogCategory _category({
   int sortOrder = 0,
   String status = 'active',
   bool visualTile = false,
+  String? operationalGroup,
   int version = 1,
 }) => PosCatalogCategory(
   id: id,
@@ -168,6 +242,7 @@ PosCatalogCategory _category({
   sortOrder: sortOrder,
   status: status,
   visualTile: visualTile,
+  operationalGroup: operationalGroup,
   version: version,
   createdAt: DateTime.utc(2026, 8, 1),
   updatedAt: DateTime.utc(2026, 8, 1),
@@ -209,6 +284,7 @@ class _RecordingCategoryAdminGateway implements PosCategoryAdminGateway {
       sortOrder: input.sortOrder ?? 0,
       status: input.status ?? 'active',
       visualTile: input.visualTile ?? false,
+      operationalGroup: input.operationalGroup,
       version: 1,
       createdAt: DateTime.utc(2026, 9, 1),
       updatedAt: DateTime.utc(2026, 9, 1),
@@ -232,6 +308,9 @@ class _RecordingCategoryAdminGateway implements PosCategoryAdminGateway {
       sortOrder: input.sortOrder ?? current.sortOrder,
       status: input.status ?? current.status,
       visualTile: input.visualTile ?? current.visualTile,
+      operationalGroup: input.clearOperationalGroup
+          ? null
+          : (input.operationalGroup ?? current.operationalGroup),
       version: current.version + 1,
       createdAt: current.createdAt,
       updatedAt: DateTime.utc(2026, 9, 2),

@@ -113,6 +113,11 @@ function saleItemHttp(value: SaleItemRow): Readonly<Record<string, unknown>> {
     tax_total: value.taxTotal,
     line_total: value.lineTotal,
     tax_snapshot: value.taxSnapshot,
+    // TASK 16.13A — the frozen "was this line Cafetería" fact at sale
+    // time; see `sale_items.operational_group_snapshot`'s own doc
+    // comment. Deliberately NOT added to `receiptItemHttp` below (an
+    // internal classification, not a printed-receipt concern).
+    operational_group_snapshot: value.operationalGroupSnapshot,
     created_at: value.createdAt.toISOString(),
   };
 }

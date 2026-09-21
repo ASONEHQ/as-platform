@@ -3081,7 +3081,7 @@ class _Content extends StatelessWidget {
                         rewardsGateway: rewardsGateway,
                         heldSalesGateway: heldSalesGateway,
                         onEnterCliente: onEnterCliente,
-                        visualTileOnly: module == PosModule.cafeteria,
+                        cafeteriaOnly: module == PosModule.cafeteria,
                         authGateway: authGateway,
                         onQuickSwitchByPin: onQuickSwitchByPin,
                         onQuickSwitchByQr: onQuickSwitchByQr,
@@ -3995,10 +3995,13 @@ class _PosSale extends StatefulWidget {
     required this.onEnterCliente,
     // TASK 14.5 (Wave 3, Phase 6): `true` only when rendered for
     // `PosModule.cafeteria` ("Acceso rápido") — see
-    // `_CategoryStrip.visualTileOnly`. Shares the exact same
+    // `_CategoryStrip.cafeteriaOnly`. Shares the exact same
     // `saleSession`/gateways as regular Punto de Venta (never a
     // disconnected second cart), only the category/product scope differs.
-    this.visualTileOnly = false,
+    // TASK 16.13A: renamed from `visualTileOnly` — the scope is now the
+    // real, structured `operational_group='cafeteria'` classification,
+    // never the generic, unrelated `visual_tile` display flag.
+    this.cafeteriaOnly = false,
     this.authGateway = const EmptyPosAuthGateway(),
     this.onQuickSwitchByPin,
     this.onQuickSwitchByQr,
@@ -4024,7 +4027,7 @@ class _PosSale extends StatefulWidget {
   // `pos_held_sales_gateway.dart`.
   final PosHeldSalesGateway heldSalesGateway;
   final VoidCallback onEnterCliente;
-  final bool visualTileOnly;
+  final bool cafeteriaOnly;
   final PosAuthGateway authGateway;
   // TASK 15.1 Phase 5: real PIN/QR quick-switch session hand-off — see
   // `PosShell`'s own field doc comment.
@@ -4343,7 +4346,7 @@ class _PosSaleState extends State<_PosSale> {
                     canCancelSale: _canCancelSale,
                     onCancelSale: () => unawaited(_handleCancelSale()),
                     cobrarButtonKey: _cobrarButtonKey,
-                    visualTileOnly: widget.visualTileOnly,
+                    cafeteriaOnly: widget.cafeteriaOnly,
                     onQuickSwitch: () => unawaited(
                       showDialog<void>(
                         context: context,
@@ -4396,8 +4399,9 @@ class _PosSaleBody extends StatelessWidget {
     required this.onCancelSale,
     this.cobrarButtonKey,
     // TASK 14.5 (Wave 3, Phase 6): `PosModule.cafeteria` ("Acceso
-    // rápido") passes `true` — see `_CategoryStrip.visualTileOnly`.
-    this.visualTileOnly = false,
+    // rápido") passes `true` — see `_CategoryStrip.cafeteriaOnly`.
+    // TASK 16.13A: renamed from `visualTileOnly`.
+    this.cafeteriaOnly = false,
     // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): "Cambiar cajero" — opens
     // `_StaffQuickSwitchDialog` (real PIN/QR verification).
     required this.onQuickSwitch,
@@ -4437,7 +4441,7 @@ class _PosSaleBody extends StatelessWidget {
   final bool canCancelSale;
   final VoidCallback onCancelSale;
   final GlobalKey<_PosCobrarButtonState>? cobrarButtonKey;
-  final bool visualTileOnly;
+  final bool cafeteriaOnly;
   final VoidCallback onQuickSwitch;
 
   @override
@@ -4491,7 +4495,7 @@ class _PosSaleBody extends StatelessWidget {
           state: controller.categories,
           selected: selectedCategoryId,
           onSelected: onSelectCategory,
-          visualTileOnly: visualTileOnly,
+          cafeteriaOnly: cafeteriaOnly,
         ),
       ],
     );
@@ -4513,15 +4517,17 @@ class _PosSaleBody extends StatelessWidget {
                 selectedCategoryId,
                 query,
                 // TASK 14.5 (Wave 3, Phase 6): "Acceso rápido" restricts
-                // "Todas" itself to only visual-tile categories' own
+                // "Todas" itself to only Cafetería categories' own
                 // products, exactly like the legacy's own `posSeccion===
                 // 'cafeteria'` scoping (never leaking the rest of the
                 // catalog into this section, and never touching Punto de
                 // Venta's own "Todas" — that keeps meaning literally
-                // every product, unrestricted).
-                visualTileOnly
+                // every product, unrestricted). TASK 16.13A: scoped by
+                // `PosCategory.isCafeteria` (`operational_group`), never
+                // the unrelated `visualTile` display flag.
+                cafeteriaOnly
                     ? controller.categories.items
-                          .where((category) => category.visualTile)
+                          .where((category) => category.isCafeteria)
                           .map((category) => category.id)
                           .toSet()
                     : null,
@@ -5377,33 +5383,44 @@ class _CategoryStrip extends StatelessWidget {
     required this.onSelected,
     // TASK 14.5 (Wave 3, Phase 6): `PosModule.cafeteria` ("Acceso
     // rápido") passes `true` — the strip (and the "Todas" chip's own
-    // scope) is restricted to only the categories a company opted into
-    // `visualTile`. Regular Punto de Venta passes `false` (the default):
-    // every active category shows, exactly as before this phase.
-    this.visualTileOnly = false,
+    // scope) is restricted to only categories classified as Cafetería.
+    // Regular Punto de Venta passes `false` (the default): every active
+    // category shows, exactly as before this phase.
+    // TASK 16.13A: renamed from `visualTileOnly`, and the filter itself
+    // now reads `PosCategory.isCafeteria` (the real, structured
+    // `operational_group='cafeteria'` classification — the SAME one the
+    // partial cash-cut's own Cafetería/Snacks reporting uses) instead of
+    // the generic, unrelated `visualTile` display flag. Forensic root
+    // cause of this screen showing empty in production even for a
+    // tenant that had genuinely tagged a Cafetería category: it was
+    // scoped by the WRONG flag, one nothing had ever set.
+    this.cafeteriaOnly = false,
   });
   final PosReadState<PosCategory> state;
   final String? selected;
   final ValueChanged<String?> onSelected;
-  final bool visualTileOnly;
+  final bool cafeteriaOnly;
 
   @override
   Widget build(BuildContext context) {
     final active = state.items
         .where(
           (category) =>
-              category.status == 'active' && (!visualTileOnly || category.visualTile),
+              category.status == 'active' && (!cafeteriaOnly || category.isCafeteria),
         )
         .toList(growable: false);
-    if (visualTileOnly && active.isEmpty) {
+    if (cafeteriaOnly && active.isEmpty) {
       // Honest empty state — never a fabricated demo category. Mirrors
       // this codebase's own established convention (e.g. CLIENTE's
       // per-category empty state) rather than silently rendering nothing.
+      // TASK 16.13A: names the real fix (Catálogo → Categorías → "Uso
+      // operativo: Cafetería / Snacks"), never a vague "not configured".
       return const Padding(
         key: Key('pos-cafeteria-empty'),
         padding: EdgeInsets.symmetric(vertical: 8),
         child: Text(
-          'Ninguna categoría está configurada como acceso rápido todavía.',
+          'Ninguna categoría está marcada como Cafetería / Snacks todavía. '
+          'Configúralo en Catálogo → Categorías.',
           style: TextStyle(fontSize: 12),
         ),
       );
