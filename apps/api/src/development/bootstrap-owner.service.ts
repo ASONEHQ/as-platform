@@ -402,7 +402,7 @@ export class DevelopmentOwnerBootstrap {
           companyId,
           name: 'Chief Executive Officer',
           code: ownerRoleCode,
-          description: 'Development owner for local AS ONE administration.',
+          description: 'Development owner for local ACCESS GO administration.',
           status: 'active',
           isSystem: true,
         });
@@ -411,7 +411,7 @@ export class DevelopmentOwnerBootstrap {
           .update(roles)
           .set({
             name: 'Chief Executive Officer',
-            description: 'Development owner for local AS ONE administration.',
+            description: 'Development owner for local ACCESS GO administration.',
             status: 'active',
             isSystem: true,
             updatedAt: new Date(),

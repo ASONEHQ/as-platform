@@ -1154,7 +1154,11 @@ class _Topbar extends StatelessWidget {
                       ),
                   ],
                   child: _ContextLabel(
-                    company: this.context.currentCompany?.name ?? 'AS ONE',
+                    // TASK 16.16A — old-brand leak fix: this is the
+                    // ACCESS GO software's own persistent top-bar company
+                    // label (never the tenant's receipt-branding fallback,
+                    // which stays untouched elsewhere in this file).
+                    company: this.context.currentCompany?.name ?? 'ACCESS GO',
                     branch: branch,
                   ),
                 ),

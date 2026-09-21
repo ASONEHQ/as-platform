@@ -85,6 +85,7 @@ import '../authentication/auth_models.dart';
 import 'pos_cash_gateway.dart';
 import 'pos_identity_admin_gateway.dart';
 import 'pos_operational_areas_gateway.dart';
+import 'pos_permission_presentation.dart';
 import 'pos_tokens.dart';
 
 /// The public entry point. Constructed with the real
@@ -707,6 +708,20 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   // its own route, not embedded in `userDetail()`'s response).
   List<PosRegisterAccessGrant> _registerAccess = const [];
 
+  // TASK 16.16A — best-effort NAME cache for the register/area access
+  // grant rows below, resolved lazily per branch actually referenced by
+  // `_registerAccess`, reusing the exact same gateways
+  // `_GrantRegisterAccessDialog` already uses for its own dropdowns
+  // (`widget.areasGateway`/`widget.cashGateway`) — never a new endpoint.
+  // [_registerAccessScopeLabel] falls back to the raw id if a lookup
+  // genuinely fails (a deleted area/register, a caller still on the
+  // default `Empty...` gateways) — never blocking or breaking this
+  // dialog's own load, exactly like [_branchLabel] already does for a
+  // branch it cannot resolve.
+  final Map<String, PosOperationalArea> _areasById = {};
+  final Map<String, PosCashRegister> _registersById = {};
+  final Set<String> _registerAccessLookedUpBranchIds = {};
+
   late String _statusValue = widget.user.membershipStatus == 'invited' ? 'active' : widget.user.membershipStatus;
   final _passwordController = TextEditingController();
   bool _statusBusy = false;
@@ -756,6 +771,9 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
         _phase = _DetailPhase.ready;
         _statusValue = detail.user.membershipStatus == 'invited' ? 'active' : detail.user.membershipStatus;
       });
+      if (registerAccess.isNotEmpty) {
+        unawaited(_loadRegisterAccessNames(registerAccess));
+      }
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -936,6 +954,58 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
     return match == null ? branchId : '${match.name} (${match.code})';
   }
 
+  // TASK 16.16A — best-effort: fetches every operational area/cash register
+  // for each branch actually referenced by [grants], once per branch
+  // (`_registerAccessLookedUpBranchIds` de-dupes across repeated `_load()`
+  // calls, e.g. after granting/revoking access). Deliberately omits the
+  // `status: 'active'` filter `_GrantRegisterAccessDialog` uses for its own
+  // picker — a grant can reference an area/register that has since been
+  // deactivated, and this only needs to DISPLAY its name, not offer it as
+  // a selectable choice. A failure here is silently absorbed: the affected
+  // rows just keep showing the raw id via [_registerAccessScopeLabel]'s
+  // own fallback, never a blocked or broken dialog.
+  Future<void> _loadRegisterAccessNames(List<PosRegisterAccessGrant> grants) async {
+    final branchIds = {for (final grant in grants) grant.branchId}
+      ..removeWhere(_registerAccessLookedUpBranchIds.contains);
+    if (branchIds.isEmpty) return;
+    for (final branchId in branchIds) {
+      _registerAccessLookedUpBranchIds.add(branchId);
+      try {
+        final areasPage = await widget.areasGateway.listAreas(branchId: branchId);
+        final registers = await widget.cashGateway.registersForBranch(branchId);
+        if (!mounted) return;
+        setState(() {
+          for (final area in areasPage.items) {
+            _areasById[area.id] = area;
+          }
+          for (final register in registers) {
+            _registersById[register.id] = register;
+          }
+        });
+      } on Object {
+        // Best-effort only — see this method's own doc comment.
+      }
+    }
+  }
+
+  // TASK 16.16A — resolves a register/area access grant's scope to a
+  // human name ("área Zona A (ZONA-A)" / "caja Caja 1 (CAJA-1)") instead
+  // of the raw UUID this row used to print unconditionally. Falls back to
+  // the raw id only when the lookup genuinely can't resolve it (deleted
+  // area/register, or a caller still on the default `Empty...` gateways)
+  // — never a thrown error, never a blank.
+  String _registerAccessScopeLabel(PosRegisterAccessGrant grant) {
+    final areaId = grant.operationalAreaId;
+    if (areaId != null) {
+      final area = _areasById[areaId];
+      return area == null ? 'área $areaId' : 'área ${area.name} (${area.code})';
+    }
+    final registerId = grant.cashRegisterId;
+    if (registerId == null) return 'caja no especificada';
+    final register = _registersById[registerId];
+    return register == null ? 'caja $registerId' : 'caja ${register.name} (${register.code})';
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -1053,6 +1123,15 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
             ),
           ],
         ),
+        const SizedBox(height: 4),
+        // TASK 16.16A Phase 7 — same short, muted-caption tone/length as
+        // "Acceso a caja/área"'s own existing helper text below, so a
+        // first-time administrator understands what a role actually
+        // controls without needing to already know the architecture.
+        Text(
+          'Un rol define qué puede hacer este usuario: el conjunto de permisos activados para él.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11),
+        ),
         const SizedBox(height: 6),
         if (detail.roles.isEmpty)
           Text('Sin roles asignados.', style: TextStyle(color: palette.textMuted, fontSize: 12))
@@ -1099,6 +1178,13 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 4),
+        // TASK 16.16A Phase 7 — same tone/length as "Acceso a caja/área"'s
+        // own existing helper text below.
+        Text(
+          'Controla en qué sucursales puede trabajar este usuario, además del alcance que ya le da su rol.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11),
         ),
         const SizedBox(height: 6),
         if (detail.branchAccess.isEmpty)
@@ -1191,8 +1277,7 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
                 children: [
                   Expanded(
                     child: Text(
-                      '${_branchLabel(grant.branchId)} · '
-                      '${grant.operationalAreaId != null ? 'área ${grant.operationalAreaId}' : 'caja ${grant.cashRegisterId}'}',
+                      '${_branchLabel(grant.branchId)} · ${_registerAccessScopeLabel(grant)}',
                       style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -1820,6 +1905,16 @@ class _RolesTabState extends State<_RolesTab> {
   }
 }
 
+/// TASK 16.16A Phase 7 — deliberately still shows [PosRole.code] (a short,
+/// human-typed slug like "cashier", never a UUID) as the row's secondary
+/// line, NOT a "N permisos" summary: computing that here would mean an
+/// extra `rolePermissions()` call PER ROW in this list (an N+1 fetch for
+/// every role, every time the Roles tab renders) — bad UX/perf, and this
+/// task explicitly does not ask for a new backend field or call to avoid
+/// it. The "Cajero / 12 permisos" style summary this task's own Phase 7
+/// example wants instead lives in [_RoleDetailDialog]'s header, computed
+/// from the SAME `rolePermissions()` call that dialog already makes to
+/// feed its own permission picker — see that class for the real summary.
 class _RoleRow extends StatelessWidget {
   const _RoleRow({required this.role, required this.onTap});
   final PosRole role;
@@ -2311,6 +2406,26 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
                     ),
                   ],
                 ),
+                // TASK 16.16A Phase 7 — "Cajero / 12 permisos" style
+                // summary, computed from the SAME `rolePermissions()` call
+                // `_loadPermissions` already makes to feed the picker below
+                // (never a new/extra network call — see `_RoleRow`'s own
+                // doc comment for why that summary does NOT live in the
+                // list row instead). Reflects the currently SAVED grant
+                // count (`_initialPermissionIds`), not unsaved in-progress
+                // checkbox edits, so it never claims a save that hasn't
+                // happened yet.
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, bottom: 8),
+                  child: Text(
+                    _permissionsPhase == _ListPhase.ready
+                        ? '${_role.code} · ${_initialPermissionIds.length} '
+                              '${_initialPermissionIds.length == 1 ? 'permiso' : 'permisos'}'
+                        : _role.code,
+                    key: const Key('pos-role-detail-summary'),
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                ),
                 if (_role.isSystem)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -2364,7 +2479,24 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
                   ),
                 ),
                 const Divider(height: 28),
-                Text('Permisos', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                // TASK 16.16A Phase 6 — labeled "Permisos avanzados" (not
+                // just "Permisos") to visually pair against "Nuevo rol"'s
+                // own "Plantilla" (roles predefinidos) step: a template
+                // pre-fills a starting set here, but this granular
+                // checkbox-per-permission picker is always the real,
+                // precise, advanced editing surface underneath it — the
+                // same distinction Phase 6 asks this screen to make
+                // clearer, without redesigning the tab structure.
+                Text(
+                  'Permisos avanzados',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Marca o desmarca permisos individuales para ajustar este rol con precisión, '
+                  'más allá de lo que trae una plantilla predefinida.',
+                  style: TextStyle(color: palette.textMuted, fontSize: 11),
+                ),
                 const SizedBox(height: 8),
                 switch (_permissionsPhase) {
                   _ListPhase.loading => const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Center(child: CircularProgressIndicator())),
@@ -2583,10 +2715,20 @@ class _PermissionDomainGroup extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: palette.border)),
       child: ExpansionTile(
         title: Text(
-          _editable ? '${_domainLabel(domain)} ($selectedCount/${permissions.length})' : _domainLabel(domain),
+          _editable
+              ? '${permissionCategoryLabel(domain)} ($selectedCount/${permissions.length})'
+              : permissionCategoryLabel(domain),
           style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
         ),
-        subtitle: Text(domain, style: TextStyle(color: palette.textMuted, fontSize: 10)),
+        // TASK 16.16A — the raw `domain` string (e.g. "branch_consolidation")
+        // used to render here unconditionally as a subtitle under every
+        // category header. That's exactly the kind of always-visible
+        // technical-identifier leak Phase 7 asks to close at the CATEGORY
+        // level: `permissionCategoryLabel(domain)` above already says the
+        // same thing in commercial Spanish, and the raw code is still
+        // available per-permission (see `_PermissionRow`'s own "Código
+        // técnico" caption) for whoever actually needs it — no separate
+        // affordance needed here too.
         children: [for (final permission in permissions) _PermissionRow(permission: permission, picker: this)],
       ),
     );
@@ -2601,14 +2743,36 @@ class _PermissionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    // TASK 16.16A — never read `permission.description` (the backend's own
+    // raw, generic "Approved AS ONE capability: <code>" string — see
+    // `pos_permission_presentation.dart`'s own header doc comment) in this
+    // file anymore. [permissionLabel]/[permissionDescription] are always
+    // non-empty and safe for an unmapped code, so both title and subtitle
+    // are unconditional now.
+    final title = Text(
+      permissionLabel(permission.code),
+      style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700),
+    );
+    // Phase 7 — the raw technical code is never the primary/leading text
+    // anymore, but stays available as a small, clearly-secondary, muted
+    // caption underneath the commercial description: a deliberate
+    // developer/technical-detail affordance (for an admin cross-
+    // referencing support docs or the API), not an oversight.
+    final subtitle = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(permissionDescription(permission.code), style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+        const SizedBox(height: 2),
+        Text('Código técnico: ${permission.code}', style: TextStyle(color: palette.textMuted, fontSize: 10)),
+      ],
+    );
     if (picker.selectedIds == null) {
       return ListTile(
         key: Key('pos-permission-row-${permission.id}'),
         dense: true,
-        title: Text(permission.code, style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700)),
-        subtitle: permission.description == null
-            ? null
-            : Text(permission.description!, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+        title: title,
+        subtitle: subtitle,
       );
     }
     final isChecked = picker.selectedIds!.contains(permission.id);
@@ -2625,69 +2789,9 @@ class _PermissionRow extends StatelessWidget {
         value: isChecked,
         onChanged: checkboxEnabled ? (_) => picker.onToggle?.call(permission) : null,
         controlAffinity: ListTileControlAffinity.leading,
-        title: Text(permission.code, style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700)),
-        subtitle: permission.description == null
-            ? null
-            : Text(permission.description!, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+        title: title,
+        subtitle: subtitle,
       ),
     );
   }
-}
-
-const Map<String, String> _domainLabels = {
-  'company': 'Empresa',
-  'company_settings': 'Configuración de empresa',
-  'branch': 'Sucursales',
-  'branch_settings': 'Configuración de sucursal',
-  'user': 'Usuarios',
-  'role': 'Roles',
-  'permission': 'Permisos',
-  'branch_access': 'Acceso a sucursales',
-  'device': 'Dispositivos',
-  'cash_register': 'Cajas registradoras',
-  'cash_session': 'Turnos de caja',
-  'cash_movement': 'Movimientos de caja',
-  'catalog': 'Catálogo',
-  'category': 'Categorías',
-  'product': 'Productos',
-  'price': 'Precios',
-  'availability': 'Disponibilidad',
-  'inventory': 'Inventario',
-  'sale': 'Ventas',
-  'payment': 'Pagos',
-  'refund': 'Reembolsos',
-  'promotion': 'Promociones',
-  'coupon': 'Cupones',
-  'discount': 'Descuentos',
-  'customer': 'Clientes',
-  'membership': 'Membresías',
-  'loyalty': 'Lealtad',
-  'reward': 'Recompensas',
-  'sync': 'Sincronización',
-  'audit': 'Auditoría',
-  'recovery': 'Recuperación',
-  'party': 'Fiestas',
-  'held_sale': 'Ventas en espera',
-  'purchase': 'Compras',
-  'employee': 'Empleados',
-  'schedule': 'Horarios',
-  'attendance': 'Checador',
-  'payroll': 'Nómina',
-  'supplier': 'Proveedores',
-  'report': 'Reportes',
-  'access': 'Accesos',
-  'staff_credential': 'Credenciales de personal',
-};
-
-/// A human-readable Spanish label for a permission's [domain] (the text
-/// before its first `.`, e.g. `sale.create` → `sale` → "Ventas"). Every
-/// domain [packages/database/src/seeds/technical-permissions.ts] defines
-/// today is covered by [_domainLabels]; an unknown future domain falls
-/// back to a capitalized version of the raw string — never a blank or a
-/// thrown error, since this catalog is server-authoritative and may grow.
-String _domainLabel(String domain) {
-  final label = _domainLabels[domain];
-  if (label != null) return label;
-  if (domain.isEmpty) return domain;
-  return domain[0].toUpperCase() + domain.substring(1).replaceAll('_', ' ');
 }

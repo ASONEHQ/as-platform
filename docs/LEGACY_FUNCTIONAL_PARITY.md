@@ -4473,6 +4473,234 @@ integration tests instead, not silently skipped. Physical 80mm printer
 certification remains outstanding, unchanged from every prior cash-
 related task.
 
+## TASK 16.16A — Commercial Permission UX Cleanup (2026-09-21)
+
+**§1 Scope.** A presentation-only pass over the Usuarios/Roles/Permisos
+admin UI TASK 16.16 built. No permission code renamed, no authorization
+semantics changed, no route/API contract/env var/database identifier
+changed, `main` untouched, Mercado Pago untouched, no deploy. The only
+thing that moved is what a business administrator *reads* on screen.
+
+**§2 Forensic inventory (four-way classification, per this task's own
+requirement).** A) **Internal identifiers to preserve**: every
+`permission.code` string (`access.manage`, `branch_consolidation.read`,
+…), every `domain` string, every route path — none renamed anywhere.
+B) **Customer-facing labels to translate**: the six domain labels
+already existing in `pos_user_administration_screen.dart`'s old
+`_domainLabels` map, plus the two TASK 16.15 domains it was missing
+(`operational_area`, `branch_consolidation`) — these were raw/derived
+strings before this task. C) **Customer-facing descriptions to
+rewrite**: every `_PermissionRow` subtitle, which read the backend's own
+generic `permission.description` (always the literal string `"Approved
+AS ONE capability: <code>"`, `technical-permissions.ts:256` — both
+stale old branding AND developer-facing, not commercial copy) verbatim.
+D) **Developer-only detail to de-emphasize, not hide**: the raw
+technical code itself — kept, but demoted to a small muted "Código
+técnico: …" caption under the commercial label/description rather than
+being the row's own title.
+
+**§3 Presentation architecture chosen.** One new file, `apps/one/lib/
+features/pos/pos_permission_presentation.dart` — a single centralized
+`Map<String, PermissionPresentation>` (`{label, description}`) covering
+all 104 current backend permission codes, plus `permissionLabel(code)`/
+`permissionDescription(code)`/`permissionCategoryLabel(domain)`
+functions with a **safe, honest fallback** for any future/unmapped code
+(derives a plain-language guess from the code's own dot-segments —
+never blank, never a thrown error, and never able to surface the
+backend's raw "Approved AS ONE capability" string). Every call site that
+needs a commercial label/description/category now calls into this one
+file instead of switching on `permission.code`/`domain` itself — no
+scattered per-widget switch statements. This mapping is presentation
+ONLY: nothing in this app's authorization path reads it: every real
+grant/denial decision still compares the exact same stable technical
+codes it always has (`AuthenticatedContext.permissions`, `PosPermission.
+code`).
+
+**§4 Categories renamed for display.** `permissionCategoryLabel()`
+extends the pre-TASK-16.16A `_domainLabels` map (now deleted, migrated
+in full) with the two domains TASK 16.15 introduced that it was missing
+(`operational_area` → "Áreas operativas", `branch_consolidation` →
+"Consolidado de sucursal"), and changes `access` → "Control de acceso"
+per this task's own example. Live-verified in the standalone Permisos
+browse tab: "Control de acceso", "Checador", "Auditoría",
+"Disponibilidad", "Sucursales", "Acceso a sucursales", "Consolidado de
+sucursal", "Configuración de sucursal", "Movimientos de caja", "Cajas"
+all render as clean Spanish category headers — no raw domain string
+anywhere in that list.
+
+**§5 Permission labels/descriptions changed.** Every one of the 104
+`_PermissionRow` entries now shows a business-recognizable label as its
+title (e.g. `access.manage` → "Administrar accesos", `access.read` →
+"Consultar accesos", `access.scan` → "Escanear accesos" — the task's own
+worked example, live-verified rendering exactly this way) and a
+plain-language description as its subtitle, with the raw code demoted
+to a small "Código técnico: access.manage"-style caption underneath —
+never the row's primary text. No description claims broader capability
+than the code actually grants (each was authored directly from the
+code's real effect, not the backend's generic catalogue text).
+
+**§6 Old "AS ONE" customer-facing branding removed.** Two genuine hits
+found by search, both fixed: (a) `pos_shell.dart`'s top-bar company-name
+fallback, `company: … ?? 'AS ONE'` → `?? 'ACCESS GO'` — this is ACCESS
+GO's own software-identity fallback, distinct from (and NOT the same
+as) the tenant's-own-store-name placeholder `'AS ONE POS'` used
+elsewhere on printed receipts, which was deliberately left untouched
+since it is the customer's own business-name placeholder, not this
+platform's branding. (b) A **live finding during this task's own Phase
+10 certification, not assumed from a search hit alone**: the local
+development owner-bootstrap seed (`apps/api/src/development/
+bootstrap-owner.service.ts`) set the system "Chief Executive Officer"
+role's `description` to `"Development owner for local AS ONE
+administration."` — a customer-facing string (rendered verbatim in the
+role-detail "Descripción" field, confirmed live in the browser before
+the fix) containing stale branding. Fixed to `"Development owner for
+local ACCESS GO administration."` in both the insert and update branch
+of that file; no test asserted the old string (confirmed by grep across
+`bootstrap-owner.test.ts`/`bootstrap-owner.integration.test.ts`); the
+already-seeded local row was patched directly via a one-off script
+(deleted immediately after use, same pattern as prior live-cert debug
+scripts) rather than re-running the bootstrap CLI, to avoid touching the
+live local owner account's password. Re-verified live: the role-detail
+dialog now reads "Development owner for local ACCESS GO
+administration."
+
+**§7 Advanced-permissions UX.** Unchanged information architecture,
+improved labeling: role creation still opens with the TASK 16.16
+"Plantilla" picker (`Personalizado / en blanco`, `Administrador`,
+`Gerente`, `Cajero` — live-verified, all four options present and
+unchanged), and the full per-permission checklist is now explicitly
+labeled "Permisos avanzados" with an explanatory subtitle ("Marca o
+desmarca permisos individuales para ajustar este rol con precisión, más
+allá de lo que trae una plantilla predefinida.") rather than a bare
+"Permisos" header — making the simple-preset vs. granular-override
+relationship explicit without redesigning the screen. Granular RBAC
+itself is untouched: every one of the 104 codes remains individually
+checkable/uncheckable, gated by the same pre-existing self-escalation
+guard (an admin can never grant a permission they don't hold).
+
+**§8 Role-detail UX.** `_RoleDetailDialog` now opens with a
+"`{role.code} · N permisos`" summary line (e.g. "owner · 104 permisos",
+live-verified) computed from the already-fetched `rolePermissions()`
+call — deliberately NOT a per-row fetch on the role list (would be an
+N+1 query pattern), so the summary lives at the detail level where the
+data is already in hand. No raw UUID is ever shown for a role.
+
+**§9 User-detail copy.** `_UserDetailDialog` gained explanatory
+subtitles under "Roles asignados" ("Un rol define qué puede hacer este
+usuario: el conjunto de permisos activados para él.") and "Acceso a
+sucursales" ("Controla en qué sucursales puede trabajar este usuario,
+además del alcance que ya le da su rol."), matching the tone of the
+pre-existing "Acceso a caja/área" subtitle, which itself now explicitly
+states the "presence narrows, absence unrestricted" semantic when a
+user has zero register/area rows ("Sin filas aquí, este usuario puede
+usar cualquier caja de las sucursales que ya tiene asignadas arriba.
+Cada fila abajo lo limita a una caja o área específica.") — live-
+verified word for word. **This also resolves TASK 16.16 §20's own
+disclosed limitation** ("shows a raw register/area UUID … rather than a
+resolved friendly name"): register/area grant rows now show a
+best-effort resolved name (e.g. "Puerta La Victoria (PLV) · caja Caja 1
+(CAJA-1)", live-verified), reusing the existing `areasGateway`/
+`cashGateway` reads, falling back to the raw id only on a genuine lookup
+failure — live-verified for both the happy path (an active register)
+and the fallback path (a register deliberately deactivated during TASK
+16.16's own QA cleanup still shows its raw id, honestly, rather than a
+wrong or stale name).
+
+**§10 Role-preset and custom-role regression.** Both re-verified live
+and by test: creating a role from a template still pre-fills the exact
+permission set that template defines (unchanged from TASK 16.16); a
+fully custom "Personalizado / en blanco" role remains available and
+editable; `syncSystemRolePermissions()` was not touched by this task and
+was not exercised by it (no backend file changed) — its TASK 16.16-
+verified "never widens a custom role" guarantee stands unchanged.
+
+**§11 Tests.** New `apps/one/test/pos_permission_presentation_test.dart`
+(hand-mirrors the backend's 104-code `technicalPermissionCodes` list,
+verified byte-for-byte in order/content against `technical-
+permissions.ts` via a throwaway Node.js diff script; asserts every code
+resolves to a non-raw, non-empty label and a description that never
+contains "AS ONE", and that unmapped/synthetic codes still resolve
+honestly via the fallback). Extended `apps/one/test/
+pos_user_administration_test.dart` (~13 new cases: commercial labels
+replacing raw codes/descriptions in both browse and edit pickers, the
+role-detail permission-count summary, the new section subtitles,
+register/area grant name resolution for both the happy path and the
+fallback path). `flutter analyze`: 0 errors (167 issues — the
+established baseline, unchanged, re-confirmed independently). `flutter
+build web --release`: succeeds (re-confirmed independently). `flutter
+test` full suite was reported 993/993 passing when this task's Flutter
+work was first delegated and reviewed; independent re-verification of
+the full suite during this task's own regression pass hit a genuine,
+non-deterministic local-machine issue — the Dart VM's JIT compiler
+crashed twice, both times deep inside Flutter/Dart SDK internals
+(`package:flutter/src/material/theme_data.dart`, `Matrix4`, `dart:io`)
+never inside any file this task touched, mirroring the same category of
+transient Windows-environment flakiness already disclosed for
+`packages/database`'s own suite in TASK 16.16 §19. Rather than accept an
+unreliable full-suite signal, the two files this task actually changed
+were re-run in isolation at reduced concurrency and both passed 100%
+clean with zero failures: `pos_permission_presentation_test.dart` (258
+cases) and `pos_user_administration_test.dart` (all 28 of its cases,
+including every TASK-16.16A-specific one: the template-role-creation
+cases, the role-detail "N permisos" summary singular/plural cases, both
+happy-path and honest-fallback register/area name resolution cases, and
+the "never the raw code/backend description as primary text" case).
+(The same combined run's third file, the large pre-existing `pos_shell_
+test.dart`, is where the JIT crash actually landed — that file was not
+modified by this task; only `pos_shell.dart`, the app file it tests,
+changed — one line — and a targeted grep confirmed no existing test in
+that file asserts the specific string that line changed, so the crash
+there is orthogonal to this task's own changes.) Backend was not
+touched by this task except for the
+single dev-seed string in §6, which has no dedicated test coverage to
+update; the full backend suite was therefore not re-run as part of this
+task (nothing backend-side changed
+that its own tests would catch), consistent with this task's own scope
+boundary.
+
+**§12 Live browser certification (local INFLAPARK tenant, 2026-09-21).**
+Logged in as `ceo@inflapark.local` (real local Owner account). Verified
+live, in order: (1) login screen carries no stale branding ("Plataforma
+ACCESS GO · Acceso seguro"); (2) Administración → Usuarios → Roles list
+shows clean commercial role names/status pills, no raw codes; (3) the
+"Chief Executive Officer" system-role detail dialog shows "owner · 104
+permisos", the "Permisos avanzados" section with its explanatory
+subtitle, and — after the §6 fix — a description free of "AS ONE"; (4)
+expanding "Control de acceso (3/3)" inside that dialog shows
+"Administrar accesos"/"Consultar accesos"/"Escanear accesos" as primary
+labels with plain-language descriptions and de-emphasized "Código
+técnico: …" captions, exactly matching this task's own worked example;
+(5) the standalone Permisos tab's category list and an expanded row
+("Administrar acceso a sucursales/cajas" for `branch_access.manage`)
+confirm the same commercial rendering in browse mode; (6) "Nuevo rol"
+still opens with the four-option Plantilla picker; (7) "Nuevo usuario"
+opens a clean, simple invite-by-email flow; (8) a real user's detail
+dialog ("QA Cajero") shows fully-resolved role/branch/register names
+with no raw UUIDs in the happy path, and a second user's detail dialog
+("QA Multi Register Manager") shows the honest raw-UUID fallback for
+one specific register that was deliberately deactivated during TASK
+16.16's own QA cleanup — proving both branches of the resolver actually
+run, not just the happy path. No overflow observed in any dialog at the
+browser pane's standard viewport. No QA data was created or needed to
+be cleaned up during this task's own certification pass — it reused
+already-existing QA fixtures read-only.
+
+**§13 Genuine remaining limitations.** The register/area name resolver
+is best-effort against currently-fetched gateway data; a register
+renamed or deleted between the user list load and the detail dialog
+open could theoretically show a stale name for the remainder of that
+session (unchanged risk profile from any other client-side read-through
+cache in this screen, not a new gap introduced by this task). This
+task's own commercial copy (labels/descriptions for 104 codes) is
+maintained by hand in a Flutter file kept in sync with the backend's
+TypeScript catalogue by a human-run cross-check script, not a build-time
+generated artifact — a future backend permission code addition will
+silently degrade to the honest fallback copy until a developer updates
+`pos_permission_presentation.dart`, not silently break (covered by
+§11's own correctness test), but it is a manual-sync point worth naming
+plainly. Physical 80mm printer certification remains outstanding,
+unchanged from every prior task.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

@@ -12,7 +12,9 @@
 library;
 
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_identity_admin_gateway.dart';
+import 'package:as_one/features/pos/pos_operational_areas_gateway.dart';
 import 'package:as_one/features/pos/pos_user_administration_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -383,6 +385,47 @@ void main() {
       final sentIds = gateway.replaceRolePermissionsCalls.single.assignments.map((a) => a.permissionId).toSet();
       expect(sentIds, isEmpty, reason: 'sale.read was unchecked and sale.create was never grantable');
     });
+
+    // TASK 16.16A Phase 7 — "Cajero / 12 permisos" style summary, computed
+    // from the same `rolePermissions()` call the picker below already
+    // makes (never a new/extra network call).
+    testWidgets('el encabezado del detalle de rol muestra un resumen "código · N permisos"', (tester) async {
+      final role = _role('r3', 'Cajero', 'cashier');
+      final saleRead = _permission('p-sale-read', 'sale.read', 'sale');
+      final saleCreate = _permission('p-sale-create', 'sale.create', 'sale');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [role],
+        permissions: [saleRead, saleCreate],
+        rolePermissionsByRole: {
+          role.id: [_assignment(saleRead), _assignment(saleCreate)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+      await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-role-detail-summary')), findsOneWidget);
+      expect(find.text('cashier · 2 permisos'), findsOneWidget);
+    });
+
+    testWidgets('el resumen usa singular "permiso" cuando el rol tiene exactamente uno', (tester) async {
+      final role = _role('r4', 'Auditor', 'auditor');
+      final auditRead = _permission('p-audit-read', 'audit.read', 'audit');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [role],
+        permissions: [auditRead],
+        rolePermissionsByRole: {
+          role.id: [_assignment(auditRead)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+      await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('auditor · 1 permiso'), findsOneWidget);
+    });
   });
 
   group('Usuarios — acceso a sucursales (TASK 16.5: corrección del bootstrap circular)', () {
@@ -486,6 +529,132 @@ void main() {
       expect(find.text('Todas las sucursales (por rol de alcance completo).'), findsOneWidget);
       expect(find.text('Sin acceso a sucursales.'), findsNothing);
     });
+
+    // TASK 16.16A Phase 7 — "Roles asignados"/"Acceso a sucursales" now
+    // carry a short explanatory subtitle, matching "Acceso a caja/área"'s
+    // own established tone/length.
+    testWidgets('"Roles asignados" y "Acceso a sucursales" muestran un subtítulo explicativo', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Un rol define qué puede hacer este usuario: el conjunto de permisos activados para él.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Controla en qué sucursales puede trabajar este usuario, además del alcance que ya le da su rol.'),
+        findsOneWidget,
+      );
+    });
+  });
+
+  // TASK 16.16A Phase 7 — a register/area access grant row used to print
+  // the raw `operationalAreaId`/`cashRegisterId` UUID unconditionally. It
+  // now resolves to a real name using the same `areasGateway`/`cashGateway`
+  // `_GrantRegisterAccessDialog` already uses for its own pickers, falling
+  // back to the raw id only when that resolution genuinely fails.
+  group('Usuarios — acceso a caja/área muestra nombres resueltos, no UUIDs crudos (TASK 16.16A)', () {
+    testWidgets('una fila resuelve un área a "área Nombre (CÓDIGO)" cuando el gateway tiene el dato', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final grant = PosRegisterAccessGrant(
+        id: 'grant-1',
+        branchId: 'branch-1',
+        operationalAreaId: 'area-1',
+        cashRegisterId: null,
+        status: 'active',
+        userId: user.id,
+      );
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+        registerAccessByUser: {user.id: [grant]},
+      );
+      final areasGateway = _StubAreasGateway([
+        PosOperationalArea(
+          id: 'area-1',
+          branchId: 'branch-1',
+          code: 'ZONA-A',
+          name: 'Zona A',
+          status: 'active',
+          version: 1,
+          createdAt: DateTime.utc(2026, 1, 1),
+          updatedAt: DateTime.utc(2026, 1, 1),
+        ),
+      ]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, areasGateway: areasGateway);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('área Zona A (ZONA-A)'), findsOneWidget);
+      expect(find.textContaining('área area-1'), findsNothing);
+    });
+
+    testWidgets('una fila resuelve una caja a "caja Nombre (CÓDIGO)" cuando el gateway tiene el dato', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final grant = PosRegisterAccessGrant(
+        id: 'grant-1',
+        branchId: 'branch-1',
+        operationalAreaId: null,
+        cashRegisterId: 'register-1',
+        status: 'active',
+        userId: user.id,
+      );
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+        registerAccessByUser: {user.id: [grant]},
+      );
+      final cashGateway = _StubCashGateway([
+        const PosCashRegister(
+          id: 'register-1',
+          branchId: 'branch-1',
+          code: 'CAJA-1',
+          name: 'Caja 1',
+          status: 'active',
+        ),
+      ]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, cashGateway: cashGateway);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('caja Caja 1 (CAJA-1)'), findsOneWidget);
+      expect(find.textContaining('caja register-1'), findsNothing);
+    });
+
+    testWidgets('sin datos del gateway de áreas/cajas (los defaults Empty...), la fila cae honestamente al id crudo, sin romperse', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final grant = PosRegisterAccessGrant(
+        id: 'grant-1',
+        branchId: 'branch-1',
+        operationalAreaId: 'area-missing',
+        cashRegisterId: null,
+        status: 'active',
+        userId: user.id,
+      );
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+        registerAccessByUser: {user.id: [grant]},
+      );
+      // Deliberately no `areasGateway`/`cashGateway` passed — the screen's
+      // own default `Empty...` gateways.
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.textContaining('área area-missing'), findsOneWidget);
+    });
   });
 
   group('Permisos — catálogo de solo lectura', () {
@@ -500,6 +669,96 @@ void main() {
       // Browse mode never renders an interactive checkbox.
       expect(find.byType(CheckboxListTile), findsNothing);
     });
+  });
+
+  // TASK 16.16A — the permission catalogue UI used to render the raw
+  // developer-facing code as the row's PRIMARY text and the backend's own
+  // generic "Approved AS ONE capability: ..." string (leaking the old
+  // brand name) as its subtitle. Both are now commercial-Spanish
+  // (`pos_permission_presentation.dart`); the raw code survives only as a
+  // small, clearly-secondary "Código técnico: ..." caption.
+  group('Permisos — presentación comercial (TASK 16.16A)', () {
+    testWidgets(
+      'una fila de permiso usa la etiqueta comercial como texto principal — nunca el código crudo ni la '
+      'descripción cruda del backend ("Approved AS ONE capability: ...")',
+      (tester) async {
+        final gateway = _RecordingIdentityAdminGateway(
+          permissions: [
+            PosPermission(
+              id: 'p-access-read',
+              code: 'access.read',
+              description: 'Approved AS ONE capability: access.read',
+              domain: 'access',
+            ),
+          ],
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Permisos');
+        await tester.tap(find.byKey(const Key('pos-permission-domain-access')));
+        await tester.pumpAndSettle();
+
+        // The commercial label is the PRIMARY text.
+        expect(find.text('Consultar accesos'), findsOneWidget);
+        // The raw code is never the primary/leading text anymore.
+        expect(find.text('access.read'), findsNothing);
+        // The backend's own raw description — carrying the old "AS ONE"
+        // brand name — must never reach the widget tree.
+        expect(find.textContaining('Approved AS ONE capability'), findsNothing);
+        expect(find.textContaining('AS ONE'), findsNothing);
+        // The commercial category label replaces the raw domain string.
+        expect(find.text('Control de acceso'), findsOneWidget);
+        // The raw code stays available only as a small, secondary,
+        // clearly-labeled technical-detail affordance.
+        expect(find.text('Código técnico: access.read'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'el mismo catálogo se muestra igual en el picker editable de un rol (Roles → detalle de rol)',
+      (tester) async {
+        final role = _role('r-perm-picker', 'Cajero', 'cashier');
+        final permission = PosPermission(
+          id: 'p-refund-read',
+          code: 'refund.read',
+          description: 'Approved AS ONE capability: refund.read',
+          domain: 'refund',
+        );
+        final gateway = _RecordingIdentityAdminGateway(
+          roles: [role],
+          permissions: [permission],
+          rolePermissionsByRole: {role.id: const []},
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+        await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-permission-domain-refund')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Consultar reembolsos'), findsOneWidget);
+        expect(find.text('refund.read'), findsNothing);
+        expect(find.textContaining('AS ONE'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'un dominio con muchos permisos no revienta el layout en un viewport de escritorio normal',
+      (tester) async {
+        final permissions = [
+          for (var i = 0; i < 40; i++) _permission('p-sale-$i', 'sale.action_$i', 'sale'),
+        ];
+        final gateway = _RecordingIdentityAdminGateway(permissions: permissions);
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Permisos');
+
+        await tester.tap(find.byKey(const Key('pos-permission-domain-sale')));
+        await tester.pumpAndSettle();
+
+        // No exception thrown by `pumpAndSettle` above means the long,
+        // scrollable list rendered without overflow — the real assertion
+        // here is simply that this reaches this line at all.
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-permission-row-p-sale-0')), findsOneWidget);
+      },
+    );
   });
 
   group('Permission-denied — solo lectura honesta', () {
@@ -889,6 +1148,12 @@ Future<void> _pump(
   required _RecordingIdentityAdminGateway gateway,
   required List<String> permissions,
   String tab = 'Usuarios',
+  // TASK 16.16A — optional, additive: only the register/area access-grant
+  // name-resolution tests pass real fakes here; every other existing
+  // caller keeps working unmodified against the screen's own `Empty...`
+  // defaults, exactly like before this task.
+  PosOperationalAreasGateway areasGateway = const EmptyPosOperationalAreasGateway(),
+  PosCashGateway cashGateway = const EmptyPosCashGateway(),
 }) async {
   tester.view.physicalSize = const Size(1400, 1000);
   tester.view.devicePixelRatio = 1;
@@ -897,7 +1162,12 @@ Future<void> _pump(
     MaterialApp(
       home: Scaffold(
         body: SingleChildScrollView(
-          child: PosUserAdministrationScreen(context: _context(permissions), gateway: gateway),
+          child: PosUserAdministrationScreen(
+            context: _context(permissions),
+            gateway: gateway,
+            areasGateway: areasGateway,
+            cashGateway: cashGateway,
+          ),
         ),
       ),
     ),
@@ -907,6 +1177,34 @@ Future<void> _pump(
     await tester.tap(find.text(tab));
     await tester.pumpAndSettle();
   }
+}
+
+// TASK 16.16A — minimal read-only fakes for the register/area access-grant
+// name-resolution tests, extending the real `Empty...` gateways (never
+// implementing the full interface by hand) and overriding only the one
+// method each test actually needs — `_RecordingAreasGateway`/
+// `_RecordingCashGateway` in `pos_operational_areas_screen_test.dart` is
+// this codebase's own fuller-featured version of the same fixture
+// convention for a screen that needs to WRITE through these gateways;
+// this file only ever reads through them.
+class _StubAreasGateway extends EmptyPosOperationalAreasGateway {
+  const _StubAreasGateway(this._areas);
+  final List<PosOperationalArea> _areas;
+
+  @override
+  Future<PosOperationalAreaPage> listAreas({String? branchId, String? status, String? cursor, int limit = 50}) async {
+    final filtered = branchId == null ? _areas : _areas.where((area) => area.branchId == branchId).toList();
+    return PosOperationalAreaPage(items: filtered, nextCursor: null);
+  }
+}
+
+class _StubCashGateway extends EmptyPosCashGateway {
+  const _StubCashGateway(this._registers);
+  final List<PosCashRegister> _registers;
+
+  @override
+  Future<List<PosCashRegister>> registersForBranch(String branchId, {String? operationalAreaId}) async =>
+      _registers.where((register) => register.branchId == branchId).toList();
 }
 
 AuthenticatedContext _context(List<String> permissions) => AuthenticatedContext(
