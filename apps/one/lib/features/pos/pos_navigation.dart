@@ -35,6 +35,21 @@ enum PosModule {
   promotions('Cupones / Promos', Icons.local_offer_outlined, 'Clientes'),
   cash('Corte de Caja', Icons.account_balance_wallet_outlined, 'Caja y Finanzas'),
   billing('Facturación CFDI', Icons.receipt_long_outlined, 'Caja y Finanzas'),
+  // TASK 16.15: "Consolidado de sucursal" — a read-only, branch-wide
+  // roll-up across every cash register/operational area for the day,
+  // gated by `branch_consolidation.read` — see
+  // `pos_branch_consolidation_screen.dart`. Grouped alongside `cash`/
+  // `billing` since both are already the established "Caja y Finanzas"
+  // group; this task's own brief explicitly asks for Mi caja/Cortes de
+  // caja/Consolidado de sucursal grouped there rather than inventing a
+  // new group ("Mi caja"/"Cortes de caja" both already live inside
+  // `PosModule.cash`'s own screen body — no separate nav entry for
+  // either exists today, and this task does not restructure that).
+  branchConsolidation(
+    'Consolidado de Sucursal',
+    Icons.summarize_outlined,
+    'Caja y Finanzas',
+  ),
   dashboard('Dashboard', Icons.dashboard_outlined, 'Administración'),
   reports('Reportes', Icons.analytics_outlined, 'Administración'),
   access('Control Acceso', Icons.qr_code_scanner_outlined, 'Administración'),
@@ -44,6 +59,12 @@ enum PosModule {
   // `pos_user_administration_screen.dart`. No separate nav entry needed.
   // TASK 15.1: branch create/edit — see `pos_branch_admin_screen.dart`.
   branches('Sucursales', Icons.store_outlined, 'Administración'),
+  // TASK 16.15: "Áreas Operativas" — tenant-defined grouping of cash
+  // registers (e.g. one tenant's own "Admisiones/Alimentos/Eventos",
+  // another's "Taquilla/Cafetería/Eventos" — always operator-entered,
+  // never a hardcoded name here) — see
+  // `pos_operational_areas_screen.dart`.
+  operationalAreas('Áreas Operativas', Icons.store_mall_directory_outlined, 'Administración'),
   employees('Empleados', Icons.badge_outlined, 'Administración'),
   history('Historial de Ventas', Icons.history_outlined, 'Administración'),
   documents('Documentos', Icons.folder_outlined, 'Sistema'),
@@ -149,6 +170,9 @@ enum PosModule {
     PosModule.catalogAdmin,
     PosModule.inventoryAdmin,
     PosModule.branches,
+    // TASK 16.15: real, backend-wired — see each screen's own file.
+    PosModule.branchConsolidation,
+    PosModule.operationalAreas,
   }.contains(this);
 }
 

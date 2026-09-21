@@ -131,9 +131,21 @@ export class SalesService {
     branchIds: readonly string[],
     key: string,
     input: CreateSaleInput,
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ value: { sale: SaleRow; items: SaleItemRow[] }; replayed: boolean }> {
     if (!branchIds.includes(input.branchId))
       throw new SaleError('validation_error', 'The branch is not authorized for this actor.');
+    // TASK 16.15 §30 — "a Snacks-only cashier must not sell against
+    // Taquilla's register": checked BEFORE the transaction even opens,
+    // exactly like the branch check above — an explicit register outside
+    // scope is a plain validation error, never a silent fallback to some
+    // other register.
+    if (
+      permittedRegisterIds !== null &&
+      input.cashRegisterId !== undefined &&
+      !permittedRegisterIds.includes(input.cashRegisterId)
+    )
+      throw new SaleError('validation_error', 'The register is not authorized for this actor.');
     if (input.items.length === 0)
       throw new SaleError('validation_error', 'A sale must have at least one item.');
     if (input.items.length > 200) throw new SaleError('validation_error', 'Too many sale items.');
@@ -151,6 +163,10 @@ export class SalesService {
       deviceId: input.deviceId ?? null,
       customerId: input.customerId ?? null,
       items: parsedItems,
+      // TASK 16.15 — see `CreateSaleInput.cashRegisterId`'s own doc
+      // comment; validated against `permittedRegisterIds` and the
+      // register's own branch below, inside the transaction.
+      cashRegisterId: input.cashRegisterId ?? null,
     };
     const requestHash = hash({
       branchId: normalized.branchId,
@@ -161,6 +177,7 @@ export class SalesService {
       id: input.id ?? null,
       rewardEntitlementId: input.rewardEntitlementId ?? null,
       note,
+      cashRegisterId: normalized.cashRegisterId,
     });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
@@ -380,6 +397,41 @@ export class SalesService {
               `Coupon "${firstRejectedCoupon.code}" could not be applied: ${firstRejectedCoupon.reason}.`,
             );
 
+          // TASK 16.15 — the register (if named) must genuinely belong to
+          // this sale's own branch — the same "target must belong to this
+          // scope" check `CashService.createRegister`/`assignDevice`
+          // already apply for a device/area, mirrored here.
+          let effectiveCashRegisterId = normalized.cashRegisterId;
+          if (effectiveCashRegisterId !== null) {
+            const registerCheck = (await client.query(
+              `select 1 from cash_registers where id=$1 and company_id=$2 and branch_id=$3 and status<>'retired' and deleted_at is null`,
+              [normalized.cashRegisterId, context.companyId, normalized.branchId],
+            )) as { rows?: unknown[] };
+            if ((registerCheck.rows?.length ?? 0) === 0)
+              throw new SaleError('validation_error', 'The register does not belong to this branch.');
+          } else {
+            // TASK 16.15 — backward compatibility: a caller that doesn't
+            // send `cash_register_id` at all (every pre-16.15 client, and
+            // any card/other-method sale — only the cash-settlement path
+            // stamps a register after the fact, via `attachCashSession`)
+            // still gets correct register attribution as long as the
+            // branch has exactly one open register right now, mirroring
+            // the same "unambiguous default, never a guess" rule
+            // `resolveOpenCashSession` already applies to cash-payment
+            // confirmation. Two-or-more open registers leaves the sale
+            // unattributed — honest, nothing to guess from — exactly like
+            // an explicit register the caller never supplied; a later
+            // cash settlement still overwrites this via
+            // `attachCashSession` regardless of what (if anything) is set
+            // here.
+            const openRegisters = (await client.query(
+              `select cash_register_id from cash_sessions where company_id=$1 and branch_id=$2 and status='open'`,
+              [context.companyId, normalized.branchId],
+            )) as { rows?: { cash_register_id: string }[] };
+            const rows = openRegisters.rows ?? [];
+            const [onlyRow] = rows;
+            if (rows.length === 1 && onlyRow !== undefined) effectiveCashRegisterId = onlyRow.cash_register_id;
+          }
           const createdSale = await this.repository.insertSale(client, {
             ...context,
             id: normalized.id,
@@ -394,6 +446,7 @@ export class SalesService {
             taxTotal: formatMoney(pricing.taxTotalUnits),
             total: formatMoney(pricing.totalUnits),
             note,
+            cashRegisterId: effectiveCashRegisterId,
           });
           // Sequential, never `Promise.all` — every one of these shares
           // the same transaction `client`, and `pg` does not support two

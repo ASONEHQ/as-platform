@@ -196,6 +196,10 @@ async function fixture(
       if (requestedBranchId !== branchId)
         throw new AppError({ code: 'branch_access_denied', message: 'Denied', statusCode: 403 });
     }),
+    // TASK 16.15 — this fixture's own `authContext` never sets
+    // `permittedRegisterIds`, matching the real guard's own "undefined
+    // means no narrowing, always allow" behavior — never throws here.
+    requireRegisterAccess: vi.fn(),
   } as unknown as AuthService;
   const service = {
     createRegister: vi.fn(() => Promise.resolve({ value: registerValue(), replayed: false })),
@@ -851,6 +855,7 @@ describe('cash register HTTP routes (TASK 12.7)', () => {
             { value: '2', quantity: 2 },
           ],
         },
+        null,
       );
     });
 

@@ -890,6 +890,22 @@ export class AuthService {
       });
   }
 
+  // TASK 16.15 — `permittedRegisterIds` absent (undefined/null) means "no
+  // register-level narrowing configured" (§35 backward compatibility —
+  // see `AuthContext.permittedRegisterIds`'s own doc comment), so this
+  // ALWAYS passes in that case; only a non-null array actually narrows.
+  // Call sites still call `requireBranchAccess` separately for the
+  // register's own branch — this never substitutes for that check.
+  public requireRegisterAccess(context: AuthContext, registerId: string): void {
+    const scope = context.permittedRegisterIds;
+    if (scope != null && !scope.includes(registerId))
+      throw new AppError({
+        code: 'register_scope_mismatch',
+        message: 'Register scope is not authorized.',
+        statusCode: 403,
+      });
+  }
+
   #selectMembership(
     memberships: readonly AuthMembership[],
     requestedCompanyId?: string,

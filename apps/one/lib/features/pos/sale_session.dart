@@ -229,6 +229,29 @@ class SaleSession extends ChangeNotifier {
 
   String? get resumedHeldCartId => _resumedHeldCartId;
 
+  // TASK 16.15: which physical cash register the cashier is currently
+  // operating — a convenience UX selection only (see `SessionContext.
+  // permittedRegisterIds`'s own doc comment; the backend independently
+  // re-verifies register scope on every request), threaded straight into
+  // `POST /sales`'s own optional `cash_register_id` (see `pos_shell.dart`'s
+  // `_submitSaleForPayment`/`_submitCashSaleForPayment`/
+  // `_submitZeroTotalSale`, all three of which already receive this same
+  // `SaleSession`). Deliberately NOT cleared by [clearAll] — mirrors
+  // [_currencyCode]'s own "survives across tickets" rationale: the
+  // cashier's physical register doesn't change just because they rang a
+  // new sale. `null` reproduces the exact pre-TASK-16.15 behavior (no
+  // register id ever sent). See `pos_register_scope.dart` for how the one
+  // real caller (`_PosSaleState`) resolves and applies this.
+  String? _cashRegisterId;
+
+  String? get cashRegisterId => _cashRegisterId;
+
+  void setCashRegister(String? registerId) {
+    if (_cashRegisterId == registerId) return;
+    _cashRegisterId = registerId;
+    notifyListeners();
+  }
+
   void setCustomer({required String customerId, required String displayName}) {
     _customerId = customerId;
     _customerDisplayName = displayName;

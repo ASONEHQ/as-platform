@@ -361,4 +361,75 @@ export function registerIdentityAdministrationRoutes(
       return reply.code(204).send();
     },
   );
+
+  // TASK 16.15 — narrows a user's already-granted branch access down to
+  // specific register(s)/area(s) — see `AdministrationService.
+  // grantRegisterAccess`'s own doc comment for the exact scoping
+  // semantics. Reuses `branch_access.manage`, the same admin capability
+  // as the branch-access routes immediately above.
+  app.post<{
+    Params: { user_id: string };
+    Body: { branch_id: string; operational_area_id?: string; cash_register_id?: string };
+  }>(
+    '/api/v1/users/:user_id/register-access',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['branch_id'],
+          properties: {
+            branch_id: { type: 'string', format: 'uuid' },
+            operational_area_id: { type: 'string', format: 'uuid' },
+            cash_register_id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const context = await requireAuthenticatedUser(request, authentication);
+      const { operational_area_id: operationalAreaId, cash_register_id: cashRegisterId } = request.body;
+      if ((operationalAreaId === undefined) === (cashRegisterId === undefined))
+        return reply.code(400).send({
+          error: {
+            code: 'validation_error',
+            message: 'Exactly one of operational_area_id or cash_register_id is required.',
+          },
+        });
+      const access = await administration.grantRegisterAccess(
+        {
+          context,
+          requestId: request.requestContext.requestId,
+          correlationId: request.requestContext.correlationId,
+        },
+        request.params.user_id,
+        request.body.branch_id,
+        operationalAreaId === undefined ? { cashRegisterId: cashRegisterId! } : { operationalAreaId },
+      );
+      return reply.code(201).send(successResponse(access, request.requestContext));
+    },
+  );
+  app.get<{ Params: { user_id: string } }>('/api/v1/users/:user_id/register-access', async (request) => {
+    const context = await requireAuthenticatedUser(request, authentication);
+    const items = await administration.listRegisterAccess(
+      { context, requestId: request.requestContext.requestId, correlationId: request.requestContext.correlationId },
+      request.params.user_id,
+    );
+    return successResponse({ items }, request.requestContext);
+  });
+  app.delete<{ Params: { user_id: string; id: string } }>(
+    '/api/v1/users/:user_id/register-access/:id',
+    async (request, reply) => {
+      const context = await requireAuthenticatedUser(request, authentication);
+      await administration.revokeRegisterAccess(
+        {
+          context,
+          requestId: request.requestContext.requestId,
+          correlationId: request.requestContext.correlationId,
+        },
+        request.params.id,
+      );
+      return reply.code(204).send();
+    },
+  );
 }

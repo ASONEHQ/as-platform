@@ -13,6 +13,11 @@ import type { AuthRepository } from '../modules/auth/auth.types.js';
 import { CashRepository } from '../modules/cash/cash.repository.js';
 import { registerCashRoutes } from '../modules/cash/cash.routes.js';
 import { CashService } from '../modules/cash/cash.service.js';
+import { OperationalAreasRepository } from '../modules/operational-areas/operational-areas.repository.js';
+import { registerOperationalAreaRoutes } from '../modules/operational-areas/operational-areas.routes.js';
+import { OperationalAreasService } from '../modules/operational-areas/operational-areas.service.js';
+import { BranchConsolidationService } from '../modules/branch-consolidation/branch-consolidation.service.js';
+import { registerBranchConsolidationRoutes } from '../modules/branch-consolidation/branch-consolidation.routes.js';
 import { CatalogRepository } from '../modules/catalog/catalog.repository.js';
 import { registerCatalogRoutes } from '../modules/catalog/catalog.routes.js';
 import { CatalogService } from '../modules/catalog/catalog.service.js';
@@ -350,6 +355,13 @@ export async function registerPlugins(
       // movement posting, see ADR-0014).
       const cashRepository = new CashRepository(options.infrastructure.database);
       const cashService = new CashService(cashRepository);
+      const operationalAreasRepository = new OperationalAreasRepository(options.infrastructure.database);
+      const operationalAreasService = new OperationalAreasService(operationalAreasRepository);
+      const branchConsolidationService = new BranchConsolidationService(
+        cashRepository,
+        cashService,
+        operationalAreasRepository,
+      );
       // TASK 13.0: constructed before `paymentService` — membership
       // activation happens inside the SAME transaction
       // `SalesRepository.trySettleSale` uses to newly settle a Sale (see
@@ -396,6 +408,8 @@ export async function registerPlugins(
       registerSaleRoutes(app, authentication, salesService, paymentService);
       registerPaymentRoutes(app, authentication, paymentService, salesService);
       registerCashRoutes(app, authentication, cashService);
+      registerOperationalAreaRoutes(app, authentication, operationalAreasService);
+      registerBranchConsolidationRoutes(app, authentication, branchConsolidationService);
       // TASK 14.3 (Wave 1, Part B.1) — constructed after `salesRepository`
       // (already built above): `linkSale`'s optional existence check
       // reads through it directly, never a second/duplicate sales

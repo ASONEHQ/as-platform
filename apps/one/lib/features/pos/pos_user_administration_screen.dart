@@ -82,7 +82,9 @@ import 'package:flutter/material.dart';
 
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
+import 'pos_cash_gateway.dart';
 import 'pos_identity_admin_gateway.dart';
+import 'pos_operational_areas_gateway.dart';
 import 'pos_tokens.dart';
 
 /// The public entry point. Constructed with the real
@@ -93,10 +95,23 @@ import 'pos_tokens.dart';
 /// be tested in isolation. Wiring it into the app's navigation is a
 /// separate, later step outside this file's scope.
 class PosUserAdministrationScreen extends StatefulWidget {
-  const PosUserAdministrationScreen({required this.context, required this.gateway, super.key});
+  const PosUserAdministrationScreen({
+    required this.context,
+    required this.gateway,
+    // TASK 16.15: optional, additive — every pre-existing call site of
+    // this screen keeps working unmodified with the `Empty...` defaults
+    // (no register/area-scoped access grant UI, exactly like before this
+    // task). Only used to populate the "Otorgar acceso a caja/área"
+    // dialog's own area/register pickers — see `_GrantRegisterAccessDialog`.
+    this.areasGateway = const EmptyPosOperationalAreasGateway(),
+    this.cashGateway = const EmptyPosCashGateway(),
+    super.key,
+  });
 
   final AuthenticatedContext context;
   final PosIdentityAdminGateway gateway;
+  final PosOperationalAreasGateway areasGateway;
+  final PosCashGateway cashGateway;
 
   @override
   State<PosUserAdministrationScreen> createState() => _PosUserAdministrationScreenState();
@@ -113,7 +128,12 @@ class _PosUserAdministrationScreenState extends State<PosUserAdministrationScree
     children: [
       _AdminHeader(tab: _tab, onTabChanged: (value) => setState(() => _tab = value)),
       switch (_tab) {
-        _AdminTab.usuarios => _UsersTab(context: widget.context, gateway: widget.gateway),
+        _AdminTab.usuarios => _UsersTab(
+          context: widget.context,
+          gateway: widget.gateway,
+          areasGateway: widget.areasGateway,
+          cashGateway: widget.cashGateway,
+        ),
         _AdminTab.roles => _RolesTab(context: widget.context, gateway: widget.gateway),
         _AdminTab.permisos => _PermissionsTab(context: widget.context, gateway: widget.gateway),
       },
@@ -333,9 +353,16 @@ class _DialogButtons extends StatelessWidget {
 // ---------------------------------------------------------------------
 
 class _UsersTab extends StatefulWidget {
-  const _UsersTab({required this.context, required this.gateway});
+  const _UsersTab({
+    required this.context,
+    required this.gateway,
+    this.areasGateway = const EmptyPosOperationalAreasGateway(),
+    this.cashGateway = const EmptyPosCashGateway(),
+  });
   final AuthenticatedContext context;
   final PosIdentityAdminGateway gateway;
+  final PosOperationalAreasGateway areasGateway;
+  final PosCashGateway cashGateway;
 
   @override
   State<_UsersTab> createState() => _UsersTabState();
@@ -412,6 +439,8 @@ class _UsersTabState extends State<_UsersTab> {
       builder: (dialogContext) => _UserDetailDialog(
         user: user,
         gateway: widget.gateway,
+        areasGateway: widget.areasGateway,
+        cashGateway: widget.cashGateway,
         adminContext: widget.context,
         canUpdate: _canUpdate,
         canAssignRole: _canAssignRole,
@@ -635,6 +664,8 @@ class _UserDetailDialog extends StatefulWidget {
   const _UserDetailDialog({
     required this.user,
     required this.gateway,
+    this.areasGateway = const EmptyPosOperationalAreasGateway(),
+    this.cashGateway = const EmptyPosCashGateway(),
     required this.adminContext,
     required this.canUpdate,
     required this.canAssignRole,
@@ -643,6 +674,8 @@ class _UserDetailDialog extends StatefulWidget {
 
   final PosUser user;
   final PosIdentityAdminGateway gateway;
+  final PosOperationalAreasGateway areasGateway;
+  final PosCashGateway cashGateway;
   final AuthenticatedContext adminContext;
   final bool canUpdate;
   final bool canAssignRole;
@@ -667,6 +700,12 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   // the grant dialog itself would otherwise resurface here right after a
   // successful grant.
   List<BranchSummary> _freshBranches = const [];
+
+  // TASK 16.15 — this user's current register/area-scoped access grants,
+  // narrowing on top of the branch access above. Loaded alongside
+  // `_detail` in [_load] (a separate call: `GET .../register-access` is
+  // its own route, not embedded in `userDetail()`'s response).
+  List<PosRegisterAccessGrant> _registerAccess = const [];
 
   late String _statusValue = widget.user.membershipStatus == 'invited' ? 'active' : widget.user.membershipStatus;
   final _passwordController = TextEditingController();
@@ -696,9 +735,24 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
     });
     try {
       final detail = await widget.gateway.userDetail(widget.user.id);
+      // TASK 16.15 — best-effort: an actor without `branch_access.manage`
+      // (see `widget.canManageBranchAccess`) gets a real 403 here, which
+      // must never fail the whole dialog load — it just means the
+      // "Acceso a caja/área" section renders empty/hidden for them,
+      // exactly like `_freshBranches` above already does nothing special
+      // on failure.
+      List<PosRegisterAccessGrant> registerAccess = const [];
+      if (widget.canManageBranchAccess) {
+        try {
+          registerAccess = await widget.gateway.listRegisterAccess(widget.user.id);
+        } on Object {
+          registerAccess = const [];
+        }
+      }
       if (!mounted) return;
       setState(() {
         _detail = detail;
+        _registerAccess = registerAccess;
         _phase = _DetailPhase.ready;
         _statusValue = detail.user.membershipStatus == 'invited' ? 'active' : detail.user.membershipStatus;
       });
@@ -831,6 +885,42 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
     } on Object {
       if (!mounted) return;
       _showSnack('No fue posible revocar el acceso a la sucursal.');
+    }
+  }
+
+  // TASK 16.15 — "Otorgar acceso a caja/área": narrows this user's ALREADY-
+  // granted branch access (the section immediately above) down to specific
+  // register(s)/area(s). Mirrors [_openGrantBranchAccess] exactly, reusing
+  // the SAME `branch_access.manage` permission — never a new one.
+  Future<void> _openGrantRegisterAccess() async {
+    final granted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _GrantRegisterAccessDialog(
+        userId: widget.user.id,
+        gateway: widget.gateway,
+        areasGateway: widget.areasGateway,
+        cashGateway: widget.cashGateway,
+        branches: widget.adminContext.branches,
+      ),
+    );
+    if (granted == true) {
+      _changed = true;
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _revokeRegisterAccess(PosRegisterAccessGrant grant) async {
+    if (!widget.canManageBranchAccess) return;
+    try {
+      await widget.gateway.revokeRegisterAccess(widget.user.id, grant.id);
+      _changed = true;
+      unawaited(_load());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      _showSnack(error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      _showSnack('No fue posible revocar el acceso a la caja/área.');
     }
   }
 
@@ -1047,6 +1137,73 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
                       key: Key('pos-user-branch-access-revoke-${access.branchId}'),
                       onPressed: widget.canManageBranchAccess && access.status == 'active'
                           ? () => unawaited(_revokeBranchAccess(access))
+                          : null,
+                      icon: Icon(Icons.close, size: 16, color: palette.error),
+                      tooltip: widget.canManageBranchAccess ? 'Revocar acceso' : _branchAccessTooltip,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        const Divider(height: 28),
+        // TASK 16.15 — "presence narrows, absence means unrestricted": a
+        // user with ZERO rows here for a branch they already have access
+        // to (the section above) is UNRESTRICTED within that branch —
+        // they can use ANY register there. Each row below NARROWS them
+        // down to only that one area/register. Never the reverse.
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Acceso a caja/área',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+              ),
+            ),
+            Tooltip(
+              message: widget.canManageBranchAccess ? '' : _branchAccessTooltip,
+              child: OutlinedButton.icon(
+                key: const Key('pos-user-detail-grant-register-access'),
+                onPressed: widget.canManageBranchAccess ? () => unawaited(_openGrantRegisterAccess()) : null,
+                icon: const Icon(Icons.add, size: 14),
+                label: const Text('Otorgar acceso'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Sin filas aquí, este usuario puede usar cualquier caja de las sucursales que ya tiene '
+          'asignadas arriba. Cada fila abajo lo limita a una caja o área específica.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11),
+        ),
+        const SizedBox(height: 6),
+        if (_registerAccess.isEmpty)
+          Text(
+            'Sin restricciones de caja/área (acceso a cualquier caja de sus sucursales).',
+            style: TextStyle(color: palette.textMuted, fontSize: 12),
+          )
+        else
+          for (final grant in _registerAccess)
+            Padding(
+              key: Key('pos-user-register-access-row-${grant.id}'),
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_branchLabel(grant.branchId)} · '
+                      '${grant.operationalAreaId != null ? 'área ${grant.operationalAreaId}' : 'caja ${grant.cashRegisterId}'}',
+                      style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  _StatusPill(label: grant.status),
+                  const SizedBox(width: 6),
+                  Tooltip(
+                    message: widget.canManageBranchAccess ? '' : _branchAccessTooltip,
+                    child: IconButton(
+                      key: Key('pos-user-register-access-revoke-${grant.id}'),
+                      onPressed: widget.canManageBranchAccess && grant.status == 'active'
+                          ? () => unawaited(_revokeRegisterAccess(grant))
                           : null,
                       icon: Icon(Icons.close, size: 16, color: palette.error),
                       tooltip: widget.canManageBranchAccess ? 'Revocar acceso' : _branchAccessTooltip,
@@ -1291,6 +1448,229 @@ class _GrantBranchAccessDialogState extends State<_GrantBranchAccessDialog> {
                 disabledTooltip: 'Selecciona una sucursal.',
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `Otorgar acceso a caja/área` dialog — TASK 16.15, reachable only from an
+/// already-`branch_access.manage`-gated entry point. Narrows a user's
+/// ALREADY-granted branch access (see `_GrantBranchAccessDialog` above)
+/// down to either "every register in one operational area" or "one
+/// specific register", per the exact XOR the backend requires
+/// (`POST /users/{id}/register-access`'s own `operational_area_id` XOR
+/// `cash_register_id` body schema).
+class _GrantRegisterAccessDialog extends StatefulWidget {
+  const _GrantRegisterAccessDialog({
+    required this.userId,
+    required this.gateway,
+    required this.areasGateway,
+    required this.cashGateway,
+    required this.branches,
+  });
+  final String userId;
+  final PosIdentityAdminGateway gateway;
+  final PosOperationalAreasGateway areasGateway;
+  final PosCashGateway cashGateway;
+  final List<BranchSummary> branches;
+
+  @override
+  State<_GrantRegisterAccessDialog> createState() => _GrantRegisterAccessDialogState();
+}
+
+enum _RegisterAccessScopeMode { area, register }
+
+class _GrantRegisterAccessDialogState extends State<_GrantRegisterAccessDialog> {
+  String? _selectedBranchId;
+  _RegisterAccessScopeMode _mode = _RegisterAccessScopeMode.area;
+  List<PosOperationalArea> _areas = const [];
+  List<PosCashRegister> _registers = const [];
+  String? _selectedAreaId;
+  String? _selectedRegisterId;
+  bool _loadingOptions = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedBranchId = widget.branches.firstOrNull?.id;
+    unawaited(_loadOptions());
+  }
+
+  Future<void> _loadOptions() async {
+    final branchId = _selectedBranchId;
+    if (branchId == null) return;
+    setState(() {
+      _loadingOptions = true;
+      _selectedAreaId = null;
+      _selectedRegisterId = null;
+    });
+    try {
+      final areasPage = await widget.areasGateway.listAreas(branchId: branchId, status: 'active');
+      final registers = await widget.cashGateway.registersForBranch(branchId);
+      if (!mounted) return;
+      setState(() {
+        _areas = areasPage.items;
+        _registers = registers;
+        _selectedAreaId = areasPage.items.firstOrNull?.id;
+        _selectedRegisterId = registers.firstOrNull?.id;
+        _loadingOptions = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _areas = const [];
+        _registers = const [];
+        _loadingOptions = false;
+      });
+    }
+  }
+
+  Future<void> _submit() async {
+    final branchId = _selectedBranchId;
+    if (branchId == null) return;
+    final areaId = _mode == _RegisterAccessScopeMode.area ? _selectedAreaId : null;
+    final registerId = _mode == _RegisterAccessScopeMode.register ? _selectedRegisterId : null;
+    if (areaId == null && registerId == null) {
+      setState(
+        () => _error = _mode == _RegisterAccessScopeMode.area
+            ? 'Selecciona un área operativa.'
+            : 'Selecciona una caja.',
+      );
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.gateway.grantRegisterAccess(
+        widget.userId,
+        branchId: branchId,
+        operationalAreaId: areaId,
+        cashRegisterId: registerId,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = 'No fue posible otorgar el acceso.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440, maxHeight: 480),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Otorgar acceso a caja/área',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Esto LIMITA al usuario a la caja o área elegida dentro de la sucursal — sin esta '
+                  'regla, ya puede usar cualquier caja de las sucursales que tiene asignadas.',
+                  style: TextStyle(color: palette.textMuted, fontSize: 11),
+                ),
+                const SizedBox(height: 14),
+                if (widget.branches.isEmpty)
+                  Text('No hay sucursales disponibles en tu sesión.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+                else ...[
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-grant-register-access-branch'),
+                    initialValue: _selectedBranchId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Sucursal'),
+                    items: [for (final branch in widget.branches) DropdownMenuItem(value: branch.id, child: Text(branch.name))],
+                    onChanged: (value) {
+                      setState(() => _selectedBranchId = value);
+                      unawaited(_loadOptions());
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  SegmentedButton<_RegisterAccessScopeMode>(
+                    key: const Key('pos-grant-register-access-mode'),
+                    segments: const [
+                      ButtonSegment(value: _RegisterAccessScopeMode.area, label: Text('Área operativa')),
+                      ButtonSegment(value: _RegisterAccessScopeMode.register, label: Text('Caja específica')),
+                    ],
+                    selected: {_mode},
+                    onSelectionChanged: (value) => setState(() => _mode = value.first),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_loadingOptions)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  else if (_mode == _RegisterAccessScopeMode.area)
+                    _areas.isEmpty
+                        ? Text('Esta sucursal no tiene áreas operativas activas.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+                        : DropdownButtonFormField<String>(
+                            key: const Key('pos-grant-register-access-area'),
+                            initialValue: _selectedAreaId,
+                            isExpanded: true,
+                            decoration: const InputDecoration(isDense: true, labelText: 'Área operativa'),
+                            items: [for (final area in _areas) DropdownMenuItem(value: area.id, child: Text(area.name))],
+                            onChanged: (value) => setState(() => _selectedAreaId = value),
+                          )
+                  else
+                    _registers.isEmpty
+                        ? Text('Esta sucursal no tiene cajas activas.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+                        : DropdownButtonFormField<String>(
+                            key: const Key('pos-grant-register-access-register'),
+                            initialValue: _selectedRegisterId,
+                            isExpanded: true,
+                            decoration: const InputDecoration(isDense: true, labelText: 'Caja'),
+                            items: [
+                              for (final register in _registers)
+                                DropdownMenuItem(value: register.id, child: Text('${register.name} (${register.code})')),
+                            ],
+                            onChanged: (value) => setState(() => _selectedRegisterId = value),
+                          ),
+                ],
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    key: const Key('pos-grant-register-access-error'),
+                    style: TextStyle(color: palette.error, fontSize: 12),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                _DialogButtons(
+                  busy: _busy,
+                  onCancel: () => Navigator.of(context).pop(false),
+                  onSave: () => unawaited(_submit()),
+                  saveKey: const Key('pos-grant-register-access-save'),
+                  saveEnabled: _selectedBranchId != null,
+                  disabledTooltip: 'Selecciona una sucursal.',
+                ),
+              ],
+            ),
           ),
         ),
       ),

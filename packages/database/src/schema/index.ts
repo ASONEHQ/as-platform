@@ -8,6 +8,7 @@ export * from './devices.js';
 export * from './held-sales.js';
 export * from './identity.js';
 export * from './inventory.js';
+export * from './operational-areas.js';
 export * from './organizations.js';
 export * from './parties.js';
 export * from './payments.js';

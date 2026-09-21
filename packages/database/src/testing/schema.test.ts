@@ -92,21 +92,21 @@ describe('database foundation schema', () => {
   // (`product_categories.operational_group` + `cash_session_partial_
   // closes.operational_summary`, backing the partial cut's operational
   // summary) landed without updating this tracker. Verified independently
-  // (`_journal.json` really does have 38 sequential entries 0-37 ending at
-  // `0037_loud_vin_gonzales`) before bumping the numbers — same precedent
-  // as TASK 15.0's/16.10B's/16.11's/16.14's own prior updates to this
-  // exact test. The test's actual intent — the journal is sequential,
-  // contiguous, and its last entry matches the newest real migration file
-  // — is unchanged.
+  // (`_journal.json` really does have 39 sequential entries 0-38 ending at
+  // `0038_melted_lady_mastermind`) before bumping the numbers — same
+  // precedent as TASK 15.0's/16.10B's/16.11's/16.14's/16.14A's own prior
+  // updates to this exact test. The test's actual intent — the journal is
+  // sequential, contiguous, and its last entry matches the newest real
+  // migration file — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(38);
+    expect(journal.entries).toHaveLength(39);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 38 }, (_, index) => index),
+      Array.from({ length: 39 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0037_loud_vin_gonzales');
+    expect(journal.entries.at(-1)?.tag).toBe('0038_melted_lady_mastermind');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {
@@ -326,16 +326,19 @@ describe('database foundation schema', () => {
   // `inventory.transfer` + `inventory.receive`, a real 403-for-everyone
   // bug — see that file's own comment) brought it to 100. TASK 16.10 then
   // added `purchase.receive` (the formal Purchase Order receiving
-  // permission), bringing it to 101, again without updating this tracker
-  // — the same drift pattern this test's own history already
-  // demonstrates happens every time a permission is added. Verified
-  // independently (the array really does hold exactly 101 unique codes)
-  // before bumping the number — same precedent as TASK 15.0's own prior
-  // update to this test. The uniqueness check and the specific
-  // spot-checked codes are the test's real intent and are unchanged.
+  // permission), bringing it to 101. TASK 16.15 adds
+  // `operational_area.read`/`operational_area.manage`/
+  // `branch_consolidation.read` (multi-register operations), bringing it
+  // to 104 — again without updating this tracker in the same commit, the
+  // same drift pattern this test's own history already demonstrates
+  // happens every time a permission is added. Verified independently (the
+  // array really does hold exactly 104 unique codes) before bumping the
+  // number — same precedent as every prior update to this test. The
+  // uniqueness check and the specific spot-checked codes are the test's
+  // real intent and are unchanged.
   it('contains exactly the current approved permission definitions, each unique', () => {
-    expect(technicalPermissionCodes).toHaveLength(101);
-    expect(new Set(technicalPermissionCodes).size).toBe(101);
+    expect(technicalPermissionCodes).toHaveLength(104);
+    expect(new Set(technicalPermissionCodes).size).toBe(104);
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { responseMeta, successResponse } from '../../http/response.js';
-import { requireAuthenticatedUser, requireBranchAccess, requirePermission } from '../auth/auth.guards.js';
+import { requireAuthenticatedUser, requireBranchAccess, requirePermission, requireRegisterAccess } from '../auth/auth.guards.js';
 import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withCashErrors } from './cash.http-errors.js';
@@ -55,6 +55,7 @@ function registerHttp(value: CashRegisterRow): Readonly<Record<string, unknown>>
     name: value.name,
     status: value.status,
     device_id: value.deviceId,
+    operational_area_id: value.operationalAreaId,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -230,7 +231,9 @@ function partialCloseHttp(value: CashSessionPartialCloseRow): Readonly<Record<st
 
 export function registerCashRoutes(app: FastifyInstance, authentication: AuthService, service: CashService): void {
   // E039.
-  app.post<{ Body: { id?: string; branch_id: string; code: string; name: string; device_id?: string } }>(
+  app.post<{
+    Body: { id?: string; branch_id: string; code: string; name: string; device_id?: string; operational_area_id?: string };
+  }>(
     '/api/v1/cash-registers',
     {
       schema: {
@@ -246,6 +249,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             code: { type: 'string', minLength: 1, maxLength: 64 },
             name: { type: 'string', minLength: 1, maxLength: 160 },
             device_id: { type: 'string', format: 'uuid' },
+            operational_area_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -266,6 +270,9 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             code: request.body.code,
             name: request.body.name,
             ...(request.body.device_id === undefined ? {} : { deviceId: request.body.device_id }),
+            ...(request.body.operational_area_id === undefined
+              ? {}
+              : { operationalAreaId: request.body.operational_area_id }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -277,7 +284,16 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
   );
 
   // E038.
-  app.get<{ Querystring: { cursor?: string; limit?: number; branch_id?: string; status?: string; device_id?: string } }>(
+  app.get<{
+    Querystring: {
+      cursor?: string;
+      limit?: number;
+      branch_id?: string;
+      status?: string;
+      device_id?: string;
+      operational_area_id?: string;
+    };
+  }>(
     '/api/v1/cash-registers',
     {
       schema: {
@@ -291,6 +307,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             branch_id: { type: 'string', format: 'uuid' },
             status: { type: 'string', enum: ['active', 'inactive', 'retired'] },
             device_id: { type: 'string', format: 'uuid' },
+            operational_area_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -308,6 +325,13 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
           ...(query.branch_id === undefined ? {} : { branchId: query.branch_id }),
           ...(query.status === undefined ? {} : { status: query.status }),
           ...(query.device_id === undefined ? {} : { deviceId: query.device_id }),
+          ...(query.operational_area_id === undefined ? {} : { operationalAreaId: query.operational_area_id }),
+          // TASK 16.15 — a register-scoped actor (`permittedRegisterIds`
+          // non-null) only ever sees the registers they're actually
+          // narrowed to, even in this general listing (never just the
+          // mutation endpoints) — so the Flutter register picker itself
+          // can never even display an unauthorized register as an option.
+          ...(auth.permittedRegisterIds == null ? {} : { registerIds: auth.permittedRegisterIds }),
         });
         return reply.send({
           data: page.items.map(registerHttp),
@@ -376,6 +400,45 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       }),
   );
 
+  // TASK 16.15 — mirrors the device-assignment route immediately above,
+  // verbatim shape, one field different.
+  app.put<{ Params: Params; Body: { operational_area_id: string | null } }>(
+    '/api/v1/cash-registers/:id/operational-area-assignment',
+    {
+      schema: {
+        tags: ['cash'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        headers: { type: 'object', properties: { 'if-match': { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['operational_area_id'],
+          properties: {
+            operational_area_id: { type: ['string', 'null'], format: 'uuid' },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withCashErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'cash_register.manage');
+        const ifMatch = request.headers['if-match'];
+        const expectedVersion = BigInt(typeof ifMatch === 'string' ? ifMatch.replaceAll('"', '') : '0');
+        const updated = await service.assignOperationalArea(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          expectedVersion,
+          request.body.operational_area_id,
+        );
+        return reply
+          .header('etag', `"${updated.version.toString()}"`)
+          .send(successResponse(registerHttp(updated), request.requestContext));
+      }),
+  );
+
   // E042.
   app.post<{ Body: { id?: string; cash_register_id: string; opening_amount: string; currency_code?: string } }>(
     '/api/v1/cash-sessions',
@@ -401,6 +464,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       withCashErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'cash_session.open');
+        requireRegisterAccess(authentication, auth, request.body.cash_register_id);
         const created = await service.openSession(
           mutationContext(request, auth.companyId, auth.userId),
           auth.permittedBranchIds,
@@ -439,6 +503,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       withCashErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'cash_session.read');
+        requireRegisterAccess(authentication, auth, request.query.cash_register_id);
         const current = await service.currentSession(auth.companyId, auth.permittedBranchIds, request.query.cash_register_id);
         return reply.send(successResponse(current === null ? null : sessionHttp(current), request.requestContext));
       }),
@@ -516,7 +581,12 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       withCashErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'cash_session.read');
-        const value = await service.session(auth.companyId, auth.permittedBranchIds, request.params.id);
+        const value = await service.session(
+          auth.companyId,
+          auth.permittedBranchIds,
+          request.params.id,
+          auth.permittedRegisterIds ?? null,
+        );
         return reply
           .header('etag', `"${value.version.toString()}"`)
           .send(successResponse(sessionHttp(value), request.requestContext));
@@ -539,7 +609,12 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       withCashErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'cash_session.read');
-        const value = await service.summary(auth.companyId, auth.permittedBranchIds, request.params.id);
+        const value = await service.summary(
+          auth.companyId,
+          auth.permittedBranchIds,
+          request.params.id,
+          auth.permittedRegisterIds ?? null,
+        );
         return reply.send(
           successResponse(
             {
@@ -630,6 +705,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             ...(request.body.note === undefined ? {} : { note: request.body.note }),
             ...(request.body.category === undefined ? {} : { category: request.body.category }),
           },
+          auth.permittedRegisterIds ?? null,
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
         return reply.code(201).send(successResponse(movementHttp(created.value), request.requestContext));
@@ -678,6 +754,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             reasonCode: request.body.reason_code,
             ...(request.body.note === undefined ? {} : { note: request.body.note }),
           },
+          auth.permittedRegisterIds ?? null,
         );
         if (reversed.replayed) reply.header('idempotency-replayed', 'true');
         return reply.code(201).send(successResponse(movementHttp(reversed.value), request.requestContext));
@@ -708,11 +785,17 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'cash_session.read');
         const query = request.query;
-        const page = await service.listMovements(auth.companyId, auth.permittedBranchIds, request.params.id, {
-          limit: query.limit ?? 50,
-          ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
-          ...(query.type === undefined ? {} : { movementType: query.type as 'opening_float' | 'cash_sale' | 'cash_in' | 'cash_out' }),
-        });
+        const page = await service.listMovements(
+          auth.companyId,
+          auth.permittedBranchIds,
+          request.params.id,
+          {
+            limit: query.limit ?? 50,
+            ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+            ...(query.type === undefined ? {} : { movementType: query.type as 'opening_float' | 'cash_sale' | 'cash_in' | 'cash_out' }),
+          },
+          auth.permittedRegisterIds ?? null,
+        );
         return reply.send({
           data: page.items.map(movementHttp),
           meta: { ...responseMeta(request.requestContext), page: { next_cursor: page.nextCursor, has_more: page.nextCursor !== null } },
@@ -822,6 +905,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
               ? {}
               : { cardReconciliation: request.body.card_reconciliation }),
           },
+          auth.permittedRegisterIds ?? null,
         );
         if (closed.replayed) reply.header('idempotency-replayed', 'true');
         return reply
@@ -859,6 +943,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
           auth.permittedBranchIds,
           idempotencyKey(request.headers['idempotency-key']),
           request.params.id,
+          auth.permittedRegisterIds ?? null,
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
         return reply.code(201).send(successResponse(partialCloseHttp(created.value), request.requestContext));

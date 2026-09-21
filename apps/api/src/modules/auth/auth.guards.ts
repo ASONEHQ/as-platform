@@ -49,3 +49,17 @@ export function requireBranchAccess(
   requireActiveMembership(context);
   service.requireBranchAccess(context, branchId);
 }
+
+// TASK 16.15 — narrows branch access one level further, when the actor's
+// membership has register-level scoping configured (see `AuthContext.
+// permittedRegisterIds`'s own doc comment). Call sites must still call
+// `requireBranchAccess` for the register's own branch separately — this
+// never substitutes for that check.
+export function requireRegisterAccess(
+  service: AuthService,
+  context: AuthContext,
+  registerId: string,
+): void {
+  requireActiveMembership(context);
+  service.requireRegisterAccess(context, registerId);
+}

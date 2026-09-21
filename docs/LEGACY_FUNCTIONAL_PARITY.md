@@ -3765,6 +3765,331 @@ Flutter input in this V1 (only the combined `label` field, matching the
 task's own suggested minimal UI) — a natural, easy future enhancement
 if ever needed, not attempted here per "keep V1 simple."
 
+## TASK 16.15 — Commercial Multi-Register Operations (2026-09-21)
+
+**§1 Legacy forensic findings.** The canonical `AS POS V1.html` DOES contain
+a "Cajas" (registers) list — `Configuración → Dispositivos` shows
+`CAJA-01`/`CAJA-02` rows with `ip`/`usuario`/`estado`/`online`/`lastSync`,
+and a "Nueva caja" form. **This is a decorative device/sync-log display,
+never a real multi-register accounting model** — exactly the same
+"cosmetic, not functional" pattern TASK 16.14A's own forensic pass found
+for the legacy "Terminal bancaria" row. Proof: the ENTIRE cash-cut engine
+operates on exactly one global object, `DB.turnoActual`, whose `caja`
+field is hardcoded to the literal string `'CAJA-01'` at session-open
+(`DB.turnoActual={...,caja:'CAJA-01',...}`) — never read from whichever
+device/session actually opened it, never varying. Every sync-log call
+site throughout the file (inventory, pulseras/NFC access, product sync)
+passes the same hardcoded `'CAJA-01'` literal regardless of context.
+`efectivoEsperado()`/`calcTotalContado()` and every sales/payment total
+read this one global session — there is no code path anywhere that opens
+a second, independently-accounted session, and the "Caja 2" row's own
+`estado:'cerrada'` never changes because nothing in the app can ever open
+it. **Verdict: this is a genuinely new capability, not a parity gap** —
+legacy never supported more than one real cash drawer per branch, and
+TASK 16.15 does not duplicate or contradict any legacy behavior.
+
+**§2 The four distinct concepts (per this task's own closing rule).**
+Deliberately never collapsed into one model:
+1. **Multiple independent cash registers** (`cash_registers`, pre-existing
+   since TASK 12.7) — each with its own `cash_sessions` lifecycle,
+   already schema-capable of more than one per branch; what was actually
+   missing was genuine SIMULTANEOUS operation and register-scoped
+   authorization/attribution, not the registers table itself.
+2. **Operational area** (`operational_areas`, new) — an optional,
+   tenant-named grouping of registers within one branch, answering "where
+   was this money collected." Never the same axis as
+   `product_categories.operational_group` (`'cafeteria'`, a narrow
+   product-classification enum, TASK 16.13A) — a Cafetería-area register
+   can sell anything in the catalog, so conflating the two would silently
+   misclassify products sold at the wrong physical location.
+3. **Branch-wide consolidated view** (`BranchConsolidationService`, new)
+   — a pure READ MODEL over already-posted register data. Never a
+   financial transaction, never written to any ledger, never double-
+   counted (§9).
+4. **Physical cash-transfer-to-treasury workflow** — explicitly OUT OF
+   SCOPE. Documented here only so the distinction is never lost: a future
+   "move $500 from Caja 1 to the safe" feature would be a REAL financial
+   movement (debiting one register, crediting a treasury concept), wholly
+   different from consolidation's read-only rollup. Nothing in this task
+   builds it, stubs it, or reserves a fake table for it.
+
+**§3 Was a new `operational_areas` entity genuinely needed?** Yes — a
+register needs to belong to a tenant-named group that can vary per
+tenant (Admissions/Food/Events for one, Taquilla/Cafetería/Eventos for
+another) and per branch within a tenant, and that grouping needed its own
+lifecycle (rename, deactivate) independent of any single register's own
+code/name. Reusing `product_categories.operational_group` was rejected
+per §2.2 above. `operational_areas` mirrors `cash_registers`' own
+code/normalizedCode/status/audit-column shape verbatim — no new pattern
+invented. `cash_registers.operational_area_id` is nullable (backfill-
+safe): every existing register keeps working, unassigned, as "Sin área"
+(§18).
+
+**§4 Register-scoped authorization model.** New `user_register_access`
+table, extending TASK 12.x's own `user_branch_access` "presence narrows,
+absence means unrestricted" semantic one level deeper: a membership with
+ZERO active grant rows for a branch it already has branch-level access to
+can operate ANY register in that branch — the default, unchanged
+behavior for every existing cashier/manager/owner. A membership with AT
+LEAST ONE grant row is narrowed to exactly what those rows resolve to: a
+direct register grant, or every register (present AND future) in a
+granted operational area. Enforced by `AuthContext.permittedRegisterIds`
+(`readonly string[] | null` — `null` unrestricted), resolved FRESH on
+every request inside `PostgresAuthRepository#resolveContext`, never
+cached in a session/JWT claim (the exact discipline TASK 16.10B's own
+incident established for `permissions`/`permittedBranchIds`) — an admin
+narrowing a cashier's scope takes effect on their very next request, mid-
+shift, with no re-login required.
+
+**§5 Backend enforcement points (§9/§30/§31 proof).** An EXPLICIT target
+in a request body (opening a session on a named register, creating a
+sale against a named register) is checked via `AuthService.
+requireRegisterAccess` — a 403 `register_scope_mismatch`, the same shape
+as an explicit out-of-scope branch. An ALREADY-EXISTING resource accessed
+outside scope (a session/summary/movement/close/partial-close by id) is a
+404 `resource_not_found` via `CashService#assertRegisterScope` — mirrors
+the pre-existing `branchIds.includes(...)` convention exactly, never
+revealing that an out-of-scope register's session exists at all. Both
+enforcement points are covered by direct ID-tampering integration tests
+(§13) — a Food-scoped actor cannot view, post to, or close an Admissions
+session, or sell against the Admissions register, by supplying its id
+directly.
+
+**§6 Sale-time register attribution — the gap this task had to close.**
+Before this task, `sales.cash_register_id` was ONLY ever stamped by
+`trySettleSale` at cash-settlement time, and only for a cash payment —
+meaning a card sale was NEVER register-attributed, making genuine per-
+register card reconciliation impossible. `CreateSaleInput` gained an
+optional `cashRegisterId`, validated against the caller's
+`permittedRegisterIds` and the register's own branch before the sale is
+created. Backward compatibility for callers that omit it (every pre-
+16.15 client, and any POS build not yet updated): `SalesService#
+createSale` falls back to the branch's SOLE currently-open register when
+unambiguous — the identical "unambiguous default, never a guess" rule
+`PaymentService#resolveOpenCashSession` already applies to cash-payment
+confirmation — and leaves the sale unattributed (honest, never a fabricated
+attribution) when the branch has zero or multiple open registers. A cash
+sale's `cash_register_id` is still unconditionally re-affirmed by
+`attachCashSession` at settlement, exactly as before.
+
+**§7 The double-counting bug this task caught in its own new feature,
+before shipping it.** `BranchConsolidationService`'s first draft summed
+each open register's card-payment totals via `CashService.summary()`'s
+existing `paymentMethodTotals` — deliberately BRANCH-scoped by TASK
+16.13/16.14's own original design, a correct simplification in a world
+where only one register per branch could ever be open. With two
+registers genuinely open at once (this task's own new capability), that
+branch-scoped query summed EVERY register's card sales into EACH
+register's own reported total — a real double-count, caught by this
+task's own deterministic multi-register test (`cardSystemNetTotal` came
+back `1800.0000`, exactly double the correct `900.0000`). Fixed by adding
+a genuinely register-scoped `CashRepository.paymentMethodTotalsForRegister`
+(filtering `sales.cash_register_id` directly, refunds via a join back to
+their originating sale's register), now used by BOTH the new
+consolidation service AND `CashService.summary()`/`closeSession()`
+themselves — the same underlying fix also correctly narrows the existing
+single-register close-time card-reconciliation preview/freeze (TASK
+16.14A) for any branch that ever has two registers open at once, a
+scenario that was unreachable before this task and is now real.
+
+**§8 No-double-counting-by-construction (§15/§18-19 proof).** Every
+register contributes EXACTLY ONE authoritative source to the branch
+totals: a live `CashService.summary()` fold (open/closing) or the frozen
+close-time columns (closed) — summed once, in JS, never a second parallel
+recomputation. A branch-wide `cashDifferenceTotal`/`cardDifferenceTotal`
+of exactly `$0.00` NEVER implies every register is clean:
+`discrepantRegisterCount`/`cardPendingOrDiscrepantRegisterCount` are
+computed independently per-register and surfaced unconditionally in both
+the API response and the Flutter UI (§20) — proven by a dedicated
+deterministic test that closes two registers with a deliberate -$20/+$20
+cash shortage/surplus, asserting the branch nets to exactly `$0.00` while
+`discrepantRegisterCount` reports `2`.
+
+**§9 Business-date/timezone correctness (§16).** New `zonedDayBounds
+(dateLabel, timezone)` in `pricing.service.ts` — a genuine capability
+that never existed before this task: a two-step `Intl.DateTimeFormat`
+correction (guess UTC midnight → reformat in the target IANA timezone →
+compute and apply the offset), with next-day-label derivation via pure
+calendar arithmetic (`Date.UTC(year, month, day+1)`) rather than a naive
+`+24h` on the instant, so it stays correct across a DST transition —
+proven by a dedicated test asserting a 25-hour window on America/
+New_York's own DST-transition day. Reuses (never duplicates)
+`isValidIanaTimezone`/`localDateString`; `BranchConsolidationService`
+re-validates `branches.timezone` itself rather than trusting it blind,
+same discipline as TASK 16.13A's own historical "Mexico_City" (non-IANA)
+bug fix.
+
+**§10 Permissions (§25-27 proof).** Three new permission codes:
+`operational_area.read`, `operational_area.manage`,
+`branch_consolidation.read`. Register-access grants reuse the existing
+`branch_access.manage` permission (semantically the identical action one
+level deeper — no new permission invented for it). TASK 16.10B's
+`syncSystemRolePermissions()` auto-grants all three to every `is_system`
+(Owner) role — re-verified via a real `npm run db:seed` run against both
+`asone_local` (3 inserted, 3 grants) and `asone_test` (3 inserted, 48
+grants across existing test companies) — and the mechanism's own
+generic, task-independent proof
+(`packages/database/src/testing/system-role-permissions.integration.
+test.ts`) already covers "a custom role never auto-widens," not
+re-duplicated here. `cash_register.read`/`.manage` gate the new
+register-area-assignment endpoint (mirrors the pre-existing device-
+assignment endpoint's own permission choice exactly).
+
+**§11 Register/branch/area/tenant isolation (§28-31 proof).** All proven
+with real Postgres, including direct-ID tampering, in
+`branch-consolidation.integration.test.ts`: a Food-scoped actor cannot
+read, post to, or close an Admissions session by id; a Food-scoped actor
+cannot sell against the Admissions register (`validation_error`); a
+Branch-Manager sees all registers in their own branch but is rejected for
+a second branch; another tenant (different `company_id`) cannot resolve
+this tenant's consolidation, registers, or areas even with the exact
+ids. `operational-areas.integration.test.ts` separately proves branch and
+tenant isolation for the areas CRUD surface itself (a 404, never
+revealing existence, for an area outside the caller's branches or
+company), plus idempotency replay/conflict and a real `audit_log`/
+`outbox_events` row on create and update.
+
+**§12 Refunds/inventory (§20-22).** No behavior change: a refund is
+attributed via its ORIGINATING sale's `cash_register_id` (refunds carry
+no register column of their own — `paymentMethodTotalsForRegister`'s own
+refund CTE joins back through `sales`), so it lands in the same
+register's totals as the sale it reverses, never double-subtracted.
+Inventory consumption (`postSaleConsumption`) is entirely unaffected by
+this task — still posted exactly once per settled sale, against the same
+authoritative stock, regardless of which register the sale is attributed
+to.
+
+**§13 Existing surfaces reused, never duplicated.** Cafetería/Taquilla/
+Eventos's own TASK 16.13/16.13A operational-summary classification is
+untouched — a genuinely separate axis from `operational_areas` (§2.2).
+The existing Dashboard/Reports surfaces are untouched; "Consolidado de
+sucursal" is a new, narrowly-scoped read model, not a rebuild of either.
+
+**§14 Backward compatibility (§35-36 proof).** Every pre-16.15 register/
+session/role keeps working unchanged: an unrestricted membership
+(`permittedRegisterIds: null`, the default for every existing account)
+can still open/use any register in its permitted branches exactly as
+before. A register with no `operational_area_id` reads back `null` and
+participates fully and correctly everywhere (sessions, sales,
+consolidation groups it under a `null`-keyed "Sin área" bucket) — proven
+by a dedicated test, never a fabricated historical area attribution. New
+tenant provisioning creates zero `operational_areas` rows automatically
+— no tenant ever gets an invented Taquilla/Snacks/Eventos (or any other)
+set of areas; every area is operator-entered, always.
+
+**§15 Backend tests.** New: `branch-consolidation.integration.test.ts`
+(11/11 passing — simultaneous multi-register operation, the deterministic
+exact-value/net-zero-but-2-discrepant-registers scenario, no-double-
+counting cross-check against the DB directly, register-scope resolution
+via real `resolveContext`, register isolation via direct API tampering, a
+Food-scoped actor rejected selling against Admissions, manager/tenant-
+isolation E2E, "Sin área" backward compatibility);
+`operational-areas.integration.test.ts` (11/11 — CRUD, idempotency,
+branch/tenant isolation, pagination, optimistic-version control, audit
+trail). Existing suites re-run and still 100% passing after the register-
+scoping fix (§7): `cash-card-reconciliation.integration.test.ts` (9/9),
+`cash-final-close-commercial.integration.test.ts` (5/5),
+`cash.integration.test.ts`, `sales.integration.test.ts`,
+`payments.integration.test.ts`, `refunds.integration.test.ts`, the
+`auth.*.integration.test.ts` suite (all touched by the new
+`permitted_register_ids` session field), the `packages/database` schema/
+seed suite. Full non-integration unit suite: 556/556 passing. Every
+integration suite verified by running its own file directly (this
+codebase's own `apps/api/package.json#test` script deliberately excludes
+`*.integration.test.ts`, and batching many integration files into one
+`vitest` process was found, during this task, to cause unrelated cross-
+file interference against the shared test database — a pre-existing test-
+infrastructure characteristic unrelated to this task's own code, not a
+regression it introduced).
+
+**§16 Flutter implementation.** New `pos_operational_areas_gateway.dart`/
+`_screen.dart` ("Áreas Operativas" — list/create/rename/activate-
+deactivate, branch-scoped, plus assigning/clearing which registers belong
+to an area); `pos_branch_consolidation_gateway.dart`/`_screen.dart`
+("Consolidado de Sucursal," under the existing "Caja y Finanzas" nav
+group — an always-visible discrepancy banner reading
+`discrepantRegisterCount`/`cardPendingOrDiscrepantRegisterCount`
+directly, never derived from or gated on the net total, per §8);
+`pos_register_scope.dart` (pure `resolvePosRegisterScope` resolver +
+`PosRegisterSwitcherBar` — auto-selects silently for an unrestricted
+branch with one open register or a cashier permitted to exactly one
+register, shows the switcher only when genuinely ambiguous, never forces
+an extra step on the common single-register case). `SessionContext`
+gained `permittedRegisterIds` (nullable, mirrors `permittedBranchIds`'s
+own convention); `PosSalesGateway.createSale` and all three of its real
+call sites in `pos_shell.dart` now thread the sale-session's own
+`cashRegisterId` through to `POST /sales`. `pos_user_administration_
+screen.dart` gained an "Acceso a caja/área" section on each user, with
+explicit "presence narrows, absence means unrestricted" copy ("Sin filas
+aquí, este usuario puede usar cualquier caja de las sucursales que ya
+tiene asignadas... Sin restricciones de caja/área").
+
+**§17 A real bug found and fixed during live certification (not a
+regression from this task's own new code).** `ApiClient._perform`
+(`apps/one/lib/core/networking/api_client.dart`, pre-existing, untouched
+by this task's own earlier edits) unconditionally sent `Content-Type:
+application/json` even for a body-less request — every `deleteJson` call
+across the ENTIRE app (revoke branch access, revoke a role assignment,
+revoke register access, and any future body-less DELETE) sent an empty
+string body under that content type, which Fastify's default JSON parser
+correctly rejects (`FST_ERR_CTP_EMPTY_JSON_BODY`) — a latent, app-wide
+bug this task's own live click-through of the new "revoke register
+access" button was the first to actually exercise end-to-end. Fixed by
+only setting `Content-Type: application/json` when a body is actually
+present. Re-verified live after the fix (`DELETE .../register-access/:id
+→ 204 No Content`) and via the full Flutter test suite (707/707 still
+passing, including `api_client_test.dart`'s own header assertions).
+
+**§18 Live browser result.** Logged in as `ceo@inflapark.local` (Manager
+role) against "Inflapark Group · Compeche" on a fresh local `asone_local`
+database with genuine existing multi-register data (4 open cash sessions
+company-wide). "Consolidado de Sucursal" rendered real, server-computed
+totals (Apertura $500.00, Ventas efectivo $859.32, Esperado $1359.32),
+the always-green "Sin cajas con diferencia..." banner, a per-area
+breakdown initially showing "Sin área," and a working date picker.
+Created a real operational area ("Zona A") live via "Áreas Operativas,"
+assigned it to the branch's open register via its "Cajas asignadas"
+checkbox, and confirmed — without any reload — that "Consolidado de
+Sucursal" immediately regrouped that register under the new area name
+instead of "Sin área," proving the full create → assign → consolidate
+path end to end against the real backend. Drilled into the register row
+for its detail dialog (opening/sales/expected/counted/difference,
+payment-method breakdown). Opened a test cashier's ("QA Cajero," Puerta
+La Victoria branch) admin record, exercised "Otorgar acceso a caja/área"
+for both the area-scoped path (correctly showed "Esta sucursal no tiene
+áreas operativas activas" — an honest empty state, since Puerta La
+Victoria had none) and the register-scoped path (granted, then revoked —
+the revoke path is where §17's bug was caught and fixed live, then
+re-verified passing). Cleaned up all test data created during this pass
+(register unassigned, test area set to Inactive) before finishing. **Not
+independently live-clicked in this pass:** the POS register-switcher/
+auto-navigate flow as an actual multi-register-permitted cashier login
+(would require a second real device/session context beyond this pass's
+single-browser-tab setup) — covered instead by
+`pos_register_scope_test.dart`/`pos_register_switcher_bar_test.dart`'s
+own passing unit/widget tests, which exercise the real resolver function
+and widget directly. No physical printer/multi-terminal card-hardware
+certification is claimed, unchanged from every prior cash-related task.
+
+**§19 Genuine remaining limitations.** The register/area-scope grant
+dialog in `pos_user_administration_screen.dart` shows a raw register/area
+UUID for an already-granted row rather than its resolved friendly name
+(cosmetic; the underlying data and enforcement are correct) — a natural
+follow-up, not attempted here. The "Sucursal" picker in that same grant
+dialog lists every branch the ADMIN can manage, not filtered down to only
+branches the TARGET user already has branch-level access to — granting
+register/area scope for a branch the user has no branch access to at all
+creates a harmless but orphaned grant (the backend's own branch-access
+check still independently gates whether the user can ever operate there
+at all); a UI-only filtering improvement, not a correctness gap. No
+dedicated widget test drives the grant/revoke dialog's UI end-to-end
+(its gateway contract is exercised via the extended fake in
+`pos_user_administration_test.dart`, and the dialog itself was verified
+live in §18). The physical cash-transfer-to-treasury workflow (§2.4)
+remains explicitly unbuilt, as scoped. Physical 80mm printer
+certification remains outstanding, unchanged from every prior cash-close
+task.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

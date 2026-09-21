@@ -271,6 +271,62 @@ class PosUserDetail {
 // Gateway
 // ---------------------------------------------------------------------
 
+/// TASK 16.15 — a `user_register_access` row: narrows a user's already-
+/// granted branch access down to either "every register in one
+/// operational area" ([operationalAreaId] non-null) or "one specific
+/// register" ([cashRegisterId] non-null) within [branchId]. Exactly one of
+/// the two is ever non-null, mirroring the backend's own required-XOR
+/// validation. Tolerant of the two slightly different response shapes the
+/// backend actually returns (`POST .../register-access`'s own
+/// `{id, membership_id, user_id, branch_id, operational_area_id,
+/// cash_register_id, status}` vs. `GET .../register-access`'s list row
+/// `{id, branch_id, operational_area_id, cash_register_id, status,
+/// created_at, revoked_at}`) — [membershipId]/[userId]/[createdAt]/
+/// [revokedAt] are simply `null` whenever a given response omits them.
+class PosRegisterAccessGrant {
+  const PosRegisterAccessGrant({
+    required this.id,
+    required this.branchId,
+    required this.operationalAreaId,
+    required this.cashRegisterId,
+    required this.status,
+    this.membershipId,
+    this.userId,
+    this.createdAt,
+    this.revokedAt,
+  });
+
+  factory PosRegisterAccessGrant.fromJson(Map<String, Object?> json) => PosRegisterAccessGrant(
+    id: json['id']! as String,
+    branchId: json['branch_id']! as String,
+    operationalAreaId: json['operational_area_id'] as String?,
+    cashRegisterId: json['cash_register_id'] as String?,
+    status: json['status'] as String? ?? 'active',
+    membershipId: json['membership_id'] as String?,
+    userId: json['user_id'] as String?,
+    createdAt: json['created_at'] as String?,
+    revokedAt: json['revoked_at'] as String?,
+  );
+
+  final String id;
+  final String branchId;
+
+  /// Non-null exactly when [cashRegisterId] is null — "every register in
+  /// this operational area".
+  final String? operationalAreaId;
+
+  /// Non-null exactly when [operationalAreaId] is null — "this one
+  /// specific register".
+  final String? cashRegisterId;
+
+  /// `active` | `revoked`.
+  final String status;
+  final String? membershipId;
+  final String? userId;
+  final String? createdAt;
+  final String? revokedAt;
+}
+
 abstract interface class PosIdentityAdminGateway {
   /// `GET /api/v1/users` (`user.read`). The backend accepts no free-text
   /// search querystring (`identity.routes.ts:13-25` reads no
@@ -373,6 +429,36 @@ abstract interface class PosIdentityAdminGateway {
   /// returned [BranchSummary]s are always `false` — this listing is not
   /// session-context-aware and neither field is read by that picker.
   Future<List<BranchSummary>> listGrantableBranches(String companyId);
+
+  /// `POST /api/v1/users/{userId}/register-access` (`branch_access.manage`
+  /// — the SAME existing permission the branch-access methods above
+  /// already use, never a new one) — TASK 16.15: narrows a user's already-
+  /// granted branch access down to specific register(s)/area(s) within
+  /// [branchId]. Exactly one of [operationalAreaId]/[cashRegisterId] must
+  /// be provided (never both, never neither); the backend independently
+  /// re-validates that exact XOR and throws [ApiException] honestly
+  /// otherwise. "Presence narrows, absence means unrestricted": a user with
+  /// ZERO grant rows for a branch they already have branch-level access to
+  /// is UNRESTRICTED within it (can use any register) — this call only
+  /// ever narrows, never widens or replaces that default.
+  Future<PosRegisterAccessGrant> grantRegisterAccess(
+    String userId, {
+    required String branchId,
+    String? operationalAreaId,
+    String? cashRegisterId,
+  });
+
+  /// `GET /api/v1/users/{userId}/register-access` (`branch_access.manage`)
+  /// — every current grant for this user, across every branch.
+  Future<List<PosRegisterAccessGrant>> listRegisterAccess(String userId);
+
+  /// `DELETE /api/v1/users/{userId}/register-access/{id}`
+  /// (`branch_access.manage`) — revokes one grant, narrowing the user back
+  /// TOWARD unrestricted (never the reverse: revoking every grant for a
+  /// branch returns that user to fully unrestricted within it, not to "no
+  /// access" — branch-level access itself is managed separately by
+  /// [changeBranchAccess]/[revokeBranchAccess] above).
+  Future<void> revokeRegisterAccess(String userId, String id);
 }
 
 class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
@@ -511,6 +597,35 @@ class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
         .toList(growable: false);
   }
 
+  @override
+  Future<PosRegisterAccessGrant> grantRegisterAccess(
+    String userId, {
+    required String branchId,
+    String? operationalAreaId,
+    String? cashRegisterId,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/users/$userId/register-access',
+      body: {
+        'branch_id': branchId,
+        if (operationalAreaId != null) 'operational_area_id': operationalAreaId,
+        if (cashRegisterId != null) 'cash_register_id': cashRegisterId,
+      },
+    );
+    return PosRegisterAccessGrant.fromJson(_map(envelope));
+  }
+
+  @override
+  Future<List<PosRegisterAccessGrant>> listRegisterAccess(String userId) async =>
+      _items(await _client.getJson('/api/v1/users/$userId/register-access'))
+          .map(PosRegisterAccessGrant.fromJson)
+          .toList(growable: false);
+
+  @override
+  Future<void> revokeRegisterAccess(String userId, String id) async {
+    await _client.deleteJson('/api/v1/users/$userId/register-access/$id');
+  }
+
   Map<String, Object?> _map(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -594,4 +709,19 @@ class EmptyPosIdentityAdminGateway implements PosIdentityAdminGateway {
 
   @override
   Future<List<BranchSummary>> listGrantableBranches(String companyId) async => const [];
+
+  @override
+  Future<PosRegisterAccessGrant> grantRegisterAccess(
+    String userId, {
+    required String branchId,
+    String? operationalAreaId,
+    String? cashRegisterId,
+  }) => Future.error(StateError('No identity admin gateway is configured.'));
+
+  @override
+  Future<List<PosRegisterAccessGrant>> listRegisterAccess(String userId) async => const [];
+
+  @override
+  Future<void> revokeRegisterAccess(String userId, String id) =>
+      Future.error(StateError('No identity admin gateway is configured.'));
 }

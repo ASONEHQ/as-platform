@@ -13,6 +13,14 @@ export const infrastructureErrorCodes = [
   'permission_denied',
   'company_scope_mismatch',
   'branch_scope_mismatch',
+  // TASK 16.15 — one level narrower than `branch_scope_mismatch`: the
+  // actor has branch access but is scoped to specific register(s)/area(s)
+  // within it (`user_register_access`) and the target register isn't one
+  // of them. Used only for an EXPLICIT target in a request body (opening
+  // a session on a given register) — an already-existing session/
+  // movement outside scope still reads as `resource_not_found`,
+  // mirroring `branch_scope_mismatch`'s own two-convention split.
+  'register_scope_mismatch',
   'device_revoked',
   'validation_error',
   'version_conflict',

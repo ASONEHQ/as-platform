@@ -484,6 +484,7 @@ class _RecordingSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) async {
     calls.add((branchId: branchId, items: items, note: note));
     return const PosSaleCreated(

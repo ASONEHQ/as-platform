@@ -201,6 +201,7 @@ describe('cash advanced HTTP routes (TASK 14.4 Wave 2)', () => {
           reasonCode: 'safe_drop',
           category: 'withdrawal',
         }),
+        null,
       );
       expect(response.json()).toMatchObject({ data: { category: 'withdrawal' } });
     });

@@ -18,7 +18,8 @@ import {
 
 import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './common.js';
 import { devices } from './devices.js';
-import { companyMemberships } from './identity.js';
+import { companyMemberships, users } from './identity.js';
+import { operationalAreas } from './operational-areas.js';
 import { branches, companies } from './organizations.js';
 
 /**
@@ -63,6 +64,17 @@ export const cashRegisters = pgTable(
     name: text('name').notNull(),
     status: text('status').notNull().default('active'),
     deviceId: uuid('device_id'),
+    // TASK 16.15 — the generic "which operational area collected this
+    // money" grouping (`operational-areas.ts`), NEVER the same axis as
+    // `product_categories.operational_group` — see that table's own doc
+    // comment. Nullable and backfill-safe: an existing register (e.g. a
+    // real production "CAJA 1") simply has no area ("Sin área" in the UI)
+    // until a tenant deliberately organizes its branch — never fabricated
+    // historical attribution (§35). Branch consistency (this register's
+    // `branch_id` must equal the area's own `branch_id`) is an
+    // application-level check in `CashService`, the same pattern already
+    // used for `device_id`'s own branch consistency above.
+    operationalAreaId: uuid('operational_area_id'),
     createdBy: uuid('created_by').notNull(),
     updatedBy: uuid('updated_by').notNull(),
     version: bigint('version', { mode: 'bigint' })
@@ -82,6 +94,11 @@ export const cashRegisters = pgTable(
       columns: [table.companyId, table.branchId],
       foreignColumns: [branches.companyId, branches.id],
       name: 'cash_registers_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.operationalAreaId],
+      foreignColumns: [operationalAreas.companyId, operationalAreas.id],
+      name: 'cash_registers_operational_area_scope_fk',
     }).onDelete('restrict'),
     // `devices` has no `(company_id, branch_id, id)` unique constraint to
     // target (its own `branch_id` is nullable — no other FK in this
@@ -107,6 +124,7 @@ export const cashRegisters = pgTable(
     }).onDelete('restrict'),
     index('cash_registers_company_branch_idx').on(table.companyId, table.branchId),
     index('cash_registers_company_status_idx').on(table.companyId, table.status),
+    index('cash_registers_company_area_idx').on(table.companyId, table.operationalAreaId),
     check('cash_registers_code_nonblank_ck', sql`length(btrim(${table.code})) > 0`),
     check(
       'cash_registers_normalized_code_ck',
@@ -564,7 +582,96 @@ export const cashSessionPartialCloses = pgTable(
   ],
 );
 
+/**
+ * TASK 16.15 — narrows a member's already-existing branch access (via
+ * `user_roles`/`user_branch_access` in `identity.ts`) down to specific
+ * register(s) or operational area(s) within that branch. Lives here
+ * (rather than in `identity.ts`, alongside its sibling `user_branch_access`)
+ * purely to avoid a schema-file import cycle: this table's own FKs need
+ * `cashRegisters`/`operationalAreas`, both already defined above in this
+ * file, and `cash.ts` already imports `identity.ts` (`companyMemberships`)
+ * — the reverse direction would be circular. Cross-domain FKs living in
+ * whichever file needs them is already this codebase's own convention
+ * (e.g. `refunds.ts` imports `cashSessions` from here for its own
+ * `cash_session_id` FK).
+ *
+ * Semantics (mirroring `user_branch_access`'s own "presence narrows,
+ * absence means unrestricted" pattern, extended one level deeper): a
+ * membership with ZERO active rows here for a branch it's otherwise
+ * permitted to may operate ANY register in that branch — the exact
+ * pre-existing, backward-compatible behavior every register/session
+ * endpoint already has (§35 — an existing production register must never
+ * become unusable just because this table now exists). A membership with
+ * AT LEAST ONE active row is narrowed to exactly the registers those rows
+ * resolve to: either a direct `cash_register_id` grant, or every register
+ * currently in a granted `operational_area_id` (present AND future
+ * registers in that area — an area grant is a standing rule, never a
+ * frozen snapshot of today's registers). Exactly one of
+ * `operational_area_id`/`cash_register_id` is set per row — see
+ * `user_register_access_scope_ck`.
+ */
+export const userRegisterAccess = pgTable(
+  'user_register_access',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn().references(() => companies.id, { onDelete: 'restrict' }),
+    membershipId: uuid('membership_id').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id').notNull(),
+    operationalAreaId: uuid('operational_area_id'),
+    cashRegisterId: uuid('cash_register_id'),
+    status: text('status').notNull().default('active'),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    unique('user_register_access_company_id_id_uq').on(table.companyId, table.id),
+    foreignKey({
+      columns: [table.companyId, table.membershipId, table.userId],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.id, companyMemberships.userId],
+      name: 'user_register_access_membership_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'user_register_access_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.operationalAreaId],
+      foreignColumns: [operationalAreas.companyId, operationalAreas.id],
+      name: 'user_register_access_area_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.cashRegisterId],
+      foreignColumns: [cashRegisters.companyId, cashRegisters.id],
+      name: 'user_register_access_register_scope_fk',
+    }).onDelete('restrict'),
+    // One membership cannot be granted the exact same area/register twice
+    // — `coalesce` folds the "which target" pair into one comparable
+    // expression so both scope kinds share one uniqueness rule.
+    uniqueIndex('user_register_access_unique_target_uq')
+      .on(table.companyId, table.membershipId, table.operationalAreaId, table.cashRegisterId)
+      .where(sql`${table.status} = 'active'`),
+    index('user_register_access_membership_idx').on(table.companyId, table.membershipId),
+    index('user_register_access_branch_idx').on(table.companyId, table.branchId),
+    check('user_register_access_status_ck', sql`${table.status} in ('active', 'revoked')`),
+    check(
+      'user_register_access_revocation_ck',
+      sql`${table.status} <> 'revoked' or ${table.revokedAt} is not null`,
+    ),
+    check(
+      'user_register_access_scope_ck',
+      sql`(${table.operationalAreaId} is not null and ${table.cashRegisterId} is null)
+        or (${table.operationalAreaId} is null and ${table.cashRegisterId} is not null)`,
+    ),
+  ],
+);
+
 export type CashRegister = typeof cashRegisters.$inferSelect;
 export type CashSession = typeof cashSessions.$inferSelect;
 export type CashMovement = typeof cashMovements.$inferSelect;
 export type CashSessionPartialClose = typeof cashSessionPartialCloses.$inferSelect;
+export type UserRegisterAccess = typeof userRegisterAccess.$inferSelect;

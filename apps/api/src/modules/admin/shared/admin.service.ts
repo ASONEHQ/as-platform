@@ -927,6 +927,128 @@ export class AdministrationService {
     });
   }
 
+  // TASK 16.15 — narrows a user's already-granted branch access (via
+  // `changeBranchAccess`/role assignment above) down to specific
+  // register(s)/area(s) within that branch. Reuses `branch_access.manage`
+  // — the same admin capability as branch-scope grants above, never a
+  // new permission for what is semantically the identical action one
+  // level deeper (§25's own "reuse where semantics already fit"). See
+  // `user_register_access`'s own doc comment (`cash.ts`) for the exact
+  // "presence narrows, absence means unrestricted" scoping this grants.
+  public async grantRegisterAccess(
+    actor: AdminActor,
+    userId: string,
+    branchId: string,
+    target: { operationalAreaId: string; cashRegisterId?: undefined } | { operationalAreaId?: undefined; cashRegisterId: string },
+  ): Promise<Record<string, unknown>> {
+    requirePermission(this.authentication, actor.context, 'branch_access.manage');
+    requireBranchAccess(this.authentication, actor.context, branchId);
+    let access: Record<string, unknown> | undefined;
+    await this.repository.mutate({
+      companyId: actor.context.companyId,
+      branchId,
+      actorId: actor.context.userId,
+      requestId: actor.requestId,
+      correlationId: actor.correlationId,
+      action: 'user.register_access_granted',
+      entityType: 'user_register_access',
+      entityId: userId,
+      eventType: 'user.register_access_granted',
+      metadata: { user_id: userId, branch_id: branchId, ...target },
+      mutation: async (client) => {
+        const membership = (await client.query(
+          `select id,status from company_memberships where company_id=$1 and user_id=$2 for update`,
+          [actor.context.companyId, userId],
+        )) as { rows?: readonly { id: string; status: string }[] };
+        const membershipRow = membership.rows?.[0];
+        if (membershipRow === undefined) throw missing();
+        if (membershipRow.status !== 'active')
+          throw new AppError({
+            code: 'company_scope_mismatch',
+            message: 'The membership is not active.',
+            statusCode: 403,
+          });
+        if (target.operationalAreaId !== undefined) {
+          const area = (await client.query(
+            `select id from operational_areas where id=$1 and company_id=$2 and branch_id=$3 and status='active'`,
+            [target.operationalAreaId, actor.context.companyId, branchId],
+          )) as { rows?: readonly { id: string }[] };
+          if (area.rows?.[0] === undefined) throw missing();
+        } else {
+          const register = (await client.query(
+            `select id from cash_registers where id=$1 and company_id=$2 and branch_id=$3 and status<>'retired' and deleted_at is null`,
+            [target.cashRegisterId, actor.context.companyId, branchId],
+          )) as { rows?: readonly { id: string }[] };
+          if (register.rows?.[0] === undefined) throw missing();
+        }
+        const id = randomUUID();
+        await client.query(
+          `insert into user_register_access (id,company_id,membership_id,user_id,branch_id,operational_area_id,cash_register_id,status)
+           values ($1,$2,$3,$4,$5,$6,$7,'active')
+           on conflict (company_id,membership_id,operational_area_id,cash_register_id) where status='active' do nothing`,
+          [
+            id,
+            actor.context.companyId,
+            membershipRow.id,
+            userId,
+            branchId,
+            target.operationalAreaId ?? null,
+            target.cashRegisterId ?? null,
+          ],
+        );
+        access = {
+          id,
+          membership_id: membershipRow.id,
+          user_id: userId,
+          branch_id: branchId,
+          operational_area_id: target.operationalAreaId ?? null,
+          cash_register_id: target.cashRegisterId ?? null,
+        };
+      },
+    });
+    if (access === undefined)
+      throw new AppError({ code: 'internal_error', message: 'Register access was not granted.', statusCode: 500 });
+    return access;
+  }
+
+  public async revokeRegisterAccess(actor: AdminActor, id: string): Promise<void> {
+    requirePermission(this.authentication, actor.context, 'branch_access.manage');
+    await this.repository.mutate({
+      companyId: actor.context.companyId,
+      actorId: actor.context.userId,
+      requestId: actor.requestId,
+      correlationId: actor.correlationId,
+      action: 'user.register_access_revoked',
+      entityType: 'user_register_access',
+      entityId: id,
+      eventType: 'user.register_access_revoked',
+      metadata: { id },
+      mutation: async (client) => {
+        const result = (await client.query(
+          `update user_register_access set status='revoked',revoked_at=coalesce(revoked_at,now()),updated_at=now()
+           where id=$1 and company_id=$2 and status='active'`,
+          [id, actor.context.companyId],
+        )) as { rowCount?: number };
+        if ((result.rowCount ?? 0) === 0) throw missing();
+      },
+    });
+  }
+
+  public async listRegisterAccess(actor: AdminActor, userId: string): Promise<readonly Record<string, unknown>[]> {
+    requirePermission(this.authentication, actor.context, 'branch_access.manage');
+    const membershipRows = await this.repository.query<{ id: string }>(
+      `select id from company_memberships where company_id=$1 and user_id=$2`,
+      [actor.context.companyId, userId],
+    );
+    const membershipRow = membershipRows[0];
+    if (membershipRow === undefined) throw missing();
+    return this.repository.query(
+      `select id,branch_id,operational_area_id,cash_register_id,status,created_at,revoked_at
+       from user_register_access where company_id=$1 and membership_id=$2 order by branch_id, created_at`,
+      [actor.context.companyId, membershipRow.id],
+    );
+  }
+
   public async listDevices(actor: AdminActor): Promise<readonly Record<string, unknown>[]> {
     requirePermission(this.authentication, actor.context, 'device.read');
     return this.repository.query(

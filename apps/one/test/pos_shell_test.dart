@@ -28,7 +28,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('keeps all 33 canonical modules in their inspected order', () {
+  test('keeps all 35 canonical modules in their inspected order', () {
     // TASK 14.5 (Wave 3): 3 new, real capabilities with no legacy sidebar
     // counterpart (Variantes/Marca del Ticket/Asistente) were appended
     // within their natural groups — 25 (Wave 2 baseline) + 3 = 28.
@@ -38,9 +38,13 @@ void main() {
     // Sucursales (Administración) — 28 + 4 = 32.
     // TASK 16.7B added Impresora de Tickets (Sistema), inserted between
     // Marca del Ticket and Asistente, not appended at the very end — 32 +
-    // 1 = 33. The first/last module and the last module's group are
-    // unchanged.
-    expect(PosModule.values, hasLength(33));
+    // 1 = 33.
+    // TASK 16.15 added 2 more real, backend-wired capabilities, both
+    // inserted within their natural groups (never a new group): Consolidado
+    // de Sucursal (Caja y Finanzas, after Facturación CFDI) and Áreas
+    // Operativas (Administración, after Sucursales) — 33 + 2 = 35. The
+    // first/last module and the last module's group are unchanged.
+    expect(PosModule.values, hasLength(35));
     // Matches the canonical `.sb-item[data-nav]` order: Ventas first
     // (Punto de Venta) — not an app-specific "Inicio first" ordering.
     // Sistema no longer ends on Configuración specifically now that
@@ -51,7 +55,7 @@ void main() {
     expect(PosModule.values.first.label, 'Punto de Venta');
     expect(PosModule.values.last.label, 'Asistente');
     expect(PosModule.values.last.group, 'Sistema');
-    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(33));
+    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(35));
   });
 
   testWidgets('renders the canonical desktop shell without fake KPIs', (
@@ -5574,7 +5578,16 @@ void main() {
           findsOneWidget,
         );
         expect(salesGateway.calls, isEmpty);
-        expect(cashGateway.openSessionForBranchCalls, ['branch-id']);
+        // TASK 16.15: `_PosSaleState`'s own register-scope resolution
+        // (`_loadRegisterScope`) also calls `openSessionForBranch` once on
+        // mount, ONLY when the session is unrestricted (`permittedRegisterIds
+        // == null`, the default here) — to learn whether the branch has
+        // exactly one open register for its own silent-auto-select case. The
+        // Efectivo gate below makes its own, independent second call.
+        expect(cashGateway.openSessionForBranchCalls, [
+          'branch-id',
+          'branch-id',
+        ]);
       },
     );
 
@@ -5596,7 +5609,12 @@ void main() {
         await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
         await tester.pump();
         await tester.pumpAndSettle();
-        expect(cashGateway.openSessionForBranchCalls, ['branch-id']);
+        // TASK 16.15 — see the identical comment in the "is blocked" test
+        // immediately above for why this is 2 calls, not 1.
+        expect(cashGateway.openSessionForBranchCalls, [
+          'branch-id',
+          'branch-id',
+        ]);
         expect(salesGateway.calls, hasLength(1));
         // The cash dialog is the real next step — never the blocked notice.
         expect(
@@ -9208,6 +9226,7 @@ class _FakeSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) async {
     calls.add((
       branchId: branchId,
@@ -9448,6 +9467,7 @@ class _DelayedSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) {
     createCalls.add(branchId);
     return _completer.future;
@@ -9601,12 +9621,22 @@ class _FakeCashGateway implements PosCashGateway {
   final List<String> registersForBranchCalls = [];
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async {
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  }) async {
     registersForBranchCalls.add(branchId);
     return registers
         .where((candidate) => candidate.branchId == branchId)
         .toList(growable: false);
   }
+
+  @override
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  ) => Future.error(StateError('not used by these tests'));
 
   @override
   Future<PosCashRegister> createRegister({
@@ -9826,8 +9856,16 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
       Future.error(StateError('network failure'));
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
-      const [];
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  }) async => const [];
+  @override
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  ) => Future.error(UnimplementedError('assignOperationalArea not faked'));
   @override
   Future<PosCashRegister> createRegister({
     required String branchId,

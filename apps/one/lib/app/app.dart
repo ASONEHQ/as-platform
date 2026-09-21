@@ -8,6 +8,7 @@ import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_assistant_gateway.dart';
 import '../features/pos/pos_auth_gateway.dart';
 import '../features/pos/pos_branch_admin_gateway.dart';
+import '../features/pos/pos_branch_consolidation_gateway.dart';
 import '../features/pos/pos_brand_admin_gateway.dart';
 import '../features/pos/pos_catalog_admin_gateway.dart';
 import '../features/pos/pos_category_admin_gateway.dart';
@@ -19,6 +20,7 @@ import '../features/pos/pos_identity_admin_gateway.dart';
 import '../features/pos/pos_inventory_admin_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
+import '../features/pos/pos_operational_areas_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
@@ -73,6 +75,10 @@ class AsOneApp extends StatefulWidget {
     this.posBrandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.posCatalogAdminGateway = const EmptyPosCatalogAdminGateway(),
     this.posBranchAdminGateway = const EmptyPosBranchAdminGateway(),
+    // TASK 16.15: real, backend-wired commercial multi-register operations
+    // UI — see `PosShell`'s own field doc comment.
+    this.posBranchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
+    this.posOperationalAreasGateway = const EmptyPosOperationalAreasGateway(),
     super.key,
   });
 
@@ -150,6 +156,9 @@ class AsOneApp extends StatefulWidget {
   final PosBrandAdminGateway posBrandAdminGateway;
   final PosCatalogAdminGateway posCatalogAdminGateway;
   final PosBranchAdminGateway posBranchAdminGateway;
+  // TASK 16.15: see `PosShell`'s own field doc comment.
+  final PosBranchConsolidationGateway posBranchConsolidationGateway;
+  final PosOperationalAreasGateway posOperationalAreasGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -201,6 +210,8 @@ class _AsOneAppState extends State<AsOneApp> {
       posBrandAdminGateway: widget.posBrandAdminGateway,
       posCatalogAdminGateway: widget.posCatalogAdminGateway,
       posBranchAdminGateway: widget.posBranchAdminGateway,
+      posBranchConsolidationGateway: widget.posBranchConsolidationGateway,
+      posOperationalAreasGateway: widget.posOperationalAreasGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -244,6 +255,9 @@ class PlatformScope extends InheritedWidget {
     this.posBrandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.posCatalogAdminGateway = const EmptyPosCatalogAdminGateway(),
     this.posBranchAdminGateway = const EmptyPosBranchAdminGateway(),
+    // TASK 16.15: see `AsOneApp`'s own field doc comment.
+    this.posBranchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
+    this.posOperationalAreasGateway = const EmptyPosOperationalAreasGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -349,6 +363,10 @@ class PlatformScope extends InheritedWidget {
   final PosCatalogAdminGateway posCatalogAdminGateway;
   final PosBranchAdminGateway posBranchAdminGateway;
 
+  // TASK 16.15: see `AsOneApp`'s own field doc comment.
+  final PosBranchConsolidationGateway posBranchConsolidationGateway;
+  final PosOperationalAreasGateway posOperationalAreasGateway;
+
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
   /// dev-only affordances without a real activation/licensing contract.
@@ -394,6 +412,8 @@ class PlatformScope extends InheritedWidget {
       posBrandAdminGateway != oldWidget.posBrandAdminGateway ||
       posCatalogAdminGateway != oldWidget.posCatalogAdminGateway ||
       posBranchAdminGateway != oldWidget.posBranchAdminGateway ||
+      posBranchConsolidationGateway != oldWidget.posBranchConsolidationGateway ||
+      posOperationalAreasGateway != oldWidget.posOperationalAreasGateway ||
       environment != oldWidget.environment;
 }
 

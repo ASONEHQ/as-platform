@@ -279,7 +279,15 @@ class ApiClient {
     final request = http.Request(method, baseUrl.resolve(path))
       ..headers.addAll({
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
+        // TASK 16.15 — never sent for a bodyless request (e.g. every
+        // `deleteJson` call with no `body`): the backend's default Fastify
+        // JSON body parser rejects an empty body when `Content-Type:
+        // application/json` is present at all (`FST_ERR_CTP_EMPTY_JSON_
+        // BODY`), which was silently breaking every no-body DELETE in the
+        // app (revoke branch access, revoke a role assignment, revoke
+        // register access, ...) — caught live-clicking the new register-
+        // access revoke flow, not specific to it.
+        ...body == null ? const {} : {'Content-Type': 'application/json'},
         'X-Correlation-ID': createCorrelationId(),
         ...token == null ? const {} : {'Authorization': 'Bearer $token'},
         ...csrfToken == null ? const {} : {'X-CSRF-Token': csrfToken},

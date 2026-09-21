@@ -26,6 +26,21 @@ export interface AuthContext {
   readonly companyWideAccess?: boolean | undefined;
   readonly permissions: readonly string[];
   readonly permittedBranchIds: readonly string[];
+  // TASK 16.15 — optional, mirroring `branchId`/`deviceId`/
+  // `companyWideAccess` above (most call sites, especially test fixtures
+  // predating this task, never set it). `undefined`/`null` both mean "no
+  // register-level narrowing configured for this membership" — the
+  // pre-existing, backward-compatible default: any register in
+  // `permittedBranchIds` (see `user_register_access`'s own doc comment in
+  // `cash.ts` for the full "presence narrows, absence means unrestricted"
+  // semantics). A non-null (possibly empty) array means the membership
+  // has at least one active `user_register_access` row and is narrowed to
+  // exactly these register ids — computed live, every request, the same
+  // as `permissions`/`permittedBranchIds` above; never cached or
+  // persisted (TASK 16.10B's own freshness guarantee extended, not
+  // regressed). Real requests always get this field from
+  // `PostgresAuthRepository#resolveContext`, which never omits it.
+  readonly permittedRegisterIds?: readonly string[] | null | undefined;
 }
 
 export interface LoginInput {
@@ -85,7 +100,7 @@ export interface LoginChallengeCreation {
 
 export interface SessionCreation extends Omit<
   AuthContext,
-  'sessionId' | 'permissions' | 'permittedBranchIds'
+  'sessionId' | 'permissions' | 'permittedBranchIds' | 'permittedRegisterIds'
 > {
   readonly transportMode: TransportMode;
   readonly tokenGeneration: number;

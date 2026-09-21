@@ -13,6 +13,7 @@ import '../features/pos/pos_access_gateway.dart';
 import '../features/pos/pos_assistant_gateway.dart';
 import '../features/pos/pos_auth_gateway.dart';
 import '../features/pos/pos_branch_admin_gateway.dart';
+import '../features/pos/pos_branch_consolidation_gateway.dart';
 import '../features/pos/pos_brand_admin_gateway.dart';
 import '../features/pos/pos_catalog_admin_gateway.dart';
 import '../features/pos/pos_category_admin_gateway.dart';
@@ -24,6 +25,7 @@ import '../features/pos/pos_identity_admin_gateway.dart';
 import '../features/pos/pos_inventory_admin_gateway.dart';
 import '../features/pos/pos_loyalty_gateway.dart';
 import '../features/pos/pos_memberships_gateway.dart';
+import '../features/pos/pos_operational_areas_gateway.dart';
 import '../features/pos/pos_parties_gateway.dart';
 import '../features/pos/pos_payments_gateway.dart';
 import '../features/pos/pos_people_gateway.dart';
@@ -106,6 +108,8 @@ void bootstrap() {
       posBrandAdminGateway: ApiPosBrandAdminGateway(api),
       posCatalogAdminGateway: ApiPosCatalogAdminGateway(api),
       posBranchAdminGateway: ApiPosBranchAdminGateway(api),
+      posBranchConsolidationGateway: ApiPosBranchConsolidationGateway(api),
+      posOperationalAreasGateway: ApiPosOperationalAreasGateway(api),
     ),
   );
   authController.bootstrapSession();

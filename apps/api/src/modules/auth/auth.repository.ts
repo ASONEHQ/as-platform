@@ -116,6 +116,37 @@ export class PostgresAuthRepository implements AuthRepository {
     const permittedBranchIds = branches.rows.map((row) => row.id);
     if (branchId !== undefined && !permittedBranchIds.includes(branchId)) return null;
 
+    // TASK 16.15 — register-level narrowing, one layer below
+    // `permittedBranchIds` above; see `AuthContext.permittedRegisterIds`'s
+    // own doc comment for the exact "presence narrows, absence means
+    // unrestricted" semantics. A company-wide role holder is never
+    // narrowed (matches their own unrestricted branch access above).
+    let permittedRegisterIds: readonly string[] | null = null;
+    if (companyWide.rowCount !== 1 && permittedBranchIds.length > 0) {
+      const hasScope = await this.database.pool.query(
+        `select 1 from user_register_access where membership_id=$1 and company_id=$2 and status='active' limit 1`,
+        [input.membershipId, input.companyId],
+      );
+      if (hasScope.rowCount === 1) {
+        const scopedRegisters = await this.database.pool.query<{ id: string }>(
+          `select distinct cr.id from cash_registers cr
+           where cr.company_id=$2 and cr.branch_id=any($3::uuid[]) and cr.status<>'retired' and cr.deleted_at is null
+             and (
+               cr.id in (
+                 select cash_register_id from user_register_access
+                 where membership_id=$1 and company_id=$2 and status='active' and cash_register_id is not null
+               )
+               or cr.operational_area_id in (
+                 select operational_area_id from user_register_access
+                 where membership_id=$1 and company_id=$2 and status='active' and operational_area_id is not null
+               )
+             )`,
+          [input.membershipId, input.companyId, permittedBranchIds],
+        );
+        permittedRegisterIds = scopedRegisters.rows.map((row) => row.id);
+      }
+    }
+
     const permissions = await this.database.pool.query<{ code: string }>(
       `select distinct p.code from user_roles ur
        join roles r on r.id = ur.role_id and r.company_id = ur.company_id and r.status = 'active'
@@ -141,6 +172,7 @@ export class PostgresAuthRepository implements AuthRepository {
       ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
       permissions: permissions.rows.map((row) => row.code),
       permittedBranchIds,
+      permittedRegisterIds,
       companyWideAccess: companyWide.rowCount === 1,
       tokenGeneration: 0,
       transportMode: 'bearer',

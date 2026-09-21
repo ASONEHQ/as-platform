@@ -509,7 +509,17 @@ class _RecordingCashGateway implements PosCashGateway {
   final List<String> partialCloseCalls = [];
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async => [_fixtureCashRegister];
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  }) async => [_fixtureCashRegister];
+
+  @override
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  ) => Future.error(UnimplementedError('assignOperationalArea not faked'));
 
   @override
   Future<PosCashRegister> createRegister({
@@ -734,6 +744,7 @@ class _UnusedSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) => Future.error(StateError('not used'));
 
   @override

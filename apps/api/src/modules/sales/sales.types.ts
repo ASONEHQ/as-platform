@@ -105,6 +105,15 @@ export interface CreateSaleInput {
    * omitted — every line must still agree (see ADR-0009). */
   currencyCode?: string;
   deviceId?: string;
+  // TASK 16.15 — the register the operator is actually working at, set
+  // for ANY payment method (previously `sales.cash_register_id` was only
+  // ever stamped by `trySettleSale` at CASH-settlement time, leaving a
+  // card sale permanently unattributed to a register — see
+  // `SalesService.createSale`'s own doc comment on this gap). Optional
+  // and never overwritten by `trySettleSale`'s own cash-settlement stamp
+  // if a cash sale later settles the same value (§10 — "never silently
+  // post a sale to an arbitrary register").
+  cashRegisterId?: string;
   /** TASK 13.0 — Part G/H: optional. Walk-in sales keep working with no
    * customer attached; a supplied id must belong to the SAME company
    * (never trusted blindly) — see `SalesService.createSale`. */

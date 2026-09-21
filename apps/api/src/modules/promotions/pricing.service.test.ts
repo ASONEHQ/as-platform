@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from './promotions.types.js';
 import type { EvaluatePricingInput } from './pricing.service.js';
-import { evaluatePricing, formatMoney, isValidIanaTimezone } from './pricing.service.js';
+import { evaluatePricing, formatMoney, isValidIanaTimezone, localDateString, zonedDayBounds } from './pricing.service.js';
 
 const BRANCH_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_BRANCH_ID = '00000000-0000-4000-8000-000000000002';
@@ -1003,6 +1003,37 @@ describe('pricing engine (TASK 12.9)', () => {
     // would have accepted just fine).
     it('accepts a real IANA identifier regardless of casing, matching the runtime it defers to exactly', () => {
       expect(isValidIanaTimezone('america/mexico_city')).toBe(true);
+    });
+  });
+
+  describe('zonedDayBounds (TASK 16.15)', () => {
+    it('returns the exact UTC instants for local midnight and the following local midnight, for a fixed (no-DST) offset', () => {
+      // America/Mexico_City has observed UTC-6 year-round since 2022 (no
+      // more DST) — 2026-09-21 local midnight is 2026-09-21T06:00:00Z.
+      const { start, end } = zonedDayBounds('2026-09-21', 'America/Mexico_City');
+      expect(start.toISOString()).toBe('2026-09-21T06:00:00.000Z');
+      expect(end.toISOString()).toBe('2026-09-22T06:00:00.000Z');
+      expect(end.getTime() - start.getTime()).toBe(24 * 60 * 60 * 1000);
+    });
+
+    it('handles a DST transition day correctly — the window is NOT a naive +24h', () => {
+      // America/New_York: DST ends 2026-11-01 (falls back at 2am local,
+      // clocks repeat 1am-2am) — 2026-11-01 local midnight is 04:00 UTC
+      // (still EDT, UTC-4); 2026-11-02 local midnight is 05:00 UTC (now
+      // EST, UTC-5) — the real window is 25 hours, never a blind 24h.
+      const { start, end } = zonedDayBounds('2026-11-01', 'America/New_York');
+      expect(start.toISOString()).toBe('2026-11-01T04:00:00.000Z');
+      expect(end.toISOString()).toBe('2026-11-02T05:00:00.000Z');
+      expect(end.getTime() - start.getTime()).toBe(25 * 60 * 60 * 1000);
+    });
+
+    it('round-trips through localDateString — formatting `start` back in the same timezone reproduces the input label', () => {
+      const { start } = zonedDayBounds('2026-03-15', 'America/Mexico_City');
+      expect(localDateString(start, 'America/Mexico_City')).toBe('2026-03-15');
+    });
+
+    it('throws for a non-IANA timezone, the same "callers must gate with isValidIanaTimezone first" convention every function here already follows', () => {
+      expect(() => zonedDayBounds('2026-09-21', 'Mexico_City')).toThrow();
     });
   });
 });

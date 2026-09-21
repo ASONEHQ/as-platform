@@ -17,6 +17,8 @@ import 'pos_assistant_screen.dart';
 import 'pos_auth_gateway.dart';
 import 'pos_branch_admin_gateway.dart';
 import 'pos_branch_admin_screen.dart';
+import 'pos_branch_consolidation_gateway.dart';
+import 'pos_branch_consolidation_screen.dart';
 import 'pos_brand_admin_gateway.dart';
 import 'pos_brand_admin_screen.dart';
 import 'pos_catalog_admin_gateway.dart';
@@ -39,6 +41,8 @@ import 'pos_loyalty_gateway.dart';
 import 'pos_memberships_gateway.dart';
 import 'pos_models.dart';
 import 'pos_navigation.dart';
+import 'pos_operational_areas_gateway.dart';
+import 'pos_operational_areas_screen.dart';
 import 'pos_parties_gateway.dart';
 import 'pos_parties_models.dart';
 import 'pos_payments_gateway.dart';
@@ -56,6 +60,7 @@ import 'pos_receipt.dart';
 import 'pos_printer_settings_screen.dart';
 import 'pos_receipt_branding_screen.dart';
 import 'pos_refunds_gateway.dart';
+import 'pos_register_scope.dart';
 import 'pos_reports_gateway.dart';
 import 'pos_reports_screen.dart';
 import 'pos_rewards_gateway.dart';
@@ -119,6 +124,10 @@ class PosShell extends StatefulWidget {
     this.brandAdminGateway = const EmptyPosBrandAdminGateway(),
     this.catalogAdminGateway = const EmptyPosCatalogAdminGateway(),
     this.branchAdminGateway = const EmptyPosBranchAdminGateway(),
+    // TASK 16.15: real, backend-wired commercial multi-register operations
+    // UI — see `PosShell`'s own field doc comment below.
+    this.branchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
+    this.operationalAreasGateway = const EmptyPosOperationalAreasGateway(),
     // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
     this.pickProductImage,
     // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): real quick-switch PIN/QR
@@ -211,6 +220,14 @@ class PosShell extends StatefulWidget {
   final PosBrandAdminGateway brandAdminGateway;
   final PosCatalogAdminGateway catalogAdminGateway;
   final PosBranchAdminGateway branchAdminGateway;
+  // TASK 16.15: "Consolidado de sucursal" (read-only, per-register/area
+  // branch roll-up) — see `pos_branch_consolidation_gateway.dart` and
+  // `pos_branch_consolidation_screen.dart`.
+  final PosBranchConsolidationGateway branchConsolidationGateway;
+  // TASK 16.15: tenant-defined operational-area CRUD — see
+  // `pos_operational_areas_gateway.dart` and
+  // `pos_operational_areas_screen.dart`.
+  final PosOperationalAreasGateway operationalAreasGateway;
   // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
   final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
@@ -276,6 +293,15 @@ class _PosShellState extends State<PosShell> {
         widget.context.session.branchId != oldWidget.context.session.branchId;
     if (!branchChanged) return;
     saleSession.clearAll();
+    // TASK 16.15: a register belongs to exactly one branch — a previously
+    // selected register must never silently keep applying after the
+    // session switches to a different branch. `clearAll()` above
+    // deliberately does NOT touch this (see `SaleSession.cashRegisterId`'s
+    // own doc comment: it survives a plain new-ticket reset), so it is
+    // cleared here explicitly, the one place a genuine branch change is
+    // detected. `_PosSaleState`'s own branch-change handling re-resolves a
+    // fresh auto-selection/switcher for the new branch independently.
+    saleSession.setCashRegister(null);
     if (selected == PosModule.pos) {
       // `refresh: true` is load-bearing here — `PosReadController.
       // loadProducts`/`loadBalances` are a no-op once their state has
@@ -475,6 +501,8 @@ class _PosShellState extends State<PosShell> {
                             brandAdminGateway: widget.brandAdminGateway,
                             catalogAdminGateway: widget.catalogAdminGateway,
                             branchAdminGateway: widget.branchAdminGateway,
+                            branchConsolidationGateway: widget.branchConsolidationGateway,
+                            operationalAreasGateway: widget.operationalAreasGateway,
                             pickProductImage: widget.pickProductImage,
                             authGateway: widget.authGateway,
                             onQuickSwitchByPin: widget.onQuickSwitchByPin,
@@ -1488,6 +1516,8 @@ Future<void> _submitSaleForPayment(
       rewardEntitlementId: saleSession.rewardEntitlementId,
       // TASK 14.3 (Wave 1, Part B.4).
       note: saleSession.note,
+      // TASK 16.15 — see `SaleSession.cashRegisterId`'s own doc comment.
+      cashRegisterId: saleSession.cashRegisterId,
     );
     if (!context.mounted) return;
 
@@ -1665,6 +1695,8 @@ Future<void> _submitCashSaleForPayment(
       rewardEntitlementId: saleSession.rewardEntitlementId,
       // TASK 14.3 (Wave 1, Part B.4).
       note: saleSession.note,
+      // TASK 16.15 — see `SaleSession.cashRegisterId`'s own doc comment.
+      cashRegisterId: saleSession.cashRegisterId,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -1828,6 +1860,8 @@ Future<void> _submitZeroTotalSale(
       rewardEntitlementId: saleSession.rewardEntitlementId,
       // TASK 14.3 (Wave 1, Part B.4).
       note: saleSession.note,
+      // TASK 16.15 — see `SaleSession.cashRegisterId`'s own doc comment.
+      cashRegisterId: saleSession.cashRegisterId,
     );
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -2951,6 +2985,8 @@ class _Content extends StatelessWidget {
     required this.brandAdminGateway,
     required this.catalogAdminGateway,
     required this.branchAdminGateway,
+    required this.branchConsolidationGateway,
+    required this.operationalAreasGateway,
     this.pickProductImage,
     required this.authGateway,
     this.onQuickSwitchByPin,
@@ -3020,6 +3056,9 @@ class _Content extends StatelessWidget {
   final PosBrandAdminGateway brandAdminGateway;
   final PosCatalogAdminGateway catalogAdminGateway;
   final PosBranchAdminGateway branchAdminGateway;
+  // TASK 16.15: see `PosShell`'s own field doc comment.
+  final PosBranchConsolidationGateway branchConsolidationGateway;
+  final PosOperationalAreasGateway operationalAreasGateway;
   // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
   final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
@@ -3138,6 +3177,10 @@ class _Content extends StatelessWidget {
                   PosModule.users => PosUserAdministrationScreen(
                     context: this.context,
                     gateway: identityAdminGateway,
+                    // TASK 16.15: populates "Otorgar acceso a caja/área"'s
+                    // own area/register pickers.
+                    areasGateway: operationalAreasGateway,
+                    cashGateway: cashGateway,
                   ),
                   PosModule.history => _SalesHistory(
                     context: this.context,
@@ -3320,6 +3363,20 @@ class _Content extends StatelessWidget {
                   PosModule.branches => PosBranchAdminScreen(
                     context: this.context,
                     branchAdminGateway: branchAdminGateway,
+                  ),
+                  // TASK 16.15: "Consolidado de sucursal" — read-only,
+                  // gated internally by `branch_consolidation.read`.
+                  PosModule.branchConsolidation => PosBranchConsolidationScreen(
+                    context: this.context,
+                    gateway: branchConsolidationGateway,
+                  ),
+                  // TASK 16.15: tenant-defined operational-area CRUD —
+                  // gated internally by `operational_area.read`/
+                  // `operational_area.manage`.
+                  PosModule.operationalAreas => PosOperationalAreasScreen(
+                    context: this.context,
+                    gateway: operationalAreasGateway,
+                    cashGateway: cashGateway,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -4055,6 +4112,89 @@ class _PosSaleState extends State<_PosSale> {
   // calls — see `_PosCobrarButton`'s own doc comment.
   final _cobrarButtonKey = GlobalKey<_PosCobrarButtonState>();
 
+  // TASK 16.15: register-aware POS flow — see `pos_register_scope.dart`'s
+  // own header doc comment for the full contract these three fields feed.
+  List<PosCashRegister> _branchRegisters = const [];
+  String? _singleOpenRegisterId;
+  String? _registerScopeBranchId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRegisterScope());
+  }
+
+  // Mirrors `_PosShellState.didUpdateWidget`'s own "a real branch change"
+  // detection exactly — a register set belongs to exactly one branch, so
+  // switching branches must always re-resolve from scratch, never keep
+  // showing the previous branch's registers/switcher.
+  @override
+  void didUpdateWidget(covariant _PosSale oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.context.session.branchId == oldWidget.context.session.branchId) {
+      return;
+    }
+    unawaited(_loadRegisterScope());
+  }
+
+  Future<void> _loadRegisterScope() async {
+    final branchId = widget.context.session.branchId;
+    _registerScopeBranchId = branchId;
+    if (branchId == null) {
+      if (!mounted) return;
+      setState(() {
+        _branchRegisters = const [];
+        _singleOpenRegisterId = null;
+      });
+      return;
+    }
+    List<PosCashRegister> registers;
+    try {
+      registers = await widget.cashGateway.registersForBranch(branchId);
+    } on Object {
+      // Best-effort UX only — a failed load simply means no auto-select/
+      // switcher this time; sale creation still works, just without an
+      // explicit `cash_register_id` (identical to every sale before
+      // TASK 16.15).
+      return;
+    }
+    // Only fetched when unrestricted — see `resolvePosRegisterScope`'s own
+    // doc comment: `singleOpenRegisterId` is only ever consulted in that
+    // case, and this call is the SAME `openSessionForBranch` the "Efectivo"
+    // gate and CLIENTE-mode entry already use elsewhere in this file, so it
+    // never fabricates a new notion of "is a register open".
+    String? singleOpen;
+    if (widget.context.session.permittedRegisterIds == null) {
+      try {
+        final session = await widget.cashGateway.openSessionForBranch(branchId);
+        singleOpen = session?.cashRegisterId;
+      } on Object {
+        singleOpen = null;
+      }
+    }
+    // The branch may have changed again while these awaits were in
+    // flight — never apply a stale load for a branch the cashier has
+    // already navigated away from.
+    if (!mounted || _registerScopeBranchId != branchId) return;
+    setState(() {
+      _branchRegisters = registers;
+      _singleOpenRegisterId = singleOpen;
+    });
+    _applyAutoRegisterSelection();
+  }
+
+  void _applyAutoRegisterSelection() {
+    final scope = resolvePosRegisterScope(
+      permittedRegisterIds: widget.context.session.permittedRegisterIds,
+      branchRegisters: _branchRegisters,
+      singleOpenRegisterId: _singleOpenRegisterId,
+    );
+    final auto = scope.autoSelectedRegisterId;
+    if (auto != null && widget.saleSession.cashRegisterId != auto) {
+      widget.saleSession.setCashRegister(auto);
+    }
+  }
+
   @override
   void dispose() {
     searchFocusNode.dispose();
@@ -4260,6 +4400,12 @@ class _PosSaleState extends State<_PosSale> {
   @override
   Widget build(BuildContext context) {
     final allowed = widget.context.permissions.contains('catalog.read');
+    // TASK 16.15 — see `resolvePosRegisterScope`'s own doc comment.
+    final registerScope = resolvePosRegisterScope(
+      permittedRegisterIds: widget.context.session.permittedRegisterIds,
+      branchRegisters: _branchRegisters,
+      singleOpenRegisterId: _singleOpenRegisterId,
+    );
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
@@ -4307,6 +4453,18 @@ class _PosSaleState extends State<_PosSale> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // TASK 16.15: only ever rendered for a cashier whose
+          // `permittedRegisterIds` narrows them to MORE than one register
+          // — see `resolvePosRegisterScope`'s own doc comment. Never shown
+          // for a single-register tenant/cashier (auto-selected silently
+          // instead) or an unrestricted cashier (relies on the backend's
+          // own best-effort fallback rather than a forced picker).
+          if (registerScope.showSwitcher)
+            PosRegisterSwitcherBar(
+              registers: registerScope.eligibleRegisters,
+              selectedRegisterId: widget.saleSession.cashRegisterId,
+              onSelected: (id) => setState(() => widget.saleSession.setCashRegister(id)),
+            ),
           Expanded(
             child: !allowed
                 ? const _PermissionState()

@@ -445,19 +445,27 @@ export class SalesRepository {
       // TASK 14.3 (Wave 1, Part B.4) — optional, frozen at creation; see
       // `SaleRow.note`'s own doc comment.
       note: string | null;
+      // TASK 16.15 — set at CREATION time now, for any payment method
+      // (previously only ever set later, by `trySettleSale`, and only
+      // for a cash sale — see `CreateSaleInput.cashRegisterId`'s own doc
+      // comment). `trySettleSale`'s own UPDATE still runs unconditionally
+      // for a cash settlement and simply re-affirms the same value in the
+      // ordinary case.
+      cashRegisterId: string | null;
     },
   ): Promise<SaleRow> {
     const row = result<SaleDb>(
       await client.query(
         `insert into sales
-         (id,company_id,branch_id,device_id,customer_id,customer_display_name,sale_number,status,currency_code,
+         (id,company_id,branch_id,cash_register_id,device_id,customer_id,customer_display_name,sale_number,status,currency_code,
           subtotal,discount_total,tax_total,total,occurred_at,created_by,note,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,'pending_payment',$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,'pending_payment',$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
          returning ${SALE_COLUMNS}`,
         [
           input.id,
           input.companyId,
           input.branchId,
+          input.cashRegisterId,
           input.deviceId,
           input.customerId,
           input.customerDisplayName,

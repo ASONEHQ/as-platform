@@ -99,6 +99,14 @@ function tokenData(service: AuthService, result: TokenResult): Readonly<Record<s
       branch_id: result.context.branchId ?? null,
       device_id: result.context.deviceId ?? null,
       permitted_branch_ids: result.context.permittedBranchIds,
+      // TASK 16.15 — a convenience snapshot only, exactly like
+      // `permitted_branch_ids` above: never the enforcement source (every
+      // cash/sales/branch-consolidation endpoint re-resolves its own
+      // `permittedRegisterIds` fresh per request via `resolveContext`,
+      // per TASK 16.10B's live-permission-freshness rule) — just enough
+      // for the client to decide, right after login, whether to show a
+      // register switcher or auto-route a single-register cashier.
+      permitted_register_ids: result.context.permittedRegisterIds ?? null,
       company_wide_access: result.context.companyWideAccess ?? false,
       transport_mode: result.context.transportMode ?? 'bearer',
       refresh_generation: result.context.tokenGeneration ?? 0,
@@ -425,6 +433,13 @@ export function registerAuthRoutes(
         device_id: context.deviceId ?? null,
         expires_at: context.expiresAt.toISOString(),
         permitted_branch_ids: context.permittedBranchIds,
+        // TASK 16.15 — resolved fresh on every call to this endpoint
+        // (never cached), the same freshness guarantee `permitted_branch_
+        // ids` already has — the client is expected to re-poll this
+        // endpoint (not trust an old login-time snapshot indefinitely)
+        // when it needs an up-to-date register scope, e.g. after an admin
+        // changes a cashier's grants mid-shift.
+        permitted_register_ids: context.permittedRegisterIds ?? null,
         company_wide_access: context.companyWideAccess ?? false,
         transport_mode: context.transportMode ?? 'bearer',
         refresh_generation: context.tokenGeneration ?? 0,

@@ -9,6 +9,7 @@ class SessionContext {
     required this.companyWideAccess,
     required this.expiresAt,
     this.branchId,
+    this.permittedRegisterIds,
   });
 
   final String id;
@@ -18,6 +19,16 @@ class SessionContext {
   final List<String> permittedBranchIds;
   final bool companyWideAccess;
   final DateTime expiresAt;
+  // TASK 16.15 — a convenience UX snapshot only, exactly like
+  // `permittedBranchIds`: never the enforcement source (the backend
+  // re-resolves its own register scope fresh on every request). `null`
+  // means unrestricted — the cashier may use any register in their
+  // permitted branches (the default/backward-compatible case for every
+  // existing cashier/manager/owner). A non-null list narrows them to
+  // exactly those register ids. Used only to decide, client-side, whether
+  // to show a register switcher or auto-route a single-register cashier —
+  // see `PosRegisterScope` in `pos_register_scope.dart`.
+  final List<String>? permittedRegisterIds;
 }
 
 class UserSummary {

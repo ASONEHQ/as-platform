@@ -121,6 +121,13 @@ export const ownerPermissionCodes = Object.freeze([
   'cash_session.read',
   'cash_movement.create',
   'cash_session.close',
+  // TASK 16.15 — operational-area CRUD, register/area scope grants (via
+  // the existing `branch_access.manage`, extended in meaning rather than
+  // duplicated), and the branch-consolidated read view — the local dev
+  // owner exercises all three end to end.
+  'operational_area.read',
+  'operational_area.manage',
+  'branch_consolidation.read',
   // TASK 12.8: the local dev owner is also the account used to exercise
   // the returns/refunds lifecycle end to end (refundable-balance lookup,
   // create a refund, complete it), so it needs exactly the four reserved

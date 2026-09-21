@@ -59,6 +59,10 @@ export interface CashRegisterRow {
   name: string;
   status: CashRegisterStatus;
   deviceId: string | null;
+  // TASK 16.15 — the generic "operational area" this register belongs to
+  // (`operational_areas`); `null` = "Sin área", the honest default for
+  // every register that predates this task, never fabricated.
+  operationalAreaId: string | null;
   createdBy: string;
   updatedBy: string;
   version: bigint;

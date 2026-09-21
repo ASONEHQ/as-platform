@@ -16,6 +16,12 @@ class PosCashRegister {
     required this.code,
     required this.name,
     required this.status,
+    this.operationalAreaId,
+    // TASK 16.15: `version` is optional/defaulted — every pre-existing
+    // caller of `PosCashRegister.fromJson` (predating this task) still
+    // decodes correctly even if some future test fixture omits it; the
+    // backend's own `registerHttp()` always sends a real one.
+    this.version = 0,
   });
 
   factory PosCashRegister.fromJson(Map<String, Object?> json) =>
@@ -25,6 +31,8 @@ class PosCashRegister {
         code: json['code']! as String,
         name: json['name']! as String,
         status: json['status']! as String,
+        operationalAreaId: json['operational_area_id'] as String?,
+        version: json['version'] as int? ?? 0,
       );
 
   final String id;
@@ -32,6 +40,17 @@ class PosCashRegister {
   final String code;
   final String name;
   final String status;
+
+  /// TASK 16.15 — `null` is "Sin área": a genuine, fully-functional
+  /// unassigned state, never a reason to fabricate a fake area name. See
+  /// `pos_operational_areas_gateway.dart`'s own header doc comment for why
+  /// this app never hardcodes a tenant-specific area name.
+  final String? operationalAreaId;
+
+  /// TASK 16.15 — required as `If-Match` by
+  /// [PosCashGateway.assignOperationalArea]'s own optimistic-concurrency
+  /// contract (`cash.routes.ts`'s `operational-area-assignment` route).
+  final int version;
 }
 
 /// Part J — one bills/coins line from the AS POS V1-canonical close-drawer
@@ -829,8 +848,31 @@ List<String> canonicalCashDenominationsForCurrency(String currencyCode) {
 
 abstract interface class PosCashGateway {
   /// `GET /api/v1/cash-registers?branch_id=...` — the branch/register
-  /// selection step of "Abrir caja" (Part C).
-  Future<List<PosCashRegister>> registersForBranch(String branchId);
+  /// selection step of "Abrir caja" (Part C). TASK 16.15: [operationalAreaId]
+  /// is an optional server-side filter (`GET .../cash-registers?...
+  /// &operational_area_id=...`) — omit it to see every active register in
+  /// the branch regardless of area, exactly like every pre-TASK-16.15
+  /// caller of this method already does.
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  });
+
+  /// `PUT /api/v1/cash-registers/{id}/operational-area-assignment`
+  /// (`cash_register.manage`) — TASK 16.15. Mirrors the backend's own
+  /// device-assignment route shape exactly (`cash.routes.ts`'s own doc
+  /// comment: "mirrors the device-assignment route immediately above,
+  /// verbatim shape, one field different"): [operationalAreaId] `null`
+  /// clears a previously-assigned area back to "Sin área", a real
+  /// genuine unassigned state, never a reason to invent a fake area.
+  /// Requires `If-Match` carrying the register's own current [version]
+  /// (optimistic concurrency); throws [ApiException] honestly, including
+  /// a 409 on a stale version.
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  );
 
   /// `POST /api/v1/cash-registers` (E039) — TASK 15.1 Phase 6 gap fix:
   /// the backend route already existed and was already gated by
@@ -976,16 +1018,42 @@ class ApiPosCashGateway implements PosCashGateway {
       'one-cash-${DateTime.now().toUtc().microsecondsSinceEpoch}';
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async {
-    final envelope = await _client.getJson(
-      '/api/v1/cash-registers?branch_id=$branchId&status=active&limit=50',
-    );
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  }) async {
+    final query = <String, String>{
+      'branch_id': branchId,
+      'status': 'active',
+      'limit': '50',
+      if (operationalAreaId != null) 'operational_area_id': operationalAreaId,
+    };
+    final path = Uri(path: '/api/v1/cash-registers', queryParameters: query).toString();
+    final envelope = await _client.getJson(path);
     final data = envelope['data'];
     if (data is! List<Object?>) return const [];
     return data
         .whereType<Map<String, Object?>>()
         .map(PosCashRegister.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  ) async {
+    final envelope = await _client.putJson(
+      '/api/v1/cash-registers/$registerId/operational-area-assignment',
+      ifMatch: '"$version"',
+      body: {'operational_area_id': operationalAreaId},
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing cash register data.');
+    }
+    return PosCashRegister.fromJson(data);
   }
 
   @override
@@ -1283,8 +1351,17 @@ class EmptyPosCashGateway implements PosCashGateway {
   const EmptyPosCashGateway();
 
   @override
-  Future<List<PosCashRegister>> registersForBranch(String branchId) async =>
-      const [];
+  Future<List<PosCashRegister>> registersForBranch(
+    String branchId, {
+    String? operationalAreaId,
+  }) async => const [];
+
+  @override
+  Future<PosCashRegister> assignOperationalArea(
+    String registerId,
+    int version,
+    String? operationalAreaId,
+  ) => Future.error(StateError('No cash gateway is configured.'));
 
   @override
   Future<PosCashRegister> createRegister({

@@ -433,12 +433,14 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     Map<String, List<PosRolePermissionAssignment>> rolePermissionsByRole = const {},
     Map<String, PosUserDetail> userDetails = const {},
     List<BranchSummary> grantableBranches = const [],
+    Map<String, List<PosRegisterAccessGrant>> registerAccessByUser = const {},
   }) : _users = List.of(users),
        _roles = List.of(roles),
        _permissions = List.of(permissions),
        _rolePermissions = Map.of(rolePermissionsByRole),
        _userDetails = Map.of(userDetails),
-       _grantableBranches = List.of(grantableBranches);
+       _grantableBranches = List.of(grantableBranches),
+       _registerAccessByUser = Map.of(registerAccessByUser);
 
   final List<PosUser> _users;
   final List<PosRole> _roles;
@@ -446,6 +448,7 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final Map<String, List<PosRolePermissionAssignment>> _rolePermissions;
   final Map<String, PosUserDetail> _userDetails;
   final List<BranchSummary> _grantableBranches;
+  final Map<String, List<PosRegisterAccessGrant>> _registerAccessByUser;
 
   int listUsersCalls = 0;
   int listRolesCalls = 0;
@@ -459,6 +462,9 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final List<({String userId, String branchId, String status, bool isDefault})> changeBranchAccessCalls = [];
   int listGrantableBranchesCalls = 0;
   String? listGrantableBranchesLastCompanyId;
+  final List<({String userId, String branchId, String? operationalAreaId, String? cashRegisterId})>
+  grantRegisterAccessCalls = [];
+  final List<({String userId, String id})> revokeRegisterAccessCalls = [];
 
   @override
   Future<List<PosUser>> listUsers() async {
@@ -675,6 +681,56 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     listGrantableBranchesCalls++;
     listGrantableBranchesLastCompanyId = companyId;
     return List.of(_grantableBranches);
+  }
+
+  @override
+  Future<PosRegisterAccessGrant> grantRegisterAccess(
+    String userId, {
+    required String branchId,
+    String? operationalAreaId,
+    String? cashRegisterId,
+  }) async {
+    grantRegisterAccessCalls.add((
+      userId: userId,
+      branchId: branchId,
+      operationalAreaId: operationalAreaId,
+      cashRegisterId: cashRegisterId,
+    ));
+    final grant = PosRegisterAccessGrant(
+      id: 'grant-${grantRegisterAccessCalls.length}',
+      branchId: branchId,
+      operationalAreaId: operationalAreaId,
+      cashRegisterId: cashRegisterId,
+      status: 'active',
+      userId: userId,
+    );
+    _registerAccessByUser[userId] = [...?_registerAccessByUser[userId], grant];
+    return grant;
+  }
+
+  @override
+  Future<List<PosRegisterAccessGrant>> listRegisterAccess(String userId) async =>
+      List.of(_registerAccessByUser[userId] ?? const []);
+
+  @override
+  Future<void> revokeRegisterAccess(String userId, String id) async {
+    revokeRegisterAccessCalls.add((userId: userId, id: id));
+    final existing = _registerAccessByUser[userId];
+    if (existing == null) return;
+    _registerAccessByUser[userId] = [
+      for (final grant in existing)
+        if (grant.id == id)
+          PosRegisterAccessGrant(
+            id: grant.id,
+            branchId: grant.branchId,
+            operationalAreaId: grant.operationalAreaId,
+            cashRegisterId: grant.cashRegisterId,
+            status: 'revoked',
+            userId: grant.userId,
+          )
+        else
+          grant,
+    ];
   }
 }
 

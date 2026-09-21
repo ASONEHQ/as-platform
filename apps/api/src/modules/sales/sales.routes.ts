@@ -48,6 +48,8 @@ interface SaleBody {
   branch_id: string;
   currency_code?: string;
   device_id?: string;
+  // TASK 16.15 — see `CreateSaleInput.cashRegisterId`'s own doc comment.
+  cash_register_id?: string;
   // TASK 13.0 — Part G/H: optional. Omitted entirely for "Venta sin
   // cliente" — a walk-in sale is not required to carry one.
   customer_id?: string;
@@ -340,6 +342,7 @@ export function registerSaleRoutes(
             branch_id: { type: 'string', format: 'uuid' },
             currency_code: { type: 'string', minLength: 3, maxLength: 3 },
             device_id: { type: 'string', format: 'uuid' },
+            cash_register_id: { type: 'string', format: 'uuid' },
             customer_id: { type: 'string', format: 'uuid' },
             items: {
               type: 'array',
@@ -421,6 +424,7 @@ export function registerSaleRoutes(
             branchId: request.body.branch_id,
             ...(request.body.currency_code === undefined ? {} : { currencyCode: request.body.currency_code }),
             ...(deviceId === undefined ? {} : { deviceId }),
+            ...(request.body.cash_register_id === undefined ? {} : { cashRegisterId: request.body.cash_register_id }),
             ...(request.body.customer_id === undefined ? {} : { customerId: request.body.customer_id }),
             ...(request.body.note === undefined ? {} : { note: request.body.note }),
             items: request.body.items.map((item) => ({ productId: item.product_id, quantity: item.quantity })),
@@ -440,6 +444,7 @@ export function registerSaleRoutes(
                   },
                 }),
           },
+          auth.permittedRegisterIds ?? null,
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
         return reply

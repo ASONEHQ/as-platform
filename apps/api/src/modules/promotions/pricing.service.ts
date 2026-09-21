@@ -200,6 +200,65 @@ export function localDateString(instant: Date, timezone: string): string {
   return `${year}-${month}-${day}`;
 }
 
+/** TASK 16.15 — the UTC instant range `[start, end)` covering ONE
+ * branch-local calendar day (`dateLabel`, `YYYY-MM-DD`) AS OBSERVED IN
+ * `timezone` — extending, never duplicating, the exact same `Intl`-based
+ * primitive `localDateString`/`localWeekdayAndTime` above already
+ * establish (no third-party timezone library, no hand-rolled UTC-offset
+ * table). Nothing in this codebase computed actual window INSTANTS from a
+ * branch's own timezone before this task — `dashboard.service.ts`'s own
+ * "today" is a client-supplied date string with naive UTC-midnight
+ * arithmetic (confirmed by forensic audit — never `isValidIanaTimezone`/
+ * `localDateString`), which is a different, weaker mechanism this
+ * function deliberately does not imitate.
+ *
+ * Algorithm: a UTC-midnight guess for `dateLabel` is reformatted back
+ * through `timezone` to read what LOCAL wall-clock instant it actually
+ * represents there; the difference between the guess and that wall clock
+ * is the zone's offset at that moment, which corrects the guess to the
+ * real UTC instant of `dateLabel`'s own local midnight. `end` repeats the
+ * same correction for the NEXT calendar day's own local midnight (never
+ * a blind `+24h`), so a DST transition inside the window still yields the
+ * exact real-world boundary, not a naive one that's off by an hour.
+ * Throws if `timezone` is not a real IANA zone — callers must gate with
+ * `isValidIanaTimezone` first, the same convention every function in this
+ * file already follows. */
+export function zonedDayBounds(dateLabel: string, timezone: string): { start: Date; end: Date } {
+  function localMidnightUtcInstant(label: string): Date {
+    const guess = new Date(`${label}T00:00:00.000Z`);
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(guess);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
+    const observedAsUtc = Date.UTC(
+      Number(get('year')),
+      Number(get('month')) - 1,
+      Number(get('day')),
+      Number(get('hour')) % 24,
+      Number(get('minute')),
+      Number(get('second')),
+    );
+    const offsetMs = guess.getTime() - observedAsUtc;
+    return new Date(guess.getTime() + offsetMs);
+  }
+  const start = localMidnightUtcInstant(dateLabel);
+  // Pure calendar arithmetic on the LABEL itself (never on a UTC instant
+  // derived above) — robust regardless of any DST offset change between
+  // the two days, since it never assumes "+24h" lands on the next
+  // calendar date in `timezone`.
+  const [year, month, day] = dateLabel.split('-').map(Number) as [number, number, number];
+  const nextDayLabel = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+  const end = localMidnightUtcInstant(nextDayLabel);
+  return { start, end };
+}
+
 function isPromotionScheduleEligible(
   promotion: PromotionRow,
   now: Date,

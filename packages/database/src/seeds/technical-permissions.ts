@@ -48,6 +48,24 @@ export const technicalPermissionCodes = [
   'cash_session.open',
   'cash_movement.create',
   'cash_session.close',
+  // TASK 16.15 — "operational area" (`operational_areas` — a generic,
+  // tenant-configured grouping of registers within a branch, e.g.
+  // Taquilla/Cafetería/Eventos for one tenant, Admissions/Food/Events for
+  // another; never a fixed set). Mirrors `cash_register.read`/
+  // `cash_register.manage`'s own read-vs-manage split exactly — a genuinely
+  // new record type, not an existing permission's semantics stretched to
+  // fit.
+  'operational_area.read',
+  'operational_area.manage',
+  // TASK 16.15 — "Consolidado de sucursal": a read-only, branch-wide
+  // aggregation across every register/area a tenant authorizes the actor
+  // to see (never a financial transaction of its own — see
+  // `BranchConsolidationService`'s own doc comment). Deliberately separate
+  // from `cash_session.read` (which already lets a cashier see their OWN
+  // session) — a cashier restricted to one register must never
+  // automatically gain visibility into the whole branch's cash position
+  // just because they can read their own drawer.
+  'branch_consolidation.read',
   'catalog.read',
   'category.manage',
   'product.manage',

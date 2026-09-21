@@ -129,6 +129,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             brandAdminGateway: PlatformScope.of(context).posBrandAdminGateway,
             catalogAdminGateway: PlatformScope.of(context).posCatalogAdminGateway,
             branchAdminGateway: PlatformScope.of(context).posBranchAdminGateway,
+            branchConsolidationGateway: PlatformScope.of(context).posBranchConsolidationGateway,
+            operationalAreasGateway: PlatformScope.of(context).posOperationalAreasGateway,
             authGateway: PlatformScope.of(context).posAuthGateway,
             // TASK 15.1 Phase 5: real PIN/QR quick-switch session
             // hand-off — `AuthController.quickSwitchByPin`/

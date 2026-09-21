@@ -229,6 +229,10 @@ class ApiAuthGateway implements AuthGateway {
       permittedBranchIds: _stringList(sessionData, 'permitted_branch_ids'),
       companyWideAccess: _boolean(sessionData, 'company_wide_access'),
       expiresAt: _date(sessionData, 'expires_at'),
+      permittedRegisterIds: _nullableStringList(
+        sessionData,
+        'permitted_register_ids',
+      ),
     );
     return AuthenticatedContext(
       session: session,
@@ -271,6 +275,10 @@ class ApiAuthGateway implements AuthGateway {
         permittedBranchIds: _stringList(sessionData, 'permitted_branch_ids'),
         companyWideAccess: _boolean(sessionData, 'company_wide_access'),
         expiresAt: _date(data, 'expires_at'),
+        permittedRegisterIds: _nullableStringList(
+          sessionData,
+          'permitted_register_ids',
+        ),
       ),
     );
     vault.replace(credentials.accessToken);
@@ -325,6 +333,18 @@ DateTime _date(Map<String, Object?> source, String key) {
 
 List<String> _stringList(Map<String, Object?> source, String key) {
   final value = source[key];
+  if (value is! List<Object?> || value.any((item) => item is! String)) {
+    throw FormatException('Invalid string list: $key');
+  }
+  return value.cast<String>().toList(growable: false);
+}
+
+// TASK 16.15 — `permitted_register_ids` is `null` (unrestricted) on every
+// existing session, so this must tolerate a JSON `null` where `_stringList`
+// above deliberately does not.
+List<String>? _nullableStringList(Map<String, Object?> source, String key) {
+  final value = source[key];
+  if (value == null) return null;
   if (value is! List<Object?> || value.any((item) => item is! String)) {
     throw FormatException('Invalid string list: $key');
   }

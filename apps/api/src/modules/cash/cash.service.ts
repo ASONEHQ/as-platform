@@ -301,14 +301,28 @@ export class CashService {
     context: CashMutationContext,
     branchIds: readonly string[],
     key: string,
-    input: { id?: string; branchId: string; code: string; name: string; deviceId?: string },
+    input: { id?: string; branchId: string; code: string; name: string; deviceId?: string; operationalAreaId?: string },
   ): Promise<{ value: CashRegisterRow; replayed: boolean }> {
     if (!branchIds.includes(input.branchId))
       throw new CashError('validation_error', 'The branch is not authorized for this actor.');
     const code = nonBlank(input.code, 'code');
     const name = nonBlank(input.name, 'name');
-    const normalized = { id: input.id ?? randomUUID(), branchId: input.branchId, code, name, deviceId: input.deviceId ?? null };
-    const requestHash = hash({ branchId: normalized.branchId, code, name, deviceId: normalized.deviceId, id: input.id ?? null });
+    const normalized = {
+      id: input.id ?? randomUUID(),
+      branchId: input.branchId,
+      code,
+      name,
+      deviceId: input.deviceId ?? null,
+      operationalAreaId: input.operationalAreaId ?? null,
+    };
+    const requestHash = hash({
+      branchId: normalized.branchId,
+      code,
+      name,
+      deviceId: normalized.deviceId,
+      operationalAreaId: normalized.operationalAreaId,
+      id: input.id ?? null,
+    });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -327,6 +341,14 @@ export class CashService {
             if ((device as { rows: unknown[] }).rows.length === 0)
               throw new CashError('validation_error', 'The device does not belong to this branch.');
           }
+          if (normalized.operationalAreaId !== null) {
+            const area = await client.query(
+              `select 1 from operational_areas where company_id=$1 and id=$2 and branch_id=$3 and status='active'`,
+              [context.companyId, normalized.operationalAreaId, normalized.branchId],
+            );
+            if ((area as { rows: unknown[] }).rows.length === 0)
+              throw new CashError('validation_error', 'The operational area does not belong to this branch.');
+          }
           const created = await this.repository.insertRegister(client, {
             id: normalized.id,
             companyId: context.companyId,
@@ -334,6 +356,7 @@ export class CashService {
             code: normalized.code,
             name: normalized.name,
             deviceId: normalized.deviceId,
+            operationalAreaId: normalized.operationalAreaId,
             actorId: context.actorId,
             timestamp: context.timestamp,
           });
@@ -400,6 +423,52 @@ export class CashService {
         branchId: updated.branchId,
         version: updated.version,
         payload: { register_id: updated.id, device_id: updated.deviceId, version: updated.version.toString() },
+      });
+      return updated;
+    });
+  }
+
+  // TASK 16.15 — mirrors `assignDevice` above verbatim: same version-
+  // locked update, same "the target must belong to this register's own
+  // branch" application-level check (a CHECK constraint can't reference
+  // another table), same audit shape. `null` clears the assignment back
+  // to "Sin área" — never destructive to the register itself.
+  public async assignOperationalArea(
+    context: CashMutationContext,
+    branchIds: readonly string[],
+    id: string,
+    expectedVersion: bigint,
+    operationalAreaId: string | null,
+  ): Promise<CashRegisterRow> {
+    return this.repository.transaction(async (client) => {
+      const current = await this.repository.lockRegister(client, context.companyId, id);
+      if (current === null || !branchIds.includes(current.branchId))
+        throw new CashError('resource_not_found', 'The register was not found.');
+      if (operationalAreaId !== null) {
+        const area = await client.query(
+          `select 1 from operational_areas where company_id=$1 and id=$2 and branch_id=$3 and status='active'`,
+          [context.companyId, operationalAreaId, current.branchId],
+        );
+        if ((area as { rows: unknown[] }).rows.length === 0)
+          throw new CashError('validation_error', 'The operational area does not belong to this branch.');
+      }
+      const updated = await this.repository.assignOperationalArea(client, context.companyId, id, expectedVersion, {
+        operationalAreaId,
+        timestamp: context.timestamp,
+        updatedBy: context.actorId,
+      });
+      await this.repository.auditAndPublish(client, context, {
+        action: 'cash_register.operational_area_assigned',
+        resourceType: 'cash_register',
+        resourceId: updated.id,
+        eventType: 'cash_register.operational_area_assigned',
+        branchId: updated.branchId,
+        version: updated.version,
+        payload: {
+          register_id: updated.id,
+          operational_area_id: updated.operationalAreaId,
+          version: updated.version.toString(),
+        },
       });
       return updated;
     });
@@ -498,10 +567,29 @@ export class CashService {
     );
   }
 
-  public async session(companyId: string, branchIds: readonly string[], id: string): Promise<CashSessionRow> {
+  // TASK 16.15 — the SAME "existing resource outside your scope reads as
+  // resource_not_found, never a distinct 403" convention `branchIds`
+  // already establishes just above, applied one level deeper. `null`
+  // (the default every pre-16.15 caller/test still gets) means no
+  // register-level narrowing at all — 100% backward compatible.
+  private assertRegisterScope(
+    sessionRow: { cashRegisterId: string },
+    permittedRegisterIds: readonly string[] | null,
+  ): void {
+    if (permittedRegisterIds !== null && !permittedRegisterIds.includes(sessionRow.cashRegisterId))
+      throw new CashError('resource_not_found', 'The session was not found.');
+  }
+
+  public async session(
+    companyId: string,
+    branchIds: readonly string[],
+    id: string,
+    permittedRegisterIds: readonly string[] | null = null,
+  ): Promise<CashSessionRow> {
     const value = await this.repository.session(companyId, id);
     if (value === null || !branchIds.includes(value.branchId))
       throw new CashError('resource_not_found', 'The session was not found.');
+    this.assertRegisterScope(value, permittedRegisterIds);
     return value;
   }
 
@@ -546,6 +634,7 @@ export class CashService {
       note?: string;
       category?: CashMovementCategory;
     },
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ value: CashMovementRow; replayed: boolean }> {
     const movementAmount = amount(input.amount, 'amount');
     const reasonCode = nonBlank(input.reasonCode, 'reason_code');
@@ -573,6 +662,7 @@ export class CashService {
           const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
           if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
             throw new CashError('resource_not_found', 'The session was not found.');
+          this.assertRegisterScope(sessionRow, permittedRegisterIds);
           if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
           const created = await this.repository.insertMovement(client, {
             id: input.id ?? randomUUID(),
@@ -630,6 +720,7 @@ export class CashService {
     cashSessionId: string,
     movementId: string,
     input: { reasonCode: string; note?: string },
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ value: CashMovementRow; replayed: boolean }> {
     const reasonCode = nonBlank(input.reasonCode, 'reason_code');
     const requestHash = hash({ cashSessionId, movementId, reasonCode, note: input.note ?? null });
@@ -646,6 +737,7 @@ export class CashService {
           const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
           if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
             throw new CashError('resource_not_found', 'The session was not found.');
+          this.assertRegisterScope(sessionRow, permittedRegisterIds);
           if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
           const original = await this.repository.lockMovement(client, context.companyId, sessionRow.id, movementId);
           if (original === null) throw new CashError('resource_not_found', 'The movement was not found.');
@@ -704,25 +796,42 @@ export class CashService {
     branchIds: readonly string[],
     cashSessionId: string,
     input: Parameters<CashRepository['listMovements']>[2],
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ items: CashMovementRow[]; nextCursor: string | null }> {
-    const sessionRow = await this.session(companyId, branchIds, cashSessionId);
+    const sessionRow = await this.session(companyId, branchIds, cashSessionId, permittedRegisterIds);
     return this.repository.listMovements(companyId, sessionRow.id, input);
   }
 
   // --- Summary / expected cash (Part H / E048) ----------------------------
 
-  public async summary(companyId: string, branchIds: readonly string[], cashSessionId: string): Promise<CashSessionSummary> {
-    const sessionRow = await this.session(companyId, branchIds, cashSessionId);
+  public async summary(
+    companyId: string,
+    branchIds: readonly string[],
+    cashSessionId: string,
+    permittedRegisterIds: readonly string[] | null = null,
+  ): Promise<CashSessionSummary> {
+    const sessionRow = await this.session(companyId, branchIds, cashSessionId, permittedRegisterIds);
     const movements = await this.repository.movementsForSession(companyId, sessionRow.id);
     // TASK 16.14A — live, not yet frozen; see `CashSessionSummary.
     // paymentMethodTotals`'s own doc comment. Window end is "now", not
     // `sessionRow.closedAt` (an open session has none) — the same
     // still-open-session live-preview shape `expectedCash` below already
     // has.
+    // TASK 16.15 — register-scoped, not branch-scoped: with two+ registers
+    // open in the same branch, a branch-wide query would attribute every
+    // OTHER register's card sales into THIS session's own totals. Safe to
+    // narrow now that `sales.cash_register_id` is populated at creation
+    // time for every payment method (previously only stamped at
+    // cash-settlement, which is why this was branch-scoped originally).
     const paymentMethodTotals =
       sessionRow.status === 'closed'
         ? (sessionRow.paymentMethodTotals ?? [])
-        : await this.repository.paymentMethodTotals(companyId, sessionRow.branchId, sessionRow.openedAt, new Date());
+        : await this.repository.paymentMethodTotalsForRegister(
+            companyId,
+            sessionRow.cashRegisterId,
+            sessionRow.openedAt,
+            new Date(),
+          );
     let expectedUnits = 0n;
     let cashSalesUnits = 0n;
     let cashSalesCount = 0;
@@ -809,6 +918,7 @@ export class CashService {
         note?: string;
       };
     },
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ value: CashSessionRow; replayed: boolean }> {
     const declaredClosingAmount = nonNegativeAmount(input.declaredClosingAmount, 'declared_closing_amount');
     const discrepancyReason = validateDiscrepancyReason(input.discrepancyReason);
@@ -848,6 +958,7 @@ export class CashService {
           const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
           if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
             throw new CashError('resource_not_found', 'The session was not found.');
+          this.assertRegisterScope(sessionRow, permittedRegisterIds);
           if (sessionRow.status === 'closed')
             throw new CashError('cash_session_closed', 'The session is already closed.');
           const denominationCounts = validateDenominationCounts(
@@ -922,9 +1033,13 @@ export class CashService {
             context.timestamp,
             localDateString(context.timestamp, branchTimezone),
           );
-          const paymentMethodTotals = await this.repository.paymentMethodTotals(
+          // TASK 16.15 — register-scoped (see the matching comment in
+          // `summary()` above): frozen at close time, so getting the scope
+          // wrong here would permanently bake another register's card
+          // sales into THIS register's immutable close snapshot.
+          const paymentMethodTotals = await this.repository.paymentMethodTotalsForRegister(
             context.companyId,
-            sessionRow.branchId,
+            sessionRow.cashRegisterId,
             sessionRow.openedAt,
             context.timestamp,
           );
@@ -1005,6 +1120,7 @@ export class CashService {
     branchIds: readonly string[],
     key: string,
     cashSessionId: string,
+    permittedRegisterIds: readonly string[] | null = null,
   ): Promise<{ value: CashSessionPartialCloseRow; replayed: boolean }> {
     const requestHash = hash({ cashSessionId, takenAt: context.timestamp.toISOString() });
     return this.repository.transaction((client) =>
@@ -1020,6 +1136,7 @@ export class CashService {
           const sessionRow = await this.repository.lockSession(client, context.companyId, cashSessionId);
           if (sessionRow === null || !branchIds.includes(sessionRow.branchId))
             throw new CashError('resource_not_found', 'The session was not found.');
+          this.assertRegisterScope(sessionRow, permittedRegisterIds);
           // A partial close only ever makes sense against a live, still-
           // open session — a `closing`/`closed` session already has its
           // own authoritative, permanent closure figures.

@@ -267,6 +267,13 @@
       "when": 1789997700670,
       "tag": "0037_loud_vin_gonzales",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790003965147,
+      "tag": "0038_melted_lady_mastermind",
+      "breakpoints": true
     }
   ]
 }

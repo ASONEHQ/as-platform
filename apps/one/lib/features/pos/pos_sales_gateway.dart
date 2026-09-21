@@ -220,6 +220,15 @@ abstract interface class PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    // TASK 16.15: which physical cash register this sale should be
+    // attributed to, for reconciliation/consolidation — see
+    // `pos_register_scope.dart` for how the caller resolves this. `null`
+    // reproduces the exact pre-TASK-16.15 request shape; the backend's own
+    // best-effort single-open-register fallback (`sales.routes.ts`) only
+    // ever applies when this is omitted, so a caller that already knows
+    // the register should always pass it explicitly rather than relying on
+    // that fallback.
+    String? cashRegisterId,
   });
 
   /// `GET /api/v1/sales/{sale_id}/receipt` — TASK 12.5B. A plain,
@@ -269,6 +278,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales',
@@ -284,6 +294,7 @@ class ApiPosSalesGateway implements PosSalesGateway {
         if (customerId != null) 'customer_id': customerId,
         if (rewardEntitlementId != null) 'reward_entitlement_id': rewardEntitlementId,
         if (note != null && note.isNotEmpty) 'note': note,
+        if (cashRegisterId != null) 'cash_register_id': cashRegisterId,
       },
     );
     final data = envelope['data'];
@@ -358,6 +369,7 @@ class EmptyPosSalesGateway implements PosSalesGateway {
     String? customerId,
     String? rewardEntitlementId,
     String? note,
+    String? cashRegisterId,
   }) => Future.error(StateError('No sales gateway is configured.'));
 
   @override

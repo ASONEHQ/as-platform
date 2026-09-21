@@ -60,7 +60,7 @@ function formatMoney(units: bigint): string {
 }
 
 const REGISTER_COLUMNS =
-  'id,company_id,branch_id,code,name,status,device_id,created_by,updated_by,version,created_at,updated_at,deleted_at';
+  'id,company_id,branch_id,code,name,status,device_id,operational_area_id,created_by,updated_by,version,created_at,updated_at,deleted_at';
 const SESSION_COLUMNS =
   'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,cash_sales_total,cash_sales_count,cash_in_total,cash_out_total,withdrawal_total,expense_total,external_income_total,cash_refund_total,cash_refund_count,payment_method_totals,operational_summary,discrepancy_reason,card_reconciliation,version,created_at,updated_at';
 const MOVEMENT_COLUMNS =
@@ -76,6 +76,7 @@ interface RegisterDb {
   name: string;
   status: string;
   device_id: string | null;
+  operational_area_id: string | null;
   created_by: string;
   updated_by: string;
   version: string;
@@ -164,6 +165,7 @@ function register(row: RegisterDb): CashRegisterRow {
     name: row.name,
     status: row.status as CashRegisterRow['status'],
     deviceId: row.device_id,
+    operationalAreaId: row.operational_area_id,
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     version: BigInt(row.version),
@@ -462,6 +464,10 @@ export class CashRepository {
       code: string;
       name: string;
       deviceId: string | null;
+      // TASK 16.15 — optional at creation, exactly like `deviceId` above;
+      // validated (if present) by the service layer to belong to the same
+      // branch before this insert ever runs.
+      operationalAreaId: string | null;
       actorId: string;
       timestamp: Date;
     },
@@ -469,8 +475,8 @@ export class CashRepository {
     const row = result<RegisterDb>(
       await client.query(
         `insert into cash_registers
-         (id,company_id,branch_id,code,normalized_code,name,status,device_id,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$8,$9,$9)
+         (id,company_id,branch_id,code,normalized_code,name,status,device_id,operational_area_id,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$9,$10,$10)
          returning ${REGISTER_COLUMNS}`,
         [
           input.id,
@@ -480,6 +486,7 @@ export class CashRepository {
           input.code.toLowerCase(),
           input.name,
           input.deviceId,
+          input.operationalAreaId,
           input.actorId,
           input.timestamp,
         ],
@@ -502,7 +509,15 @@ export class CashRepository {
   public async listRegisters(
     companyId: string,
     branchIds: readonly string[],
-    input: { limit: number; cursor?: string; branchId?: string; status?: string; deviceId?: string },
+    input: {
+      limit: number;
+      cursor?: string;
+      branchId?: string;
+      status?: string;
+      deviceId?: string;
+      operationalAreaId?: string;
+      registerIds?: readonly string[];
+    },
   ): Promise<{ items: CashRegisterRow[]; nextCursor: string | null }> {
     const values: unknown[] = [companyId, branchIds];
     const where = ['company_id=$1', 'branch_id=any($2::uuid[])', 'deleted_at is null'];
@@ -517,6 +532,17 @@ export class CashRepository {
     if (input.deviceId !== undefined) {
       values.push(input.deviceId);
       where.push(`device_id=$${String(values.length)}`);
+    }
+    if (input.operationalAreaId !== undefined) {
+      values.push(input.operationalAreaId);
+      where.push(`operational_area_id=$${String(values.length)}`);
+    }
+    // TASK 16.15 — narrows to a specific set of register ids, e.g. a
+    // register-scoped actor's own `permittedRegisterIds` (see
+    // `AuthContext`). Never used to WIDEN access beyond `branchIds` above.
+    if (input.registerIds !== undefined) {
+      values.push(input.registerIds);
+      where.push(`id=any($${String(values.length)}::uuid[])`);
     }
     if (input.cursor !== undefined) {
       values.push(input.cursor);
@@ -558,6 +584,26 @@ export class CashRepository {
          where company_id=$1 and id=$2 and version=$6
          returning ${REGISTER_COLUMNS}`,
         [companyId, id, input.deviceId, input.updatedBy, input.timestamp, expectedVersion.toString()],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new CashError('version_conflict', 'The register version changed.');
+    return register(row);
+  }
+
+  // TASK 16.15 — mirrors `assignDevice` verbatim, one column different.
+  public async assignOperationalArea(
+    client: CashTransaction,
+    companyId: string,
+    id: string,
+    expectedVersion: bigint,
+    input: { operationalAreaId: string | null; timestamp: Date; updatedBy: string },
+  ): Promise<CashRegisterRow> {
+    const row = result<RegisterDb>(
+      await client.query(
+        `update cash_registers set operational_area_id=$3,updated_by=$4,updated_at=$5,version=version+1
+         where company_id=$1 and id=$2 and version=$6
+         returning ${REGISTER_COLUMNS}`,
+        [companyId, id, input.operationalAreaId, input.updatedBy, input.timestamp, expectedVersion.toString()],
       ),
     ).rows[0];
     if (row === undefined) throw new CashError('version_conflict', 'The register version changed.');
@@ -654,6 +700,37 @@ export class CashRepository {
          where company_id=$1 and branch_id=$2 and status='open'
          order by opened_at asc`,
         [companyId, branchId],
+      ),
+    ).rows;
+    return rows.map(session);
+  }
+
+  /** TASK 16.15 — "Consolidado de sucursal": for each register in
+   * `registerIds`, the ONE session relevant to a business-date window —
+   * its currently OPEN session if it has one (regardless of when it was
+   * opened; an open drawer is always "now"), else its most recently
+   * CLOSED session whose `closed_at` falls inside `[windowStart, windowEnd)`,
+   * else no row at all (an honest "no session this business day," never
+   * fabricated). `distinct on` + this exact `order by` is what encodes
+   * "prefer open, else most-recent-closed-in-window" per register in one
+   * query — never a second, parallel branch-wide cash query that could
+   * double-count alongside `CashService.summary()`'s own per-session
+   * fold (see `BranchConsolidationService`'s own no-double-counting doc
+   * comment for the full proof). */
+  public async sessionsForRegistersInWindow(
+    companyId: string,
+    registerIds: readonly string[],
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<readonly CashSessionRow[]> {
+    if (registerIds.length === 0) return [];
+    const rows = result<SessionDb>(
+      await this.database.pool.query(
+        `select distinct on (cash_register_id) ${SESSION_COLUMNS} from cash_sessions
+         where company_id=$1 and cash_register_id=any($2::uuid[])
+           and (status='open' or (status='closed' and closed_at>=$3 and closed_at<$4))
+         order by cash_register_id, (status='open') desc, closed_at desc nulls last`,
+        [companyId, registerIds, windowStart, windowEnd],
       ),
     ).rows;
     return rows.map(session);
@@ -1377,6 +1454,73 @@ export class CashRepository {
          full outer join refunds_by_method r on r.method = s.method
          order by 1`,
         [companyId, branchId, windowStart, windowEnd],
+      ),
+    ).rows;
+    return rows.map((row) => {
+      const gross = moneyUnits(row.gross_sales_total);
+      const refunds = moneyUnits(row.refunds_total);
+      return {
+        method: row.method,
+        grossSalesTotal: formatMoney(gross),
+        refundsTotal: formatMoney(refunds),
+        netTotal: formatMoney(gross - refunds),
+        ticketCount: Number(row.ticket_count),
+      };
+    });
+  }
+
+  /** TASK 16.15 — the SAME per-method breakdown `paymentMethodTotals`
+   * above computes, but scoped to ONE register's own sales, never the
+   * whole branch. This is the load-bearing distinction for a multi-
+   * register branch: `paymentMethodTotals` (branch+window) is correct
+   * for a SINGLE register's own `summary()` when it's the only register
+   * transacting in that window (TASK 16.13/16.14's own original design
+   * point), but summing that branch-scoped figure once per register in a
+   * branch-CONSOLIDATED view would double- (or N-times-) count every
+   * OTHER register's own sales in the same window — exactly the failure
+   * mode TASK 16.15 §15 forbids. `sales.cash_register_id` (populated at
+   * creation for every payment method by this same task — see
+   * `SalesService.createSale`'s own doc comment) is what makes this
+   * genuinely possible; refunds have no register column of their own, so
+   * they're attributed via their ORIGINAL sale's register (`refunds.
+   * sale_id → sales.cash_register_id`), never the refund's own
+   * (register-less) branch scope. Used exclusively by
+   * `BranchConsolidationService` for an OPEN/`closing` register's live
+   * card figures — a CLOSED register instead reads its own frozen
+   * `payment_method_totals` column, never this query. */
+  public async paymentMethodTotalsForRegister(
+    companyId: string,
+    cashRegisterId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<readonly CashPaymentMethodTotal[]> {
+    const rows = result<{ method: string; gross_sales_total: string; refunds_total: string; ticket_count: string }>(
+      await this.database.pool.query(
+        `with sales_by_method as (
+           select p.payment_method as method, coalesce(sum(p.amount),0) as gross, count(*) as ticket_count
+           from payments p
+           join sales s on s.company_id=p.company_id and s.id=p.sale_id
+           where p.company_id=$1 and s.cash_register_id=$2 and p.captured_at is not null
+             and p.captured_at>=$3 and p.captured_at<=$4
+           group by p.payment_method
+         ),
+         refunds_by_method as (
+           select r.refund_method as method, coalesce(sum(r.total),0) as refunds
+           from refunds r
+           join sales s on s.company_id=r.company_id and s.id=r.sale_id
+           where r.company_id=$1 and s.cash_register_id=$2 and r.status='completed'
+             and r.completed_at>=$3 and r.completed_at<=$4
+           group by r.refund_method
+         )
+         select
+           coalesce(s.method, r.method) as method,
+           coalesce(s.gross,0) as gross_sales_total,
+           coalesce(r.refunds,0) as refunds_total,
+           coalesce(s.ticket_count,0) as ticket_count
+         from sales_by_method s
+         full outer join refunds_by_method r on r.method = s.method
+         order by 1`,
+        [companyId, cashRegisterId, windowStart, windowEnd],
       ),
     ).rows;
     return rows.map((row) => {
