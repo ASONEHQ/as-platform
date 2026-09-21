@@ -28,7 +28,9 @@ void main() {
 
     expect(html, contains('CORTE PARCIAL'));
     expect(html, contains('LA CAJA SIGUE ABIERTA'));
-    expect(html, isNot(contains('CUADRADO')));
+    // TASK 16.14 §11/§13 — neutral accounting language; the zero-
+    // discrepancy label is "SIN DIFERENCIA", never "CUADRADO".
+    expect(html, isNot(contains('SIN DIFERENCIA')));
     expect(html, isNot(contains('FALTANTE')));
     expect(html, isNot(contains('SOBRANTE')));
     expect(html, isNot(contains('Efectivo contado')));
@@ -37,7 +39,7 @@ void main() {
     expect(html, contains(r'$1430.00'));
   });
 
-  test('a final close renders counted/expected/difference and a CUADRADO/FALTANTE/SOBRANTE verdict', () {
+  test('a final close renders counted/expected/difference and a SIN DIFERENCIA/FALTANTE/SOBRANTE verdict', () {
     final shortage = buildCashCutHtml(
       isFinal: true,
       businessName: 'AS ONE Park',
@@ -86,7 +88,7 @@ void main() {
       discrepancyAmount: '0.0000',
       currencyCode: 'MXN',
     );
-    expect(balanced, contains('CUADRADO'));
+    expect(balanced, contains('SIN DIFERENCIA'));
   });
 
   test('renders the real denomination breakdown when supplied', () {
@@ -229,6 +231,81 @@ void main() {
         ),
       );
       expect(html, contains('No configurado'));
+    });
+  });
+
+  group('TASK 16.14 — commercial final close', () {
+    String buildFinal({
+      String? cashRefundTotal,
+      String? discrepancyReason,
+      List<CashCutLine>? paymentMethodLines,
+    }) => buildCashCutHtml(
+      isFinal: true,
+      businessName: 'AS ONE Park',
+      branchName: 'Puerta La Victoria',
+      registerName: 'Caja 1',
+      openedByName: 'Ana Cajera',
+      openedAt: DateTime.utc(2026, 9, 17, 9, 0),
+      closedByName: 'Ana Cajera',
+      closedAt: DateTime.utc(2026, 9, 17, 18, 0),
+      openingAmount: '500.0000',
+      cashSalesTotal: '150.0000',
+      cashSalesCount: 2,
+      externalIncomeTotal: '300.0000',
+      withdrawalTotal: '0.0000',
+      expenseTotal: '10.0000',
+      otherCashInTotal: '20.0000',
+      otherCashOutTotal: '0.0000',
+      expectedCash: '935.0000',
+      declaredClosingAmount: '940.0000',
+      discrepancyAmount: '5.0000',
+      currencyCode: 'MXN',
+      cashRefundTotal: cashRefundTotal,
+      discrepancyReason: discrepancyReason,
+      paymentMethodLines: paymentMethodLines,
+    );
+
+    test('omits "Devoluciones en efectivo" when there is no cash refund, and renders it when there is', () {
+      final withoutRefund = buildFinal(cashRefundTotal: '0.0000');
+      expect(withoutRefund, isNot(contains('Devoluciones en efectivo')));
+
+      final withRefund = buildFinal(cashRefundTotal: '25.0000');
+      expect(withRefund, contains('Devoluciones en efectivo'));
+      expect(withRefund, contains(r'-$25.00'));
+    });
+
+    test('renders the discrepancy reason directly under the verdict banner when supplied, omits it otherwise', () {
+      final withoutReason = buildFinal();
+      expect(withoutReason, isNot(contains('Motivo:')));
+
+      final withReason = buildFinal(discrepancyReason: 'Propina en efectivo no registrada.');
+      expect(withReason, contains('Motivo: Propina en efectivo no registrada.'));
+    });
+
+    test('renders "VENTAS POR MÉTODO DE PAGO" only when payment-method lines are supplied — never a fabricated line', () {
+      final withoutMethods = buildFinal();
+      expect(withoutMethods, isNot(contains('VENTAS POR MÉTODO DE PAGO')));
+
+      final withMethods = buildFinal(
+        paymentMethodLines: const [
+          CashCutLine('Efectivo', r'$125.00'),
+          CashCutLine('Tarjeta', r'$200.00'),
+        ],
+      );
+      expect(withMethods, contains('VENTAS POR MÉTODO DE PAGO'));
+      expect(withMethods, contains('Efectivo'));
+      expect(withMethods, contains(r'$125.00'));
+      expect(withMethods, contains('Tarjeta'));
+      expect(withMethods, contains(r'$200.00'));
+      // Never a fabricated "Transferencia" line — nothing in this
+      // scenario produced one, and this builder never invents one.
+      expect(withMethods, isNot(contains('Transferencia')));
+    });
+
+    test('uses neutral "SIN DIFERENCIA"/"FALTANTE"/"SOBRANTE" language — never "CUADRADO"', () {
+      final html = buildFinal();
+      expect(html, isNot(contains('CUADRADO')));
+      expect(html, contains('SOBRANTE')); // this fixture's own $5 surplus.
     });
   });
 }

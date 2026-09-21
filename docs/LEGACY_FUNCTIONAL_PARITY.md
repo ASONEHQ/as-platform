@@ -2992,6 +2992,454 @@ own spec required:
   before), but a from-the-live-app print render specifically was not
   re-confirmed visually in this task's own session.
 
+## TASK 16.14 — CERRAR CAJA: the complete commercial final close (2026-09-21)
+
+TASK 16.11/CASH COMMERCIAL CERTIFICATION already established the
+authoritative session lifecycle, expected-cash formula, denomination
+counting, and close-vs-close/movement concurrency. TASK 16.13/16.13A
+already established the "Resumen operativo" snapshot (Taquilla/
+Cafetería/Eventos) for the PARTIAL cut. This task brings that same rigor
+to the FINAL close specifically: a real financial breakdown, a genuine
+"Ventas por método de pago" summary, the operational snapshot, and an
+optional discrepancy reason — all frozen once, at close time, on the
+session row itself.
+
+### §1 — Legacy forensic findings (re-read of the canonical `AS POS V1.html`)
+
+| Legacy behavior | Evidence | Classification |
+|---|---|---|
+| Denomination-driven conteo (`calcTotalContado()`, `DENOMINACIONES`) | Real bills/coins array, live-summed into "Total contado" — no manual-total override existed at all | **A** — modern is a strict superset (denomination optional, manual total also allowed) |
+| `efectivoEsperado()` formula | `fondoInicial + ventas.efectivo − retiros − gastos + ingresos` | **A**, but... |
+| Refunds excluded from `efectivoEsperado()` | `turno().devoluciones` incremented at refund time but never read by the expected-cash formula — a cash refund never reduced the register's own "esperado" | **G — a real bug.** Modern's `cash_refund` movement (direction `-1`, TASK 12.8) already correctly nets this; this task adds §4's `cashRefundTotal` to make it visible, not to fix a new bug |
+| Blocking on discrepancy | `confirmarCierreCaja()` never inspected `dif` — close always succeeded regardless of size | **A** — modern's own behavior already matches (never invents a tolerance); this task's §12 discrepancy-reason field is additive, never blocking |
+| "Observaciones del cierre" (free-text note) | Real, optional `<textarea>`, stored in `historialCortes[].obs`, printed | **A** — the direct legacy precedent for this task's own `discrepancy_reason` |
+| Sales-by-payment-method breakdown (Efectivo/Tarjeta/Transferencia/QR) | Efectivo/Tarjeta/Transferencia genuinely tracked per sale; **QR always $0** — no UI ever sets `payMethod="qr"` | **A** (efectivo/tarjeta/transferencia) / **G** (QR — never reproduced) |
+| Partial-cut print always shows `totalContado:0, diferencia:0` | Hardcoded literal object in `corteParcial()`, regardless of any real count | **G** — not reproduced; modern's partial cut has no counted-cash concept at all (TASK 14.4), so there is nothing to fake |
+| Printed "IP"/"Equipo" telemetry | `Math.random()`-generated once at page load, printed as if real | **G** — not reproduced; modern's audit trail (`audit_log`) never fabricates device/network facts |
+| `historialCortes`/`bitacora` persistence | In-memory only — lost on page reload; only `negocio`/`usuarios`/`licencia` were ever saved to `localStorage` | **H** — modern's Postgres-backed `cash_sessions`/`audit_log` are categorically superior; the legacy's "lost on reload" defect is structurally impossible to reproduce |
+| `permisosPorRol.abrirCaja`/`.cerrarCaja` toggles | Defined in the UI but never actually consulted — the real gate was hardcoded `rol==='master'||'admin'` + a universal backdoor PIN (`2604`) | **G** — not reproduced; modern's `cash_session.close` permission is the one real, consulted gate (§16) |
+
+Full findings (including the `movsCaja[]`/`efectivoEsperado()` double-
+ledger inconsistency and the "Sucursal" print bug) are in the forensic
+audit this task began with; only the launch-relevant subset is repeated
+here.
+
+### §2 — Pre-task current-close architecture (what already existed)
+
+- **Backend** (`apps/api/src/modules/cash/`): `POST /api/v1/cash-sessions/
+  :id/closures` (E047) was already fully solid — idempotent (per-tenant
+  key + request-hash conflict detection), concurrency-safe (`SELECT ...
+  FOR UPDATE` + optimistic version columns), permission-gated
+  (`cash_session.close`), audited (`auditAndPublish`), and computed
+  `expected_closing_amount`/`discrepancy_amount` via the SAME generic
+  `cash_movements` ledger fold `summary()` uses — which, contrary to the
+  legacy, ALREADY correctly netted a `cash_refund` movement (direction
+  `-1`) into that fold. What it did NOT do: call `operationalSummary`
+  (TASK 16.13's snapshot builder — only `partialClose` did), compute or
+  persist any payment-method breakdown, or accept/persist a discrepancy
+  reason. `cash_sessions` had no columns for any of these.
+- **Flutter**: `_CloseCajaDialog` already had denomination counting AND a
+  manual-total fallback (superior to the legacy, which was denomination-
+  only). `_CloseResultDialog` showed only Efectivo esperado/contado/
+  diferencia — no financial block, no payment breakdown, no operational
+  summary. `_CutDetailDialog` (history) showed a THINNER set of fields
+  than the LIVE `_CajaCurrent` card (no Retiros/Gastos/Ingresos
+  externos). No discrepancy-reason input existed anywhere.
+- **Print** (`cash_cut_html.dart`): a single `buildCashCutHtml` already
+  handled both partial cuts and final closes (`isFinal`), already
+  hardened per TASK 16.9's thermal-print principles, and already
+  supported an optional operational-summary section — but a final
+  close's own print call never actually populated `operationalSummary`
+  at all (only a partial-cut print did), and there was no payment-method
+  section or discrepancy-reason line.
+
+### §3 — Exact commercial gaps found (and only these were built)
+
+1. No financial-block breakdown frozen on the closed session row
+   (Ventas efectivo/Entradas/Salidas/Retiros/Gastos/Ingresos externos/
+   Devoluciones efectivo) — only esperado/contado/diferencia existed.
+2. No "Ventas por método de pago" anywhere in the codebase — no query,
+   no model, no UI, no print section.
+3. No operational snapshot (Taquilla/Cafetería/Eventos) on a final
+   close — only on a partial cut.
+4. No discrepancy-reason field — request schema, persistence, UI, or
+   print.
+5. The final-close result dialog and the closed-session history detail
+   showed materially less than the live "Caja actual" card.
+6. A final-close print never showed the operational summary; a history
+   reprint of a final close never did either.
+
+### §4 — Financial invariant (unchanged, re-certified)
+
+`expected_closing_amount` remains computed EXCLUSIVELY from the
+immutable `cash_movements` ledger — `Σ(amount × direction)` where
+`direction ∈ {opening_float:+1, cash_sale:+1, cash_in:+1, cash_out:-1,
+cash_refund:-1}` — never from any of this task's new columns, never from
+`operational_summary`, never from `payment_method_totals`. `declared_
+closing_amount` remains client-submitted (what was physically counted);
+`discrepancy_amount = declared − expected`, computed server-side, never
+accepted as client input. This task adds a FROZEN, self-contained
+breakdown of that same fold's own named buckets (`cash_sales_total`,
+`cash_in_total`, `cash_out_total`, `withdrawal_total`, `expense_total`,
+`external_income_total`, and the newly-surfaced `cash_refund_total`/
+`cash_refund_count`) directly onto `cash_sessions`, purely additive and
+purely a materialization of numbers the fold already produced — never a
+second source of truth, never re-derivable to a different answer (the
+underlying movements are immutable once the session is closed, so a
+fresh recomputation would always agree byte-for-byte).
+
+### §5 — Payment-method semantics
+
+`payment_method_totals` (new, `cash_sessions.payment_method_totals`
+jsonb) is built by a NEW `CashRepository.paymentMethodTotals` query
+against `payments`/`refunds` directly — NEVER `cash_movements` — for the
+exact same `[opened_at, closed_at]` window `operationalSummary` already
+uses. `grossSalesTotal` filters on `captured_at is not null` (a
+deliberate choice: a fully-refunded payment transitions its own `status`
+to `reversed`, but `captured_at` is never cleared on that transition —
+see `PaymentRepository.updatePaymentStatus`'s own `coalesce($6,
+captured_at)` — so a refunded sale correctly stays visible in its own
+gross total rather than silently vanishing). `refundsTotal` sums
+`refunds.total` grouped by `refund_method` for `completed` refunds in
+the same window. `netTotal = grossSalesTotal − refundsTotal`. Only
+methods that genuinely occurred are ever returned — this codebase's real
+`payments.payment_method` values are `cash | card_terminal |
+card_manual | other`; there is **no `transfer` value at all**. The POS's
+own "Transfer" payment button (`pos_shell.dart`'s `_PosPayGrid`) is a
+documented no-op (a read-only notice, never a functional tender), so no
+sale in this codebase can ever actually be tendered as a transfer — this
+task's own scenario substitutes a second `card_manual` line rather than
+fabricate one, and the UI/print never invent a "Transferencia" row.
+
+This is explicitly a DIFFERENT figure from `expected_cash`: a card sale
+never posts a `cash_movements` row at all (only a `cash`-tendered
+payment ever touches the drawer), so "Efectivo esperado" and "Ventas por
+método de pago → Efectivo" answer different questions from different
+tables — the UI/print keep them in visually separate sections with
+distinct headings ("FINANCIERO"/arqueo vs. "VENTAS POR MÉTODO DE PAGO")
+so they can never be misread as the same number.
+
+### §6 — Refund semantics
+
+Cash refunds were ALREADY correct before this task (unlike the legacy):
+`RefundsService.completeRefund` posts a `cash_refund` movement
+(`cashMovementDirection.cash_refund = -1`) ONLY for `refund_method
+='cash'`, uniquely indexed (`cash_movements_refund_reference_uq`) so a
+refund can never be double-counted. A `card_terminal`/`card_manual`/
+`other` refund posts NO drawer movement at all (correctly — it never
+touched the drawer) — its only durable effect is `payments.status
+='reversed'`. This task adds visibility, not correctness: `cash_refund_
+total`/`cash_refund_count` (from the same movement fold, now named) for
+the CASH side, and `payment_method_totals[].refundsTotal` (from
+`refunds.total` grouped by `refund_method`) for the informational,
+per-method view that correctly includes non-cash refunds too — proven by
+a dedicated test showing a card refund leaves `cash_refund_total`/
+`expected_cash` completely untouched while still appearing honestly in
+its own payment-method line.
+
+### §7 — Event-payment semantics
+
+Re-confirmed (already established by TASK 16.13's own forensics, and
+independently re-verified for this task): a party/event deposit
+ALWAYS posts a plain `cash_in` movement (`reference_type=
+'party_reservation'`) — there is no code path anywhere that lets an
+event payment be card/other-tendered (the route schema, `additionalProperties:
+false`, has no method field at all). An event deposit therefore NEVER
+appears in `payment_method_totals` (which only ever reads `payments`/
+`refunds`, tables an event payment never touches) — it is counted
+exactly once, in `cash_in_total`/`expected_cash` (as an ordinary cash-in)
+and, separately and purely informationally, in the operational
+snapshot's own `events.depositsCollected`. No double-counting path
+exists between the two.
+
+### §8 — Snapshot strategy (frozen, never recalculated)
+
+Every new column mirrors `cash_sessions`' own pre-existing convention
+(`declared_closing_amount`/`expected_closing_amount`/`discrepancy_
+amount`): computed ONCE inside `closeSession`'s transaction, persisted
+directly on the row, never recomputed on read. `operational_summary`
+reuses `CashRepository.operationalSummary` verbatim (the exact TASK
+16.13 builder, itself already reading `sale_items.operational_group_
+snapshot` — the TASK 16.13A sale-time-frozen classification — so a later
+Cafetería reclassification can never move a historical close, proven by
+this task's own test reassigning a category after close and re-reading
+the same figure unchanged). `payment_method_totals` is new but follows
+the identical pattern. Every new column is NULLABLE and can ONLY be
+non-null on a `closed` row (asymmetric check constraints mirroring
+`denomination_counts`' own precedent) — never a symmetric all-or-nothing
+group, specifically so a session closed before this migration remains a
+perfectly valid row with every new field `null`, never a constraint
+violation.
+
+### §9 — Schema / migrations
+
+Migration `packages/database/drizzle/0036_wide_menace.sql` (additive
+only, 12 new nullable columns on `cash_sessions` + matching check
+constraints, zero existing columns touched):
+`cash_sales_total`, `cash_sales_count`, `cash_in_total`, `cash_out_total`,
+`withdrawal_total`, `expense_total`, `external_income_total`,
+`cash_refund_total`, `cash_refund_count`, `payment_method_totals` (jsonb),
+`operational_summary` (jsonb), `discrepancy_reason` (text).
+
+### §10 — Close UX implemented
+
+`_CloseCajaDialog` gains a live, client-side-only "esperado/contado/
+diferencia" preview (`Faltante`/`Sobrante`/`Sin diferencia` — neutral
+accounting language, never "Cuadrado") that updates as the cashier types
+or picks denominations, BEFORE confirming — and an optional "Motivo de
+la diferencia" text field, always available, never required (the
+backend never conditions the close on its presence or on the size of
+any eventual discrepancy). `_CloseResultDialog` ("Caja cerrada") now
+shows Caja/Sucursal/Cajero/Apertura/Cierre, the full financial block,
+the discrepancy reason (when present), "Ventas por método de pago", and
+the operational snapshot — reusing one new shared widget,
+`_CommercialCloseSummary`, so the result dialog and the history detail
+view can never quietly drift into two different renderings of the same
+underlying frozen row.
+
+### §11 — Denomination behavior
+
+Unchanged (already correct, already currency-aware via
+`canonicalCashDenominationsForCurrency`, already backend-validated to
+sum exactly to `declared_closing_amount`) — this task adds nothing here
+beyond keeping it working alongside the new preview/reason fields.
+
+### §12 — Discrepancy / reason behavior
+
+`discrepancy_reason` (new, optional, text): accepted by `POST .../
+closures` (`minLength: 1, maxLength: 1000` at the HTTP layer; server-
+side `trim()` + reject-blank-after-trim in `CashService`), folded into
+the idempotency request hash (a retry with a DIFFERENT reason under the
+same key is a genuine `idempotency_conflict`, never a silent overwrite),
+included in the `cash_session.closed` audit payload. Never required,
+never gates the close, never a fabricated tolerance.
+
+### §13 — Final result screen
+
+"Caja cerrada" — see §10. Actions: `Imprimir` / `Entendido`, unchanged,
+no fake actions added.
+
+### §14 — Payment-method summary
+
+See §5. Rendered as its own labeled section, human-readable method names
+(`Efectivo`/`Tarjeta`/`Tarjeta (manual)`/`Otro` — `posPaymentMethodLabel`,
+never a raw `card_manual` string shown to an operator), amounts right-
+aligned via the same `_CajaInfoRow` every other financial line uses.
+
+### §15 — Operational summary
+
+Reused verbatim from TASK 16.13/16.13A (`_OperationalSummarySection`) —
+now also rendered for a FINAL close (previously partial-cut only).
+Subset semantics unchanged: Cafetería is a labeled SUBSET of Taquilla,
+never additive.
+
+### §16 — Cafetería no-double-count proof
+
+Not re-derived — this task reuses the exact TASK 16.13A frozen-snapshot
+query, so the same proof already certified there (a $100 Taquilla + $50
+Cafetería shift shows Taquilla $150 / Cafetería $50, never $200) applies
+identically to a final close. This task's own deterministic scenario
+(§23 below) re-confirms it end-to-end through a real `closeSession` call.
+
+### §17 — Event snapshot result
+
+See §7. `events.reservationsCreated`/`depositsCollected`/etc. now also
+appear on a final close's own frozen `operational_summary`, identical
+shape and semantics to the partial-cut version, verified by this task's
+own integration test (a $300 event deposit shows in `operational_
+summary.events.depositsCollected` and in `cash_in_total`/`expected_cash`,
+never in `payment_method_totals`, never doubled).
+
+### §18 — Idempotency / concurrency result
+
+Re-certified, not re-invented: the pre-existing per-tenant idempotency
+key (now covering `discrepancy_reason` too — a different reason under
+the same key correctly conflicts, proven by a new test) and the
+pre-existing row-lock + optimistic-version guard (`cash-concurrency.
+integration.test.ts`, unmodified and still passing) together guarantee
+exactly one authoritative `open → closing → closed` transition, no
+duplicate audit entries, no duplicate snapshots — this task added new
+columns to the SAME single UPDATE statement the close already performs,
+never a second write.
+
+### §19 — Closed-session mutation protections
+
+Unchanged, re-certified by the existing (still-passing) test suite: no
+new movement, no new partial cut, no second close — all already
+rejected by the pre-existing `status !== 'open'` / `status === 'closed'`
+guards, all row-locked against a concurrent close.
+
+### §20 — Permissions
+
+No new permission introduced (per this task's own instruction). `POST
+.../closures` remains gated on `cash_session.close`, unchanged, still
+compatible with the TASK 16.10B system-role permission sync (this task
+touched zero permission-catalog code).
+
+### §21 — Audit evidence
+
+`cash_session.closed`'s existing `auditAndPublish` payload gains one new
+field, `discrepancy_reason` (alongside the pre-existing `declared_
+closing_amount`/`expected_closing_amount`/`discrepancy_amount`/
+`denomination_counts`/`version`) — no sensitive/auth data, purely the
+operator's own optional text.
+
+### §22 — History / reload result
+
+`_CutDetailDialog` now renders the SAME `_CommercialCloseSummary` widget
+a closed session's result dialog uses, for any closed session reopened
+from "Cortes de caja" — verified to survive a fresh, independent DB
+client re-read (a new `CashRepository`/`CashService` instance, simulating
+a completely separate process) in this task's own integration test.
+
+### §23 — Reprint result
+
+`_CutDetailDialog._print()` (previously the one print call site that
+NEVER passed `operationalSummary` even for a final close — a real gap
+this task closes) now sources `operationalSummary`/`paymentMethodLines`/
+`cashRefundTotal`/`discrepancyReason` straight from the persisted,
+frozen `session`, exactly matching what `_printCashCut`'s own live-close
+print already sources — a reprint is therefore byte-for-byte the same
+commercial content as the original close, never recomputed from live
+catalog/event data.
+
+### §24 — Print-preview result
+
+`buildCashCutHtml` gains three new optional parameters (`cashRefundTotal`,
+`discrepancyReason`, `paymentMethodLines`) rendering, respectively: a
+"Devoluciones en efectivo" line in the existing cash-truth table (only
+when non-zero), a "Motivo: …" line directly under the verdict banner,
+and a new, visually separate "VENTAS POR MÉTODO DE PAGO" section — all
+covered by new unit tests in `cash_cut_html_test.dart` (11 new
+assertions across 4 new tests). The verdict label is now "SIN
+DIFERENCIA" (never "CUADRADO") throughout, matching this task's own
+neutral-accounting-language instruction.
+
+### §25 — Physical 80mm status
+
+Unchanged from TASK 16.9/16.13's own notes: never claimed, never
+attempted here — browser print-preview only.
+
+### §26 — Deterministic E2E — exact numbers used
+
+Real domain flows (no direct table inserts), all amounts MXN:
+
+```
+Opening float:                    500.0000
+Cash Taquilla sale:                100.0000  (cash_sale, cash movement)
+Cash Cafetería sale:                50.0000  (cash_sale, cash movement; Cafetería-classified category)
+Card sale (card_manual):           200.0000  (payments only, NEVER touches cash_movements)
+Manual cash in (category 'other'):  20.0000
+Manual cash out (category 'expense'): 10.0000
+Cash refund (partial, 50% of the
+  50.0000 Cafetería sale):          25.0000  (cash_refund movement, -1)
+Event/party cash deposit:          300.0000  (cash_in, reference_type='party_reservation')
+Partial cut taken mid-shift — confirmed NOT to mutate the session (status stays 'open')
+Expected cash = 500 + 100 + 50 + 20 + 300 − 10 − 25       = 935.0000
+Declared/counted (intentional $5 surplus):                = 940.0000
+Discrepancy = 940 − 935                                    = 5.0000
+Discrepancy reason: "Propina en efectivo no registrada como venta."
+```
+
+Note on the task's own suggested scenario: it lists a "Transfer sale:
+75" line. `payments.payment_method` has no `transfer` value in this
+codebase at all (`cash | card_terminal | card_manual | other` —
+confirmed by forensic audit; the POS's own Transfer button is a
+documented no-op). Rather than fabricate a payment method nothing in
+this codebase can actually produce, the deterministic test substitutes
+its second tender with a `card_manual` sale and documents the
+substitution inline.
+
+Result, exactly as produced by a real `CashService.closeSession` call
+(backend integration test, `cash-final-close-commercial.integration.
+test.ts`):
+- `cashSalesTotal: 150.0000 (2)`, `cashInTotal: 320.0000`,
+  `cashOutTotal: 10.0000`, `expenseTotal: 10.0000`,
+  `cashRefundTotal: 25.0000 (1)`.
+- `paymentMethodTotals`: `cash {gross 150.0000, refunds 25.0000, net
+  125.0000, tickets 2}`, `card_manual {gross 200.0000, refunds 0, net
+  200.0000, tickets 1}` — no `transfer` line.
+- `operationalSummary.pos.grossSales: 350.0000` (100+50+200 — ALL sales
+  regardless of tender, TASK 16.13's own established semantics),
+  `netSales: 325.0000` (350−25 refund); `cafeteria.netSales: 25.0000`
+  (50−25, the refunded Cafetería sale, correctly a SUBSET); `events.
+  depositsCollected: 300.0000`.
+- Reassigning the Cafetería category AFTER close and re-reading the
+  session shows `cafeteria.netSales` unchanged at `25.0000` — proven in
+  the same test.
+- History reload (fresh DB client), tenant isolation (`resource_not_
+  found` for another company), post-close guards (movement/partial-
+  close/second-close all rejected) all re-confirmed in the same test.
+
+### §27 — Tests / results
+
+- **Database**: 42/42 passing (journal length bumped 36 → 37 for
+  `0036_wide_menace`).
+- **Backend**: full suite re-run sequentially with a real
+  `DATABASE_TEST_URL` — **1269/1285 passing, 15 pre-existing skips, 0
+  real failures** (one unrelated `product-options.integration.test.ts`
+  timeout reproduced as flaky-under-load and confirmed passing in
+  isolation — nothing to do with this task's own files). New file
+  `apps/api/src/modules/cash/cash-final-close-commercial.integration.
+  test.ts` (9 tests): the full deterministic scenario above; discrepancy-
+  reason persistence + idempotency-conflict-on-different-reason +
+  blank-reason rejection; a non-cash (card) refund's zero cash impact
+  alongside its honest payment-method visibility; branch isolation
+  (two branches, two registers, no cross-branch leak in either the
+  financial totals or the operational snapshot); old-close backward
+  compatibility (a manually-simulated pre-TASK-16.14 closed row reads
+  back with every new field honestly `null`).
+- **Flutter**: full suite — **all passing** (5 new tests in
+  `pos_shell_test.dart`'s new "CERRAR CAJA — complete commercial final
+  close" group: live diff preview, optional/never-required discrepancy
+  reason, reason round-trips into the result dialog, full financial/
+  payment-method rendering with real human labels, and the old-close
+  "not available" fallback; 4 new tests in `cash_cut_html_test.dart`'s
+  new "TASK 16.14" group covering the refund line, the reason line, the
+  payment-method section, and the neutral-language verdict). `flutter
+  analyze`: 156 issues — the exact pre-existing baseline, 0 new.
+  `flutter build web --release`: succeeds.
+
+### §28 — Files changed
+
+`packages/database/src/schema/cash.ts`,
+`packages/database/drizzle/0036_wide_menace.sql` (new),
+`packages/database/src/testing/schema.test.ts`,
+`apps/api/src/modules/cash/cash.types.ts`, `cash.repository.ts`,
+`cash.service.ts`, `cash.routes.ts`, `cash.routes.test.ts`,
+`cash-advanced.routes.test.ts`,
+`cash-final-close-commercial.integration.test.ts` (new),
+`apps/one/lib/features/pos/pos_cash_gateway.dart`, `pos_shell.dart`,
+`cash_cut_html.dart`, `apps/one/test/pos_shell_test.dart`,
+`apps/one/test/pos_shell_wave2_recovery_cash_test.dart`,
+`apps/one/test/cash_cut_html_test.dart`, this section.
+
+### §29 — Genuine, honest remaining limitations
+
+- Live-in-browser certification of the full deterministic scenario
+  (§26) through the actual Flutter app, including a real print preview,
+  is covered by this report's own §27 automated evidence, but a from-
+  the-browser walkthrough specific to THIS task should still be
+  performed and is documented separately in this task's own final
+  report rather than duplicated here.
+- Physical 80mm printer certification remains outstanding (unchanged
+  from TASK 16.9/16.13 — browser preview only, never claimed as
+  hardware-certified).
+- `payment_method_totals`/`operational_summary` on a final close read
+  the SAME `[opened_at, closed_at]` branch-window semantics TASK 16.13
+  established — meaning, exactly as already documented for the partial
+  cut, a concurrent second register open on the same branch during the
+  same window contributes to the OPERATIONAL/payment-method totals
+  (by design — they answer "how did the branch do," not "how did THIS
+  register do") but never to `expected_cash`/`discrepancy_amount`
+  (which remain strictly session-scoped via `cash_movements`). This is
+  the same, already-accepted TASK 16.13 design choice, not a new gap.
+- `cafeteria.available`'s live-query semantics (from TASK 16.13A) mean
+  the honest "not configured" flag on a STILL-OPEN session's live view
+  can differ from what a later close ends up freezing — a pre-existing,
+  already-documented characteristic, not something this task changes or
+  needs to re-solve.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

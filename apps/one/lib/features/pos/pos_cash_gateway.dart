@@ -70,10 +70,24 @@ class PosCashSession {
     this.expectedClosingAmount,
     this.discrepancyAmount,
     this.denominationCounts,
+    this.cashSalesTotal,
+    this.cashSalesCount,
+    this.cashInTotal,
+    this.cashOutTotal,
+    this.withdrawalTotal,
+    this.expenseTotal,
+    this.externalIncomeTotal,
+    this.cashRefundTotal,
+    this.cashRefundCount,
+    this.paymentMethodTotals,
+    this.operationalSummary,
+    this.discrepancyReason,
   });
 
   factory PosCashSession.fromJson(Map<String, Object?> json) {
     final rawDenominations = json['denomination_counts'];
+    final rawPaymentMethodTotals = json['payment_method_totals'];
+    final rawOperationalSummary = json['operational_summary'];
     return PosCashSession(
       id: json['id']! as String,
       branchId: json['branch_id']! as String,
@@ -96,6 +110,30 @@ class PosCashSession {
                 .map(PosCashDenominationCount.fromJson)
                 .toList(growable: false)
           : null,
+      // TASK 16.14 — the frozen commercial final-close snapshot. `null`
+      // for an open/closing session, or for any session closed before
+      // this field existed — never synthesized, and every field below
+      // is independently optional for that same reason (a real backend
+      // response predating this task simply omits them all).
+      cashSalesTotal: json['cash_sales_total'] as String?,
+      cashSalesCount: json['cash_sales_count'] as int?,
+      cashInTotal: json['cash_in_total'] as String?,
+      cashOutTotal: json['cash_out_total'] as String?,
+      withdrawalTotal: json['withdrawal_total'] as String?,
+      expenseTotal: json['expense_total'] as String?,
+      externalIncomeTotal: json['external_income_total'] as String?,
+      cashRefundTotal: json['cash_refund_total'] as String?,
+      cashRefundCount: json['cash_refund_count'] as int?,
+      paymentMethodTotals: rawPaymentMethodTotals is List<Object?>
+          ? rawPaymentMethodTotals
+                .whereType<Map<String, Object?>>()
+                .map(PosCashPaymentMethodTotal.fromJson)
+                .toList(growable: false)
+          : null,
+      operationalSummary: rawOperationalSummary is Map<String, Object?>
+          ? PosCashOperationalSummary.fromJson(rawOperationalSummary)
+          : null,
+      discrepancyReason: json['discrepancy_reason'] as String?,
     );
   }
 
@@ -113,10 +151,73 @@ class PosCashSession {
   final String? expectedClosingAmount;
   final String? discrepancyAmount;
   final List<PosCashDenominationCount>? denominationCounts;
+  final String? cashSalesTotal;
+  final int? cashSalesCount;
+  final String? cashInTotal;
+  final String? cashOutTotal;
+  final String? withdrawalTotal;
+  final String? expenseTotal;
+  final String? externalIncomeTotal;
+  final String? cashRefundTotal;
+  final int? cashRefundCount;
+  final List<PosCashPaymentMethodTotal>? paymentMethodTotals;
+  final PosCashOperationalSummary? operationalSummary;
+  final String? discrepancyReason;
 
   bool get isOpen => status == 'open';
   bool get isClosed => status == 'closed';
+
+  /// `true` once the session has real, frozen commercial-close figures
+  /// (TASK 16.14) — `false` for an open session or a session closed
+  /// before this task, in which case the UI must show an honest "not
+  /// available for this close" rather than fabricate zeros.
+  bool get hasCommercialCloseSummary => isClosed && cashSalesTotal != null;
 }
+
+/// TASK 16.14 — one payment method's real captured-sales totals for a
+/// final close's `[opened_at, closed_at]` window. Mirrors `cash.types.ts`'s
+/// `CashPaymentMethodTotal` field for field. Deliberately NOT the same
+/// figure as [PosCashSession.expectedClosingAmount]/`discrepancyAmount` —
+/// this is derived from real captured payments/refunds, those are derived
+/// exclusively from the cash-drawer ledger. Only methods that genuinely
+/// occurred in the window are ever present — never a fabricated row for
+/// an inert method like "transfer" (the POS's own Transfer button is a
+/// documented no-op — see `pos_shell.dart`'s `_PosPayGrid`).
+class PosCashPaymentMethodTotal {
+  const PosCashPaymentMethodTotal({
+    required this.method,
+    required this.grossSalesTotal,
+    required this.refundsTotal,
+    required this.netTotal,
+    required this.ticketCount,
+  });
+
+  factory PosCashPaymentMethodTotal.fromJson(Map<String, Object?> json) =>
+      PosCashPaymentMethodTotal(
+        method: json['method']! as String,
+        grossSalesTotal: json['gross_sales_total']! as String,
+        refundsTotal: json['refunds_total']! as String,
+        netTotal: json['net_total']! as String,
+        ticketCount: json['ticket_count']! as int,
+      );
+
+  final String method;
+  final String grossSalesTotal;
+  final String refundsTotal;
+  final String netTotal;
+  final int ticketCount;
+}
+
+/// A human label for a real backend `payment_method` code — never a raw
+/// internal enum value shown to an operator. Mirrors the exact same
+/// switch already used elsewhere in this file for refunds/receipts
+/// (`'card_terminal' => 'Tarjeta'`, `'card_manual' => 'Tarjeta (manual)'`).
+String posPaymentMethodLabel(String method) => switch (method) {
+  'cash' => 'Efectivo',
+  'card_terminal' => 'Tarjeta',
+  'card_manual' => 'Tarjeta (manual)',
+  _ => 'Otro',
+};
 
 /// TASK 14.4 (Wave 2, Part F.1) — the exact category set
 /// `cash.types.ts`'s own `cashMovementCategories` defines, only ever
@@ -242,6 +343,8 @@ class PosCashSessionSummary {
     required this.withdrawalTotal,
     required this.expenseTotal,
     required this.externalIncomeTotal,
+    required this.cashRefundTotal,
+    required this.cashRefundCount,
   });
 
   factory PosCashSessionSummary.fromJson(Map<String, Object?> json) {
@@ -273,6 +376,11 @@ class PosCashSessionSummary {
       withdrawalTotal: json['withdrawal_total'] as String? ?? '0.0000',
       expenseTotal: json['expense_total'] as String? ?? '0.0000',
       externalIncomeTotal: json['external_income_total'] as String? ?? '0.0000',
+      // TASK 16.14 — same tolerate-absence convention as the three totals
+      // immediately above (an older backend process might not have this
+      // field yet either).
+      cashRefundTotal: json['cash_refund_total'] as String? ?? '0.0000',
+      cashRefundCount: json['cash_refund_count'] as int? ?? 0,
     );
   }
 
@@ -286,6 +394,8 @@ class PosCashSessionSummary {
   final String withdrawalTotal;
   final String expenseTotal;
   final String externalIncomeTotal;
+  final String cashRefundTotal;
+  final int cashRefundCount;
 }
 
 /// TASK 16.13 — "Ventas / Taquilla" within a partial cut's operational
@@ -634,11 +744,15 @@ abstract interface class PosCashGateway {
   /// `expected_closing_amount`/`discrepancy_amount` (Part I).
   /// [denominationCounts] is the optional Part J bills/coins breakdown —
   /// the backend independently requires it to sum to
-  /// [declaredClosingAmount] exactly.
+  /// [declaredClosingAmount] exactly. [discrepancyReason] (TASK 16.14
+  /// §12) is a fully optional explanation for a non-zero difference —
+  /// never required to close, whatever the size of the eventual
+  /// discrepancy.
   Future<PosCashSession> closeSession({
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   });
 
   /// `GET /api/v1/cash-sessions` (Part L cut history) — server-side
@@ -850,6 +964,7 @@ class ApiPosCashGateway implements PosCashGateway {
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/cash-sessions/$cashSessionId/closures',
@@ -860,6 +975,8 @@ class ApiPosCashGateway implements PosCashGateway {
           'denomination_counts': [
             for (final line in denominationCounts) line.toJson(),
           ],
+        if (discrepancyReason != null && discrepancyReason.trim().isNotEmpty)
+          'discrepancy_reason': discrepancyReason.trim(),
       },
     );
     return _decodeSession(envelope);
@@ -1038,6 +1155,7 @@ class EmptyPosCashGateway implements PosCashGateway {
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   }) => Future.error(StateError('No cash gateway is configured.'));
 
   @override

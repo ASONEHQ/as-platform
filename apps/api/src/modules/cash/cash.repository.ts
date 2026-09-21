@@ -11,6 +11,7 @@ import {
   type CashMovementType,
   type CashMutationContext,
   type CashPartialCloseOperationalSummary,
+  type CashPaymentMethodTotal,
   type CashRegisterRow,
   type CashSessionPartialCloseRow,
   type CashSessionRow,
@@ -60,7 +61,7 @@ function formatMoney(units: bigint): string {
 const REGISTER_COLUMNS =
   'id,company_id,branch_id,code,name,status,device_id,created_by,updated_by,version,created_at,updated_at,deleted_at';
 const SESSION_COLUMNS =
-  'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,version,created_at,updated_at';
+  'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,cash_sales_total,cash_sales_count,cash_in_total,cash_out_total,withdrawal_total,expense_total,external_income_total,cash_refund_total,cash_refund_count,payment_method_totals,operational_summary,discrepancy_reason,version,created_at,updated_at';
 const MOVEMENT_COLUMNS =
   'id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,reference_type,reference_id,occurred_at,created_by,device_id,reversal_of_id,created_at,category';
 const PARTIAL_CLOSE_COLUMNS =
@@ -97,6 +98,18 @@ interface SessionDb {
   expected_closing_amount: string | null;
   discrepancy_amount: string | null;
   denomination_counts: unknown;
+  cash_sales_total: string | null;
+  cash_sales_count: number | null;
+  cash_in_total: string | null;
+  cash_out_total: string | null;
+  withdrawal_total: string | null;
+  expense_total: string | null;
+  external_income_total: string | null;
+  cash_refund_total: string | null;
+  cash_refund_count: number | null;
+  payment_method_totals: unknown;
+  operational_summary: CashPartialCloseOperationalSummary | null;
+  discrepancy_reason: string | null;
   version: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -166,6 +179,19 @@ function denominationCounts(raw: unknown): readonly DenominationCount[] | null {
     )
     .map((entry) => ({ value: String((entry as { value: unknown }).value), quantity: Number((entry as { quantity: unknown }).quantity) }));
 }
+function paymentMethodTotals(raw: unknown): readonly CashPaymentMethodTotal[] | null {
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw)) return null;
+  return raw
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({
+      method: String(entry.method),
+      grossSalesTotal: String(entry.grossSalesTotal),
+      refundsTotal: String(entry.refundsTotal),
+      netTotal: String(entry.netTotal),
+      ticketCount: Number(entry.ticketCount),
+    }));
+}
 function session(row: SessionDb): CashSessionRow {
   return {
     id: row.id,
@@ -183,6 +209,18 @@ function session(row: SessionDb): CashSessionRow {
     expectedClosingAmount: row.expected_closing_amount,
     discrepancyAmount: row.discrepancy_amount,
     denominationCounts: denominationCounts(row.denomination_counts),
+    cashSalesTotal: row.cash_sales_total,
+    cashSalesCount: row.cash_sales_count,
+    cashInTotal: row.cash_in_total,
+    cashOutTotal: row.cash_out_total,
+    withdrawalTotal: row.withdrawal_total,
+    expenseTotal: row.expense_total,
+    externalIncomeTotal: row.external_income_total,
+    cashRefundTotal: row.cash_refund_total,
+    cashRefundCount: row.cash_refund_count,
+    paymentMethodTotals: paymentMethodTotals(row.payment_method_totals),
+    operationalSummary: row.operational_summary ?? null,
+    discrepancyReason: row.discrepancy_reason,
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -687,6 +725,22 @@ export class CashRepository {
       expectedClosingAmount: string;
       discrepancyAmount: string;
       denominationCounts: readonly DenominationCount[] | null;
+      // TASK 16.14 — the frozen commercial final-close snapshot; see
+      // `packages/database/src/schema/cash.ts`'s own doc comment on these
+      // columns for why each is persisted rather than only ever
+      // recomputed from `cash_movements` on read.
+      cashSalesTotal: string;
+      cashSalesCount: number;
+      cashInTotal: string;
+      cashOutTotal: string;
+      withdrawalTotal: string;
+      expenseTotal: string;
+      externalIncomeTotal: string;
+      cashRefundTotal: string;
+      cashRefundCount: number;
+      paymentMethodTotals: readonly CashPaymentMethodTotal[];
+      operationalSummary: CashPartialCloseOperationalSummary | null;
+      discrepancyReason: string | null;
     },
   ): Promise<CashSessionRow> {
     const row = result<SessionDb>(
@@ -699,6 +753,18 @@ export class CashRepository {
            expected_closing_amount=$6,
            discrepancy_amount=$7,
            denomination_counts=$8::jsonb,
+           cash_sales_total=$10,
+           cash_sales_count=$11,
+           cash_in_total=$12,
+           cash_out_total=$13,
+           withdrawal_total=$14,
+           expense_total=$15,
+           external_income_total=$16,
+           cash_refund_total=$17,
+           cash_refund_count=$18,
+           payment_method_totals=$19::jsonb,
+           operational_summary=$20::jsonb,
+           discrepancy_reason=$21,
            updated_at=$4,
            version=version+1
          where company_id=$1 and id=$2 and version=$9
@@ -713,6 +779,18 @@ export class CashRepository {
           input.discrepancyAmount,
           input.denominationCounts === null ? null : JSON.stringify(input.denominationCounts),
           expectedVersion.toString(),
+          input.cashSalesTotal,
+          input.cashSalesCount,
+          input.cashInTotal,
+          input.cashOutTotal,
+          input.withdrawalTotal,
+          input.expenseTotal,
+          input.externalIncomeTotal,
+          input.cashRefundTotal,
+          input.cashRefundCount,
+          JSON.stringify(input.paymentMethodTotals),
+          input.operationalSummary === null ? null : JSON.stringify(input.operationalSummary),
+          input.discrepancyReason,
         ],
       ),
     ).rows[0];
@@ -1202,6 +1280,80 @@ export class CashRepository {
         reservationsOccurringToday: Number(eventsOccurringTodayRow?.count ?? '0'),
       },
     };
+  }
+
+  /** TASK 16.14 §6 — "Ventas por método de pago": real captured-payment
+   * totals grouped by `payments.payment_method`, for the SAME
+   * `[windowStart, windowEnd]`/branch scope `operationalSummary` above
+   * already uses (so "Ventas / Taquilla" and this breakdown describe the
+   * identical underlying sales activity, just sliced two different ways
+   * — by business category there, by tender here). Deliberately reads
+   * `payments`/`refunds` directly, NEVER `cash_movements` — a card/other
+   * sale has no cash-drawer footprint at all (only a `cash`-tendered
+   * payment ever posts a `cash_sale` movement), so this must stay a
+   * wholly separate query from `expectedCash`'s ledger fold, and the two
+   * are allowed — expected — to disagree (see this task's own
+   * `docs/LEGACY_FUNCTIONAL_PARITY.md` section for the full "why these
+   * are different numbers" explanation this task requires).
+   *
+   * Only a method that genuinely appears in a captured payment OR a
+   * completed refund within the window is ever returned — never a
+   * fabricated zero row for a method nothing produced (e.g. the POS's
+   * own inert "Transfer" button, which has no backend `payment_method`
+   * counterpart at all — see `pos_shell.dart`'s `_PosPayGrid`). */
+  public async paymentMethodTotals(
+    companyId: string,
+    branchId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<readonly CashPaymentMethodTotal[]> {
+    // Filters on captured_at is not null, deliberately never status=
+    // 'captured': a payment that was captured and later fully refunded
+    // transitions its own status to 'reversed', but captured_at itself is
+    // never cleared on that transition (see PaymentRepository.
+    // updatePaymentStatus's own coalesce($6,captured_at)) — gross sales
+    // must reflect the historical fact that the sale happened, never make
+    // a fully-refunded sale silently vanish from its own gross total. The
+    // refund itself is still fully, separately accounted for below.
+    const rows = result<{ method: string; gross_sales_total: string; refunds_total: string; ticket_count: string }>(
+      await this.database.pool.query(
+        `with sales_by_method as (
+           select p.payment_method as method, coalesce(sum(p.amount),0) as gross, count(*) as ticket_count
+           from payments p
+           join sales s on s.company_id=p.company_id and s.id=p.sale_id
+           where p.company_id=$1 and s.branch_id=$2 and p.captured_at is not null
+             and p.captured_at>=$3 and p.captured_at<=$4
+           group by p.payment_method
+         ),
+         refunds_by_method as (
+           select refund_method as method, coalesce(sum(total),0) as refunds
+           from refunds
+           where company_id=$1 and branch_id=$2 and status='completed'
+             and completed_at>=$3 and completed_at<=$4
+           group by refund_method
+         )
+         select
+           coalesce(s.method, r.method) as method,
+           coalesce(s.gross,0) as gross_sales_total,
+           coalesce(r.refunds,0) as refunds_total,
+           coalesce(s.ticket_count,0) as ticket_count
+         from sales_by_method s
+         full outer join refunds_by_method r on r.method = s.method
+         order by 1`,
+        [companyId, branchId, windowStart, windowEnd],
+      ),
+    ).rows;
+    return rows.map((row) => {
+      const gross = moneyUnits(row.gross_sales_total);
+      const refunds = moneyUnits(row.refunds_total);
+      return {
+        method: row.method,
+        grossSalesTotal: formatMoney(gross),
+        refundsTotal: formatMoney(refunds),
+        netTotal: formatMoney(gross - refunds),
+        ticketCount: Number(row.ticket_count),
+      };
+    });
   }
 
   // --- Audit trail ("Bitácora") (TASK 16.11 §13) ---------------------------

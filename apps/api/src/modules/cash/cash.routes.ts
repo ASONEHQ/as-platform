@@ -10,6 +10,7 @@ import type {
   CashMovementRow,
   CashMutationContext,
   CashPartialCloseOperationalSummary,
+  CashPaymentMethodTotal,
   CashRegisterRow,
   CashSessionPartialCloseRow,
   CashSessionRow,
@@ -58,6 +59,22 @@ function registerHttp(value: CashRegisterRow): Readonly<Record<string, unknown>>
     updated_at: value.updatedAt.toISOString(),
   };
 }
+function paymentMethodTotalsHttp(
+  value: readonly CashPaymentMethodTotal[] | null,
+): readonly Readonly<Record<string, unknown>>[] | null {
+  // Loose check on purpose — see `operationalSummaryHttp`'s own doc
+  // comment: a real DB row is always exactly `null` when absent, but a
+  // test fixture predating this field may carry `undefined` instead;
+  // both mean "no payment-method breakdown to show."
+  if (value == null) return null;
+  return value.map((line) => ({
+    method: line.method,
+    gross_sales_total: line.grossSalesTotal,
+    refunds_total: line.refundsTotal,
+    net_total: line.netTotal,
+    ticket_count: line.ticketCount,
+  }));
+}
 function sessionHttp(value: CashSessionRow): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -79,6 +96,29 @@ function sessionHttp(value: CashSessionRow): Readonly<Record<string, unknown>> {
       value.denominationCounts === null
         ? null
         : value.denominationCounts.map((line) => ({ value: line.value, quantity: line.quantity })),
+    // TASK 16.14 — the frozen commercial final-close snapshot; every
+    // field is `null` for an open/closing session, or for any session
+    // closed before this task existed (see the schema column's own doc
+    // comment). Never fabricated zeros — the Flutter client must render
+    // an honest "not available" for `null`, exactly like it already does
+    // for a pre-TASK-16.13 partial close's `operational_summary: null`.
+    cash_sales_total: value.cashSalesTotal,
+    cash_sales_count: value.cashSalesCount,
+    cash_in_total: value.cashInTotal,
+    cash_out_total: value.cashOutTotal,
+    withdrawal_total: value.withdrawalTotal,
+    expense_total: value.expenseTotal,
+    external_income_total: value.externalIncomeTotal,
+    cash_refund_total: value.cashRefundTotal,
+    cash_refund_count: value.cashRefundCount,
+    payment_method_totals: paymentMethodTotalsHttp(value.paymentMethodTotals),
+    // Reused verbatim — the exact same nested camelCase->snake_case
+    // mapper `partialCloseHttp` already uses below, never a second,
+    // slightly-different copy (TASK 16.13's own HTTP-mapper bug, caught
+    // during that task's live verification, is exactly the class of
+    // mistake reusing this function here avoids reintroducing).
+    operational_summary: operationalSummaryHttp(value.operationalSummary),
+    discrepancy_reason: value.discrepancyReason,
     version: Number(value.version),
   };
 }
@@ -490,6 +530,12 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
               withdrawal_total: value.withdrawalTotal,
               expense_total: value.expenseTotal,
               external_income_total: value.externalIncomeTotal,
+              // TASK 16.14 — already folded into expected_cash (direction
+              // -1); now also surfaced as its own named total, mirroring
+              // withdrawal_total/expense_total/external_income_total's
+              // own precedent exactly.
+              cash_refund_total: value.cashRefundTotal,
+              cash_refund_count: value.cashRefundCount,
               expected_cash: value.expectedCash,
             },
             request.requestContext,
@@ -649,6 +695,7 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
     Body: {
       declared_closing_amount: string;
       denomination_counts?: { value: string; quantity: number }[];
+      discrepancy_reason?: string;
     };
   }>(
     '/api/v1/cash-sessions/:id/closures',
@@ -680,6 +727,11 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
                 },
               },
             },
+            // TASK 16.14 §12 — optional explanation for a non-zero
+            // discrepancy; NEVER required (see `CashService.closeSession`'s
+            // own doc comment) — this schema never conditions the close
+            // on the size of any eventual discrepancy.
+            discrepancy_reason: { type: 'string', minLength: 1, maxLength: 1000 },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -699,6 +751,9 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             ...(request.body.denomination_counts === undefined
               ? {}
               : { denominationCounts: request.body.denomination_counts }),
+            ...(request.body.discrepancy_reason === undefined
+              ? {}
+              : { discrepancyReason: request.body.discrepancy_reason }),
           },
         );
         if (closed.replayed) reply.header('idempotency-replayed', 'true');

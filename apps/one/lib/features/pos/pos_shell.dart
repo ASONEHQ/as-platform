@@ -17801,6 +17801,20 @@ List<CashCutLine>? _denominationLines(PosCashSession session, String currencyCod
   ];
 }
 
+/// TASK 16.14 §6/§18 — the real, backend-persisted "Ventas por método de
+/// pago" breakdown (`cash_sessions.payment_method_totals`) formatted for
+/// the printed corte final. `null` when the session has no commercial
+/// close summary at all (a pre-TASK-16.14 closed session) — never a
+/// fabricated line for a method that never occurred.
+List<CashCutLine>? _paymentMethodLines(PosCashSession session) {
+  final totals = session.paymentMethodTotals;
+  if (totals == null || totals.isEmpty) return null;
+  return [
+    for (final line in totals)
+      CashCutLine(posPaymentMethodLabel(line.method), _formatMoney(line.netTotal, session.currencyCode)),
+  ];
+}
+
 enum _CajaTab { current, history }
 
 class _Caja extends StatefulWidget {
@@ -18063,6 +18077,9 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       context: context,
       builder: (dialogContext) => _CloseResultDialog(
         session: closed,
+        branchName: widget.context.currentBranch?.name ?? '',
+        registerName: _selectedRegister?.name ?? '',
+        cashierName: widget.context.user.displayName,
         onPrint: () => unawaited(
           _printCashCut(
             isFinal: true,
@@ -18130,9 +18147,18 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       declaredClosingAmount: isFinal ? session.declaredClosingAmount : null,
       discrepancyAmount: isFinal ? session.discrepancyAmount : null,
       denominationLines: isFinal ? _denominationLines(session, session.currencyCode) : null,
-      operationalSummary: partialSnapshot?.operationalSummary == null
-          ? null
-          : _toCashCutOperationalSummary(partialSnapshot!.operationalSummary!),
+      // TASK 16.14 — a FINAL close now carries its own frozen operational
+      // snapshot on [session] itself (never only on a partial-close
+      // snapshot); a partial-cut print keeps reading [partialSnapshot]'s
+      // own copy exactly as before.
+      operationalSummary: isFinal
+          ? (session.operationalSummary == null ? null : _toCashCutOperationalSummary(session.operationalSummary!))
+          : (partialSnapshot?.operationalSummary == null
+                ? null
+                : _toCashCutOperationalSummary(partialSnapshot!.operationalSummary!)),
+      cashRefundTotal: isFinal ? session.cashRefundTotal : null,
+      discrepancyReason: isFinal ? session.discrepancyReason : null,
+      paymentMethodLines: isFinal ? _paymentMethodLines(session) : null,
       paperWidthMm: branding.paperWidthMm ?? 80,
       logoDataUri: branding.logoUrl,
       headerText: branding.header,
@@ -18516,6 +18542,17 @@ class _CajaOpenView extends StatelessWidget {
                 label: 'Ingresos externos',
                 value: _formatMoney(summary.externalIncomeTotal, session.currencyCode),
               ),
+              // TASK 16.14 — already folded into "Salidas" above via the
+              // exact same `cash_refund` movement direction (-1) as any
+              // other cash-out; now also surfaced as its own named line,
+              // mirroring Retiros/Gastos/Ingresos externos' own precedent.
+              // Only shown when non-zero, so a shift with no refunds keeps
+              // the exact same card it always had.
+              if (_isMoneyPositive(summary.cashRefundTotal))
+                _CajaInfoRow(
+                  label: 'Devoluciones en efectivo',
+                  value: '-${_formatMoney(summary.cashRefundTotal, session.currencyCode)}',
+                ),
               const Divider(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -19541,6 +19578,10 @@ class _CloseCajaDialog extends StatefulWidget {
 
 class _CloseCajaDialogState extends State<_CloseCajaDialog> {
   final _countedController = TextEditingController();
+  // TASK 16.14 §12 — optional; never blocks or requires the close (see
+  // `_confirm`'s own call, which sends this whenever it's non-blank,
+  // whatever `_previewDiscrepancy` below currently shows).
+  final _reasonController = TextEditingController();
   bool _useDenominations = false;
   // TASK 16.11 — currency-aware (mirrors the backend's own
   // canonicalCashDenominationsForCurrency): built in initState, not a
@@ -19558,15 +19599,40 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
     _denominationControllers = {
       for (final value in _denominations) value: TextEditingController(),
     };
+    // TASK 16.14 §11 — live "esperado / contado / diferencia" preview as
+    // the cashier types the manual total, mirroring what denomination
+    // mode already gets via `_recomputeFromDenominations`'s own
+    // `setState`. Purely a client-side PREVIEW for the operator's own
+    // understanding — the backend alone still computes and persists the
+    // real `discrepancy_amount` on confirm.
+    _countedController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _countedController.dispose();
+    _reasonController.dispose();
     for (final controller in _denominationControllers.values) {
       controller.dispose();
     }
     super.dispose();
+  }
+
+  /// TASK 16.14 §11 — a client-side-only preview of `contado - esperado`,
+  /// for the operator to see BEFORE confirming (never submitted, never
+  /// treated as authoritative — see this widget's own top doc comment).
+  /// `null` while the counted field is empty/unparseable, matching this
+  /// dialog's own existing "no value yet" convention.
+  Money? get _previewDiscrepancy {
+    final text = _countedController.text.trim();
+    if (text.isEmpty) return null;
+    try {
+      final counted = Money.parse(text, widget.currencyCode);
+      final expected = Money.parse(widget.expectedCash, widget.currencyCode);
+      return counted - expected;
+    } on MoneyFormatException {
+      return null;
+    }
   }
 
   void _recomputeFromDenominations() {
@@ -19614,10 +19680,12 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
       _error = null;
     });
     try {
+      final reason = _reasonController.text.trim();
       final closed = await widget.cashGateway.closeSession(
         cashSessionId: widget.cashSessionId,
         declaredClosingAmount: counted.toApiString(),
         denominationCounts: denominationCounts,
+        discrepancyReason: reason.isEmpty ? null : reason,
       );
       if (!mounted) return;
       Navigator.of(context).pop(closed);
@@ -19701,6 +19769,58 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
                     ],
                   ),
                 ),
+            // TASK 16.14 §11 — "before final confirmation show CONTEO:
+            // Efectivo esperado / Efectivo contado / Diferencia" — a
+            // live, client-side-only preview (see `_previewDiscrepancy`'s
+            // own doc comment); the backend recomputes and persists the
+            // real figure on confirm regardless of what this shows.
+            Builder(
+              builder: (context) {
+                final preview = _previewDiscrepancy;
+                if (preview == null) return const SizedBox.shrink();
+                final isShortage = preview.isNegative;
+                final isZero = preview.isZero;
+                final color = isZero ? Colors.green : (isShortage ? Colors.red : Colors.orange);
+                final label = isZero ? 'Sin diferencia' : (isShortage ? 'Faltante' : 'Sobrante');
+                return Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Container(
+                    key: const Key('pos-caja-close-preview-diff'),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: .12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+                        Text(
+                          _formatMoney(preview.toApiString(), widget.currencyCode),
+                          style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 15),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            // TASK 16.14 §12 — always available, never required to close:
+            // an optional explanation for a shortage/surplus. Shown here
+            // regardless of whether there's currently a difference, so a
+            // cashier who already knows the reason can type it before
+            // finishing the count.
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-caja-discrepancy-reason'),
+              controller: _reasonController,
+              enabled: !_busy,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Motivo de la diferencia (opcional)',
+                hintText: 'Ej. propina no registrada, error de cambio…',
+              ),
+            ),
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(_error!, style: const TextStyle(color: Colors.red)),
@@ -19729,93 +19849,170 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
   );
 }
 
-/// Part I — the closed-session cut summary, showing the backend-computed
-/// difference verbatim (never re-derived): zero, shortage (red), or
-/// overage (amber) — matching AS POS V1's own three-state coloring.
+/// TASK 16.14 §13 — "CAJA CERRADA": the complete, immutable final-close
+/// summary — header (Caja/Sucursal/Cajero/Apertura/Cierre), the full
+/// financial block, "Ventas por método de pago", and the TASK 16.13
+/// operational snapshot — reusing [_CommercialCloseSummary] verbatim so
+/// this dialog and [_CutDetailDialog]'s own closed-session view (history)
+/// render the SAME frozen figures the SAME way, never two slightly-
+/// different copies.
 class _CloseResultDialog extends StatelessWidget {
-  const _CloseResultDialog({required this.session, required this.onPrint});
+  const _CloseResultDialog({
+    required this.session,
+    required this.branchName,
+    required this.registerName,
+    required this.cashierName,
+    required this.onPrint,
+  });
   final PosCashSession session;
+  final String branchName;
+  final String registerName;
+  final String cashierName;
   final VoidCallback onPrint;
 
   @override
-  Widget build(BuildContext context) {
-    final discrepancy = session.discrepancyAmount ?? '0';
-    final isShortage = discrepancy.trim().startsWith('-');
-    final isZero = Money.parse(
-      isShortage ? discrepancy.trim().substring(1) : discrepancy.trim(),
-      session.currencyCode,
-    ).isZero;
-    final color = isZero
-        ? Colors.green
-        : isShortage
-        ? Colors.red
-        : Colors.orange;
-    final label = isZero
-        ? 'Cuadrado'
-        : isShortage
-        ? 'Faltante'
-        : 'Sobrante';
-    return AlertDialog(
-      title: const Text('Corte de caja'),
-      content: SizedBox(
-        width: 360,
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Caja cerrada'),
+    content: SizedBox(
+      width: 400,
+      child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _CajaInfoRow(
-              label: 'Efectivo esperado',
-              value: _formatMoney(
-                session.expectedClosingAmount ?? '0',
-                session.currencyCode,
-              ),
-            ),
-            _CajaInfoRow(
-              label: 'Efectivo contado',
-              value: _formatMoney(
-                session.declaredClosingAmount ?? '0',
-                session.currencyCode,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: .12),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(color: color, fontWeight: FontWeight.w800),
-                  ),
-                  Text(
-                    _formatMoney(discrepancy, session.currencyCode),
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _CajaInfoRow(label: 'Caja', value: registerName),
+            _CajaInfoRow(label: 'Sucursal', value: branchName),
+            _CajaInfoRow(label: 'Cajero', value: cashierName),
+            _CajaInfoRow(label: 'Apertura', value: _formatCajaDate(session.openedAt)),
+            if (session.closedAt != null)
+              _CajaInfoRow(label: 'Cierre', value: _formatCajaDate(session.closedAt!)),
+            _CommercialCloseSummary(session: session),
           ],
         ),
       ),
-      actions: [
-        OutlinedButton.icon(
-          key: const Key('pos-caja-print-close'),
-          onPressed: onPrint,
-          icon: const Icon(Icons.print_outlined, size: 16),
-          label: const Text('Imprimir'),
+    ),
+    actions: [
+      OutlinedButton.icon(
+        key: const Key('pos-caja-print-close'),
+        onPressed: onPrint,
+        icon: const Icon(Icons.print_outlined, size: 16),
+        label: const Text('Imprimir'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Entendido'),
+      ),
+    ],
+  );
+}
+
+/// TASK 16.14 — the complete frozen commercial final-close summary:
+/// financial breakdown (mirrors the live `_CajaCurrent` card's own field
+/// list, plus Devoluciones/Contado/Diferencia), "Ventas por método de
+/// pago" (real captured-payment totals, deliberately NOT the same figure
+/// as Efectivo esperado — see `cash.types.ts`'s own
+/// `CashPaymentMethodTotal` doc comment), and (reusing
+/// [_OperationalSummarySection] verbatim) the operational Taquilla/
+/// Cafetería/Eventos snapshot. Shared by [_CloseResultDialog] (right
+/// after closing) and [_CutDetailDialog] (reopening a closed session from
+/// history) — one rendering, never two copies that could quietly drift.
+/// [session.hasCommercialCloseSummary] `false` (a session closed before
+/// this task) renders an honest "not available" notice instead of
+/// fabricating zeros (§25).
+class _CommercialCloseSummary extends StatelessWidget {
+  const _CommercialCloseSummary({required this.session});
+  final PosCashSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final currencyCode = session.currencyCode;
+    if (!session.hasCommercialCloseSummary) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Text(
+          'Resumen comercial no disponible para este corte.',
+          key: const Key('pos-caja-close-summary-unavailable'),
+          style: TextStyle(color: palette.textSecondary, fontSize: 12),
         ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Entendido'),
+      );
+    }
+    final discrepancy = session.discrepancyAmount ?? '0';
+    final isShortage = discrepancy.trim().startsWith('-');
+    final isZero = Money.parse(
+      isShortage ? discrepancy.trim().substring(1) : discrepancy.trim(),
+      currencyCode,
+    ).isZero;
+    final color = isZero ? Colors.green : (isShortage ? Colors.red : Colors.orange);
+    // TASK 16.14 §11/§13 — neutral accounting language, never "Cuadrado".
+    final label = isZero ? 'Sin diferencia' : (isShortage ? 'Faltante' : 'Sobrante');
+    final paymentMethods = session.paymentMethodTotals;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 24),
+        const Text('FINANCIERO', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3)),
+        const SizedBox(height: 4),
+        _CajaInfoRow(label: 'Fondo inicial', value: _formatMoney(session.openingAmount, currencyCode)),
+        _CajaInfoRow(
+          label: 'Ventas en efectivo',
+          value: '${_formatMoney(session.cashSalesTotal!, currencyCode)} (${session.cashSalesCount})',
         ),
+        _CajaInfoRow(label: 'Entradas', value: _formatMoney(session.cashInTotal!, currencyCode)),
+        _CajaInfoRow(label: 'Salidas', value: _formatMoney(session.cashOutTotal!, currencyCode)),
+        _CajaInfoRow(label: 'Retiros', value: _formatMoney(session.withdrawalTotal!, currencyCode)),
+        _CajaInfoRow(label: 'Gastos', value: _formatMoney(session.expenseTotal!, currencyCode)),
+        _CajaInfoRow(label: 'Ingresos externos', value: _formatMoney(session.externalIncomeTotal!, currencyCode)),
+        if (_isMoneyPositive(session.cashRefundTotal ?? '0'))
+          _CajaInfoRow(
+            label: 'Devoluciones en efectivo',
+            value: '-${_formatMoney(session.cashRefundTotal!, currencyCode)}',
+          ),
+        const SizedBox(height: 4),
+        _CajaInfoRow(
+          label: 'Efectivo esperado',
+          value: _formatMoney(session.expectedClosingAmount ?? '0', currencyCode),
+        ),
+        _CajaInfoRow(
+          label: 'Efectivo contado',
+          value: _formatMoney(session.declaredClosingAmount ?? '0', currencyCode),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          key: const Key('pos-caja-close-diff-banner'),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(10)),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+              Text(
+                _formatMoney(discrepancy, currencyCode),
+                style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+        if (session.discrepancyReason != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Motivo: ${session.discrepancyReason}',
+            key: const Key('pos-caja-close-discrepancy-reason'),
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+        ],
+        const Divider(height: 24),
+        const Text('VENTAS POR MÉTODO DE PAGO', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3)),
+        const SizedBox(height: 4),
+        if (paymentMethods == null || paymentMethods.isEmpty)
+          Text(
+            'Sin ventas registradas en este turno.',
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          )
+        else
+          for (final line in paymentMethods)
+            _CajaInfoRow(label: posPaymentMethodLabel(line.method), value: _formatMoney(line.netTotal, currencyCode)),
+        _OperationalSummarySection(summary: session.operationalSummary, currencyCode: currencyCode),
       ],
     );
   }
@@ -20288,6 +20485,17 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
       declaredClosingAmount: isFinal ? session.declaredClosingAmount : null,
       discrepancyAmount: isFinal ? session.discrepancyAmount : null,
       denominationLines: isFinal ? _denominationLines(session, session.currencyCode) : null,
+      // TASK 16.14 §21 — "reprint must match the original close": the
+      // frozen operational/payment-method/discrepancy-reason snapshot,
+      // read straight off the persisted session, never recomputed. Was
+      // previously omitted entirely from this specific reprint path even
+      // for a final close — a real gap this task closes.
+      operationalSummary: isFinal && session.operationalSummary != null
+          ? _toCashCutOperationalSummary(session.operationalSummary!)
+          : null,
+      cashRefundTotal: isFinal ? session.cashRefundTotal : null,
+      discrepancyReason: isFinal ? session.discrepancyReason : null,
+      paymentMethodLines: isFinal ? _paymentMethodLines(session) : null,
       paperWidthMm: branding.paperWidthMm ?? 80,
       logoDataUri: branding.logoUrl,
       headerText: branding.header,
@@ -20309,7 +20517,7 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
     return AlertDialog(
       title: const Text('Detalle de corte'),
       content: SizedBox(
-        width: 380,
+        width: 400,
         child: summary == null
             ? SizedBox(
                 height: 120,
@@ -20322,75 +20530,63 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
                         ),
                 ),
               )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _CajaInfoRow(
-                    label: 'Apertura',
-                    value: _formatCajaDate(summary.session.openedAt),
-                  ),
-                  if (summary.session.closedAt != null)
+            : SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _CajaInfoRow(label: 'Caja', value: _registerName ?? ''),
+                    _CajaInfoRow(label: 'Sucursal', value: widget.branchName),
                     _CajaInfoRow(
-                      label: 'Cierre',
-                      value: _formatCajaDate(summary.session.closedAt!),
+                      label: 'Apertura',
+                      value: _formatCajaDate(summary.session.openedAt),
                     ),
-                  _CajaInfoRow(
-                    label: 'Fondo inicial',
-                    value: _formatMoney(
-                      summary.openingAmount,
-                      summary.session.currencyCode,
-                    ),
-                  ),
-                  _CajaInfoRow(
-                    label: 'Ventas en efectivo',
-                    value:
-                        '${_formatMoney(summary.cashSalesTotal, summary.session.currencyCode)} '
-                        '(${summary.cashSalesCount})',
-                  ),
-                  _CajaInfoRow(
-                    label: 'Entradas',
-                    value: _formatMoney(
-                      summary.cashInTotal,
-                      summary.session.currencyCode,
-                    ),
-                  ),
-                  _CajaInfoRow(
-                    label: 'Salidas',
-                    value: _formatMoney(
-                      summary.cashOutTotal,
-                      summary.session.currencyCode,
-                    ),
-                  ),
-                  const Divider(height: 20),
-                  _CajaInfoRow(
-                    label: 'Efectivo esperado',
-                    value: _formatMoney(
-                      summary.expectedCash,
-                      summary.session.currencyCode,
-                    ),
-                  ),
-                  if (summary.session.declaredClosingAmount != null)
-                    _CajaInfoRow(
-                      label: 'Efectivo contado',
-                      value: _formatMoney(
-                        summary.session.declaredClosingAmount!,
-                        summary.session.currencyCode,
+                    if (summary.session.closedAt != null)
+                      _CajaInfoRow(
+                        label: 'Cierre',
+                        value: _formatCajaDate(summary.session.closedAt!),
                       ),
-                    ),
-                  if (summary.session.discrepancyAmount != null)
-                    _CajaInfoRow(
-                      label: 'Diferencia',
-                      value: _formatMoney(
-                        summary.session.discrepancyAmount!,
-                        summary.session.currencyCode,
+                    // TASK 16.14 §20/§21 — a CLOSED session shows its own
+                    // frozen commercial summary (financial breakdown,
+                    // payment methods, operational snapshot), reusing the
+                    // exact same widget the just-closed result dialog
+                    // uses — never a second, different rendering. A
+                    // still-OPEN session (this history list also shows
+                    // active sessions) keeps the lighter live-style rows
+                    // it always had, since it has no frozen close yet.
+                    if (summary.session.isClosed)
+                      _CommercialCloseSummary(session: summary.session)
+                    else ...[
+                      _CajaInfoRow(
+                        label: 'Fondo inicial',
+                        value: _formatMoney(summary.openingAmount, summary.session.currencyCode),
                       ),
-                    ),
-                  if (_printError != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_printError!, style: const TextStyle(color: Colors.red)),
+                      _CajaInfoRow(
+                        label: 'Ventas en efectivo',
+                        value:
+                            '${_formatMoney(summary.cashSalesTotal, summary.session.currencyCode)} '
+                            '(${summary.cashSalesCount})',
+                      ),
+                      _CajaInfoRow(
+                        label: 'Entradas',
+                        value: _formatMoney(summary.cashInTotal, summary.session.currencyCode),
+                      ),
+                      _CajaInfoRow(
+                        label: 'Salidas',
+                        value: _formatMoney(summary.cashOutTotal, summary.session.currencyCode),
+                      ),
+                      const Divider(height: 20),
+                      _CajaInfoRow(
+                        label: 'Efectivo esperado',
+                        value: _formatMoney(summary.expectedCash, summary.session.currencyCode),
+                      ),
+                    ],
+                    if (_printError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(_printError!, style: const TextStyle(color: Colors.red)),
+                    ],
                   ],
-                ],
+                ),
               ),
       ),
       actions: [

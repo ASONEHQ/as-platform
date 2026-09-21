@@ -45,6 +45,21 @@ function sessionValue(overrides?: Readonly<Record<string, unknown>>): Readonly<R
     expectedClosingAmount: null,
     discrepancyAmount: null,
     denominationCounts: null,
+    // TASK 16.14 — the frozen commercial final-close snapshot; `null` on
+    // this default open-session fixture, exactly like every other
+    // closure-only field above.
+    cashSalesTotal: null,
+    cashSalesCount: null,
+    cashInTotal: null,
+    cashOutTotal: null,
+    withdrawalTotal: null,
+    expenseTotal: null,
+    externalIncomeTotal: null,
+    cashRefundTotal: null,
+    cashRefundCount: null,
+    paymentMethodTotals: null,
+    operationalSummary: null,
+    discrepancyReason: null,
     version: 1n,
     ...overrides,
   };

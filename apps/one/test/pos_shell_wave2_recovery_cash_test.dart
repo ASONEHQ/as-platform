@@ -221,6 +221,8 @@ void main() {
           withdrawalTotal: '20.0000',
           expenseTotal: '13.0000',
           externalIncomeTotal: '55.0000',
+          cashRefundTotal: '0.0000',
+          cashRefundCount: 0,
         ),
       );
       await _pump(tester, cashGateway: gateway);
@@ -542,6 +544,8 @@ class _RecordingCashGateway implements PosCashGateway {
         withdrawalTotal: '0.0000',
         expenseTotal: '0.0000',
         externalIncomeTotal: '0.0000',
+        cashRefundTotal: '0.0000',
+        cashRefundCount: 0,
       );
 
   @override
@@ -580,6 +584,7 @@ class _RecordingCashGateway implements PosCashGateway {
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   }) => Future.error(StateError('not used'));
 
   @override

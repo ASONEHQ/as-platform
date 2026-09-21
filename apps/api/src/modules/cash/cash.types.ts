@@ -137,6 +137,29 @@ export function canonicalCashDenominationsForCurrency(currencyCode: string): rea
   }
 }
 
+/** TASK 16.14 — one payment method's real captured-sales totals for the
+ * `[opened_at, closed_at]` window of a final close, derived from `payments`
+ * (never fabricated): `grossSalesTotal` is every payment of this `method`
+ * that was EVER captured (`captured_at is not null` — a fully-refunded
+ * payment's own `status` later becomes `reversed`, but its `captured_at`
+ * is never cleared, so a refunded sale never silently vanishes from its
+ * own gross total); `refundsTotal` is every `completed` refund whose own
+ * `refund_method` equals this `method`; `netTotal = grossSalesTotal -
+ * refundsTotal`. Deliberately NOT the same figure as `expectedCash`/
+ * `discrepancyAmount` — those come exclusively from `cash_movements` and
+ * this comes exclusively from `payments`/`refunds`; see this task's own
+ * `docs/LEGACY_FUNCTIONAL_PARITY.md` section for the full "why these two
+ * numbers are allowed to differ" explanation. Only methods that genuinely
+ * appear in the window are ever present — never a fabricated zero row for
+ * an inert method like "transfer" (see `pos_shell.dart`'s `_PosPayGrid`). */
+export interface CashPaymentMethodTotal {
+  readonly method: string;
+  readonly grossSalesTotal: string;
+  readonly refundsTotal: string;
+  readonly netTotal: string;
+  readonly ticketCount: number;
+}
+
 export interface CashSessionRow {
   id: string;
   companyId: string;
@@ -153,6 +176,26 @@ export interface CashSessionRow {
   expectedClosingAmount: string | null;
   discrepancyAmount: string | null;
   denominationCounts: readonly DenominationCount[] | null;
+  // TASK 16.14 — the frozen commercial final-close snapshot. Every field
+  // below is `null` for a session closed before this task, for a session
+  // still `open`/`closing`, or (financial breakdown fields only) in the
+  // vanishingly unlikely event a future code path closes a session
+  // without them — the API/UI must render "not available for this close"
+  // for `null`, never a fabricated zero. See
+  // `packages/database/src/schema/cash.ts`'s own doc comment on these
+  // columns for the full backward-compatibility rationale.
+  cashSalesTotal: string | null;
+  cashSalesCount: number | null;
+  cashInTotal: string | null;
+  cashOutTotal: string | null;
+  withdrawalTotal: string | null;
+  expenseTotal: string | null;
+  externalIncomeTotal: string | null;
+  cashRefundTotal: string | null;
+  cashRefundCount: number | null;
+  paymentMethodTotals: readonly CashPaymentMethodTotal[] | null;
+  operationalSummary: CashPartialCloseOperationalSummary | null;
+  discrepancyReason: string | null;
   version: bigint;
   createdAt: Date;
   updatedAt: Date;

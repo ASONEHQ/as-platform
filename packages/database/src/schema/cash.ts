@@ -5,6 +5,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   numeric,
   pgTable,
@@ -152,6 +153,75 @@ export const cashSessions = pgTable(
     // before persisting it, and it is written once, atomically, with the
     // rest of the closure. See ADR-0014.
     denominationCounts: jsonb('denomination_counts'),
+    // TASK 16.14 — "CERRAR CAJA" commercial final close. Every column
+    // below is nullable and, like `denomination_counts` above, can ONLY
+    // ever be non-null on a `closed` row (see the asymmetric check
+    // constraints below) — but unlike `denomination_counts`, these are
+    // never optional-by-choice for a NEW close: `CashService.closeSession`
+    // always populates them going forward. They stay nullable purely for
+    // backward compatibility with every session closed before this task
+    // (§25) — an old closed row simply has all of them `null`, and the
+    // API/UI must render an honest "not available for this close" rather
+    // than fabricate zeros. None of these columns are ever read back into
+    // `expected_closing_amount`/`discrepancy_amount` — those two remain
+    // computed exclusively from the immutable `cash_movements` ledger, and
+    // stay the single source of cash-truth exactly as before this task.
+    //
+    // Financial breakdown — a frozen mirror of `CashSessionSummary`'s own
+    // shape (`CashService.summary`), reused verbatim rather than
+    // reinvented, plus the two new `cash_refund_*` fields that summary()
+    // itself gains in this task (a movement-type bucket that was already
+    // folded into `expected_cash` but never separately surfaced before).
+    // Freezing these here (rather than only relying on `cash_movements`
+    // being immutable once closed, which would also be mathematically
+    // safe) matches this table's own existing convention: the row is
+    // meant to be self-contained historical evidence, readable without a
+    // join, exactly like `declared_closing_amount`/`expected_closing_
+    // amount`/`discrepancy_amount` already are.
+    cashSalesTotal: numeric('cash_sales_total', { precision: 19, scale: 4 }),
+    cashSalesCount: integer('cash_sales_count'),
+    cashInTotal: numeric('cash_in_total', { precision: 19, scale: 4 }),
+    cashOutTotal: numeric('cash_out_total', { precision: 19, scale: 4 }),
+    withdrawalTotal: numeric('withdrawal_total', { precision: 19, scale: 4 }),
+    expenseTotal: numeric('expense_total', { precision: 19, scale: 4 }),
+    externalIncomeTotal: numeric('external_income_total', { precision: 19, scale: 4 }),
+    cashRefundTotal: numeric('cash_refund_total', { precision: 19, scale: 4 }),
+    cashRefundCount: integer('cash_refund_count'),
+    // Commercial payment-method summary (TASK 16.14 §6) — real captured
+    // `payments` totals grouped by `payment_method`, for the SAME
+    // `[opened_at, closed_at]` window as `operational_summary` below.
+    // Deliberately NEVER read by `expected_closing_amount`/
+    // `discrepancy_amount` (cash-drawer truth is `cash_movements`-only) —
+    // this is the separate, explicitly-labeled "sales by tender" report
+    // the task requires never be confused with expected cash. An array of
+    // `{method, gross_sales_total, refunds_total, net_total, ticket_count}`
+    // — only methods that genuinely appear in captured payments/completed
+    // refunds for the window are ever included, never a fabricated
+    // "Transferencia" line (the POS's own Transfer button is inert —
+    // see `pos_shell.dart`'s `_PosPayGrid` doc comment).
+    paymentMethodTotals: jsonb('payment_method_totals').$type<
+      readonly Readonly<{
+        method: string;
+        grossSalesTotal: string;
+        refundsTotal: string;
+        netTotal: string;
+        ticketCount: number;
+      }>[]
+    >(),
+    // The exact same "Resumen operativo" snapshot shape TASK 16.13 already
+    // established on `cash_session_partial_closes.operational_summary` —
+    // reused, not reinvented, for the SAME `[opened_at, closed_at]`
+    // window. See that column's own doc comment for the full double-
+    // counting analysis, which applies identically here.
+    operationalSummary: jsonb('operational_summary').$type<Readonly<Record<string, unknown>>>(),
+    // TASK 16.14 §12 — an OPTIONAL, free-text explanation for a non-zero
+    // `discrepancy_amount`. Never required to close (this task's own
+    // instruction: "do not invent a tolerance," "do not prevent close
+    // solely because there is a difference") — the backend never
+    // conditions the close transition on this field's presence, size of
+    // `discrepancy_amount`, or anything else. When present, it is
+    // immutable audit evidence exactly like every other closure field.
+    discrepancyReason: text('discrepancy_reason'),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
       .default(sql`1`),
@@ -220,6 +290,47 @@ export const cashSessions = pgTable(
       'cash_sessions_denomination_counts_ck',
       sql`${table.denominationCounts} is null
         or (${table.status} = 'closed' and jsonb_typeof(${table.denominationCounts}) = 'array')`,
+    ),
+    // TASK 16.14 — every new commercial-close field mirrors
+    // `denomination_counts`'s own asymmetric pattern exactly: each can
+    // ONLY exist on a closed row, but is never REQUIRED to (a session
+    // closed before this task, or by future code that somehow skips one,
+    // stays a valid row with that field `null` — never a constraint
+    // violation, never a fabricated value). Never a symmetric
+    // all-or-nothing group like `cash_sessions_closure_fields_ck` above,
+    // deliberately, for that backward-compatibility reason.
+    check(
+      'cash_sessions_cash_refund_total_ck',
+      sql`${table.cashRefundTotal} is null or ${table.status} = 'closed'`,
+    ),
+    check(
+      'cash_sessions_cash_refund_count_ck',
+      sql`${table.cashRefundCount} is null or ${table.status} = 'closed'`,
+    ),
+    check(
+      'cash_sessions_financial_breakdown_ck',
+      sql`(${table.cashSalesTotal} is null and ${table.cashSalesCount} is null
+          and ${table.cashInTotal} is null and ${table.cashOutTotal} is null
+          and ${table.withdrawalTotal} is null and ${table.expenseTotal} is null
+          and ${table.externalIncomeTotal} is null)
+        or ${table.status} = 'closed'`,
+    ),
+    check(
+      'cash_sessions_payment_method_totals_ck',
+      sql`${table.paymentMethodTotals} is null
+        or (${table.status} = 'closed' and jsonb_typeof(${table.paymentMethodTotals}) = 'array')`,
+    ),
+    check(
+      'cash_sessions_operational_summary_ck',
+      sql`${table.operationalSummary} is null or ${table.status} = 'closed'`,
+    ),
+    // A discrepancy reason, when present, must be real text — never an
+    // empty/whitespace-only string silently accepted (mirrors
+    // `cash_movements_reason_code_nonblank_ck`'s own convention).
+    check(
+      'cash_sessions_discrepancy_reason_ck',
+      sql`${table.discrepancyReason} is null
+        or (${table.status} = 'closed' and length(btrim(${table.discrepancyReason})) > 0)`,
     ),
   ],
 );

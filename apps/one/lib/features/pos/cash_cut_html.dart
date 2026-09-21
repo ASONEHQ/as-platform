@@ -131,6 +131,23 @@ String buildCashCutHtml({
   String? discrepancyAmount,
   List<CashCutLine>? denominationLines,
   CashCutOperationalSummary? operationalSummary,
+  // TASK 16.14 — already folded into the cash-truth block above via the
+  // "Salidas" total (a `cash_refund` movement is a real cash-out), now
+  // also surfaced as its own named line, mirroring Retiros/Gastos/
+  // Ingresos externos' own precedent. Only rendered when non-zero.
+  String? cashRefundTotal,
+  // TASK 16.14 §12/§18 — the operator's own optional explanation for a
+  // non-zero difference, printed directly under the diferencia banner.
+  String? discrepancyReason,
+  // TASK 16.14 §6/§18 — "VENTAS POR MÉTODO DE PAGO": real captured-sales
+  // totals by tender (never the same figure as `expectedCash` above —
+  // see this file's own top doc comment for why cash/card/other sales
+  // are deliberately kept out of the cash-truth block). Pre-formatted by
+  // the caller (label = human method name, value = formatted money),
+  // mirroring [denominationLines]'s own "plain lines, no gateway
+  // dependency here" convention. Final close only; `null`/empty omits
+  // the whole section.
+  List<CashCutLine>? paymentMethodLines,
   double paperWidthMm = 80,
   String? logoDataUri,
   String? headerText,
@@ -155,6 +172,9 @@ String buildCashCutHtml({
     ..write(row('Retiros', '-${_money(withdrawalTotal, currencyCode)}'))
     ..write(row('Gastos', '-${_money(expenseTotal, currencyCode)}'));
   if (_isNonZero(otherCashOutTotal)) movementRows.write(row('Otras salidas', '-${_money(otherCashOutTotal, currencyCode)}'));
+  if (cashRefundTotal != null && _isNonZero(cashRefundTotal)) {
+    movementRows.write(row('Devoluciones en efectivo', '-${_money(cashRefundTotal, currencyCode)}'));
+  }
 
   final closingSectionHtml = !isFinal
       ? '<div class="banner">CORTE PARCIAL — LA CAJA SIGUE ABIERTA</div>'
@@ -164,20 +184,37 @@ String buildCashCutHtml({
                 final discrepancy = discrepancyAmount ?? '0';
                 final isShortage = discrepancy.trim().startsWith('-');
                 final isZero = double.tryParse(discrepancy.replaceAll('-', '')) == 0;
-                final label = isZero ? 'CUADRADO' : (isShortage ? 'FALTANTE' : 'SOBRANTE');
+                // TASK 16.14 §11/§13/§18 — neutral accounting language,
+                // never "CUADRADO".
+                final label = isZero ? 'SIN DIFERENCIA' : (isShortage ? 'FALTANTE' : 'SOBRANTE');
                 final denomHtml = denominationLines == null || denominationLines.isEmpty
                     ? ''
                     : '<hr class="divider"><div class="meta"><b>Conteo por denominación</b></div><table class="kv">'
                           '${denominationLines.map((l) => '<tr><td>${_escape(l.label)}</td><td class="amount">${_escape(l.value)}</td></tr>').join()}'
                           '</table>';
+                final reasonHtml = (discrepancyReason == null || discrepancyReason.trim().isEmpty)
+                    ? ''
+                    : '<div class="meta">Motivo: ${_escape(discrepancyReason.trim())}</div>';
                 return '<hr class="divider">'
                     '<table class="totals">'
                     '${row('Efectivo contado', _money(declaredClosingAmount, currencyCode))}'
                     '${row('Diferencia', _money(discrepancy, currencyCode))}'
                     '</table>'
                     '<div class="banner">$label</div>'
+                    '$reasonHtml'
                     '$denomHtml';
               }());
+
+  // TASK 16.14 §6/§18 — visually separate from the cash-truth block
+  // above, exactly like RESUMEN OPERATIVO below it — real captured-sales
+  // totals by tender, deliberately never mixed into "Efectivo esperado".
+  final paymentMethodHtml = paymentMethodLines == null || paymentMethodLines.isEmpty
+      ? ''
+      : '<hr class="divider">'
+            '<div class="meta"><b>VENTAS POR MÉTODO DE PAGO</b></div>'
+            '<table class="kv">'
+            '${paymentMethodLines.map((l) => row(l.label, l.value)).join()}'
+            '</table>';
 
   // TASK 16.13 — visually separate from the cash-truth block above (its
   // own heading, its own `<hr>`), reporting-only, and Cafetería is
@@ -259,6 +296,7 @@ String buildCashCutHtml({
       '${row('Efectivo esperado', _money(expectedCash, currencyCode), emphasize: true)}'
       '</table>'
       '$closingSectionHtml'
+      '$paymentMethodHtml'
       '$operationalHtml'
       '<hr class="divider">'
       '$footerTextHtml'

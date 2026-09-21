@@ -4442,6 +4442,21 @@ void main() {
             declaredClosingAmount: '1000.0000',
             expectedClosingAmount: '1029.0000',
             discrepancyAmount: '-29.0000',
+            // TASK 16.14 — the frozen commercial close snapshot, all
+            // fields together (mirroring the real backend's own
+            // all-or-nothing population), so the result dialog renders
+            // its full financial block instead of the "not available"
+            // fallback.
+            cashSalesTotal: '29.0000',
+            cashSalesCount: 1,
+            cashInTotal: '0.0000',
+            cashOutTotal: '0.0000',
+            withdrawalTotal: '0.0000',
+            expenseTotal: '0.0000',
+            externalIncomeTotal: '0.0000',
+            cashRefundTotal: '0.0000',
+            cashRefundCount: 0,
+            paymentMethodTotals: const [],
           ),
         );
         await _pump(
@@ -4464,7 +4479,7 @@ void main() {
         await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
         await tester.pumpAndSettle();
         expect(cashGateway.closeCalls, [
-          (cashSessionId: 'session-id', declaredClosingAmount: '1000.0000'),
+          (cashSessionId: 'session-id', declaredClosingAmount: '1000.0000', discrepancyReason: null),
         ]);
         // The result dialog shows the backend's own discrepancy — a real
         // shortage — never a client-recomputed figure.
@@ -4586,7 +4601,230 @@ void main() {
         expect(find.byKey(const Key('pos-caja-denom-0.50')), findsNothing);
       },
     );
+  });
 
+  group('CERRAR CAJA — complete commercial final close (TASK 16.14)', () {
+    /// A closed session fixture carrying the full frozen commercial
+    /// snapshot — the shape `closeSession` genuinely returns for a real
+    /// close after this task.
+    PosCashSession commercialClosedSession({
+      String declaredClosingAmount = '940.0000',
+      String expectedClosingAmount = '935.0000',
+      String discrepancyAmount = '5.0000',
+      String? discrepancyReason,
+      String cashRefundTotal = '25.0000',
+      List<PosCashPaymentMethodTotal> paymentMethodTotals = const [
+        PosCashPaymentMethodTotal(
+          method: 'cash',
+          grossSalesTotal: '150.0000',
+          refundsTotal: '25.0000',
+          netTotal: '125.0000',
+          ticketCount: 2,
+        ),
+        PosCashPaymentMethodTotal(
+          method: 'card_manual',
+          grossSalesTotal: '200.0000',
+          refundsTotal: '0.0000',
+          netTotal: '200.0000',
+          ticketCount: 1,
+        ),
+      ],
+      PosCashOperationalSummary? operationalSummary,
+    }) => PosCashSession(
+      id: 'session-id',
+      branchId: 'branch-id',
+      cashRegisterId: 'register-id',
+      openedBy: 'user-id',
+      openedAt: DateTime.utc(2026, 9, 15, 8),
+      openingAmount: '500.0000',
+      currencyCode: 'MXN',
+      status: 'closed',
+      closedBy: 'user-id',
+      closedAt: DateTime.utc(2026, 9, 15, 18),
+      declaredClosingAmount: declaredClosingAmount,
+      expectedClosingAmount: expectedClosingAmount,
+      discrepancyAmount: discrepancyAmount,
+      discrepancyReason: discrepancyReason,
+      cashSalesTotal: '150.0000',
+      cashSalesCount: 2,
+      cashInTotal: '320.0000',
+      cashOutTotal: '10.0000',
+      withdrawalTotal: '0.0000',
+      expenseTotal: '10.0000',
+      externalIncomeTotal: '20.0000',
+      cashRefundTotal: cashRefundTotal,
+      cashRefundCount: 1,
+      paymentMethodTotals: paymentMethodTotals,
+      operationalSummary: operationalSummary,
+    );
+
+    testWidgets(
+      'a live esperado/contado/diferencia preview appears as the cashier types the counted '
+      'total, before confirming — purely a client preview, never submitted',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        // Nothing typed yet — no preview.
+        expect(find.byKey(const Key('pos-caja-close-preview-diff')), findsNothing);
+
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.pump();
+        expect(find.byKey(const Key('pos-caja-close-preview-diff')), findsOneWidget);
+        // The fixture session's own expected cash is $1029.00 — a $1000
+        // count is a real shortage, previewed live.
+        expect(find.text('Faltante'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1029');
+        await tester.pump();
+        expect(find.text('Sin diferencia'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the optional discrepancy reason is never required to close, and is sent trimmed '
+      'when the cashier does provide one',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(closeResult: commercialClosedSession());
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '940');
+        // No reason typed at all — the close must still succeed.
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls.single.discrepancyReason, isNull);
+        expect(find.text('Caja cerrada'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a discrepancy reason typed before confirming is submitted trimmed, and shown back '
+      'in the result dialog',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          closeResult: commercialClosedSession(
+            discrepancyReason: 'Propina en efectivo no registrada.',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '940');
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-discrepancy-reason')),
+          '  Propina en efectivo no registrada.  ',
+        );
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls.single.discrepancyReason, 'Propina en efectivo no registrada.');
+        expect(
+          find.byKey(const Key('pos-caja-close-discrepancy-reason')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Propina en efectivo no registrada.'), findsWidgets);
+      },
+    );
+
+    testWidgets(
+      'the result dialog shows the full financial block, "Devoluciones en efectivo", and '
+      '"Ventas por método de pago" — real backend figures, never fabricated',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(closeResult: commercialClosedSession());
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '940');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Caja cerrada'), findsOneWidget);
+        expect(find.text('FINANCIERO'), findsOneWidget);
+        expect(find.text('Devoluciones en efectivo'), findsOneWidget);
+        expect(find.text(r'-$25.00'), findsOneWidget);
+        expect(find.text('VENTAS POR MÉTODO DE PAGO'), findsOneWidget);
+        expect(find.text('Efectivo'), findsOneWidget);
+        expect(find.text(r'$125.00'), findsOneWidget);
+        // 'card_manual' -> the real human label, never the raw enum code.
+        expect(find.text('Tarjeta (manual)'), findsOneWidget);
+        expect(find.text('card_manual'), findsNothing);
+        expect(find.text(r'$200.00'), findsOneWidget);
+        // Never a fabricated "Transferencia" line.
+        expect(find.text('Transferencia'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a session closed before this task (no commercial snapshot fields) shows an honest '
+      '"not available" notice instead of fabricating zeros',
+      (tester) async {
+        final legacyClosed = PosCashSession(
+          id: 'session-id',
+          branchId: 'branch-id',
+          cashRegisterId: 'register-id',
+          openedBy: 'user-id',
+          openedAt: DateTime.utc(2026, 9, 15, 8),
+          openingAmount: '500.0000',
+          currencyCode: 'MXN',
+          status: 'closed',
+          closedBy: 'user-id',
+          closedAt: DateTime.utc(2026, 9, 15, 18),
+          declaredClosingAmount: '500.0000',
+          expectedClosingAmount: '500.0000',
+          discrepancyAmount: '0.0000',
+          // No cashSalesTotal/paymentMethodTotals/operationalSummary —
+          // exactly what a real pre-TASK-16.14 closed session has.
+        );
+        final cashGateway = _FakeCashGateway(closeResult: legacyClosed);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('pos-caja-close-summary-unavailable')),
+          findsOneWidget,
+        );
+        expect(find.text('FINANCIERO'), findsNothing);
+        expect(find.text('VENTAS POR MÉTODO DE PAGO'), findsNothing);
+      },
+    );
+  });
+
+  group('Caja (TASK 12.7) — movements/reversal', () {
     testWidgets(
       'a client-postable movement can be reversed, and the drawer reloads with the '
       'reversal visible (TASK 16.11 §6)',
@@ -4827,6 +5065,20 @@ void main() {
               declaredClosingAmount: '1029.0000',
               expectedClosingAmount: '1029.0000',
               discrepancyAmount: '0.0000',
+              // TASK 16.14 — the frozen commercial close snapshot on the
+              // SESSION itself (not just the sibling `summary` below) —
+              // `_CutDetailDialog` now reads THIS for a closed session's
+              // full financial block via `_CommercialCloseSummary`.
+              cashSalesTotal: '29.0000',
+              cashSalesCount: 1,
+              cashInTotal: '0.0000',
+              cashOutTotal: '0.0000',
+              withdrawalTotal: '0.0000',
+              expenseTotal: '0.0000',
+              externalIncomeTotal: '0.0000',
+              cashRefundTotal: '0.0000',
+              cashRefundCount: 0,
+              paymentMethodTotals: const [],
             ),
             openingAmount: '1000.0000',
             cashSalesTotal: '29.0000',
@@ -4837,6 +5089,8 @@ void main() {
             withdrawalTotal: '0.0000',
             expenseTotal: '0.0000',
             externalIncomeTotal: '0.0000',
+            cashRefundTotal: '0.0000',
+            cashRefundCount: 0,
           ),
         );
         await _pump(
@@ -8904,7 +9158,7 @@ class _FakeCashGateway implements PosCashGateway {
     })
   >
   movementCalls = [];
-  final List<({String cashSessionId, String declaredClosingAmount})>
+  final List<({String cashSessionId, String declaredClosingAmount, String? discrepancyReason})>
   closeCalls = [];
   final List<String> registersForBranchCalls = [];
 
@@ -8974,6 +9228,8 @@ class _FakeCashGateway implements PosCashGateway {
         withdrawalTotal: '0.0000',
         expenseTotal: '0.0000',
         externalIncomeTotal: '0.0000',
+        cashRefundTotal: '0.0000',
+        cashRefundCount: 0,
       );
 
   @override
@@ -9018,10 +9274,12 @@ class _FakeCashGateway implements PosCashGateway {
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   }) async {
     closeCalls.add((
       cashSessionId: cashSessionId,
       declaredClosingAmount: declaredClosingAmount,
+      discrepancyReason: discrepancyReason,
     ));
     if (closeFailure != null) throw closeFailure!;
     final closed =
@@ -9040,6 +9298,7 @@ class _FakeCashGateway implements PosCashGateway {
           declaredClosingAmount: declaredClosingAmount,
           expectedClosingAmount: '1029.0000',
           discrepancyAmount: '0.0000',
+          discrepancyReason: discrepancyReason,
         );
     // A closed session is no longer "the" open session for this register —
     // the very next `_load()` (Part I: an immutable closed session) must
@@ -9165,6 +9424,7 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
+    String? discrepancyReason,
   }) => Future.error(StateError('not used'));
   @override
   Future<PosCashSessionHistoryPage> listSessions({

@@ -58,6 +58,19 @@ function nonBlank(value: string, field: string): string {
   if (clean.length > 200) throw new CashError('validation_error', `${field} is too long.`);
   return clean;
 }
+/** TASK 16.14 §12 — the discrepancy reason is OPTIONAL (see `closeSession`'s
+ * own doc comment on why it can never be required), so `undefined` is a
+ * valid, common input meaning "no explanation given." When the caller DOES
+ * send one, it must be real text — an all-whitespace string is rejected
+ * rather than silently persisted as one, mirroring `nonBlank`'s own
+ * non-empty rule but without that helper's own "always required" shape. */
+function validateDiscrepancyReason(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const clean = value.trim();
+  if (clean.length === 0) throw new CashError('validation_error', 'discrepancy_reason cannot be blank.');
+  if (clean.length > 1000) throw new CashError('validation_error', 'discrepancy_reason is too long.');
+  return clean;
+}
 /** Part J — validates an optional bills/coins breakdown against the
  * canonical AS POS V1 denomination set and requires it to sum to exactly
  * `declaredClosingAmount` (the same figure the cashier would otherwise
@@ -161,6 +174,13 @@ export interface CashSessionSummary {
   withdrawalTotal: string;
   expenseTotal: string;
   externalIncomeTotal: string;
+  // TASK 16.14 — the exact same `cash_refund` movement fold that was
+  // already correctly netted into `expectedCash`'s own direction sum
+  // below (see `cashMovementDirection.cash_refund = -1`), never before
+  // separately surfaced as its own named total. Purely additive: this
+  // was always mathematically inside `expectedCash`, never a new figure.
+  cashRefundTotal: string;
+  cashRefundCount: number;
   expectedCash: string;
 }
 
@@ -598,6 +618,10 @@ export class CashService {
     let withdrawalUnits = 0n;
     let expenseUnits = 0n;
     let externalIncomeUnits = 0n;
+    // TASK 16.14 — was always folded into `expectedUnits` (direction -1)
+    // but never separately surfaced; see `CashSessionSummary.cashRefundTotal`.
+    let cashRefundUnits = 0n;
+    let cashRefundCount = 0;
     for (const item of movements) {
       const units = moneyUnits(item.amount);
       expectedUnits += units * BigInt(cashMovementDirection[item.movementType]);
@@ -611,6 +635,9 @@ export class CashService {
         cashOutUnits += units;
         if (item.category === 'withdrawal') withdrawalUnits += units;
         else if (item.category === 'expense') expenseUnits += units;
+      } else if (item.movementType === 'cash_refund') {
+        cashRefundUnits += units;
+        cashRefundCount += 1;
       }
     }
     return {
@@ -623,6 +650,8 @@ export class CashService {
       withdrawalTotal: formatMoney(withdrawalUnits),
       expenseTotal: formatMoney(expenseUnits),
       externalIncomeTotal: formatMoney(externalIncomeUnits),
+      cashRefundTotal: formatMoney(cashRefundUnits),
+      cashRefundCount,
       expectedCash: formatMoney(expectedUnits),
     };
   }
@@ -646,17 +675,32 @@ export class CashService {
     input: {
       declaredClosingAmount: string;
       denominationCounts?: readonly { value: string; quantity: number }[];
+      // TASK 16.14 §12 — optional, never required: this task's own
+      // instruction is "do not invent a tolerance" / "do not prevent
+      // close solely because there is a difference." The backend never
+      // conditions the close on this field's presence or on the size of
+      // the eventual discrepancy — it is pure, optional audit evidence.
+      discrepancyReason?: string;
     },
   ): Promise<{ value: CashSessionRow; replayed: boolean }> {
     const declaredClosingAmount = nonNegativeAmount(input.declaredClosingAmount, 'declared_closing_amount');
+    const discrepancyReason = validateDiscrepancyReason(input.discrepancyReason);
     // TASK 16.11 — the denomination set depends on the SESSION's own
     // currency (see `canonicalCashDenominationsForCurrency`'s own doc
     // comment), which is only known once the session row is loaded
     // below, inside the transaction — never validated here against a
     // blind MXN assumption. The idempotency request hash therefore
     // covers the RAW input, not a pre-validated/normalized shape (still
-    // fully deterministic per distinct request).
-    const requestHash = hash({ cashSessionId, declaredClosingAmount, denominationCounts: input.denominationCounts });
+    // fully deterministic per distinct request). TASK 16.14 extends the
+    // hash with `discrepancyReason` — a second close attempt with the
+    // same key but a DIFFERENT reason is a genuinely different request,
+    // never silently replayed with the first reason's text.
+    const requestHash = hash({
+      cashSessionId,
+      declaredClosingAmount,
+      denominationCounts: input.denominationCounts,
+      discrepancyReason,
+    });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -689,13 +733,67 @@ export class CashService {
           );
           const movements = await this.repository.movementsForSession(context.companyId, sessionRow.id);
           let expectedUnits = 0n;
-          for (const item of movements)
-            expectedUnits += moneyUnits(item.amount) * BigInt(cashMovementDirection[item.movementType]);
+          // TASK 16.14 — the exact same named-bucket fold `summary()`
+          // already performs (never called directly here — see that
+          // method's own sibling comment on `partialClose` about reading
+          // the same still-locked session state), extended so the
+          // frozen commercial close snapshot (§4) can be persisted
+          // alongside `expectedClosingAmount`/`discrepancyAmount` below,
+          // which remain computed exactly as before this task.
+          let cashSalesUnits = 0n;
+          let cashSalesCount = 0;
+          let cashInUnits = 0n;
+          let cashOutUnits = 0n;
+          let withdrawalUnits = 0n;
+          let expenseUnits = 0n;
+          let externalIncomeUnits = 0n;
+          let cashRefundUnits = 0n;
+          let cashRefundCount = 0;
+          for (const item of movements) {
+            const units = moneyUnits(item.amount);
+            expectedUnits += units * BigInt(cashMovementDirection[item.movementType]);
+            if (item.movementType === 'cash_sale') {
+              cashSalesUnits += units;
+              cashSalesCount += 1;
+            } else if (item.movementType === 'cash_in') {
+              cashInUnits += units;
+              if (item.category === 'external_income') externalIncomeUnits += units;
+            } else if (item.movementType === 'cash_out') {
+              cashOutUnits += units;
+              if (item.category === 'withdrawal') withdrawalUnits += units;
+              else if (item.category === 'expense') expenseUnits += units;
+            } else if (item.movementType === 'cash_refund') {
+              cashRefundUnits += units;
+              cashRefundCount += 1;
+            }
+          }
           const expectedClosingAmount = formatMoney(expectedUnits);
           // Part I: backend computes the difference — `declared -
           // expected`, exact BigInt arithmetic, never accepted as
           // client-submitted input.
           const discrepancyAmount = formatMoney(moneyUnits(declaredClosingAmount) - expectedUnits);
+          // TASK 16.14 §7 — brings the TASK 16.13 operational snapshot
+          // (Taquilla/Cafetería/Eventos) AND the new payment-method
+          // summary (§6) into the final close, reusing the exact same
+          // authoritative builders `partialClose` already calls — never
+          // a second/different calculation. Same branch-local "today"
+          // fix as TASK 16.13A: `branches.timezone` re-validated here,
+          // never trusted blind, never hardcoded.
+          const rawBranchTimezone = await this.repository.branchTimezone(context.companyId, sessionRow.branchId);
+          const branchTimezone = isValidIanaTimezone(rawBranchTimezone) ? rawBranchTimezone : 'UTC';
+          const operationalSummary = await this.repository.operationalSummary(
+            context.companyId,
+            sessionRow.branchId,
+            sessionRow.openedAt,
+            context.timestamp,
+            localDateString(context.timestamp, branchTimezone),
+          );
+          const paymentMethodTotals = await this.repository.paymentMethodTotals(
+            context.companyId,
+            sessionRow.branchId,
+            sessionRow.openedAt,
+            context.timestamp,
+          );
           const closed = await this.repository.closeSession(client, context.companyId, sessionRow.id, closingRow.version, {
             closedBy: context.actorId,
             closedAt: context.timestamp,
@@ -703,6 +801,18 @@ export class CashService {
             expectedClosingAmount,
             discrepancyAmount,
             denominationCounts,
+            cashSalesTotal: formatMoney(cashSalesUnits),
+            cashSalesCount,
+            cashInTotal: formatMoney(cashInUnits),
+            cashOutTotal: formatMoney(cashOutUnits),
+            withdrawalTotal: formatMoney(withdrawalUnits),
+            expenseTotal: formatMoney(expenseUnits),
+            externalIncomeTotal: formatMoney(externalIncomeUnits),
+            cashRefundTotal: formatMoney(cashRefundUnits),
+            cashRefundCount,
+            paymentMethodTotals,
+            operationalSummary,
+            discrepancyReason,
           });
           await this.repository.auditAndPublish(client, context, {
             action: 'cash_session.closed',
@@ -717,6 +827,10 @@ export class CashService {
               expected_closing_amount: closed.expectedClosingAmount,
               discrepancy_amount: closed.discrepancyAmount,
               denomination_counts: closed.denominationCounts,
+              // TASK 16.14 — preserved in the audit payload exactly like
+              // every other closure field above; never sensitive/auth
+              // data, purely the operator's own optional explanation.
+              discrepancy_reason: closed.discrepancyReason,
               version: closed.version.toString(),
             },
           });
