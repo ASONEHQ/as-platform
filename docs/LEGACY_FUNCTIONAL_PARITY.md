@@ -4090,6 +4090,389 @@ remains explicitly unbuilt, as scoped. Physical 80mm printer
 certification remains outstanding, unchanged from every prior cash-close
 task.
 
+## TASK 16.16 — Commercial Operator Roles + Workspaces + Role-Based Start Experience (2026-09-21)
+
+**§1 Six concepts, never interchangeable (per this task's own explicit
+requirement).** This section exists specifically to keep them distinct in
+one place, since the whole feature is built by composing them, never
+merging them:
+1. **Backend authorization** — `permissions`/`role_permissions`/
+   `user_roles` (pre-existing) plus `user_branch_access`/
+   `user_register_access` (TASK 16.15). The sole source of truth; every
+   grant/denial happens here, server-side, on every request.
+2. **Commercial role preset** (new, this task) — a static, non-persisted
+   starter permission BUNDLE (`roleTemplates`) that pre-fills the role-
+   creation checklist. Never read by any authorization check.
+3. **Branch scope** — `permittedBranchIds` (pre-existing).
+4. **Register scope** — `permittedRegisterIds` (TASK 16.15).
+5. **Operational area** — `operational_areas` (TASK 16.15), a register
+   grouping, never a permission concept.
+6. **UI workspace/navigation** (new, this task) — a purely CLIENT-SIDE,
+   derived, non-authoritative concept: which module a user lands on and
+   which nav items render, computed from (1)+(3)+(4) above. Never
+   persisted, never itself a grant.
+
+**§2 Legacy forensic findings.** Unlike TASK 16.14A/16.15's own cosmetic
+findings, legacy `AS POS V1.html` DOES have a real, functionally load-
+bearing role system: `DB.roles` (7 hardcoded literals — `master`,
+`admin`, `cajero`, `cafeteria`, `fiestas`, `almacen`,
+`mantenimiento` — no way to add a custom role anywhere), a flat per-role
+permission matrix (`DB.permisosPorRol`, 26 named booleans) plus a
+per-user override, and a real `puedeHacer(accion)` gate called at 5
+transaction-blocking sites (deleting a product, cancelling a sale,
+manual discounts, price changes, authorizing a return) plus a broader
+`requiereMasterOAdmin(...)` gate (string-compared `usuarioActual.rol===
+'master'||...==='admin'`) in front of ~25 more admin mutations. **Verdict:
+real, but a primitive, hardcoded 7-role taxonomy with no way to build a
+genuinely custom role** — the exact gap this task's granular RBAC (96
+permission codes across `apps/api`) already vastly exceeds; this task's
+own job was making that ALREADY-superior system as convenient as
+legacy's fixed dropdown, not catching up to it.
+
+**§3 No `role.name`/`role.code` string-comparison authorization anywhere
+in `apps/api/src`.** Confirmed by a full-tree search: the one
+`role.code === 'owner'` hit (`business-config.service.ts`) is a refusal
+guard inside a generic onboarding tool (never lets itself create/touch
+the system "owner" role), not an authorization decision —
+`requirePermission(...)` gates every real one. TASK 16.16 preserves this
+discipline on the Flutter side too: `AuthenticatedContext`/
+`SessionContext` carry no role name/code field at all (confirmed by
+reading the full class) — any role-name-based UI branching was therefore
+not just discouraged but structurally impossible without first adding
+one, which this task deliberately never does.
+
+**§4 Role/template architecture chosen.** A static, code-only catalogue
+(`packages/database/src/seeds/role-templates.ts`, `roleTemplates:
+readonly RoleTemplate[]`) — deliberately NOT a `roles.template_key`
+column, NOT a template table. A template only pre-fills the permission
+checklist at role-CREATION time via the EXISTING `POST /api/v1/roles` +
+`PUT /api/v1/roles/{id}/permissions` endpoints (new read-only `GET
+/api/v1/role-templates`, gated by the same `role.read` the role list
+already requires) — once created, a template-sourced role is an
+ordinary, fully custom (`is_system=false`) role: fully editable, fully
+deletable, never auto-widened by `syncSystemRolePermissions()` (which
+only ever touches `is_system=true` roles — unchanged, re-verified §11),
+and subject to the pre-existing self-escalation guard
+(`AdministrationService.replaceRolePermissions`/`assignRole`: an admin
+can never grant a permission they don't hold themselves). Three
+templates: **Administrador** (the full current catalogue — a second
+full-access admin distinct from the system Owner), **Gerente** (~80
+codes: day-to-day branch operations, register/area administration,
+catalog pricing, inventory, sales/payments/refunds, promotions,
+customers, loyalty/rewards, parties, purchases, people, reports, access
+— explicitly excluding company settings, user/role management beyond
+`user.read`, and device/sync admin), **Cajero** (18 codes: open/close a
+session, ring up sales across every tender, refunds, customer lookup,
+catalog read, held sales, reward redemption, discount — satisfying "no
+20+ manual picks" with room to spare). A dedicated unit-test suite
+(`role-templates.test.ts`, 13 tests) asserts every template's codes are
+real (drift-proof against the catalogue), the Administrator template is
+byte-for-byte the current catalogue, the Cashier template stays under
+20 codes, and the Manager template never includes company/user/role/
+device/sync codes.
+
+**§5 A genuine gap the Cashier template shipped with, caught live, not
+assumed (§12/§18).** `GET /api/v1/cash-registers` requires
+`cash_register.read` (TASK 16.15) — and that's exactly the endpoint
+TASK 16.15's own register-scope resolver (`resolvePosRegisterScope`)
+calls to learn which register(s) a narrowed cashier may use. The first
+Cashier template draft omitted it (reasoning: "a cashier doesn't
+administer registers"), which is true but irrelevant — READING the list
+is a prerequisite for USING one, not administering it. Missing it meant
+a register-scoped Cashier-template role could open the POS screen but
+never have a sale correctly attributed to its own register — confirmed
+live: `GET /cash-registers` 403'd for a real restricted cashier session,
+the switcher/auto-select degraded silently, and a completed test sale's
+`cash_register_id` came back null. Fixed by adding `cash_register.read`
+to the template (still excluding `cash_register.manage` — a cashier can
+see the list, never administer it); re-verified live: the identical
+scenario, same cashier, same register grant, now resolves and attributes
+correctly end to end (`sales.cash_register_id` populated with the
+granted register's own id).
+
+**§6 Workspace derivation strategy.** No new table, no new backend
+endpoint. A workspace is a pure, client-side DERIVED value, computed
+from data `AuthenticatedContext`/`SessionContext` already carry:
+`permissions`, `companyWideAccess`, `session.permittedBranchIds`,
+`session.permittedRegisterIds`, and `branches[].isDefault` (a pre-
+existing, already-session-aware field from `GET /api/v1/context/
+branches`, unused for this purpose before this task). New file
+`apps/one/lib/features/pos/pos_workspace.dart` — `resolvePosStartRoute`
+and `isStaleSelectedRegister`, mirroring TASK 16.15's own
+`resolvePosRegisterScope` shape/rigor exactly (pure functions, no
+widget, independently unit-tested).
+
+**§7 Backend authorization behavior — unchanged, re-certified.** No
+production authorization logic changed for this task; §5's fix was a
+template DATA correction (which permission codes a starter bundle
+grants), never a change to how `requireRegisterAccess`/
+`assertRegisterScope`/`resolveContext` work. New integration test file
+`apps/api/src/modules/auth/workspace-scope.integration.test.ts` (12
+tests, real Postgres) certifies this directly rather than re-deriving
+it: generic **User A** (Register 1 only) / **User B** (Register 2 only)
+/ **Manager** (both) / **Owner** (unrestricted) — named exactly per this
+task's own spec, never a tenant-specific label — proving register
+isolation including direct API-level tampering against the real
+`AuthService.requireRegisterAccess` guard (never a Flutter-only check).
+
+**§8 Branch/register intersection behavior.** Proven, not assumed: a
+register grant can never widen branch access, because
+`PostgresAuthRepository#resolveContext`'s own register-scope query
+(TASK 16.15) filters candidate registers to `branch_id=any($permitted
+BranchIds)` as a hard requirement on the register row itself — a stale
+`user_register_access` row naming a register in a branch the membership
+no longer has ANY access to is excluded by construction, not by a
+special case. A new dedicated regression test (§7's own file) proves
+this exact scenario end to end: grant branch + register access, confirm
+both resolve live, revoke the BRANCH grant while deliberately leaving
+the narrower register grant untouched (the realistic "orphan" case),
+confirm the stale register grant now yields zero usable access and an
+explicit request for that branch returns null (identical to "never
+granted at all"). No code change was needed here — TASK 16.15's own
+query design already got this right; this task adds the proof.
+
+**§9 Start-routing behavior — capability-derived, never role-name-based
+(§4's own hard constraint).** `resolvePosStartRoute`, exactly three
+rules, in priority order: (1) `companyWideAccess == true` → Dashboard
+(today's unchanged default — correctly captures "Owner/full-access
+admin" via the real existing unrestricted-role signal, never a role-name
+check). (2) Else, holding NONE of a fixed "management signal" permission
+set (`report.read, user.read, role.read, branch.read,
+branch_consolidation.read, employee.read, inventory_location.manage,
+supplier.read, purchase.read`) AND holding `sale.create` or
+`cash_session.open` → skip Dashboard entirely, land directly in the
+POS/register workspace — the "single-register operational cashier logs
+in and goes straight to their register" case. (3) Else → Dashboard,
+which already adapts its own content to whatever permissions the actor
+holds (e.g. its sales-trend banner is already gated by `report.read`) —
+covering "Manager" (some management signal, not company-wide) as a
+genuine, disclosed reuse of the existing landing surface rather than a
+second, largely redundant "what does my day look like" screen. A
+dedicated unit test proves the same permission set produces identical
+routing under two different, fictitious role names — the explicit
+role-name-independence guarantee this task requires.
+
+**§10 A real bug caught and fixed while wiring start-routing (§18).**
+Landing directly on `PosModule.pos` from `initState` bypassed `select
+()`'s own data-loading side effects (`loadProducts`/`loadCategories`/
+`loadBalances`) — before this task `selected` always started as the
+hardcoded `PosModule.dashboard`, which needs no eager load of its own
+(`_Dashboard` fetches its own summary), so this gap was invisible.
+Fixed by extracting `_loadDataFor(module)` and calling it from both
+`select()` and the new `initState()` path — caught by a wave-3 cashier-
+experience test hanging in `pumpAndSettle` once that file's default
+context started resolving to `PosModule.pos`, not invented after the
+fact.
+
+**§11 Navigation-gating behavior.** Before this task the sidebar
+(`_Sidebar`, `pos_shell.dart`) rendered every one of 31 `PosModule`
+values unconditionally — permission denial happened only inside each
+screen's own body (a `_PermissionState` placeholder), confirmed by
+reading the full file (zero `permission` references in
+`pos_navigation.dart`, zero filtering in `_Sidebar`'s own item-building
+loop). New `_posModuleRequiredAnyPermission` (`pos_navigation.dart`) — a
+static `Map<PosModule, List<String>>`, "any of" semantics, built from
+each module's own ALREADY-ESTABLISHED internal read-tier gate (e.g.
+`products`/`categories`/`brands`→`catalog.read`, `users`→`user.read`,
+`branchConsolidation`→`branch_consolidation.read`) — filters what
+`_Sidebar` actually renders. This is a SECOND, independent gate layered
+on top of, never a replacement for, each screen's own existing check
+(defense in depth) — confirmed unchanged: every one of the 60+ existing
+`permissions.contains(...)` call sites inside screen bodies stays
+exactly as it was. Live-verified (§18): a restricted cashier's sidebar
+shows only Ventas/Catálogo(read)/Historial de Ventas/Corte de
+Caja/Facturación CFDI/Asistente — no Dashboard, Reportes, Usuarios,
+Sucursales, Áreas Operativas, Consolidado de Sucursal, or any Sistema
+item beyond Asistente; a Manager's sidebar additionally shows
+Dashboard/Reportes/Control Acceso/Usuarios/Sucursales/Áreas
+Operativas/Empleados/Consolidado de Sucursal (each because their own
+role genuinely holds that read permission) while Sistema still shows
+only Asistente (no `company_settings.read`/`sync.execute`).
+
+**§12 User-admin UX changes.** `_RoleFormDialog` gained a template
+picker (`Administrador`/`Gerente`/`Cajero`/"Personalizado / en blanco" —
+the last one is today's exact original 3-field free-text flow, fully
+preserved) that auto-fills the name field (never clobbering a name the
+admin already typed/edited) and, once the role is created, immediately
+re-opens the existing `_RoleDetailDialog`/`_PermissionPicker` pre-
+checked with the template's codes — filtered to codes the ACTING ADMIN
+also holds (the simpler, explicitly-sanctioned fallback over rendering
+a pre-checked-but-disabled box, since the self-escalation guard would
+403 the former anyway). Live-verified end to end (§18): selecting
+"Cajero" pre-checked exactly the template's 18 codes across the real
+domain-grouped picker (`Turnos de caja 3/3`, `Movimientos de caja 1/1`,
+`Catálogo 1/1`, `Ventas 3/4`, `Reembolsos 2/5`, `Recompensas 2/4`,
+`Descuentos 1/1`, `Ventas en espera 1/1`, `Clientes 2/3`, `Cajas
+registradoras 1/2` — matching the template's own code list item for
+item) and saved successfully via the same existing `PUT /roles/{id}/
+permissions` call. The register/area-access grant flow itself is
+unchanged from TASK 16.15 — reused, not rebuilt.
+
+**§13 Single/multi/zero-register behavior (re-audited under the new
+workspace system, per this task's own Phase 9).** Single eligible
+register (restricted-to-one or unrestricted-with-one-open) → silent
+auto-select, no switcher, unchanged from TASK 16.15. Multi (narrowed to
+2+ specific registers) → `PosRegisterSwitcherBar` renders, unchanged.
+**New this task:** zero eligible registers for a narrowed (never an
+unrestricted-and-ambiguous) actor is a real, reachable case — every one
+of their granted registers deactivated/reassigned — previously
+undefined behavior; now a dedicated `_NoRegisterState` honest empty
+state ("Sin caja disponible" / "No tienes ninguna caja asignada y
+disponible en esta sucursal. Contacta a tu administrador."), gated
+behind a `_registerScopeReady` flag so it never flashes before the real
+register list has loaded. **New this task:** a previously-selected
+register that a live session refresh reveals is no longer permitted
+(`isStaleSelectedRegister`, wired into `_PosShellState.didUpdateWidget`)
+is cleared automatically — `SaleSession.setCashRegister(null)` — letting
+the normal auto-select/switcher/empty-state resolution re-run from
+scratch, as if the cashier had never picked one; a genuinely narrowed-
+to-one-real-register replacement isn't automatically re-applied until
+the next natural register-scope reload (e.g. a branch change) — a
+disclosed, non-safety-affecting limitation (worst case: a sale posts
+without an explicit `cash_register_id`, identical to pre-TASK-16.15
+behavior), not silently glossed over.
+
+**§14 Custom-role safety (re-certified, not re-invented).**
+`syncSystemRolePermissions()` unchanged: targets `is_system=true` only
+(confirmed by both its SQL and its own doc comment — today, exactly the
+one "Owner" role `ProductionOwnerProvisioner`/`DevelopmentOwnerBootstrap`
+each create). A new dedicated test (§7's file) inserts a genuinely NEW
+permission code mid-test, runs the real sync function, and asserts a
+template-sourced custom role (`register_operator`, `is_system=false`)
+never receives it while the `is_system=true` Owner role does — proving
+the guarantee specifically for a role this task's own feature creates,
+not just the pre-existing mechanism in the abstract.
+
+**§15 Owner behavior.** Fully unchanged and re-verified: `companyWideAccess
+=== true` is the ONLY signal `resolvePosStartRoute` checks for the
+"unrestricted" case (§9), landing on Dashboard with the complete,
+unfiltered application — live-confirmed before and after every other
+change in this task, including a full sale + role/user creation flow.
+
+**§16 Cross-tenant/branch isolation.** Re-certified via the same new
+integration test file: a different company cannot resolve this
+company's register/branch scope even reusing this company's exact
+membership/user ids under its own `companyId` — returns `null`,
+identical to "no such membership" (never leaks existence). Cross-branch
+(§8) and cross-register (§7) isolation both re-proven with real
+Postgres, including direct-ID tampering.
+
+**§17 Commercial onboarding — recommended setup order (documentation
+only, per this task's own "do not build a giant wizard unless genuinely
+needed").** A real, generic, config-driven onboarding tool already
+exists (`apps/api/src/business-config/`, TASK 14.2 Part D) — a
+`LaunchConfig` JSON (company/branches/registers/roles/users/catalog/
+inventory-opening-balances/rewards), applied idempotently AFTER
+`ProductionOwnerProvisioner` creates the company + Owner, with zero
+hardcoded business names anywhere. **Recommended order for a brand-new
+tenant**, using only existing surfaces: (1) `provision:production-owner`
+— company + Owner. (2) A `LaunchConfig` run — branches, registers,
+starter roles (`LaunchRoleConfig.permissions` can reference the same
+codes this task's own templates use — an operator can literally copy a
+template's `permission_codes` into their own `LaunchConfig`), and staff
+users. (3) The Administración → Áreas Operativas screen (this task's own
+UI) — create the tenant's own operational areas, if the business wants
+them at all (never mandatory — "Sin área" is a fully supported
+permanent state, TASK 16.15 §14). (4) Assign registers to areas
+(Cajas registradoras assignment, TASK 16.15). (5) Administración →
+Usuarios — grant each staff member their role (from a template or fully
+custom) plus, only if narrower than their branch access, a specific
+register/area grant (TASK 16.15's own admin UI, reused unchanged by this
+task). **Genuine, disclosed gap**: `LaunchConfig` itself does not yet
+have first-class fields for operational areas, register-area
+assignment, or register/area-scoped user grants — a new tenant's steps
+(3)-(5) above are manual-UI-only today, not bootstrap-file-driven. Given
+the size of the rest of this task, extending `LaunchConfig`'s schema
+was deliberately left undone rather than rushed; the existing tool
+still correctly bootstraps everything TASK 16.15/16.16 didn't add
+(company, branches, registers, starter roles, users), and steps (3)-(5)
+are a small, one-time, per-tenant admin task through an already-live UI.
+
+**§18 Live browser certification.** Against the real local stack
+(`asone_local`), logged in as `ceo@inflapark.local` (Owner). Created a
+real "Cajero" template-sourced role, live-verified every domain's pre-
+checked count matched the template exactly, saved successfully. Created
+a **restricted cashier** (generic QA identity, `qa-restricted-cashier-
+1616@example.test` — never a tenant-specific label), assigned the
+template role scoped to one branch, granted exactly one register.
+Logged in as them: landed **directly on the POS screen** (zero Dashboard
+flash), sidebar showed only the capability-matching subset (§11),
+completed a real cash sale — confirmed via direct query that the sale's
+`cash_register_id` matched the granted register exactly (this is where
+§5's gap was caught, fixed, rebuilt, and re-verified live end to end,
+including the DB-level attribution check both before and after the
+fix). Created a **multi-register manager** (generic QA identity),
+granted the Gerente-template role plus two explicit register grants
+(one pre-existing register, one test-fixture register created via
+direct insert for this pass — disclosed, since the UI's own register-
+creation screen wasn't hunted down given time constraints): logged in,
+landed on **Dashboard** (not POS, per §9's rule 3), sidebar showed the
+broader Manager-tier subset including Consolidado de Sucursal, opening
+POS rendered the real **register switcher** with both registers
+selectable, selecting one persisted correctly. **Owner** retained the
+complete, unfiltered application throughout (re-confirmed at both the
+start and end of this pass). **Not mechanically reachable in this
+tool**: live direct-API-tampering with a raw HTTP client (no DevTools
+network-request-editing/bearer-token-extraction capability for a
+compiled Flutter Web app in this environment) — covered instead by
+§7/§8's own dedicated integration tests, which exercise the real
+`AuthService.requireRegisterAccess` enforcement function directly
+against real Postgres, arguably a more precise proof than an opaque
+live HTTP response could give; disclosed honestly rather than
+fabricated. All QA data created during this pass was cleaned up
+afterward: both QA accounts revoked of every register grant and role
+assignment, then disabled; both QA roles retired; the one test-fixture
+register deactivated. The one real cash sale created during the pass
+was deliberately left in place (a genuine, harmless, already-completed
+financial transaction — this platform's own established convention,
+followed by every prior live-cert pass, is to never retroactively alter
+or delete a real posted transaction during cleanup).
+
+**§19 Tests/results.** Backend: new `role-templates.test.ts` (13 tests,
+pure catalogue correctness), new `workspace-scope.integration.test.ts`
+(12 tests, real Postgres — multi-register isolation incl. tampering,
+branch/register intersection, the stale-grant regression, live
+permission-change reflection, custom-role-from-template safety, cross-
+tenant isolation), new `GET /api/v1/role-templates` route tests (2
+tests). Existing suites re-verified 100% passing after the Cashier-
+template fix: `branch-consolidation.integration.test.ts` (11/11),
+`operational-areas.integration.test.ts` (11/11), the full `cash`/
+`sales.integration.test.ts` suites, the full non-integration unit suite
+(558/558). `packages/database`'s own suite hit one transient Windows
+filesystem module-resolution flake under heavy parallel load (confirmed
+the files genuinely exist on disk; a sequential re-run passed clean,
+55/55) — an environment characteristic, not a code defect. Flutter: new
+`pos_workspace_test.dart` (pure start-route/stale-register logic,
+including the explicit role-name-independence proof), new
+`pos_workspace_widget_test.dart` (sidebar visibility, the zero-register
+empty state, a stale-register-cleared rebuild test), plus four existing
+test files updated for legitimate fallout from real sidebar gating (a
+permission-less actor's nav item is now correctly absent rather than
+reachable-then-denied — the STRONGER guarantee, not a weakened one).
+Full suite: 726/726 passing (707 pre-existing + 19 new). `flutter
+analyze`: 0 errors (167 issues total — the established 165-issue
+baseline plus 2 new, harmless `directives_ordering` infos in the new
+test file). `flutter build web --release`: succeeds.
+
+**§20 Genuine remaining limitations.** `LaunchConfig` doesn't yet cover
+operational areas/register-area assignment/register-scoped user grants
+(§17) — a new tenant's TASK 16.15/16.16 setup is manual-UI-only. The
+register/area-scope grant dialog shows a raw register/area UUID for an
+already-granted row rather than a resolved friendly name (TASK 16.15's
+own disclosed limitation, unchanged). A genuinely-narrowed-to-one
+register isn't automatically re-selected the instant it becomes the
+sole eligible option after a stale-selection clear — only on the next
+natural register-scope reload (§13) — never a safety issue, disclosed
+rather than silently accepted. No dedicated widget test drives the
+role-template picker's own dialog UI end-to-end (its gateway contract
+is exercised via the extended fake in `pos_user_administration_test.
+dart`, and the real dialog was verified live in §18). Live direct-API-
+ID-tampering could not be mechanically demonstrated in this specific
+browser-automation environment (§18) — covered by dedicated backend
+integration tests instead, not silently skipped. Physical 80mm printer
+certification remains outstanding, unchanged from every prior cash-
+related task.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

@@ -251,6 +251,29 @@ export function registerIdentityAdministrationRoutes(
       request.requestContext,
     );
   });
+  // TASK 16.16 — a static, non-persisted starter permission bundle
+  // catalogue for the role-creation UI (Administrador/Gerente/Cajero).
+  // See `AdministrationService.listRoleTemplates`'s own doc comment.
+  app.get('/api/v1/role-templates', async (request) => {
+    const context = await requireAuthenticatedUser(request, authentication);
+    return successResponse(
+      {
+        items: administration
+          .listRoleTemplates({
+            context,
+            requestId: request.requestContext.requestId,
+            correlationId: request.requestContext.correlationId,
+          })
+          .map((template) => ({
+            key: template.key,
+            label: template.label,
+            description: template.description,
+            permission_codes: template.permissionCodes,
+          })),
+      },
+      request.requestContext,
+    );
+  });
   app.get('/api/v1/permissions', async (request) => {
     const context = await requireAuthenticatedUser(request, authentication);
     return successResponse(

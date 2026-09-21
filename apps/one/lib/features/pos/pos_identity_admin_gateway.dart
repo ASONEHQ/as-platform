@@ -149,6 +149,53 @@ class PosPermissionEffect {
 }
 
 // ---------------------------------------------------------------------
+// Role templates (TASK 16.16) — a static, non-persisted, non-authoritative
+// starter-permission-bundle catalogue, used ONLY to pre-fill the "Nuevo
+// rol" permission checklist. Never treat [PosRoleTemplate.key] as
+// meaningful after a role is created from it — the resulting role is an
+// ordinary, fully editable custom role from that point on, never branched
+// on anywhere in app logic (display-only, e.g. a one-time "creado desde la
+// plantilla Gerente" creation-flow label, is fine; anything behavioral is
+// not — see `pos_user_administration_screen.dart`'s own template-picker
+// doc comment).
+// ---------------------------------------------------------------------
+
+/// `GET /api/v1/role-templates` (`role.read`) — one static starter bundle
+/// (`administrator`/`manager`/`cashier` today, `AdministrationService.
+/// listRoleTemplates`, `packages/database/src/seeds/role-templates.ts`).
+class PosRoleTemplate {
+  const PosRoleTemplate({
+    required this.key,
+    required this.label,
+    required this.description,
+    required this.permissionCodes,
+  });
+
+  factory PosRoleTemplate.fromJson(Map<String, Object?> json) => PosRoleTemplate(
+    key: json['key']! as String,
+    label: json['label']! as String,
+    description: json['description'] as String?,
+    permissionCodes: (json['permission_codes'] as List<Object?>? ?? const [])
+        .map((item) => item! as String)
+        .toList(growable: false),
+  );
+
+  /// A stable identifier (`administrator`/`manager`/`cashier`) — never
+  /// persisted, never read back after role creation (see this section's
+  /// own header doc comment).
+  final String key;
+  final String label;
+  final String? description;
+
+  /// Real permission codes from the same server-authoritative catalogue
+  /// [PosPermission.code] carries — directly comparable/resolvable to
+  /// [PosPermission.id] via an already-fetched [PosIdentityAdminGateway.
+  /// listPermissions] the same way `_PermissionPicker`'s self-escalation
+  /// guard already compares codes.
+  final List<String> permissionCodes;
+}
+
+// ---------------------------------------------------------------------
 // Permissions (the server-authoritative catalog)
 // ---------------------------------------------------------------------
 
@@ -366,6 +413,10 @@ abstract interface class PosIdentityAdminGateway {
   /// `GET /api/v1/roles/{id}` (`role.read`).
   Future<PosRole> role(String roleId);
 
+  /// `GET /api/v1/role-templates` (`role.read`) — see [PosRoleTemplate]'s
+  /// own section header doc comment.
+  Future<List<PosRoleTemplate>> listRoleTemplates();
+
   /// `PATCH /api/v1/roles/{id}` (`role.update`) — every field optional
   /// (partial update). 403s `permission_denied` server-side for a system
   /// role (`admin.service.ts:462-467`).
@@ -510,6 +561,10 @@ class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
     final envelope = await _client.getJson('/api/v1/roles/$roleId');
     return PosRole.fromJson(_map(envelope));
   }
+
+  @override
+  Future<List<PosRoleTemplate>> listRoleTemplates() async =>
+      _items(await _client.getJson('/api/v1/role-templates')).map(PosRoleTemplate.fromJson).toList(growable: false);
 
   @override
   Future<PosRole> updateRole(String roleId, {String? name, String? description, String? status}) async {
@@ -674,6 +729,9 @@ class EmptyPosIdentityAdminGateway implements PosIdentityAdminGateway {
 
   @override
   Future<PosRole> role(String roleId) => Future.error(StateError('No identity admin gateway is configured.'));
+
+  @override
+  Future<List<PosRoleTemplate>> listRoleTemplates() async => const [];
 
   @override
   Future<PosRole> updateRole(String roleId, {String? name, String? description, String? status}) =>

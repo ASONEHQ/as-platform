@@ -171,6 +171,146 @@ void main() {
     });
   });
 
+  // TASK 16.16 — role templates: a static, non-persisted starter permission
+  // bundle catalogue (`GET /api/v1/role-templates`) that only ever pre-fills
+  // the "Nuevo rol" flow — never persisted, never branched on afterward.
+  group('Roles — creación desde plantilla (TASK 16.16)', () {
+    final roleReadPermission = _permission('p-role-read', 'role.read', 'role');
+    final roleCreatePermission = _permission('p-role-create', 'role.create', 'role');
+    final saleReadPermission = _permission('p-sale-read', 'sale.read', 'sale');
+    // The acting owner fixture (`_ownerPermissions`) deliberately does NOT
+    // hold this one — proves a template's pre-checked set is filtered to
+    // what the actor actually holds, never silently submitted as a grant
+    // that would 403.
+    final cashSessionReadPermission = _permission('p-cash-read', 'cash_session.read', 'cash_session');
+
+    List<PosRoleTemplate> templates() => const [
+      PosRoleTemplate(
+        key: 'administrator',
+        label: 'Administrador',
+        description: 'El catálogo completo de permisos.',
+        permissionCodes: ['role.read', 'role.create'],
+      ),
+      PosRoleTemplate(
+        key: 'manager',
+        label: 'Gerente',
+        description: 'Operación diaria de sucursal.',
+        permissionCodes: ['sale.read', 'cash_session.read'],
+      ),
+      PosRoleTemplate(
+        key: 'cashier',
+        label: 'Cajero',
+        description: 'Ventas de mostrador.',
+        permissionCodes: ['sale.read'],
+      ),
+    ];
+
+    testWidgets(
+      'creando un rol desde la plantilla Gerente pre-marca exactamente sus permisos que el actor '
+      'también posee — nunca uno que el actor no tiene',
+      (tester) async {
+        final gateway = _RecordingIdentityAdminGateway(
+          roles: const [],
+          permissions: [roleReadPermission, roleCreatePermission, saleReadPermission, cashSessionReadPermission],
+          roleTemplates: templates(),
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+        await tester.tap(find.byKey(const Key('pos-roles-new')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.listRoleTemplatesCalls, 1);
+        await tester.tap(find.byKey(const Key('pos-role-form-template')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Gerente').last);
+        await tester.pumpAndSettle();
+
+        // Pre-fills the name with the template's own label, but stays
+        // fully editable — a business can rename it freely.
+        expect(find.widgetWithText(TextField, 'Gerente'), findsOneWidget);
+        await tester.enterText(find.byKey(const Key('pos-role-form-name')), 'Gerente de Taquilla');
+        await tester.enterText(find.byKey(const Key('pos-role-form-code')), 'branch_manager');
+        await tester.tap(find.byKey(const Key('pos-role-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.createRoleCalls, hasLength(1));
+        expect(gateway.createRoleCalls.single.name, 'Gerente de Taquilla');
+        expect(gateway.createRoleCalls.single.code, 'branch_manager');
+
+        // The SAME `_RoleDetailDialog`/`_PermissionPicker` flow a manual
+        // edit uses opens immediately, pre-checked.
+        expect(find.byKey(const Key('pos-role-detail-save-permissions')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-permission-domain-sale')));
+        await tester.pumpAndSettle();
+        final saleReadCheckbox = tester.widget<CheckboxListTile>(
+          find.byKey(Key('pos-permission-checkbox-${saleReadPermission.id}')),
+        );
+        expect(saleReadCheckbox.value, isTrue, reason: 'sale.read is in the template AND the actor holds it');
+
+        await tester.tap(find.byKey(const Key('pos-permission-domain-cash_session')));
+        await tester.pumpAndSettle();
+        final cashReadCheckbox = tester.widget<CheckboxListTile>(
+          find.byKey(Key('pos-permission-checkbox-${cashSessionReadPermission.id}')),
+        );
+        expect(
+          cashReadCheckbox.value,
+          isFalse,
+          reason: 'cash_session.read is in the template but the actor does not hold it — never pre-checked',
+        );
+        expect(cashReadCheckbox.onChanged, isNull, reason: 'and never offered as a grantable choice either');
+
+        // Fully editable from here — explicitly saving submits exactly the
+        // pre-checked (actor-held) set, never a silent auto-save. Scrolled
+        // into view first — the two expanded domain groups above push the
+        // save button below the dialog's scrollable fold.
+        await tester.ensureVisible(find.byKey(const Key('pos-role-detail-save-permissions')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-role-detail-save-permissions')));
+        await tester.pumpAndSettle();
+        expect(gateway.replaceRolePermissionsCalls, hasLength(1));
+        expect(
+          gateway.replaceRolePermissionsCalls.single.assignments.map((a) => a.permissionId),
+          [saleReadPermission.id],
+        );
+      },
+    );
+
+    testWidgets(
+      '"Personalizado / en blanco" (la opción por defecto) sigue creando un rol totalmente vacío, '
+      'exactamente como antes de esta tarea',
+      (tester) async {
+        final gateway = _RecordingIdentityAdminGateway(
+          roles: const [],
+          permissions: [roleReadPermission, roleCreatePermission, saleReadPermission],
+          roleTemplates: templates(),
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+        await tester.tap(find.byKey(const Key('pos-roles-new')));
+        await tester.pumpAndSettle();
+
+        // The template dropdown is offered (templates loaded successfully)
+        // but deliberately never touched — "Personalizado / en blanco" is
+        // its own default value, not merely the absence of a picker.
+        expect(find.byKey(const Key('pos-role-form-template')), findsOneWidget);
+        expect(find.text('Personalizado / en blanco'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-role-form-name')), 'Rol a la medida');
+        await tester.enterText(find.byKey(const Key('pos-role-form-code')), 'custom_role');
+        await tester.tap(find.byKey(const Key('pos-role-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.createRoleCalls, hasLength(1));
+        expect(gateway.createRoleCalls.single.name, 'Rol a la medida');
+        // No automatic permission dialog, and no permissions ever sent —
+        // a truly empty role, exactly like the pre-TASK-16.16 flow.
+        expect(find.byKey(const Key('pos-role-detail-save-permissions')), findsNothing);
+        expect(gateway.replaceRolePermissionsCalls, isEmpty);
+      },
+    );
+  });
+
   group('Roles — asignación de permisos y el guardia contra auto-escalación', () {
     testWidgets('un permiso que el propio actor no tiene queda deshabilitado, con tooltip', (tester) async {
       final role = _role('r1', 'Cajero', 'cashier');
@@ -434,13 +574,15 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     Map<String, PosUserDetail> userDetails = const {},
     List<BranchSummary> grantableBranches = const [],
     Map<String, List<PosRegisterAccessGrant>> registerAccessByUser = const {},
+    List<PosRoleTemplate> roleTemplates = const [],
   }) : _users = List.of(users),
        _roles = List.of(roles),
        _permissions = List.of(permissions),
        _rolePermissions = Map.of(rolePermissionsByRole),
        _userDetails = Map.of(userDetails),
        _grantableBranches = List.of(grantableBranches),
-       _registerAccessByUser = Map.of(registerAccessByUser);
+       _registerAccessByUser = Map.of(registerAccessByUser),
+       _roleTemplates = List.of(roleTemplates);
 
   final List<PosUser> _users;
   final List<PosRole> _roles;
@@ -449,10 +591,12 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final Map<String, PosUserDetail> _userDetails;
   final List<BranchSummary> _grantableBranches;
   final Map<String, List<PosRegisterAccessGrant>> _registerAccessByUser;
+  final List<PosRoleTemplate> _roleTemplates;
 
   int listUsersCalls = 0;
   int listRolesCalls = 0;
   int listPermissionsCalls = 0;
+  int listRoleTemplatesCalls = 0;
   final List<({String email, String displayName})> createUserCalls = [];
   final List<({String userId, String status, String? password})> updateMembershipCalls = [];
   final List<({String name, String code, String? description})> createRoleCalls = [];
@@ -543,6 +687,12 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
 
   @override
   Future<PosRole> role(String roleId) async => _roles.firstWhere((role) => role.id == roleId);
+
+  @override
+  Future<List<PosRoleTemplate>> listRoleTemplates() async {
+    listRoleTemplatesCalls++;
+    return List.of(_roleTemplates);
+  }
 
   @override
   Future<PosRole> updateRole(String roleId, {String? name, String? description, String? status}) async {

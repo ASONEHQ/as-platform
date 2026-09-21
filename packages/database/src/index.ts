@@ -11,4 +11,7 @@ export type {
 } from './client.js';
 export * from './schema/index.js';
 export { seedTechnicalPermissions } from './seeds/technical-permissions.js';
+export { syncSystemRolePermissions } from './seeds/system-role-permissions.js';
+export type { RoleTemplate } from './seeds/role-templates.js';
+export { roleTemplates } from './seeds/role-templates.js';
 export { withTransaction } from './transaction.js';

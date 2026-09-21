@@ -37,6 +37,7 @@ function authContext(permissions: readonly string[]): AuthContext {
 
 interface ServiceDouble {
   rolePermissions: ReturnType<typeof vi.fn>;
+  listRoleTemplates: ReturnType<typeof vi.fn>;
 }
 
 const apps: FastifyInstance[] = [];
@@ -90,6 +91,17 @@ function fixture(permissions: readonly string[]): { app: FastifyInstance; servic
         { id: 'perm-2', code: 'sale.create', description: 'Create sales', domain: 'sale', effect: 'allow' },
       ]);
     }),
+    // TASK 16.16 — mirrors `rolePermissions` above exactly: the gate lives
+    // inside the (real) service method (`role.read`), so this double
+    // replicates it to prove the route never drops `context` on its way
+    // through.
+    listRoleTemplates: vi.fn((actor: { context: AuthContext }) => {
+      if (!actor.context.permissions.includes('role.read'))
+        throw new AppError({ code: 'permission_denied', message: 'Permission denied.', statusCode: 403 });
+      return [
+        { key: 'cashier', label: 'Cajero', description: 'Solo caja.', permissionCodes: ['sale.create'] },
+      ];
+    }),
   };
   registerIdentityAdministrationRoutes(app, authentication, service as unknown as AdministrationService);
   return { app, service };
@@ -136,6 +148,38 @@ describe('GET /api/v1/roles/:role_id/permissions', () => {
     // gate `rolePermissions` has always had), so the double IS invoked and
     // throws; no data leaks in the response either way.
     expect(service.rolePermissions).toHaveBeenCalledOnce();
+    expect(response.json()).not.toHaveProperty('data.items');
+  });
+});
+
+describe('GET /api/v1/role-templates (TASK 16.16)', () => {
+  it('lists the starter permission-bundle catalogue, snake-casing permission_codes, requiring only role.read', async () => {
+    const { app, service } = fixture(['role.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/role-templates',
+      headers: { authorization: 'Bearer token' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: {
+        items: [{ key: 'cashier', label: 'Cajero', description: 'Solo caja.', permission_codes: ['sale.create'] }],
+      },
+    });
+    expect(service.listRoleTemplates).toHaveBeenCalledOnce();
+  });
+
+  it('403s permission_denied without role.read', async () => {
+    const { app, service } = fixture([]);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/role-templates',
+      headers: { authorization: 'Bearer token' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe('permission_denied');
     expect(response.json()).not.toHaveProperty('data.items');
   });
 });

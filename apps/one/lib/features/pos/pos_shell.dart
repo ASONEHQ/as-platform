@@ -70,6 +70,7 @@ import 'pos_suppliers_gateway.dart';
 import 'pos_suppliers_screen.dart';
 import 'pos_tokens.dart';
 import 'pos_user_administration_screen.dart';
+import 'pos_workspace.dart';
 import 'purchase_order_folio.dart';
 import 'receipt_html.dart';
 import 'cash_cut_html.dart';
@@ -249,14 +250,17 @@ class PosShell extends StatefulWidget {
 }
 
 class _PosShellState extends State<PosShell> {
-  PosModule selected = PosModule.dashboard;
+  // TASK 16.16 — resolved in `initState` below (never a hardcoded
+  // constant anymore) via `resolvePosStartRoute`; see `pos_workspace.dart`
+  // for the full three-way rule this implements.
+  late PosModule selected;
   bool dark = false;
   // V1's `.sidebar` carries no `.expanded` class by default — the rail
   // starts collapsed until the hamburger toggles it.
   bool sidebarExpanded = false;
   // Mirrors `_expandirGrupoDe`: exactly one nav group is open at a time,
   // starting with whichever group contains the initially-active item.
-  String? expandedGroup = PosModule.dashboard.group;
+  late String? expandedGroup;
 
   // TASK 12.3B: `SaleSession` and `clienteMode` moved here from
   // `_PosSaleState` (where TASK 12.3/12.3A first put them). CLIENTE mode
@@ -269,6 +273,28 @@ class _PosShellState extends State<PosShell> {
   // building `_PosSale`.
   final saleSession = SaleSession();
   bool clienteMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // TASK 16.16 — resolved synchronously here, straight from the already-
+    // hydrated `AuthenticatedContext.companyWideAccess`/`permissions` (no
+    // async fetch needed — see `pos_workspace.dart`'s own doc comment), so
+    // an operational-tier actor lands directly on `PosModule.pos` with no
+    // visible Dashboard flash. Register auto-select/switcher resolution is
+    // NOT duplicated here — `_PosSaleState.initState` (inside the POS
+    // screen itself) already independently resolves that the moment it
+    // builds, exactly as it does today.
+    selected = resolvePosStartRoute(
+      companyWideAccess: widget.context.companyWideAccess,
+      permissions: widget.context.permissions,
+    );
+    expandedGroup = selected.group;
+    // See `_loadDataFor`'s own doc comment — landing directly on a module
+    // other than the old hardcoded Dashboard default needs the same data
+    // load a real nav tap (`select`) would have triggered.
+    _loadDataFor(selected);
+  }
 
   @override
   void dispose() {
@@ -291,7 +317,26 @@ class _PosShellState extends State<PosShell> {
     super.didUpdateWidget(oldWidget);
     final branchChanged =
         widget.context.session.branchId != oldWidget.context.session.branchId;
-    if (!branchChanged) return;
+    if (!branchChanged) {
+      // TASK 16.16 — the branch itself didn't change, but this is still a
+      // real, fresh `AuthenticatedContext` (every rebuild here follows a
+      // genuine `AuthController` re-hydrate — e.g. `api.onUnauthorized`'s
+      // `authController.refresh` on a 401, or any other
+      // `_acceptCredentials` call — see `pos_workspace.dart`'s own doc
+      // comment on `isStaleSelectedRegister`). `permittedRegisterIds` may
+      // have narrowed since the previous context (an admin revoked this
+      // cashier's register grant mid-shift) — never let a now-invalid
+      // selection keep silently applying; clearing it here lets the normal
+      // auto-select/switcher/empty-state resolution re-run as if the
+      // cashier had never picked one.
+      if (isStaleSelectedRegister(
+        selectedRegisterId: saleSession.cashRegisterId,
+        permittedRegisterIds: widget.context.session.permittedRegisterIds,
+      )) {
+        saleSession.setCashRegister(null);
+      }
+      return;
+    }
     saleSession.clearAll();
     // TASK 16.15: a register belongs to exactly one branch — a previously
     // selected register must never silently keep applying after the
@@ -384,6 +429,23 @@ class _PosShellState extends State<PosShell> {
       selected = module;
       expandedGroup = module.group;
     });
+    _loadDataFor(module);
+  }
+
+  // TASK 16.16 — extracted out of `select` so `initState` can trigger the
+  // exact same data load for whichever module `resolvePosStartRoute`
+  // lands the actor on by default, without going through a nav tap. Before
+  // this task, `selected` always started as the hardcoded `PosModule.
+  // dashboard` (which needs no eager load here — `_Dashboard` fetches its
+  // own summary internally), so this gap never mattered; now that an
+  // operational actor can land directly on `PosModule.pos` at `initState`
+  // time, skipping this would leave `PosReadController` stuck at `idle`
+  // forever (never explicitly told to load), which renders as a permanent
+  // loading spinner — a real, previously-undetected regression caught by
+  // `pos_shell_wave3_cashier_experience_test.dart`'s own tests hanging in
+  // `pumpAndSettle` once that file's default context started resolving to
+  // `PosModule.pos`.
+  void _loadDataFor(PosModule module) {
     if (module == PosModule.pos) {
       // TASK 12.3C: the POS sale screen resolves branch-specific price
       // overrides ahead of the company-wide default (same branch scope
@@ -454,6 +516,7 @@ class _PosShellState extends State<PosShell> {
                       onToggleDark: () => setState(() => dark = !dark),
                       expandedGroup: expandedGroup,
                       onToggleGroup: _toggleGroup,
+                      permissions: widget.context.permissions,
                     ),
                   Expanded(
                     child: Column(
@@ -554,6 +617,7 @@ class _PosShellState extends State<PosShell> {
                     ? null
                     : group,
               ),
+              permissions: widget.context.permissions,
             ),
           ),
         ),
@@ -572,6 +636,7 @@ class _Sidebar extends StatelessWidget {
     required this.onToggleDark,
     required this.expandedGroup,
     required this.onToggleGroup,
+    required this.permissions,
   });
 
   final PosModule selected;
@@ -581,6 +646,13 @@ class _Sidebar extends StatelessWidget {
   final VoidCallback onToggleDark;
   final String? expandedGroup;
   final ValueChanged<String> onToggleGroup;
+  // TASK 16.16 (Phase 5) — the acting session's own real permission codes
+  // (`AuthenticatedContext.permissions`), used ONLY to filter which nav
+  // items render via `posModuleVisibleFor` (`pos_navigation.dart`) — a
+  // first line of defense on top of, never a replacement for, each
+  // screen's own existing internal permission gate (see that function's
+  // own doc comment).
+  final List<String> permissions;
 
   @override
   Widget build(BuildContext context) {
@@ -692,7 +764,9 @@ class _Sidebar extends StatelessWidget {
                       children: expandedGroup == group
                           ? [
                               for (final module in PosModule.values.where(
-                                (module) => module.group == group,
+                                (module) =>
+                                    module.group == group &&
+                                    posModuleVisibleFor(module, permissions),
                               ))
                                 _SidebarItem(
                                   module: module,
@@ -4117,6 +4191,14 @@ class _PosSaleState extends State<_PosSale> {
   List<PosCashRegister> _branchRegisters = const [];
   String? _singleOpenRegisterId;
   String? _registerScopeBranchId;
+  // TASK 16.16 — `true` only once `_loadRegisterScope` has actually
+  // resolved `_branchRegisters` for the CURRENT branch (success path
+  // only, never on a failed/best-effort load — see that method's own
+  // `on Object` branch). Guards `_NoRegisterState` from flashing on the
+  // very first frame, before the real register list has loaded, for
+  // every restricted cashier (when `_branchRegisters` is still its
+  // initial empty value).
+  bool _registerScopeReady = false;
 
   @override
   void initState() {
@@ -4140,6 +4222,7 @@ class _PosSaleState extends State<_PosSale> {
   Future<void> _loadRegisterScope() async {
     final branchId = widget.context.session.branchId;
     _registerScopeBranchId = branchId;
+    _registerScopeReady = false;
     if (branchId == null) {
       if (!mounted) return;
       setState(() {
@@ -4179,6 +4262,7 @@ class _PosSaleState extends State<_PosSale> {
     setState(() {
       _branchRegisters = registers;
       _singleOpenRegisterId = singleOpen;
+      _registerScopeReady = true;
     });
     _applyAutoRegisterSelection();
   }
@@ -4406,6 +4490,19 @@ class _PosSaleState extends State<_PosSale> {
       branchRegisters: _branchRegisters,
       singleOpenRegisterId: _singleOpenRegisterId,
     );
+    // TASK 16.16 — a cashier whose `permittedRegisterIds` narrowed them to
+    // specific register(s) that have since all been deactivated/reassigned
+    // is a real, reachable "zero eligible registers" case (see
+    // `_NoRegisterState`'s own doc comment) — distinct from an
+    // UNRESTRICTED cashier's own "zero or multiple open registers is
+    // genuinely ambiguous" outcome (`resolvePosRegisterScope`'s own doc
+    // comment), which must keep behaving exactly as before (no register
+    // id sent, sale surface still usable). Gated on `_registerScopeReady`
+    // so this never flashes before the real register list has loaded.
+    final noEligibleRegister =
+        _registerScopeReady &&
+        widget.context.session.permittedRegisterIds != null &&
+        registerScope.eligibleRegisters.isEmpty;
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
@@ -4468,6 +4565,8 @@ class _PosSaleState extends State<_PosSale> {
           Expanded(
             child: !allowed
                 ? const _PermissionState()
+                : noEligibleRegister
+                ? const _NoRegisterState(key: Key('pos-no-register-state'))
                 : _PosSaleBody(
                     controller: widget.controller,
                     saleSession: widget.saleSession,
@@ -17636,6 +17735,28 @@ class _PermissionState extends StatelessWidget {
     icon: Icons.lock_outline,
     title: 'Acceso no autorizado',
     message: 'Tu sesión no incluye el permiso de lectura requerido.',
+  );
+}
+
+/// TASK 16.16 — the honest empty state for a real, reachable case
+/// `resolvePosRegisterScope` (TASK 16.15) can produce: a cashier whose
+/// `permittedRegisterIds` narrowed them to specific register(s), but every
+/// one of those registers has since been deactivated or reassigned, so
+/// `eligibleRegisters` comes back empty. Before this task, `_PosSaleState.
+/// build` fell straight through to `_PosSaleBody` regardless, rendering a
+/// sale surface with no valid register behind it — never a fabricated
+/// register, but also never an explanation. Mirrors `_PermissionState`'s
+/// own `_StateCard` look, so this reads as the same family of "nothing to
+/// show, here's why" surface the rest of this file already uses.
+class _NoRegisterState extends StatelessWidget {
+  const _NoRegisterState({super.key});
+  @override
+  Widget build(BuildContext context) => const _StateCard(
+    icon: Icons.point_of_sale_outlined,
+    title: 'Sin caja disponible',
+    message:
+        'No tienes ninguna caja asignada y disponible en esta sucursal. '
+        'Contacta a tu administrador.',
   );
 }
 

@@ -77,7 +77,15 @@ void main() {
   });
 
   testWidgets('shows unsupported modules as Coming soon', (tester) async {
-    await _pump(tester, const Size(1440, 900));
+    // TASK 16.16 (Phase 5): "Facturación CFDI" is now gated in the sidebar
+    // by `cash_session.read` (same as "Corte de Caja", its own group-mate
+    // — see `pos_navigation.dart`'s module→permission map), so reaching it
+    // needs a context that actually carries it; `_contextWithCashPermissions`
+    // already exists for exactly this domain (TASK 12.7). This test is
+    // about the module's own "Coming soon" placeholder body, not
+    // permission gating, so it isn't testing anything about
+    // `_contextWithCashPermissions`'s specific extra permissions.
+    await _pump(tester, const Size(1440, 900), context: _contextWithCashPermissions);
     // TASK 14.5 (Wave 3, Phase 6): Cafetería ("Acceso rápido") is now a
     // real screen — the exact same `_PosSale` surface as Punto de Venta,
     // scoped to visual-tile categories (see `pos_shell_wave3_cashier_
@@ -4080,15 +4088,24 @@ void main() {
       await tester.pumpAndSettle();
 
       // Dashboard's group (Administración) is open by default; Ventas is
-      // closed, so its items are absent.
-      expect(find.byKey(const Key('nav-dashboard')), findsOneWidget);
+      // closed, so its items are absent. Asserted via `nav-users` rather
+      // than `nav-dashboard` itself — TASK 16.16 (Phase 5) now gates
+      // "Dashboard" in the sidebar on `report.read`, which the default
+      // `_context` deliberately lacks (see `_context`'s own doc comment
+      // and the dedicated Dashboard-permission test above); `_context`
+      // does carry `user.read`, so "Usuarios" (the same Administración
+      // group) is the equivalent, still-visible proxy for "this group is
+      // open" — the actual module SELECTED on landing is still Dashboard
+      // regardless (`resolvePosStartRoute`'s own "Manager" branch, proven
+      // by `pos-dashboard-permission` in the very first test above).
+      expect(find.byKey(const Key('nav-users')), findsOneWidget);
       expect(find.byKey(const Key('nav-pos')), findsNothing);
 
       await tester.tap(find.byKey(const Key('nav-group-Ventas')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('nav-pos')), findsOneWidget);
       // Opening Ventas closed Administración — a single open group.
-      expect(find.byKey(const Key('nav-dashboard')), findsNothing);
+      expect(find.byKey(const Key('nav-users')), findsNothing);
 
       // Tapping the already-open group's header collapses it entirely.
       await tester.tap(find.byKey(const Key('nav-group-Ventas')));
@@ -6066,9 +6083,19 @@ void main() {
       },
     );
 
+    // TASK 16.16 (Phase 5): a domain-permission-less actor no longer even
+    // reaches this screen — the sidebar itself now hides "Cupones / Promos"
+    // for anyone without `promotion.read`/`coupon.read` (see
+    // `pos_navigation.dart`'s own module→permission map), a first line of
+    // defense on top of `_PromotionsAdmin`'s own unchanged internal
+    // `_PermissionState` gate (still directly exercised by every other
+    // test in this group, all of which DO carry `promotion.read`/
+    // `coupon.read`). This test now proves that stronger guarantee instead
+    // of the old "reach the screen, see a denial" path, which is no longer
+    // reachable through the sidebar at all.
     testWidgets(
-      'a permission-less actor never sees the create action and sees an '
-      'honest permission state, never a silently-empty list',
+      'a permission-less actor never even sees "Cupones / Promos" in the '
+      'sidebar — never a reachable dead-end',
       (tester) async {
         final promotionsGateway = _FakePromotionsGateway();
         await _pump(
@@ -6077,10 +6104,9 @@ void main() {
           context: _contextWithSaleRead,
           promotionsGateway: promotionsGateway,
         );
-        await navigateToPromotionsAdmin(tester);
-
-        expect(find.byKey(const Key('pos-promotion-new')), findsNothing);
-        expect(find.text('Acceso no autorizado'), findsWidgets);
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('nav-promotions')), findsNothing);
       },
     );
 
@@ -6233,9 +6259,13 @@ void main() {
       await tester.pumpAndSettle();
     }
 
+    // TASK 16.16 (Phase 5) — see the equivalent Promotions test's own doc
+    // comment above for the full rationale: `customer.read` now gates
+    // "Clientes" in the sidebar itself, so a domain-permission-less actor
+    // never reaches this screen at all any more.
     testWidgets(
-      'a permission-less actor never sees the create action and sees an '
-      'honest permission state, never a silently-empty list',
+      'a permission-less actor never even sees "Clientes" in the sidebar — '
+      'never a reachable dead-end',
       (tester) async {
         await _pump(
           tester,
@@ -6243,10 +6273,9 @@ void main() {
           context: _contextWithSaleRead,
           customersGateway: _FakeCustomersGateway(),
         );
-        await navigateToCustomersAdmin(tester);
-
-        expect(find.byKey(const Key('pos-customer-new')), findsNothing);
-        expect(find.text('Acceso no autorizado'), findsWidgets);
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('nav-customers')), findsNothing);
       },
     );
 
@@ -6483,9 +6512,15 @@ void main() {
       },
     );
 
+    // TASK 16.16 (Phase 5) — see the equivalent Promotions test's own doc
+    // comment above for the full rationale: `membership.read` now gates
+    // "Membresías" in the sidebar itself. `_contextWithCustomerReadOnly`
+    // carries `customer.read` (so "Clientes" itself is visible) but never
+    // `membership.read`, so a domain-permission-less actor never reaches
+    // the membership plans screen at all any more.
     testWidgets(
-      'a permission-less actor never sees the new-plan action on the '
-      'membership plans admin screen',
+      'a permission-less actor never even sees "Membresías" in the sidebar '
+      '— never a reachable dead-end',
       (tester) async {
         await _pump(
           tester,
@@ -6493,10 +6528,9 @@ void main() {
           context: _contextWithCustomerReadOnly,
           membershipsGateway: _FakeMembershipsGateway(),
         );
-        await navigateToMembershipsAdmin(tester);
-
-        expect(find.byKey(const Key('pos-membership-plan-new')), findsNothing);
-        expect(find.text('Acceso no autorizado'), findsWidgets);
+        await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('nav-memberships')), findsNothing);
       },
     );
 
@@ -7773,14 +7807,25 @@ void main() {
   });
 
   group('Fiestas (TASK 14.3 Wave 1 Part A)', () {
-    testWidgets('the nav entry is gated on party.read — no permission shows an honest permission state, never real data', (
+    // TASK 16.16 (Phase 5) — see the equivalent Promotions test's own doc
+    // comment (above, in the Promotions/discounts/coupons group) for the
+    // full rationale: `party.read` now gates "Fiestas" in the sidebar
+    // itself, so an actor lacking it never reaches this screen (and its
+    // real reservation data) at all any more — a stronger guarantee than
+    // the old "reach the screen, see a denial" path this test used to
+    // exercise, which is no longer reachable through the sidebar.
+    // `_FiestasAdminState`'s own internal `party.read` gate (`_canRead`)
+    // stays unchanged and is still directly exercised by every other test
+    // in this group, all of which carry `party.read` via
+    // `_contextWithParties`.
+    testWidgets('the sidebar hides Fiestas entirely when the actor lacks party.read — never a reachable dead-end', (
       tester,
     ) async {
       final partiesGateway = _FakePartiesGateway(reservationsResult: [_fixturePartyReservation()]);
       await _pump(tester, const Size(1440, 900), context: _context, partiesGateway: partiesGateway);
-      await _navigateToFiestas(tester);
-      expect(find.text('Acceso no autorizado'), findsOneWidget);
-      expect(find.byKey(const Key('pos-fiestas-reservation-reservation-1')), findsNothing);
+      await tester.tap(find.byKey(const Key('nav-group-Clientes')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('nav-events')), findsNothing);
     });
 
     testWidgets('Lista shows an honest empty state when the gateway returns no reservations', (

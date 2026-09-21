@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { roleTemplates, type RoleTemplate } from '@asone/database';
 import { AppError } from '@asone/errors';
 
 import { requireBranchAccess, requirePermission } from '../../auth/auth.guards.js';
@@ -451,6 +452,17 @@ export class AdministrationService {
       `select id,code,description,domain from permissions order by domain,code`,
       [],
     );
+  }
+
+  // TASK 16.16 — a static, non-persisted catalogue of starter permission
+  // bundles for the role-creation UI; see `@asone/database`'s
+  // `role-templates.ts` for the full "never an authorization concept"
+  // rationale. Gated by `role.read` (the same read-tier permission the
+  // role-creation flow already requires to even see the role list) — this
+  // never reads or writes a `roles`/`role_permissions` row itself.
+  public listRoleTemplates(actor: AdminActor): readonly RoleTemplate[] {
+    requirePermission(this.authentication, actor.context, 'role.read');
+    return roleTemplates;
   }
 
   public async createRole(

@@ -176,6 +176,88 @@ enum PosModule {
   }.contains(this);
 }
 
+// TASK 16.16 (Phase 5) — "which permission(s) gate this module's own
+// sidebar nav item?" A pure, static, capability-derived table: never keyed
+// off a role's name/code (see this task's own absolute constraint), only
+// off the SAME real permission codes `AuthenticatedContext.permissions`
+// already carries. "Any of" semantics — the module is visible when the
+// actor holds at least one of the listed codes. `null`/absent means always
+// visible (no gate at all — today only [PosModule.assistant]).
+//
+// This is deliberately a SECOND, independent gate layered on top of each
+// screen's own existing internal permission check (see e.g. `_PosSaleState.
+// build`'s `catalog.read` check, `_Dashboard.build`'s `report.read` check)
+// — defense in depth, not a replacement. The two are allowed to differ:
+// a sidebar nav entry answers "does this look like this actor's job?" (a
+// commercial/UX framing) while a screen body's own gate answers "is this
+// specific read/write technically authorized?" (the real, backend-enforced
+// question). `PosModule.pos`/`cafeteria`/`suspended` are the clearest
+// example — gated here by `sale.create` (the meaningful "this person can
+// ring up a sale" signal) even though the screen body underneath only
+// strictly needs `catalog.read` to render the product grid.
+//
+// Values for not-yet-implemented modules (`cafeteria`/`billing`/
+// `documents`/`notifications`) reuse the closest real, already-existing
+// permission — there is no dedicated backend permission for any of them
+// yet, and this table never invents one.
+const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
+  PosModule.pos: ['sale.create'],
+  PosModule.cafeteria: ['sale.create'],
+  PosModule.suspended: ['sale.create'],
+  PosModule.returns: ['refund.read'],
+  PosModule.products: ['catalog.read'],
+  PosModule.productVariants: ['catalog.read'],
+  PosModule.categories: ['catalog.read'],
+  PosModule.brands: ['catalog.read'],
+  PosModule.suppliers: ['supplier.read'],
+  PosModule.catalogAdmin: ['catalog.read'],
+  PosModule.inventory: ['inventory.read'],
+  PosModule.purchases: ['purchase.read'],
+  PosModule.inventoryAdmin: ['inventory.read'],
+  PosModule.customers: ['customer.read'],
+  PosModule.events: ['party.read'],
+  PosModule.memberships: ['membership.read'],
+  PosModule.promotions: ['promotion.read', 'coupon.read'],
+  PosModule.cash: ['cash_session.read'],
+  PosModule.billing: ['cash_session.read'],
+  PosModule.branchConsolidation: ['branch_consolidation.read'],
+  PosModule.dashboard: ['report.read'],
+  PosModule.reports: ['report.read'],
+  PosModule.access: ['access.read'],
+  PosModule.users: ['user.read'],
+  PosModule.branches: ['branch.read'],
+  PosModule.operationalAreas: ['operational_area.read'],
+  PosModule.employees: ['employee.read'],
+  PosModule.history: ['sale.read'],
+  PosModule.documents: ['company_settings.read'],
+  PosModule.sync: ['sync.execute'],
+  PosModule.notifications: ['company_settings.read'],
+  PosModule.settings: ['company_settings.read'],
+  PosModule.receiptBranding: ['company_settings.read'],
+  PosModule.printerSettings: ['company_settings.read'],
+  // `PosModule.assistant` intentionally absent — always visible, matching
+  // `pos_assistant_screen.dart`'s own deliberate zero-permission-check
+  // design (see this map's own header doc comment).
+};
+
+extension PosModuleAccess on PosModule {
+  /// The permission code(s) gating this module's own sidebar nav item —
+  /// `null`/empty means always visible. See
+  /// [_posModuleRequiredAnyPermission]'s own doc comment for the full rule.
+  List<String>? get requiredAnyPermission => _posModuleRequiredAnyPermission[this];
+}
+
+/// `true` when [permissions] holds at least one of [module]'s own
+/// [PosModuleAccess.requiredAnyPermission] codes (or that module has no
+/// gate at all). Extracted as a plain function — not a method on a widget
+/// — so it's testable without building any UI, mirroring
+/// `resolvePosRegisterScope`'s own precedent in `pos_register_scope.dart`.
+bool posModuleVisibleFor(PosModule module, List<String> permissions) {
+  final required = module.requiredAnyPermission;
+  if (required == null || required.isEmpty) return true;
+  return required.any(permissions.contains);
+}
+
 const posNavigationGroups = [
   'Ventas',
   'Catálogo',

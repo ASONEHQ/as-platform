@@ -543,7 +543,16 @@ final _context = AuthenticatedContext(
     ),
   ],
   companyWideAccess: false,
-  permissions: const ['catalog.read', 'inventory.read'],
+  // TASK 16.16 (Phase 5): `sale.create` added so this default context still
+  // sees "Punto de Venta"/"Cafetería" in the sidebar at all — both are now
+  // gated there on `sale.create` (see `pos_navigation.dart`'s own
+  // module→permission map). Every test in this file exercises the real
+  // sale surface via `_navigateToPos`/tapping `nav-cafeteria`, and none of
+  // them test a `sale.create`-less denial (that's covered elsewhere, e.g.
+  // `pos_shell_test.dart`'s own dedicated permission tests), so this is a
+  // pure like-for-like "keep reaching the same screen" fix, never a
+  // widened scenario.
+  permissions: const ['catalog.read', 'inventory.read', 'sale.create'],
 );
 
 AuthenticatedContext _withPermissions(List<String> extra) => AuthenticatedContext(

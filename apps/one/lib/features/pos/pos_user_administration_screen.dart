@@ -1738,8 +1738,33 @@ class _RolesTabState extends State<_RolesTab> {
 
   Future<void> _openNewForm() async {
     if (!_canCreate) return;
-    final saved = await showDialog<bool>(context: context, builder: (dialogContext) => _RoleFormDialog(gateway: widget.gateway));
-    if (saved == true) unawaited(_load());
+    final result = await showDialog<_RoleFormResult>(
+      context: context,
+      builder: (dialogContext) => _RoleFormDialog(gateway: widget.gateway),
+    );
+    if (result == null) return;
+    unawaited(_load());
+    // TASK 16.16 — a role created from a template immediately continues
+    // into the SAME `_RoleDetailDialog`/`_PermissionPicker` flow a manual
+    // edit uses, pre-checked with that template's own permission codes
+    // (see `_RoleFormResult`'s own doc comment). Never attempted when the
+    // acting admin can't manage permissions at all — mirrors every other
+    // `role.permission.manage` gate in this file.
+    final templateCodes = result.templatePermissionCodes;
+    if (templateCodes != null && _canManagePermissions && mounted) {
+      final changed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => _RoleDetailDialog(
+          role: result.role,
+          gateway: widget.gateway,
+          actorPermissions: widget.context.permissions,
+          canUpdate: _canUpdate,
+          canManagePermissions: _canManagePermissions,
+          initialTemplatePermissionCodes: templateCodes,
+        ),
+      );
+      if (changed == true) unawaited(_load());
+    }
   }
 
   Future<void> _openDetail(PosRole role) async {
@@ -1846,6 +1871,21 @@ class _RoleRow extends StatelessWidget {
   }
 }
 
+/// TASK 16.16 — [_RoleFormDialog]'s own result: the freshly-created role,
+/// plus (only when the admin picked a real template rather than
+/// "Personalizado / en blanco") that template's RAW permission codes —
+/// never yet resolved to ids, never yet filtered to what the acting admin
+/// holds. `_RolesTabState._openNewForm` is the one caller, and immediately
+/// hands [templatePermissionCodes] to `_RoleDetailDialog` (via
+/// `initialTemplatePermissionCodes`), which does that resolution/filtering
+/// itself — the same place every other permission decision for that dialog
+/// already lives.
+class _RoleFormResult {
+  const _RoleFormResult({required this.role, this.templatePermissionCodes});
+  final PosRole role;
+  final List<String>? templatePermissionCodes;
+}
+
 class _RoleFormDialog extends StatefulWidget {
   const _RoleFormDialog({required this.gateway});
   final PosIdentityAdminGateway gateway;
@@ -1860,6 +1900,56 @@ class _RoleFormDialogState extends State<_RoleFormDialog> {
   final _descriptionController = TextEditingController();
   bool _busy = false;
   String? _error;
+
+  // TASK 16.16 — template-selection step. `null` (the default) means
+  // "Personalizado / en blanco": today's exact original behavior, fully
+  // preserved — three raw free-text fields, an ordinary empty role.
+  List<PosRoleTemplate> _templates = const [];
+  String? _selectedTemplateKey;
+  // The label this dialog itself last typed into `_nameController` on the
+  // admin's behalf (picking a template) — lets template switches keep
+  // re-filling the name field, WITHOUT ever clobbering a name the admin
+  // typed or edited by hand.
+  String? _autoFilledName;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadTemplates());
+  }
+
+  // Best-effort only, exactly like every other secondary/decorative fetch
+  // in this file (e.g. `_DashboardScreenState._requestBannerSummary`) — a
+  // failed load just means the template picker offers nothing but
+  // "Personalizado / en blanco", never a blocked or broken dialog.
+  Future<void> _loadTemplates() async {
+    try {
+      final templates = await widget.gateway.listRoleTemplates();
+      if (!mounted) return;
+      setState(() => _templates = templates);
+    } on Object {
+      // Silently absent — see this method's own doc comment.
+    }
+  }
+
+  void _selectTemplate(String? key) {
+    setState(() {
+      _selectedTemplateKey = key;
+      if (key == null) return;
+      final template = _templates.where((item) => item.key == key).firstOrNull;
+      if (template == null) return;
+      final currentName = _nameController.text;
+      // Only overwrite when the field is empty or still holds exactly
+      // whatever THIS dialog auto-filled last — never a name the admin
+      // typed or edited themselves (a business might want "Cajero de
+      // Taquilla" for their own operation, never forced back to the
+      // template's generic label).
+      if (currentName.isEmpty || currentName == _autoFilledName) {
+        _nameController.text = template.label;
+        _autoFilledName = template.label;
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -1886,9 +1976,18 @@ class _RoleFormDialogState extends State<_RoleFormDialog> {
       _error = null;
     });
     try {
-      await widget.gateway.createRole(name: name, code: code, description: description.isEmpty ? null : description);
+      final role = await widget.gateway.createRole(
+        name: name,
+        code: code,
+        description: description.isEmpty ? null : description,
+      );
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      final template = _selectedTemplateKey == null
+          ? null
+          : _templates.where((item) => item.key == _selectedTemplateKey).firstOrNull;
+      Navigator.of(context).pop(
+        _RoleFormResult(role: role, templatePermissionCodes: template?.permissionCodes),
+      );
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -1920,6 +2019,34 @@ class _RoleFormDialogState extends State<_RoleFormDialog> {
             children: [
               Text('Nuevo rol', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
               const SizedBox(height: 14),
+              if (_templates.isNotEmpty) ...[
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-role-form-template'),
+                  initialValue: _selectedTemplateKey,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Plantilla'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('Personalizado / en blanco')),
+                    for (final template in _templates)
+                      DropdownMenuItem<String?>(
+                        value: template.key,
+                        key: Key('pos-role-form-template-${template.key}'),
+                        child: Text(template.label),
+                      ),
+                  ],
+                  onChanged: _selectTemplate,
+                ),
+                if (_selectedTemplateKey != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      _templates.where((item) => item.key == _selectedTemplateKey).first.description ??
+                          'Los permisos de esta plantilla se podrán revisar y ajustar antes de guardarlos.',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
+                  ),
+                const SizedBox(height: 10),
+              ],
               TextField(
                 key: const Key('pos-role-form-name'),
                 controller: _nameController,
@@ -1945,7 +2072,7 @@ class _RoleFormDialogState extends State<_RoleFormDialog> {
               const SizedBox(height: 16),
               _DialogButtons(
                 busy: _busy,
-                onCancel: () => Navigator.of(context).pop(false),
+                onCancel: () => Navigator.of(context).pop(),
                 onSave: () => unawaited(_submit()),
                 saveKey: const Key('pos-role-form-save'),
               ),
@@ -1966,6 +2093,7 @@ class _RoleDetailDialog extends StatefulWidget {
     required this.actorPermissions,
     required this.canUpdate,
     required this.canManagePermissions,
+    this.initialTemplatePermissionCodes,
   });
 
   final PosRole role;
@@ -1973,6 +2101,13 @@ class _RoleDetailDialog extends StatefulWidget {
   final List<String> actorPermissions;
   final bool canUpdate;
   final bool canManagePermissions;
+  // TASK 16.16 — set only right after creating a role from a template
+  // (`_RolesTabState._openNewForm`); `null` for every other caller
+  // (opening an existing role's own detail), which keeps today's exact
+  // original behavior. See `_RoleDetailDialogState._loadPermissions` for
+  // how this gets resolved to permission ids and filtered to what the
+  // acting admin actually holds.
+  final List<String>? initialTemplatePermissionCodes;
 
   @override
   State<_RoleDetailDialog> createState() => _RoleDetailDialogState();
@@ -2025,9 +2160,30 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
       final current = await widget.gateway.rolePermissions(_role.id);
       if (!mounted) return;
       final ids = current.where((item) => item.effect == 'allow').map((item) => item.permissionId).toSet();
+      // TASK 16.16 — a role freshly created from a template starts with
+      // NO real server-side permissions yet (`ids` is empty), so this pre-
+      // checks the template's own codes on top, resolved to ids via this
+      // same already-fetched `all` catalogue. Deliberately filtered to
+      // codes the ACTING ADMIN also holds — the existing self-escalation
+      // guard (`_PermissionRow`'s own `checkboxEnabled`) only disables a
+      // NOT-yet-checked box the actor doesn't hold; pre-checking one here
+      // would instead render it checked-and-editable, letting an admin
+      // save a grant that would 403 server-side. Never pre-checking it at
+      // all is this task's own explicitly-sanctioned simpler fallback —
+      // see `_RoleFormDialog`'s own header doc comment.
+      final templateCodes = widget.initialTemplatePermissionCodes;
+      final preSelected = templateCodes == null
+          ? ids
+          : {
+              ...ids,
+              for (final permission in all)
+                if (templateCodes.contains(permission.code) &&
+                    widget.actorPermissions.contains(permission.code))
+                  permission.id,
+            };
       setState(() {
         _allPermissions = all;
-        _selectedPermissionIds = Set.of(ids);
+        _selectedPermissionIds = Set.of(preSelected);
         _initialPermissionIds = Set.of(ids);
         _permissionsPhase = all.isEmpty ? _ListPhase.empty : _ListPhase.ready;
       });
