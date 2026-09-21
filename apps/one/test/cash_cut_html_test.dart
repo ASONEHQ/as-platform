@@ -308,4 +308,126 @@ void main() {
       expect(html, contains('SOBRANTE')); // this fixture's own $5 surplus.
     });
   });
+
+  group('TASK 16.14A — card-terminal reconciliation', () {
+    String buildFinal({CashCutCardReconciliation? cardReconciliation}) => buildCashCutHtml(
+      isFinal: true,
+      businessName: 'AS ONE Park',
+      branchName: 'Puerta La Victoria',
+      registerName: 'Caja 1',
+      openedByName: 'Ana Cajera',
+      openedAt: DateTime.utc(2026, 9, 21, 9, 0),
+      closedByName: 'Ana Cajera',
+      closedAt: DateTime.utc(2026, 9, 21, 18, 0),
+      openingAmount: '500.0000',
+      cashSalesTotal: '150.0000',
+      cashSalesCount: 2,
+      externalIncomeTotal: '0.0000',
+      withdrawalTotal: '0.0000',
+      expenseTotal: '0.0000',
+      otherCashInTotal: '0.0000',
+      otherCashOutTotal: '0.0000',
+      expectedCash: '650.0000',
+      declaredClosingAmount: '650.0000',
+      discrepancyAmount: '0.0000',
+      currencyCode: 'MXN',
+      cardReconciliation: cardReconciliation,
+    );
+
+    test('omits the whole section for null (pre-16.14A close) and for a not_applicable reconciliation', () {
+      final withoutReconciliation = buildFinal();
+      expect(withoutReconciliation, isNot(contains('CONCILIACIÓN DE TARJETAS')));
+
+      final notApplicable = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '0.0000',
+          terminalEntries: [],
+          terminalTotal: '0.0000',
+          difference: '0.0000',
+          status: 'not_applicable',
+        ),
+      );
+      expect(notApplicable, isNot(contains('CONCILIACIÓN DE TARJETAS')));
+    });
+
+    test('a reconciled close prints Sistema/Terminales/Diferencia/CONCILIADO and each terminal line', () {
+      final html = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '4850.0000',
+          terminalEntries: [CashCutLine('BBVA', r'$2,500.00'), CashCutLine('Clip', r'$2,350.00')],
+          terminalTotal: '4850.0000',
+          difference: '0.0000',
+          status: 'reconciled',
+        ),
+      );
+      expect(html, contains('CONCILIACIÓN DE TARJETAS'));
+      expect(html, contains('Sistema'));
+      expect(html, contains('Terminales'));
+      expect(html, contains('Diferencia'));
+      expect(html, contains('CONCILIADO'));
+      expect(html, contains('BBVA'));
+      expect(html, contains('Clip'));
+    });
+
+    test('a discrepancy prints FALTANTE EN TERMINAL / SOBRANTE EN TERMINAL — never "CUADRADO"', () {
+      final shortage = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '900.0000',
+          terminalEntries: [CashCutLine('Terminal Único', r'$875.00')],
+          terminalTotal: '875.0000',
+          difference: '-25.0000',
+          status: 'discrepancy',
+          note: 'Prueba de conciliación.',
+        ),
+      );
+      expect(shortage, contains('FALTANTE EN TERMINAL'));
+      expect(shortage, isNot(contains('CUADRADO')));
+      expect(shortage, contains('Motivo: Prueba de conciliación.'));
+
+      final surplus = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '900.0000',
+          terminalEntries: [CashCutLine('Terminal Único', r'$950.00')],
+          terminalTotal: '950.0000',
+          difference: '50.0000',
+          status: 'discrepancy',
+        ),
+      );
+      expect(surplus, contains('SOBRANTE EN TERMINAL'));
+    });
+
+    test('a pending reconciliation prints "PENDIENTE DE CONCILIAR" and omits Terminales/Diferencia rows', () {
+      final html = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '300.0000',
+          terminalEntries: [],
+          terminalTotal: '0.0000',
+          difference: '-300.0000',
+          status: 'pending',
+        ),
+      );
+      expect(html, contains('PENDIENTE DE CONCILIAR'));
+      expect(html, contains('Sistema'));
+      // "Diferencia" legitimately appears once already, in the cash
+      // section's own counted/expected table — only "Terminales" (a
+      // card-reconciliation-only label) is the reliable signal that the
+      // card section's own Terminales/Diferencia rows were skipped.
+      expect(html, isNot(contains('Terminales')));
+    });
+
+    test('never prints a fabricated terminal label — only the entries actually supplied', () {
+      final html = buildFinal(
+        cardReconciliation: const CashCutCardReconciliation(
+          systemNetTotal: '100.0000',
+          terminalEntries: [CashCutLine('Clip', r'$100.00')],
+          terminalTotal: '100.0000',
+          difference: '0.0000',
+          status: 'reconciled',
+        ),
+      );
+      expect(html, isNot(contains('BBVA')));
+      expect(html, isNot(contains('Santander')));
+      expect(html, isNot(contains('Mercado Pago')));
+    });
+  });
 }

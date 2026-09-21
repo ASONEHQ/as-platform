@@ -260,6 +260,13 @@
       "when": 1789967277631,
       "tag": "0036_wide_menace",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789997700670,
+      "tag": "0037_loud_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }

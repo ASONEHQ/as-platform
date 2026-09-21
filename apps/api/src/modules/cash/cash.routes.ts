@@ -7,6 +7,7 @@ import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withCashErrors } from './cash.http-errors.js';
 import type { CashService } from './cash.service.js';
 import type {
+  CashCardReconciliation,
   CashMovementRow,
   CashMutationContext,
   CashPartialCloseOperationalSummary,
@@ -75,6 +76,29 @@ function paymentMethodTotalsHttp(
     ticket_count: line.ticketCount,
   }));
 }
+// TASK 16.14A — same defensive `== null` loose check as
+// `paymentMethodTotalsHttp`/`operationalSummaryHttp` above, for the exact
+// same reason (a real DB row is always exactly `null` when absent; an
+// older test fixture may carry `undefined`).
+function cardReconciliationHttp(value: CashCardReconciliation | null): Readonly<Record<string, unknown>> | null {
+  if (value == null) return null;
+  return {
+    system_gross_total: value.systemGrossTotal,
+    system_refund_total: value.systemRefundTotal,
+    system_net_total: value.systemNetTotal,
+    terminal_entries: value.terminalEntries.map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      amount: entry.amount,
+      reference: entry.reference,
+      note: entry.note,
+    })),
+    terminal_total: value.terminalTotal,
+    difference: value.difference,
+    status: value.status,
+    note: value.note,
+  };
+}
 function sessionHttp(value: CashSessionRow): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -119,6 +143,7 @@ function sessionHttp(value: CashSessionRow): Readonly<Record<string, unknown>> {
     // mistake reusing this function here avoids reintroducing).
     operational_summary: operationalSummaryHttp(value.operationalSummary),
     discrepancy_reason: value.discrepancyReason,
+    card_reconciliation: cardReconciliationHttp(value.cardReconciliation),
     version: Number(value.version),
   };
 }
@@ -537,6 +562,12 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
               cash_refund_total: value.cashRefundTotal,
               cash_refund_count: value.cashRefundCount,
               expected_cash: value.expectedCash,
+              // TASK 16.14A — live preview of the same per-method
+              // breakdown a final close freezes; see
+              // `CashSessionSummary.paymentMethodTotals`'s own doc
+              // comment. Reuses the exact same mapper `sessionHttp` uses
+              // for the frozen version, never a second one.
+              payment_method_totals: paymentMethodTotalsHttp(value.paymentMethodTotals),
             },
             request.requestContext,
           ),
@@ -696,6 +727,10 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
       declared_closing_amount: string;
       denomination_counts?: { value: string; quantity: number }[];
       discrepancy_reason?: string;
+      card_reconciliation?: {
+        entries: { label: string; amount: string; reference?: string; note?: string }[];
+        note?: string;
+      };
     };
   }>(
     '/api/v1/cash-sessions/:id/closures',
@@ -732,6 +767,35 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             // own doc comment) — this schema never conditions the close
             // on the size of any eventual discrepancy.
             discrepancy_reason: { type: 'string', minLength: 1, maxLength: 1000 },
+            // TASK 16.14A §7/§10 — optional. The PRESENCE of this key
+            // (even with an empty `entries` array) is itself the "operator
+            // attempted reconciliation" signal — see
+            // `CashCardReconciliationStatus`'s own doc comment for why a
+            // request that omits this key entirely produces `pending`,
+            // never `reconciled` with a fabricated zero total.
+            card_reconciliation: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['entries'],
+              properties: {
+                entries: {
+                  type: 'array',
+                  maxItems: 20,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['label', 'amount'],
+                    properties: {
+                      label: { type: 'string', minLength: 1, maxLength: 200 },
+                      amount: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
+                      reference: { type: 'string', maxLength: 200 },
+                      note: { type: 'string', maxLength: 500 },
+                    },
+                  },
+                },
+                note: { type: 'string', maxLength: 1000 },
+              },
+            },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -754,6 +818,9 @@ export function registerCashRoutes(app: FastifyInstance, authentication: AuthSer
             ...(request.body.discrepancy_reason === undefined
               ? {}
               : { discrepancyReason: request.body.discrepancy_reason }),
+            ...(request.body.card_reconciliation === undefined
+              ? {}
+              : { cardReconciliation: request.body.card_reconciliation }),
           },
         );
         if (closed.replayed) reply.header('idempotency-replayed', 'true');

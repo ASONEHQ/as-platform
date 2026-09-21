@@ -3440,6 +3440,331 @@ test.ts`):
   already-documented characteristic, not something this task changes or
   needs to re-solve.
 
+## TASK 16.14A — CONCILIACIÓN DE TARJETAS: card-terminal reconciliation at final close (2026-09-21)
+
+**§1 Legacy forensic findings.** A full-file, quote-verified sweep of the
+canonical `AS POS V1.html` (14,712 lines) for `terminal`/`lote`/
+`conciliaci`/`tarjeta`/`card`/`TPV`/`datafono`/`settlement`/`batch` found
+**no terminal-reconciliation precedent whatsoever**. The legacy app's own
+`efectivoEsperado()`/`calcTotalContado()` reconciliation machinery
+(expected vs. counted, Faltante/Sobrante/Cuadrado) is exclusively
+cash-denomination based; card payments are tracked only as a single
+running total (`turno().ventas.tarjeta`) shown as one read-only line in
+the payment-method breakdown, both on-screen and on the printed corte —
+never counted, verified, or diffed against anything external. The only
+"terminal" hit in real markup is a static, hardcoded, non-functional
+Configuración → Hardware row ("Terminal bancaria · Clip Pro 2 ·
+Conectada") whose one interactive control just fires a `toast()` with no
+real logic. **Verdict: this is a genuinely new capability, not a parity
+gap** — nothing here duplicates or contradicts legacy behavior.
+
+**§2 Current card-payment architecture (pre-task).** `payments.
+payment_method` is a hard 4-value check constraint:
+`cash | card_terminal | card_manual | other` — no `transfer` value exists
+anywhere (the Flutter POS's own "Transfer" button is a documented no-op
+inert control, confirmed in TASK 16.14's own forensic pass). A dedicated
+`payment_terminals` table already exists — a 1:1, device-scoped
+provider-pairing registry for a LIVE processor integration (Mercado
+Pago Point), not a settlement-reconciliation table; it has no lote/total
+columns and requires a `devices` row per branch.
+
+**§3 `card_terminal` semantics.** `payments_terminal_required_ck`
+enforces `(payment_method = 'card_terminal') = (terminal_id is not
+null)` — a `card_terminal` payment is dispatched through
+`PaymentService.createOrder`/`transitionAttempt` to a registered
+`payment_terminals` row (Mercado Pago Point). With Mercado Pago paused
+(this task's own explicit scope guard), a live browser attempt to pay by
+card in this environment produces "terminal no configurada" and creates
+**no payment record at all** — confirmed live during this task's own
+certification (§21 below).
+
+**§4 `card_manual` semantics.** Forensically confirmed: no code path
+anywhere in `apps/one/lib` ever creates a `card_manual` payment — it
+exists client-side only as a display-label lookup (`'card_manual' =>
+'Tarjeta (manual)'`, used for refunds/receipts). Backend-side, nothing in
+`payments.service.ts` distinguishes it beyond the terminal-required
+constraint; it is accepted purely as a valid enum value with no
+attempt/dispatch machinery attached. Its real-world meaning — an operator
+recording a card charge taken on a physical terminal the app has no live
+connection to — is exactly the scenario this task's reconciliation
+feature exists to serve, and is documented here rather than inferred
+silently by the code.
+
+**§5 Refund semantics.** `refunds.refund_method` mirrors `payments.
+payment_method` exactly (same 4 values); `refunds_method_ck`,
+`refunds_completed_fields_ck` (a completed refund always has
+`completed_at` and `payment_id`). No behavior change from this task —
+refunds already flow correctly into `payments`/`refunds`, which the new
+system-card-total formula reads.
+
+**§6 System card reconciliation formula (§5/§6/§8 of the task).** Never a
+second query: `CashService.buildCardReconciliation` derives
+`systemGrossTotal`/`systemRefundTotal`/`systemNetTotal` by summing the
+`card_terminal`+`card_manual` rows already present in
+`payment_method_totals` (TASK 16.14's own `CashRepository.
+paymentMethodTotals`, itself already correctly filtering on
+`captured_at is not null`, never `status='captured'`, per TASK 16.14's
+own captured-at fix). `card_manual` is deliberately included — §15's own
+"if `card_manual` means an externally-entered card transaction that
+still belongs to terminal settlement, include it" condition is
+factually true per §4 above. `difference = terminalTotal -
+systemNetTotal`, computed server-side in exact BigInt money-unit
+arithmetic, never accepted from the client.
+
+**§7 Terminal-entry model.** One new JSONB column,
+`cash_sessions.card_reconciliation` — NOT a child table, and NOT a
+foreign key into `payment_terminals`: that table is a device-pairing
+registry for a live processor integration, and requiring every branch to
+register a device just to log a settlement ticket would be exactly the
+"unnecessary hardware-management system" the task explicitly says not to
+build. Each terminal entry is free-text
+`{id, label, amount, reference, note}` — `label` is what the operator
+types ("BBVA", "Clip", "Terminal 2"), never a picker over a registry.
+`reference`/`note` exist on the API for future use; the V1 Flutter UI
+exposes exactly two fields per entry ("Terminal / referencia" +
+"Total del ticket"), matching the task's own suggested minimal UI.
+
+**§8 Pending-vs-zero semantics (§10).** The PRESENCE of the request's
+`card_reconciliation` key (even `{entries: []}`) is the sole "operator
+attempted reconciliation" signal — entirely independent of whether any
+entries were typed. `CashCardReconciliationStatus`:
+`not_applicable` (system gross = 0, key omitted or not — never asks),
+`pending` (system gross > 0, key omitted entirely),
+`reconciled`/`discrepancy` (key present, difference = 0 or not). Flutter
+mirrors this exactly: `_CloseCajaDialogState._cardReconciliationStarted`
+flips permanently `true` the first time the operator clicks "+ Agregar
+terminal" (even if they delete every row again — a legitimate "I
+checked, it's genuinely $0" answer) and gates whether
+`cardReconciliationEntries` is sent as `null` (omitted) or a real list.
+
+**§9 Database/snapshot strategy.** Migration `0037_loud_vin_gonzales.sql`
+— pure `ADD COLUMN card_reconciliation jsonb` + one check constraint,
+mirroring TASK 16.14's own `payment_method_totals`/`operational_summary`
+asymmetric-nullable pattern exactly: `card_reconciliation is null or
+(status='closed' and jsonb_typeof(...) = 'object')`. Unlike
+`payment_method_totals` (which can be legitimately absent even on a
+16.14-and-later close in edge cases), `card_reconciliation` is ALWAYS
+populated by `closeSession` going forward, even for a zero-card-sales
+session (`status: 'not_applicable'`) — so `null` unambiguously means
+"closed before TASK 16.14A," never conflated with "no card sales this
+shift" (§16 proof, §22 below).
+
+**§10 Close UX.** A new, visually separated "CONCILIACIÓN DE TARJETAS"
+section in `_CloseCajaDialog`, below the existing cash-count/discrepancy-
+reason fields — never merged into them. Omitted entirely (no section at
+all) when the LIVE system card total is zero (§10's own "never require
+reconciliation when system card total is zero"). When non-zero: shows
+"Registrado en ACCESS GO" (a live preview, from a new `GET .../summary`
+field `payment_method_totals`, itself reusing the identical repository
+method `closeSession` uses — never a second computation; the backend
+independently recomputes authoritatively at close, under lock — same
+"live preview, backend is truth" pattern `expectedCash`/
+`_previewDiscrepancy` already established), a dynamic "+ Agregar
+terminal" entry list, live "Total terminales"/diferencia preview banner
+(green "Conciliado" / red "Faltante en terminal" / orange "Sobrante en
+terminal" — neutral accounting language, never "Cuadrado"), and an
+optional "Motivo de la diferencia en tarjetas."
+
+**§11 Multiple-terminal behavior.** No hardcoded provider names anywhere
+in code, schema, or UI copy — `label` is 100% operator-entered free text.
+The deterministic backend test (§20 below) exercises exactly two
+terminals summing correctly; the Flutter dialog supports any number via
+repeated "+ Agregar terminal."
+
+**§12 Difference/reason behavior.** `difference = terminalTotal -
+systemNetTotal`, shown with neutral wording exactly matching the task's
+own examples ("Faltante en terminal" for negative, "Sobrante en
+terminal" for positive, "Conciliado" for zero). An optional note is
+always available (never required, never gated on the size of the
+difference — same "do not invent a tolerance" precedent as TASK 16.14's
+own cash discrepancy reason) and is trimmed server-side
+(`validateCardReconciliationInput`).
+
+**§13 Cash-isolation proof.** `buildCardReconciliation` reads only
+`paymentMethodTotals` (itself derived from `payments`/`refunds`) and the
+operator's own terminal entries — it never reads, and the
+`closeSession` transaction never lets it write, a single byte of
+`expectedUnits`/`expectedClosingAmount`/`discrepancyAmount`. Proven by a
+dedicated integration-test assertion (§20 below): the SAME
+`expectedClosingAmount`/`discrepancyAmount` values regardless of what
+card-reconciliation values are submitted in the same request.
+
+**§14 History result.** `Caja → Cortes de caja → [closed session]` opens
+`_CutDetailDialog`, which now renders `_CardReconciliationSection`
+(shared verbatim with the close-result dialog — one rendering, never two
+copies that could drift) from `session.cardReconciliation`, reproducing
+the exact frozen figures. Live-verified (§21 below): reopening a just-
+closed "Sin ventas con tarjeta" session shows the identical honest
+not-applicable message.
+
+**§15 Print/reprint result.** `buildCashCutHtml` gained an optional
+`cardReconciliation` parameter and a "CONCILIACIÓN DE TARJETAS" HTML
+block (Sistema/Terminales/Diferencia rows, each terminal line, a neutral-
+language Estado banner, an optional Motivo line) inserted between
+"VENTAS POR MÉTODO DE PAGO" and "RESUMEN OPERATIVO" — omitted entirely
+for `null` (pre-16.14A close) or `not_applicable` (no card sales), never
+printing noise for a shift that never had a card sale. Both print call
+sites (`_CajaCurrentState._printCashCut` for a live close,
+`_CutDetailDialogState._print()` for a historical reprint) now pass
+`_toCashCutCardReconciliation(session)`, reading exclusively from the
+already-loaded, frozen session — never recomputed. Live-verified (§21):
+both the live "Imprimir" and history's own "Reimprimir" correctly
+trigger `window.open`, confirmed via the browser's own popup-blocked
+toast (the same non-defect browser-automation limitation already
+established in TASK 16.13A/16.14's own live certifications).
+
+**§16 PCI/data-safety confirmation.** The entire reconciliation shape —
+`CashCardReconciliationEntry {id, label, amount, reference, note}` and
+its parent object — has no field that could hold a PAN, CVV, expiration,
+or cardholder name; there was never anything to strip. A dedicated
+backend test (`cash-card-reconciliation.integration.test.ts`, "no
+sensitive card data") asserts every key across the persisted/returned
+shape against a `pan|card_number|cvv|cvc|expir|track|pin` pattern. No
+terminal-API call, no receipt-image parsing, no PAN/CVV field anywhere —
+exactly the task's own §19 allowed-data list (label, non-sensitive
+reference, aggregate amount, note) and nothing beyond it.
+
+**§17 Idempotency/concurrency.** `card_reconciliation` participates in
+the exact same `closeSession` transaction, `pg_advisory_xact_lock`-backed
+idempotency wrapper, and row-lock/optimistic-version UPDATE TASK 16.14
+already established — re-certified, not re-invented. The idempotency
+request hash now also covers the RAW (pre-validation) `card_reconciliation`
+input, mirroring `denomination_counts`'/`discrepancy_reason`'s own
+precedent exactly — never the validated shape, whose entries each carry
+a freshly `randomUUID()`-generated `id` that would otherwise make even a
+genuine retry hash differently. Proven: a retried close with the
+identical reconciliation replays the STORED result (same entry ids,
+never a duplicate), and the same key with a DIFFERENT reconciliation
+correctly conflicts (`idempotency_conflict`).
+
+**§18 Permissions/audit.** No new permission — `cash_session.close`
+remains the sole gate, unchanged. The audit payload for
+`cash_session.closed` gained `card_reconciliation_status`/
+`card_reconciliation_difference`/`card_reconciliation_note` — status,
+amount, and free-text note only, never anything PCI-sensitive (there is
+none to capture — §16).
+
+**§19 Backward compatibility.** A session closed before this migration
+has `card_reconciliation: null` unconditionally (the column didn't
+exist), rendered as an honest "Conciliación de tarjetas no disponible
+para este cierre." — a distinct message from "Sin ventas con tarjeta en
+este turno." (§8's `not_applicable`), never conflated. Proven by a
+dedicated integration test that hand-simulates a pre-16.14A closed row
+(every TASK 16.14 column populated, only `card_reconciliation` left
+NULL) and a dedicated Flutter widget test asserting the two distinct
+notices/keys.
+
+**§20 Deterministic E2E exact values** (backend, real PostgreSQL,
+`cash-card-reconciliation.integration.test.ts`):
+opening float $500 (not touched by the scenario below); cash sale $100;
+card payment $600; second card payment $400 (both `card_manual`, since
+`card_terminal` requires a live Mercado Pago Point pairing this task's
+own scope guard forbids building a fixture chain for — see the file's
+own top doc comment); card refund $100 on the $600 sale → system card
+gross $1000, refund $100, **net $900**. Terminal entries "Terminal A"
+$500 + "Terminal B" $400 → terminal total $900 → **difference $0.00,
+status `reconciled`**. Cash expected remained exactly $600 ($500 + $100
+cash sale) — bit-for-bit identical whether or not card reconciliation
+was submitted, proving §13. A second scenario: system net $900, one
+terminal entry $875 → **difference −$25.00, status `discrepancy`**, note
+"Prueba de conciliación." persisted verbatim. A third: zero card sales →
+`status: not_applicable`, `systemGrossTotal: '0.0000'`, no entries. A
+fourth: card sales exist, `card_reconciliation` key omitted → `status:
+pending`, entries `[]`. A fifth: `{entries: []}` explicitly submitted
+with zero card sales existing → `status: discrepancy` (not `pending`),
+`difference: -$150.00` — proving the presence-of-the-key signal, not the
+entries' own emptiness, decides pending vs. reconciled/discrepancy.
+
+**§21 Live browser result.** Logged in as `ceo@inflapark.local`,
+selected the "Universidad" branch (a fresh branch for this task, to
+avoid any session-window overlap with prior tasks' own live-cert data on
+other branches). Completed a real cash sale ($271.44, via a genuine
+`POST /api/v1/sales` + `POST /api/v1/payments` cash flow). Attempted a
+real card sale ($172.84) — confirmed live that this environment
+genuinely cannot create a card payment today: "Venta ...preparada para
+pago — terminal no configurada," no payment record created, exactly
+matching §3's forensic finding (Mercado Pago paused, no
+`payment_terminals` row for this branch) — an environment characteristic
+this task's own scope guard explicitly forbids working around (no
+resuming Mercado Pago, no calling terminal APIs). Opened "Cerrar caja":
+confirmed the CONCILIACIÓN DE TARJETAS section is correctly ABSENT
+entirely (zero card sales, §10). Closed with an exact-match counted
+amount ($871.44 = $600 opening + $271.44 cash sale, "Sin diferencia
+$0.00"). The "Caja cerrada" result dialog showed FINANCIERO, "VENTAS POR
+MÉTODO DE PAGO: Efectivo $271.44" (no fabricated line), and
+"CONCILIACIÓN DE TARJETAS: Sin ventas con tarjeta en este turno." —
+live-proving the not-applicable path end to end. "Imprimir" correctly
+triggered the browser's own popup-blocked toast (proof `window.open` was
+called). Navigated to "Cortes de caja," reopened the same closed
+session: identical frozen FINANCIERO/payment-method/card-reconciliation
+figures reproduced exactly. "Reimprimir" attempted with no error.
+**The populated multi-terminal/discrepancy/pending UI paths were not
+independently live-clicked in this pass** — this specific deployed
+environment has no live path to create a real card payment (per §3/§4;
+resuming Mercado Pago or building a terminal-registration fixture chain
+are both explicitly out of scope) — but are thoroughly proven via 9
+passing Flutter widget tests exercising the real `_CloseCajaDialog`/
+`_CommercialCloseSummary` code paths with mocked gateway data, and via 9
+passing backend integration tests against real PostgreSQL with real
+`card_manual` payment/refund rows (§20). No physical printer
+certification is claimed.
+
+**§22 Tests/results.** Backend: new
+`cash-card-reconciliation.integration.test.ts`, 9/9 passing against real
+PostgreSQL (deterministic exact-match/discrepancy, zero-card-sales,
+pending-vs-omitted, explicit-zero-vs-pending, idempotency replay/
+conflict, no-sensitive-data assertion, old-close compatibility, tenant
+isolation). Existing `cash-final-close-commercial.integration.test.ts`
+(TASK 16.14) re-run unchanged: 5/5 still passing. Full backend suite
+(sequential, single-fork, to avoid load-induced cross-suite timeouts):
+1278/1294 passing, 15 pre-existing unrelated skips, 1 flaky timeout
+(`cash.integration.test.ts`'s own inventory-rollback test — confirmed
+passing in isolation, unrelated to this task's own files). Flutter: new
+9-test group in `pos_shell_test.dart`
+("CONCILIACIÓN DE TARJETAS — card-terminal reconciliation (TASK
+16.14A)") plus a new 5-test group in `cash_cut_html_test.dart`, both
+100% passing; full suite 676/676 passing; `flutter analyze` clean at the
+established 156-issue baseline (zero new errors — two genuine bugs were
+caught and fixed by this same analyze/test loop before it went clean:
+`Money.parse` rejecting a negative `difference` string, and a
+`RenderFlex` overflow from the longer "Faltante/Sobrante en terminal"
+labels — see the file's own commit history); `flutter build web
+--release` succeeded.
+
+**§23 Files changed.** `packages/database/src/schema/cash.ts` (new
+column + check constraint), `packages/database/drizzle/
+0037_loud_vin_gonzales.sql` + `meta/0037_snapshot.json` (new),
+`packages/database/src/testing/schema.test.ts` (journal-length bump),
+`apps/api/src/modules/cash/cash.types.ts` (new
+`CashCardReconciliation*` types), `apps/api/src/modules/cash/
+cash.repository.ts` (column plumbing + decoder), `apps/api/src/modules/
+cash/cash.service.ts` (`buildCardReconciliation`, validation, live
+preview in `summary()`, wiring in `closeSession()`), `apps/api/src/
+modules/cash/cash.routes.ts` (request schema, response mapper),
+`apps/api/src/modules/cash/cash.routes.test.ts` /
+`cash-advanced.routes.test.ts` (fixture field), new
+`apps/api/src/modules/cash/cash-card-reconciliation.integration.test.ts`,
+`apps/one/lib/features/pos/pos_cash_gateway.dart` (new models,
+`closeSession()` params, live `paymentMethodTotals` on the summary),
+`apps/one/lib/features/pos/pos_shell.dart` (close-dialog UI, shared
+`_CardReconciliationSection`, print-builder wiring), `apps/one/lib/
+features/pos/cash_cut_html.dart` (new print block), `apps/one/test/
+pos_shell_test.dart` / `cash_cut_html_test.dart` (new test groups + a
+handful of fixture updates for the new required field), `docs/
+LEGACY_FUNCTIONAL_PARITY.md` (this section).
+
+**§24 Genuine remaining limitations.** No live browser click-through of
+the populated (multi-terminal/discrepancy/pending) card-reconciliation UI
+in this exact deployed environment — no branch here has a configured
+card terminal and Mercado Pago is paused by explicit scope guard, so no
+real card payment can be created through the live app today; covered
+instead by automated tests (§20/§22). Physical 80mm printer certification
+remains outstanding, unchanged from every prior cash-close task. The
+`reference`/`note` per-entry API fields exist but have no dedicated
+Flutter input in this V1 (only the combined `label` field, matching the
+task's own suggested minimal UI) — a natural, easy future enhancement
+if ever needed, not attempted here per "keep V1 simple."
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

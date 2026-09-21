@@ -1,4 +1,5 @@
 import '../../core/networking/api_client.dart';
+import 'money.dart';
 
 /// TASK 12.7: the Flutter side of E038–E048 — see ADR-0014 for the full
 /// backend design this mirrors. Every model here is exactly what the
@@ -82,12 +83,14 @@ class PosCashSession {
     this.paymentMethodTotals,
     this.operationalSummary,
     this.discrepancyReason,
+    this.cardReconciliation,
   });
 
   factory PosCashSession.fromJson(Map<String, Object?> json) {
     final rawDenominations = json['denomination_counts'];
     final rawPaymentMethodTotals = json['payment_method_totals'];
     final rawOperationalSummary = json['operational_summary'];
+    final rawCardReconciliation = json['card_reconciliation'];
     return PosCashSession(
       id: json['id']! as String,
       branchId: json['branch_id']! as String,
@@ -134,6 +137,12 @@ class PosCashSession {
           ? PosCashOperationalSummary.fromJson(rawOperationalSummary)
           : null,
       discrepancyReason: json['discrepancy_reason'] as String?,
+      // TASK 16.14A — `null` for an open/closing session or any session
+      // closed before this task existed — never synthesized, mirroring
+      // every other closure-only field above.
+      cardReconciliation: rawCardReconciliation is Map<String, Object?>
+          ? PosCashCardReconciliation.fromJson(rawCardReconciliation)
+          : null,
     );
   }
 
@@ -163,6 +172,7 @@ class PosCashSession {
   final List<PosCashPaymentMethodTotal>? paymentMethodTotals;
   final PosCashOperationalSummary? operationalSummary;
   final String? discrepancyReason;
+  final PosCashCardReconciliation? cardReconciliation;
 
   bool get isOpen => status == 'open';
   bool get isClosed => status == 'closed';
@@ -218,6 +228,140 @@ String posPaymentMethodLabel(String method) => switch (method) {
   'card_manual' => 'Tarjeta (manual)',
   _ => 'Otro',
 };
+
+/// TASK 16.14A — the methods that belong to "terminal settlement" for a
+/// LIVE preview, mirroring `cash.service.ts`'s own
+/// `CARD_RECONCILIATION_METHODS` exactly (`card_terminal`+`card_manual`).
+/// Used only to show "Registrado en ACCESS GO" in the close dialog before
+/// confirming — the backend independently recomputes the authoritative
+/// figure at close time, under lock; this client-side sum is never sent
+/// back or trusted as the real total (mirrors the existing
+/// `_previewDiscrepancy` pattern for cash).
+String posCardSystemNetTotalPreview(
+  List<PosCashPaymentMethodTotal> paymentMethodTotals,
+  String currencyCode,
+) {
+  var total = Money.zero(currencyCode);
+  for (final line in paymentMethodTotals) {
+    if (line.method != 'card_terminal' && line.method != 'card_manual') {
+      continue;
+    }
+    try {
+      total = total + Money.parse(line.netTotal, currencyCode);
+    } on MoneyFormatException {
+      continue;
+    }
+  }
+  return total.toApiString();
+}
+
+/// TASK 16.14A — one operator-entered physical card-terminal settlement
+/// line ("Terminal / referencia" + "Total del ticket"). `label` is free
+/// text the operator types (e.g. "BBVA", "Clip", "Terminal 2") — never a
+/// picker over a device registry (see `cash.ts`'s own doc comment on why).
+/// `id` is always server-generated; a NEW, not-yet-submitted entry drafted
+/// client-side simply omits it until the close response comes back.
+class PosCashCardReconciliationEntry {
+  const PosCashCardReconciliationEntry({
+    this.id,
+    required this.label,
+    required this.amount,
+    this.reference,
+    this.note,
+  });
+
+  factory PosCashCardReconciliationEntry.fromJson(Map<String, Object?> json) =>
+      PosCashCardReconciliationEntry(
+        id: json['id'] as String?,
+        label: json['label']! as String,
+        amount: json['amount']! as String,
+        reference: json['reference'] as String?,
+        note: json['note'] as String?,
+      );
+
+  final String? id;
+  final String label;
+  final String amount;
+  final String? reference;
+  final String? note;
+
+  Map<String, Object?> toJson() => {
+    'label': label,
+    'amount': amount,
+    if (reference != null && reference!.trim().isNotEmpty)
+      'reference': reference!.trim(),
+    if (note != null && note!.trim().isNotEmpty) 'note': note!.trim(),
+  };
+}
+
+/// `not_applicable` — the session had zero card sales; the operator was
+/// never asked to reconcile anything. `pending` — card sales exist but
+/// the operator omitted reconciliation entirely — the UI/print must show
+/// "Pendiente de conciliar", NEVER treat this state's own numeric
+/// [PosCashCardReconciliation.difference] as a real shortage/surplus to
+/// display. `reconciled`/`discrepancy` — the operator explicitly
+/// submitted terminal entries (even an empty list, meaning "$0 across all
+/// terminals") and the totals match or don't.
+enum PosCashCardReconciliationStatus { notApplicable, pending, reconciled, discrepancy }
+
+PosCashCardReconciliationStatus _cardReconciliationStatus(String raw) =>
+    switch (raw) {
+      'not_applicable' => PosCashCardReconciliationStatus.notApplicable,
+      'reconciled' => PosCashCardReconciliationStatus.reconciled,
+      'discrepancy' => PosCashCardReconciliationStatus.discrepancy,
+      _ => PosCashCardReconciliationStatus.pending,
+    };
+
+/// TASK 16.14A — "CONCILIACIÓN DE TARJETAS": the frozen final-close
+/// comparison of ACCESS GO's own recorded card-payment totals ([systemGrossTotal]/
+/// [systemRefundTotal]/[systemNetTotal], from `card_terminal`+`card_manual`
+/// payments — never the same figure as cash expected/counted, see
+/// `cash.types.ts`'s own doc comment) against what the physical card
+/// terminal(s) reported ([terminalEntries]/[terminalTotal]).
+/// [difference] = `terminalTotal - systemNetTotal`. Structurally
+/// independent of [PosCashSession.expectedClosingAmount]/
+/// `discrepancyAmount` — this object never reads or writes a single
+/// cash-drawer figure.
+class PosCashCardReconciliation {
+  const PosCashCardReconciliation({
+    required this.systemGrossTotal,
+    required this.systemRefundTotal,
+    required this.systemNetTotal,
+    required this.terminalEntries,
+    required this.terminalTotal,
+    required this.difference,
+    required this.status,
+    this.note,
+  });
+
+  factory PosCashCardReconciliation.fromJson(Map<String, Object?> json) {
+    final rawEntries = json['terminal_entries'];
+    return PosCashCardReconciliation(
+      systemGrossTotal: json['system_gross_total']! as String,
+      systemRefundTotal: json['system_refund_total']! as String,
+      systemNetTotal: json['system_net_total']! as String,
+      terminalEntries: rawEntries is List<Object?>
+          ? rawEntries
+                .whereType<Map<String, Object?>>()
+                .map(PosCashCardReconciliationEntry.fromJson)
+                .toList(growable: false)
+          : const [],
+      terminalTotal: json['terminal_total']! as String,
+      difference: json['difference']! as String,
+      status: _cardReconciliationStatus(json['status']! as String),
+      note: json['note'] as String?,
+    );
+  }
+
+  final String systemGrossTotal;
+  final String systemRefundTotal;
+  final String systemNetTotal;
+  final List<PosCashCardReconciliationEntry> terminalEntries;
+  final String terminalTotal;
+  final String difference;
+  final PosCashCardReconciliationStatus status;
+  final String? note;
+}
 
 /// TASK 14.4 (Wave 2, Part F.1) — the exact category set
 /// `cash.types.ts`'s own `cashMovementCategories` defines, only ever
@@ -345,10 +489,12 @@ class PosCashSessionSummary {
     required this.externalIncomeTotal,
     required this.cashRefundTotal,
     required this.cashRefundCount,
+    required this.paymentMethodTotals,
   });
 
   factory PosCashSessionSummary.fromJson(Map<String, Object?> json) {
     final rawSession = json['session'];
+    final rawPaymentMethodTotals = json['payment_method_totals'];
     return PosCashSessionSummary(
       session: PosCashSession.fromJson(
         rawSession is Map<String, Object?>
@@ -381,6 +527,17 @@ class PosCashSessionSummary {
       // field yet either).
       cashRefundTotal: json['cash_refund_total'] as String? ?? '0.0000',
       cashRefundCount: json['cash_refund_count'] as int? ?? 0,
+      // TASK 16.14A — a LIVE preview of the same per-method breakdown a
+      // final close freezes, so "CONCILIACIÓN DE TARJETAS" can show
+      // "Registrado en ACCESS GO" BEFORE the operator confirms the close
+      // — same tolerate-absence convention as the three totals above (an
+      // older backend process might not have this field yet either).
+      paymentMethodTotals: rawPaymentMethodTotals is List<Object?>
+          ? rawPaymentMethodTotals
+                .whereType<Map<String, Object?>>()
+                .map(PosCashPaymentMethodTotal.fromJson)
+                .toList(growable: false)
+          : const [],
     );
   }
 
@@ -396,6 +553,7 @@ class PosCashSessionSummary {
   final String externalIncomeTotal;
   final String cashRefundTotal;
   final int cashRefundCount;
+  final List<PosCashPaymentMethodTotal> paymentMethodTotals;
 }
 
 /// TASK 16.13 — "Ventas / Taquilla" within a partial cut's operational
@@ -747,12 +905,19 @@ abstract interface class PosCashGateway {
   /// [declaredClosingAmount] exactly. [discrepancyReason] (TASK 16.14
   /// §12) is a fully optional explanation for a non-zero difference —
   /// never required to close, whatever the size of the eventual
-  /// discrepancy.
+  /// discrepancy. [cardReconciliationEntries] (TASK 16.14A §10) is `null`
+  /// when the operator never opened "Conciliación de tarjetas" at all
+  /// (→ `pending`, whenever card sales exist) — a non-null list, even
+  /// empty, means they DID (→ `reconciled`/`discrepancy`); never conflate
+  /// the two. [cardReconciliationNote] is only ever sent alongside a
+  /// non-null [cardReconciliationEntries].
   Future<PosCashSession> closeSession({
     required String cashSessionId,
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
     String? discrepancyReason,
+    List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+    String? cardReconciliationNote,
   });
 
   /// `GET /api/v1/cash-sessions` (Part L cut history) — server-side
@@ -965,6 +1130,8 @@ class ApiPosCashGateway implements PosCashGateway {
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
     String? discrepancyReason,
+    List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+    String? cardReconciliationNote,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/cash-sessions/$cashSessionId/closures',
@@ -977,6 +1144,19 @@ class ApiPosCashGateway implements PosCashGateway {
           ],
         if (discrepancyReason != null && discrepancyReason.trim().isNotEmpty)
           'discrepancy_reason': discrepancyReason.trim(),
+        // TASK 16.14A — the presence of this key (even with an empty
+        // `entries` list) is itself the "operator attempted
+        // reconciliation" signal; see `cardReconciliationEntries`'s own
+        // doc comment on why `null` must never send this key at all.
+        if (cardReconciliationEntries != null)
+          'card_reconciliation': {
+            'entries': [
+              for (final entry in cardReconciliationEntries) entry.toJson(),
+            ],
+            if (cardReconciliationNote != null &&
+                cardReconciliationNote.trim().isNotEmpty)
+              'note': cardReconciliationNote.trim(),
+          },
       },
     );
     return _decodeSession(envelope);
@@ -1156,6 +1336,8 @@ class EmptyPosCashGateway implements PosCashGateway {
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
     String? discrepancyReason,
+    List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+    String? cardReconciliationNote,
   }) => Future.error(StateError('No cash gateway is configured.'));
 
   @override

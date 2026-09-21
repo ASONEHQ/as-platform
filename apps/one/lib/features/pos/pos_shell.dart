@@ -17815,6 +17815,35 @@ List<CashCutLine>? _paymentMethodLines(PosCashSession session) {
   ];
 }
 
+/// TASK 16.14A §13 — the real, backend-persisted "Conciliación de
+/// tarjetas" (`cash_sessions.card_reconciliation`) formatted for the
+/// printed corte final. `null` for a session with no card reconciliation
+/// at all (closed before this task) — `buildCashCutHtml` itself
+/// separately omits the whole section for a `not_applicable` status
+/// (zero card sales), so that case is passed through unchanged rather
+/// than filtered here, matching every other "let the print builder be
+/// the single place that decides what's noise" convention in this file.
+CashCutCardReconciliation? _toCashCutCardReconciliation(PosCashSession session) {
+  final reconciliation = session.cardReconciliation;
+  if (reconciliation == null) return null;
+  return CashCutCardReconciliation(
+    systemNetTotal: reconciliation.systemNetTotal,
+    terminalEntries: [
+      for (final entry in reconciliation.terminalEntries)
+        CashCutLine(entry.label, _formatMoney(entry.amount, session.currencyCode)),
+    ],
+    terminalTotal: reconciliation.terminalTotal,
+    difference: reconciliation.difference,
+    status: switch (reconciliation.status) {
+      PosCashCardReconciliationStatus.notApplicable => 'not_applicable',
+      PosCashCardReconciliationStatus.pending => 'pending',
+      PosCashCardReconciliationStatus.reconciled => 'reconciled',
+      PosCashCardReconciliationStatus.discrepancy => 'discrepancy',
+    },
+    note: reconciliation.note,
+  );
+}
+
 enum _CajaTab { current, history }
 
 class _Caja extends StatefulWidget {
@@ -18069,6 +18098,11 @@ class _CajaCurrentState extends State<_CajaCurrent> {
         currencyCode: session.currencyCode,
         expectedCash: summary.expectedCash,
         cashGateway: widget.cashGateway,
+        // TASK 16.14A — the live per-method preview `GET .../summary`
+        // now carries; the dialog derives "Registrado en ACCESS GO" from
+        // it client-side (`posCardSystemNetTotalPreview`), purely for
+        // display — the backend recomputes authoritatively at close.
+        paymentMethodTotals: summary.paymentMethodTotals,
       ),
     );
     if (closed == null) return;
@@ -18159,6 +18193,7 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       cashRefundTotal: isFinal ? session.cashRefundTotal : null,
       discrepancyReason: isFinal ? session.discrepancyReason : null,
       paymentMethodLines: isFinal ? _paymentMethodLines(session) : null,
+      cardReconciliation: isFinal ? _toCashCutCardReconciliation(session) : null,
       paperWidthMm: branding.paperWidthMm ?? 80,
       logoDataUri: branding.logoUrl,
       headerText: branding.header,
@@ -19566,14 +19601,35 @@ class _CloseCajaDialog extends StatefulWidget {
     required this.currencyCode,
     required this.expectedCash,
     required this.cashGateway,
+    required this.paymentMethodTotals,
   });
   final String cashSessionId;
   final String currencyCode;
   final String expectedCash;
   final PosCashGateway cashGateway;
+  // TASK 16.14A — live preview only; see `_closeRegister`'s own comment
+  // on the call site.
+  final List<PosCashPaymentMethodTotal> paymentMethodTotals;
 
   @override
   State<_CloseCajaDialog> createState() => _CloseCajaDialogState();
+}
+
+/// TASK 16.14A — one draft "Terminal / referencia" + "Total del ticket"
+/// row, local to the close dialog until confirmed. Deliberately just two
+/// free-text fields, matching this task's own suggested minimal V1 UI —
+/// the backend's `label`/`amount` pair (`reference`/`note` stay available
+/// on the API for a future enhancement, unused by this dialog).
+class _CardTerminalEntryDraft {
+  _CardTerminalEntryDraft()
+    : labelController = TextEditingController(),
+      amountController = TextEditingController();
+  final TextEditingController labelController;
+  final TextEditingController amountController;
+  void dispose() {
+    labelController.dispose();
+    amountController.dispose();
+  }
 }
 
 class _CloseCajaDialogState extends State<_CloseCajaDialog> {
@@ -19591,6 +19647,16 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
   late final Map<String, TextEditingController> _denominationControllers;
   bool _busy = false;
   String? _error;
+  // TASK 16.14A — the "operator attempted reconciliation" signal: starts
+  // `false` (→ sends no `card_reconciliation` key at all → backend
+  // `pending`), flips permanently `true` the first time the operator adds
+  // a terminal row — even if they later delete every row again, meaning
+  // "I checked, the terminal genuinely reports $0" (a real, legitimate
+  // answer, never re-collapsed back into "never asked" — see
+  // `CashCardReconciliationStatus`'s own doc comment on this distinction).
+  bool _cardReconciliationStarted = false;
+  final List<_CardTerminalEntryDraft> _cardEntries = [];
+  final _cardReconciliationNoteController = TextEditingController();
 
   @override
   void initState() {
@@ -19615,7 +19681,61 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
     for (final controller in _denominationControllers.values) {
       controller.dispose();
     }
+    for (final entry in _cardEntries) {
+      entry.dispose();
+    }
+    _cardReconciliationNoteController.dispose();
     super.dispose();
+  }
+
+  /// TASK 16.14A §5/§6 — LIVE preview only (see
+  /// `posCardSystemNetTotalPreview`'s own doc comment); `null` when there
+  /// are no card sales this shift at all (§10 — never asks for
+  /// reconciliation in that case).
+  Money? get _cardSystemNetTotal {
+    final raw = posCardSystemNetTotalPreview(widget.paymentMethodTotals, widget.currencyCode);
+    final parsed = Money.parse(raw, widget.currencyCode);
+    return parsed.isZero ? null : parsed;
+  }
+
+  /// Sum of every drafted terminal entry's own amount — `0` while none
+  /// are entered, exactly like an explicit `{ entries: [] }` submission
+  /// would mean once `_cardReconciliationStarted`.
+  Money get _cardTerminalTotal {
+    var total = Money.zero(widget.currencyCode);
+    for (final entry in _cardEntries) {
+      final text = entry.amountController.text.trim();
+      if (text.isEmpty) continue;
+      try {
+        total = total + Money.parse(text, widget.currencyCode);
+      } on MoneyFormatException {
+        continue;
+      }
+    }
+    return total;
+  }
+
+  /// `terminalTotal - systemNetTotal`, mirroring the backend's own exact
+  /// formula (§8) — a client-side PREVIEW only.
+  Money get _cardDifference {
+    final system = _cardSystemNetTotal ?? Money.zero(widget.currencyCode);
+    return _cardTerminalTotal - system;
+  }
+
+  void _addCardEntry() {
+    setState(() {
+      _cardReconciliationStarted = true;
+      final entry = _CardTerminalEntryDraft();
+      entry.amountController.addListener(() => setState(() {}));
+      _cardEntries.add(entry);
+    });
+  }
+
+  void _removeCardEntry(_CardTerminalEntryDraft entry) {
+    setState(() {
+      _cardEntries.remove(entry);
+      entry.dispose();
+    });
   }
 
   /// TASK 16.14 §11 — a client-side-only preview of `contado - esperado`,
@@ -19681,11 +19801,34 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
     });
     try {
       final reason = _reasonController.text.trim();
+      final cardNote = _cardReconciliationNoteController.text.trim();
       final closed = await widget.cashGateway.closeSession(
         cashSessionId: widget.cashSessionId,
         declaredClosingAmount: counted.toApiString(),
         denominationCounts: denominationCounts,
         discrepancyReason: reason.isEmpty ? null : reason,
+        // TASK 16.14A — `null` (never sent) unless the operator actually
+        // opened this section; see `_cardReconciliationStarted`'s own
+        // doc comment.
+        cardReconciliationEntries: _cardReconciliationStarted
+            ? [
+                for (final entry in _cardEntries)
+                  if (entry.labelController.text.trim().isNotEmpty ||
+                      entry.amountController.text.trim().isNotEmpty)
+                    PosCashCardReconciliationEntry(
+                      label: entry.labelController.text.trim(),
+                      amount: Money.parse(
+                        entry.amountController.text.trim().isEmpty
+                            ? '0'
+                            : entry.amountController.text.trim(),
+                        widget.currencyCode,
+                      ).toApiString(),
+                    ),
+              ]
+            : null,
+        cardReconciliationNote: _cardReconciliationStarted && cardNote.isNotEmpty
+            ? cardNote
+            : null,
       );
       if (!mounted) return;
       Navigator.of(context).pop(closed);
@@ -19820,6 +19963,139 @@ class _CloseCajaDialogState extends State<_CloseCajaDialog> {
                 labelText: 'Motivo de la diferencia (opcional)',
                 hintText: 'Ej. propina no registrada, error de cambio…',
               ),
+            ),
+            // TASK 16.14A — "CONCILIACIÓN DE TARJETAS", a clearly
+            // separated section from the cash count above (§6 — never
+            // clutter the cash-count section). Omitted entirely when
+            // there were no card sales this shift at all (§10).
+            Builder(
+              builder: (context) {
+                final systemNet = _cardSystemNetTotal;
+                if (systemNet == null) return const SizedBox.shrink();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Divider(height: 24),
+                    const Text(
+                      'CONCILIACIÓN DE TARJETAS',
+                      style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3),
+                    ),
+                    const SizedBox(height: 4),
+                    _CajaInfoRow(
+                      label: 'Registrado en ACCESS GO',
+                      value: _formatMoney(systemNet.toApiString(), widget.currencyCode),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final entry in _cardEntries)
+                      Padding(
+                        key: ValueKey(entry),
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: TextField(
+                                key: Key('pos-caja-card-entry-label-${_cardEntries.indexOf(entry)}'),
+                                controller: entry.labelController,
+                                enabled: !_busy,
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  hintText: 'Terminal / referencia',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              flex: 2,
+                              child: TextField(
+                                key: Key('pos-caja-card-entry-amount-${_cardEntries.indexOf(entry)}'),
+                                controller: entry.amountController,
+                                enabled: !_busy,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  prefixText: r'$ ',
+                                  hintText: 'Total del ticket',
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              key: Key('pos-caja-card-entry-remove-${_cardEntries.indexOf(entry)}'),
+                              icon: const Icon(Icons.close, size: 18),
+                              onPressed: _busy ? null : () => _removeCardEntry(entry),
+                              tooltip: 'Quitar',
+                            ),
+                          ],
+                        ),
+                      ),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        key: const Key('pos-caja-card-add-terminal'),
+                        onPressed: _busy ? null : _addCardEntry,
+                        icon: const Icon(Icons.add, size: 16),
+                        label: const Text('Agregar terminal'),
+                      ),
+                    ),
+                    if (!_cardReconciliationStarted)
+                      const Text(
+                        'Pendiente de conciliar — agrega el ticket de la terminal cuando lo tengas disponible.',
+                        key: Key('pos-caja-card-pending-hint'),
+                        style: TextStyle(fontSize: 12),
+                      )
+                    else ...[
+                      const SizedBox(height: 4),
+                      _CajaInfoRow(
+                        label: 'Total terminales',
+                        value: _formatMoney(_cardTerminalTotal.toApiString(), widget.currencyCode),
+                      ),
+                      const SizedBox(height: 6),
+                      Builder(
+                        builder: (context) {
+                          final diff = _cardDifference;
+                          final isZero = diff.isZero;
+                          final isShortfall = diff.isNegative;
+                          final color = isZero ? Colors.green : (isShortfall ? Colors.red : Colors.orange);
+                          final label = isZero
+                              ? 'Conciliado'
+                              : (isShortfall ? 'Faltante en terminal' : 'Sobrante en terminal');
+                          return Container(
+                            key: const Key('pos-caja-card-diff-preview'),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: color.withValues(alpha: .12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+                                ),
+                                Text(
+                                  _formatMoney(diff.toApiString(), widget.currencyCode),
+                                  style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 15),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        key: const Key('pos-caja-card-reconciliation-note'),
+                        controller: _cardReconciliationNoteController,
+                        enabled: !_busy,
+                        maxLines: 2,
+                        decoration: const InputDecoration(
+                          labelText: 'Motivo de la diferencia en tarjetas (opcional)',
+                          hintText: 'Ej. ticket pendiente de aclaración…',
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
             ),
             if (_error != null) ...[
               const SizedBox(height: 8),
@@ -20012,7 +20288,119 @@ class _CommercialCloseSummary extends StatelessWidget {
         else
           for (final line in paymentMethods)
             _CajaInfoRow(label: posPaymentMethodLabel(line.method), value: _formatMoney(line.netTotal, currencyCode)),
+        _CardReconciliationSection(reconciliation: session.cardReconciliation, currencyCode: currencyCode),
         _OperationalSummarySection(summary: session.operationalSummary, currencyCode: currencyCode),
+      ],
+    );
+  }
+}
+
+/// TASK 16.14A — "CONCILIACIÓN DE TARJETAS" as it appears on a FROZEN
+/// close (the result dialog and history's `_CutDetailDialog`, and the
+/// print builder's own equivalent block) — reused by both, never two
+/// slightly-different copies. `null` [reconciliation] means a session
+/// closed before this task existed (§16 — an honest "not available",
+/// never a fabricated one); `status: notApplicable` means THIS session
+/// genuinely had zero card sales (§10 — never confused with the former).
+class _CardReconciliationSection extends StatelessWidget {
+  const _CardReconciliationSection({required this.reconciliation, required this.currencyCode});
+  final PosCashCardReconciliation? reconciliation;
+  final String currencyCode;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final reconciliation = this.reconciliation;
+    if (reconciliation == null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          'Conciliación de tarjetas no disponible para este cierre.',
+          key: const Key('pos-caja-card-reconciliation-unavailable'),
+          style: TextStyle(color: palette.textSecondary, fontSize: 12),
+        ),
+      );
+    }
+    if (reconciliation.status == PosCashCardReconciliationStatus.notApplicable) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Divider(height: 24),
+          const Text('CONCILIACIÓN DE TARJETAS', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3)),
+          const SizedBox(height: 4),
+          Text(
+            'Sin ventas con tarjeta en este turno.',
+            key: const Key('pos-caja-card-reconciliation-not-applicable'),
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+        ],
+      );
+    }
+    final isPending = reconciliation.status == PosCashCardReconciliationStatus.pending;
+    final isZero = reconciliation.status == PosCashCardReconciliationStatus.reconciled;
+    // `Money.parse` rejects a negative string outright (by design — see
+    // its own doc comment); `difference` can genuinely be negative, so
+    // the sign is read from the string itself, mirroring
+    // `_CommercialCloseSummary`'s own `discrepancyAmount` handling above.
+    final isShortfall = !isPending && reconciliation.difference.trim().startsWith('-');
+    final color = isPending
+        ? palette.textSecondary
+        : (isZero ? Colors.green : (isShortfall ? Colors.red : Colors.orange));
+    // Neutral accounting language, never treating `pending`'s own
+    // numeric `difference` as a real shortage (§10/§11).
+    final label = isPending
+        ? 'Pendiente de conciliar'
+        : (isZero ? 'Conciliado' : (isShortfall ? 'Faltante en terminal' : 'Sobrante en terminal'));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 24),
+        const Text('CONCILIACIÓN DE TARJETAS', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: .3)),
+        const SizedBox(height: 4),
+        _CajaInfoRow(
+          label: 'Registrado en ACCESS GO',
+          value: _formatMoney(reconciliation.systemNetTotal, currencyCode),
+        ),
+        if (reconciliation.terminalEntries.isNotEmpty)
+          for (final entry in reconciliation.terminalEntries)
+            _CajaInfoRow(label: entry.label, value: _formatMoney(entry.amount, currencyCode)),
+        if (!isPending) ...[
+          _CajaInfoRow(
+            label: 'Total terminales',
+            value: _formatMoney(reconciliation.terminalTotal, currencyCode),
+          ),
+        ],
+        const SizedBox(height: 6),
+        Container(
+          key: const Key('pos-caja-card-reconciliation-status'),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(10)),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // "Faltante en terminal"/"Sobrante en terminal" are longer
+              // than the cash section's own "Faltante"/"Sobrante" labels
+              // — `Expanded` lets the label wrap rather than overflow the
+              // 380px dialog (§24 — no overflow at production viewport).
+              Expanded(
+                child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+              ),
+              if (!isPending)
+                Text(
+                  _formatMoney(reconciliation.difference, currencyCode),
+                  style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 15),
+                ),
+            ],
+          ),
+        ),
+        if (reconciliation.note != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Motivo: ${reconciliation.note}',
+            key: const Key('pos-caja-card-reconciliation-note-display'),
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
+        ],
       ],
     );
   }
@@ -20496,6 +20884,7 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
       cashRefundTotal: isFinal ? session.cashRefundTotal : null,
       discrepancyReason: isFinal ? session.discrepancyReason : null,
       paymentMethodLines: isFinal ? _paymentMethodLines(session) : null,
+      cardReconciliation: isFinal ? _toCashCutCardReconciliation(session) : null,
       paperWidthMm: branding.paperWidthMm ?? 80,
       logoDataUri: branding.logoUrl,
       headerText: branding.header,

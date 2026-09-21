@@ -54,6 +54,7 @@ function sessionValue(): Readonly<Record<string, unknown>> {
     paymentMethodTotals: null,
     operationalSummary: null,
     discrepancyReason: null,
+    cardReconciliation: null,
     version: 1n,
   };
 }

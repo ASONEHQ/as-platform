@@ -222,6 +222,31 @@ export const cashSessions = pgTable(
     // `discrepancy_amount`, or anything else. When present, it is
     // immutable audit evidence exactly like every other closure field.
     discrepancyReason: text('discrepancy_reason'),
+    // TASK 16.14A — "CONCILIACIÓN DE TARJETAS": comparing ACCESS GO's own
+    // recorded card-payment totals (from `payments`/`refunds`, the exact
+    // same `card_terminal`+`card_manual` rows already summed into
+    // `payment_method_totals` above) against what a physical card
+    // terminal's own settlement/lote ticket reports — entered manually by
+    // the operator, never fetched from any terminal API (Mercado Pago
+    // stays paused; this is not a processor integration). Same asymmetric
+    // nullable pattern as every other TASK 16.14 column: only settable
+    // when `status = 'closed'`, never required even then. Unlike
+    // `payment_method_totals`, this IS always populated by
+    // `CashService.closeSession` going forward — even a session with zero
+    // card sales gets a `status: 'not_applicable'` object here, never a
+    // fabricated pending/reconciled state — so `null` unambiguously means
+    // "closed before this task." One JSONB blob (terminal entries are
+    // free-text label/amount/reference/note — no `payment_terminals` FK:
+    // that table is a device-pairing registry for a live processor
+    // integration, and requiring every branch to register a device just
+    // to log a settlement ticket would be exactly the "unnecessary
+    // hardware-management system" this task says not to build) rather
+    // than a child table, mirroring `operational_summary`'s own
+    // self-contained-JSON convention. See `cash.types.ts`'s
+    // `CashCardReconciliation` for the exact shape and
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.14A section for the
+    // full system-total/difference/status semantics.
+    cardReconciliation: jsonb('card_reconciliation').$type<Readonly<Record<string, unknown>>>(),
     version: bigint('version', { mode: 'bigint' })
       .notNull()
       .default(sql`1`),
@@ -331,6 +356,14 @@ export const cashSessions = pgTable(
       'cash_sessions_discrepancy_reason_ck',
       sql`${table.discrepancyReason} is null
         or (${table.status} = 'closed' and length(btrim(${table.discrepancyReason})) > 0)`,
+    ),
+    // TASK 16.14A — same shape as `cash_sessions_payment_method_totals_ck`:
+    // only ever non-null on a closed row, and when present must be a real
+    // JSON object (never a bare array/scalar).
+    check(
+      'cash_sessions_card_reconciliation_ck',
+      sql`${table.cardReconciliation} is null
+        or (${table.status} = 'closed' and jsonb_typeof(${table.cardReconciliation}) = 'object')`,
     ),
   ],
 );

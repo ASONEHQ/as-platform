@@ -160,6 +160,65 @@ export interface CashPaymentMethodTotal {
   readonly ticketCount: number;
 }
 
+/** TASK 16.14A — one operator-entered physical card-terminal settlement
+ * line ("Terminal / referencia" + "Total del ticket"). Free-text `label`
+ * (e.g. "BBVA", "Clip", "Terminal 2") — deliberately never a foreign key
+ * into `payment_terminals` (that table is a device-pairing registry for a
+ * live processor integration; requiring a registered device per branch
+ * just to log a settlement ticket would be the "unnecessary hardware-
+ * management system" this task explicitly says not to build). No PCI-
+ * sensitive field exists here or anywhere in this shape — never a card
+ * number, CVV, expiration, or cardholder name (§19). */
+export interface CashCardReconciliationEntry {
+  readonly id: string;
+  readonly label: string;
+  readonly amount: string;
+  readonly reference: string | null;
+  readonly note: string | null;
+}
+
+/** `not_applicable` — the session had zero card sales (`systemGrossTotal`
+ * is `0`); the operator was never asked to reconcile anything (§10/§6).
+ * `pending` — card sales exist but the operator omitted reconciliation
+ * entirely (the request carried no `card_reconciliation` key at all) —
+ * distinct from `reconciled`/`discrepancy` below, which both require the
+ * operator to have explicitly submitted a (possibly empty) entries list.
+ * `reconciled` — `terminalTotal - systemNetTotal = 0`. `discrepancy` —
+ * that difference is non-zero. Never a client-supplied value — computed
+ * exclusively by `CashService.closeSession` from server-authoritative
+ * data (§6/§8). */
+export type CashCardReconciliationStatus = 'not_applicable' | 'pending' | 'reconciled' | 'discrepancy';
+
+/** TASK 16.14A — "CONCILIACIÓN DE TARJETAS": the frozen final-close
+ * comparison of ACCESS GO's own recorded card-payment totals against
+ * what the physical card terminal(s) reported. `systemGrossTotal`/
+ * `systemRefundTotal`/`systemNetTotal` are derived from the SAME
+ * `payment_method_totals` rows already computed for `card_terminal` and
+ * `card_manual` (§15 — both belong to terminal settlement: `card_manual`
+ * is an operator-recorded card charge with no live processor round-trip,
+ * exactly the "physical terminal but no API integration" case this
+ * feature reconciles), never a second query. Structurally, completely
+ * independent of `expected_closing_amount`/`discrepancy_amount` above —
+ * this object is never read by, and never writes to, the cash-drawer
+ * math (§3). See `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.14A section
+ * for the full semantics writeup. */
+export interface CashCardReconciliation {
+  readonly systemGrossTotal: string;
+  readonly systemRefundTotal: string;
+  readonly systemNetTotal: string;
+  readonly terminalEntries: readonly CashCardReconciliationEntry[];
+  readonly terminalTotal: string;
+  /** `terminalTotal - systemNetTotal`. Positive = terminal reports more
+   * than the system ("Sobrante en terminal"); negative = terminal reports
+   * less ("Faltante en terminal"). */
+  readonly difference: string;
+  readonly status: CashCardReconciliationStatus;
+  /** Optional free-text explanation, offered whenever `difference !== 0`
+   * (never required — §9/§30 "do not invent a tolerance" applies here
+   * exactly as it does to the cash discrepancy reason). */
+  readonly note: string | null;
+}
+
 export interface CashSessionRow {
   id: string;
   companyId: string;
@@ -196,6 +255,11 @@ export interface CashSessionRow {
   paymentMethodTotals: readonly CashPaymentMethodTotal[] | null;
   operationalSummary: CashPartialCloseOperationalSummary | null;
   discrepancyReason: string | null;
+  // TASK 16.14A — `null` only for a session closed before this task (or
+  // still open/closing); every close going forward always populates it,
+  // even with zero card sales (`status: 'not_applicable'`) — see this
+  // type's own doc comment.
+  cardReconciliation: CashCardReconciliation | null;
   version: bigint;
   createdAt: Date;
   updatedAt: Date;

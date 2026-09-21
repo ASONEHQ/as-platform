@@ -88,6 +88,28 @@ class CashCutOperationalSummary {
   final int eventsCancelledCount;
 }
 
+/// TASK 16.14A — plain, print-ready mirror of `PosCashCardReconciliation`
+/// (`pos_cash_gateway.dart`), same "primitives only, caller converts"
+/// convention as [CashCutOperationalSummary]. [status] is one of
+/// `not_applicable`/`pending`/`reconciled`/`discrepancy`, matching the
+/// backend's own `CashCardReconciliationStatus` verbatim.
+class CashCutCardReconciliation {
+  const CashCutCardReconciliation({
+    required this.systemNetTotal,
+    required this.terminalEntries,
+    required this.terminalTotal,
+    required this.difference,
+    required this.status,
+    this.note,
+  });
+  final String systemNetTotal;
+  final List<CashCutLine> terminalEntries;
+  final String terminalTotal;
+  final String difference;
+  final String status;
+  final String? note;
+}
+
 String _units(String raw) {
   final parsed = double.tryParse(raw);
   if (parsed == null) return raw;
@@ -148,6 +170,12 @@ String buildCashCutHtml({
   // dependency here" convention. Final close only; `null`/empty omits
   // the whole section.
   List<CashCutLine>? paymentMethodLines,
+  // TASK 16.14A §13 — "CONCILIACIÓN DE TARJETAS": frozen, never
+  // recomputed for a reprint. `null` prints nothing (a pre-16.14A close,
+  // or a partial cut, which never carries a card reconciliation at all);
+  // `status: 'not_applicable'` (zero card sales this shift) also prints
+  // nothing — never noise for a shift that had no card sales.
+  CashCutCardReconciliation? cardReconciliation,
   double paperWidthMm = 80,
   String? logoDataUri,
   String? headerText,
@@ -215,6 +243,42 @@ String buildCashCutHtml({
             '<table class="kv">'
             '${paymentMethodLines.map((l) => row(l.label, l.value)).join()}'
             '</table>';
+
+  // TASK 16.14A §13 — visually separate from both the cash-truth block
+  // and VENTAS POR MÉTODO DE PAGO above — comparing ACCESS GO's own card
+  // total against the physical terminal(s)' own reported total is
+  // structurally independent of the cash drawer (§3).
+  final cardReconciliationHtml = cardReconciliation == null || cardReconciliation.status == 'not_applicable'
+      ? ''
+      : () {
+          final r = cardReconciliation;
+          final isPending = r.status == 'pending';
+          final isZero = r.status == 'reconciled';
+          final diffIsNegative = r.difference.trim().startsWith('-');
+          // TASK 16.14 §11/§18's own neutral-language precedent, never
+          // "CUADRADO".
+          final estado = isPending
+              ? 'PENDIENTE DE CONCILIAR'
+              : (isZero ? 'CONCILIADO' : (diffIsNegative ? 'FALTANTE EN TERMINAL' : 'SOBRANTE EN TERMINAL'));
+          final summaryRows = StringBuffer()..write(row('Sistema', _money(r.systemNetTotal, currencyCode)));
+          if (!isPending) {
+            summaryRows
+              ..write(row('Terminales', _money(r.terminalTotal, currencyCode)))
+              ..write(row('Diferencia', _money(r.difference, currencyCode)));
+          }
+          final entriesHtml = r.terminalEntries.isEmpty
+              ? ''
+              : '<table class="kv">${r.terminalEntries.map((l) => row(l.label, l.value)).join()}</table>';
+          final noteHtml = (r.note == null || r.note!.trim().isEmpty)
+              ? ''
+              : '<div class="meta">Motivo: ${_escape(r.note!.trim())}</div>';
+          return '<hr class="divider">'
+              '<div class="meta"><b>CONCILIACIÓN DE TARJETAS</b></div>'
+              '<table class="kv">$summaryRows</table>'
+              '$entriesHtml'
+              '<div class="banner">$estado</div>'
+              '$noteHtml';
+        }();
 
   // TASK 16.13 — visually separate from the cash-truth block above (its
   // own heading, its own `<hr>`), reporting-only, and Cafetería is
@@ -297,6 +361,7 @@ String buildCashCutHtml({
       '</table>'
       '$closingSectionHtml'
       '$paymentMethodHtml'
+      '$cardReconciliationHtml'
       '$operationalHtml'
       '<hr class="divider">'
       '$footerTextHtml'

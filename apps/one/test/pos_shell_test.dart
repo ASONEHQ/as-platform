@@ -4479,7 +4479,13 @@ void main() {
         await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
         await tester.pumpAndSettle();
         expect(cashGateway.closeCalls, [
-          (cashSessionId: 'session-id', declaredClosingAmount: '1000.0000', discrepancyReason: null),
+          (
+            cashSessionId: 'session-id',
+            declaredClosingAmount: '1000.0000',
+            discrepancyReason: null,
+            cardReconciliationEntries: null,
+            cardReconciliationNote: null,
+          ),
         ]);
         // The result dialog shows the backend's own discrepancy — a real
         // shortage — never a client-recomputed figure.
@@ -4824,6 +4830,429 @@ void main() {
     );
   });
 
+  group('CONCILIACIÓN DE TARJETAS — card-terminal reconciliation (TASK 16.14A)', () {
+    /// A live `.../summary` fixture whose `paymentMethodTotals` carries a
+    /// real card sale — the exact shape that makes the close dialog's own
+    /// "CONCILIACIÓN DE TARJETAS" section appear at all (§10 — omitted
+    /// entirely when there are no card sales).
+    PosCashSessionSummary summaryWithCard({String netTotal = '900.0000'}) =>
+        PosCashSessionSummary(
+          session: PosCashSession(
+            id: 'session-id',
+            branchId: 'branch-id',
+            cashRegisterId: 'register-id',
+            openedBy: 'user-id',
+            openedAt: DateTime.utc(2026, 9, 6, 9),
+            openingAmount: '1000.0000',
+            currencyCode: 'MXN',
+            status: 'open',
+          ),
+          openingAmount: '1000.0000',
+          cashSalesTotal: '0.0000',
+          cashSalesCount: 0,
+          cashInTotal: '0.0000',
+          cashOutTotal: '0.0000',
+          expectedCash: '1000.0000',
+          withdrawalTotal: '0.0000',
+          expenseTotal: '0.0000',
+          externalIncomeTotal: '0.0000',
+          cashRefundTotal: '0.0000',
+          cashRefundCount: 0,
+          paymentMethodTotals: [
+            PosCashPaymentMethodTotal(
+              method: 'card_manual',
+              grossSalesTotal: netTotal,
+              refundsTotal: '0.0000',
+              netTotal: netTotal,
+              ticketCount: 1,
+            ),
+          ],
+        );
+
+    /// A closed session carrying a frozen `cardReconciliation`, mirroring
+    /// `commercialClosedSession`'s own precedent for the surrounding
+    /// financial fields.
+    PosCashSession closedWithReconciliation(PosCashCardReconciliation? reconciliation) =>
+        PosCashSession(
+          id: 'session-id',
+          branchId: 'branch-id',
+          cashRegisterId: 'register-id',
+          openedBy: 'user-id',
+          openedAt: DateTime.utc(2026, 9, 15, 8),
+          openingAmount: '500.0000',
+          currencyCode: 'MXN',
+          status: 'closed',
+          closedBy: 'user-id',
+          closedAt: DateTime.utc(2026, 9, 15, 18),
+          declaredClosingAmount: '500.0000',
+          expectedClosingAmount: '500.0000',
+          discrepancyAmount: '0.0000',
+          cashSalesTotal: '0.0000',
+          cashSalesCount: 0,
+          cashInTotal: '0.0000',
+          cashOutTotal: '0.0000',
+          withdrawalTotal: '0.0000',
+          expenseTotal: '0.0000',
+          externalIncomeTotal: '0.0000',
+          cashRefundTotal: '0.0000',
+          cashRefundCount: 0,
+          paymentMethodTotals: const [],
+          cardReconciliation: reconciliation,
+        );
+
+    testWidgets(
+      'zero card sales never shows the reconciliation section, and closing sends no '
+      'card_reconciliation key at all',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(closeResult: closedWithReconciliation(null));
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        expect(find.text('CONCILIACIÓN DE TARJETAS'), findsNothing);
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls.single.cardReconciliationEntries, isNull);
+        expect(cashGateway.closeCalls.single.cardReconciliationNote, isNull);
+      },
+    );
+
+    testWidgets(
+      'card sales exist, shows "Registrado en ACCESS GO", and closing WITHOUT touching the '
+      'section sends no card_reconciliation key — pending, never a fabricated zero',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          summaryResult: summaryWithCard(),
+          closeResult: closedWithReconciliation(null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        expect(find.text('CONCILIACIÓN DE TARJETAS'), findsOneWidget);
+        expect(find.text('Registrado en ACCESS GO'), findsOneWidget);
+        expect(find.text(r'$900.00'), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-card-pending-hint')), findsOneWidget);
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls.single.cardReconciliationEntries, isNull);
+      },
+    );
+
+    testWidgets(
+      'adding one terminal that exactly matches shows a live "Conciliado" \$0.00 banner, and '
+      'submits the real typed entry',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          summaryResult: summaryWithCard(),
+          closeResult: closedWithReconciliation(null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-caja-card-add-terminal')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-label-0')), 'BBVA');
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-amount-0')), '900');
+        await tester.pump();
+        expect(find.byKey(const Key('pos-caja-card-diff-preview')), findsOneWidget);
+        expect(find.text('Conciliado'), findsOneWidget);
+        expect(find.byKey(const Key('pos-caja-card-pending-hint')), findsNothing);
+
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        final entries = cashGateway.closeCalls.single.cardReconciliationEntries;
+        expect(entries, hasLength(1));
+        expect(entries!.single.label, 'BBVA');
+        expect(entries.single.amount, '900.0000');
+      },
+    );
+
+    testWidgets(
+      'a terminal total below the system total shows "Faltante en terminal" live, and the '
+      'card reconciliation note is sent trimmed',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          summaryResult: summaryWithCard(),
+          closeResult: closedWithReconciliation(null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-caja-card-add-terminal')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-label-0')), 'Terminal Único');
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-amount-0')), '875');
+        await tester.pump();
+        expect(find.text('Faltante en terminal'), findsOneWidget);
+        expect(find.text(r'-$25.00'), findsOneWidget);
+
+        await tester.enterText(
+          find.byKey(const Key('pos-caja-card-reconciliation-note')),
+          '  Prueba de conciliación.  ',
+        );
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(cashGateway.closeCalls.single.cardReconciliationNote, 'Prueba de conciliación.');
+      },
+    );
+
+    testWidgets(
+      'multiple terminals sum correctly into "Total terminales", and a surplus shows '
+      '"Sobrante en terminal"',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          summaryResult: summaryWithCard(),
+          closeResult: closedWithReconciliation(null),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-caja-card-add-terminal')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-label-0')), 'Terminal 1');
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-amount-0')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-card-add-terminal')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-label-1')), 'Terminal 2');
+        await tester.enterText(find.byKey(const Key('pos-caja-card-entry-amount-1')), '450');
+        await tester.pump();
+        expect(find.text(r'$950.00'), findsOneWidget); // Total terminales.
+        expect(find.text('Sobrante en terminal'), findsOneWidget);
+        expect(find.text(r'$50.00'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '1000');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        final entries = cashGateway.closeCalls.single.cardReconciliationEntries;
+        expect(entries, hasLength(2));
+      },
+    );
+
+    testWidgets(
+      'the result dialog shows a reconciled card total with Sistema/Terminales/Estado',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          closeResult: closedWithReconciliation(
+            const PosCashCardReconciliation(
+              systemGrossTotal: '4850.0000',
+              systemRefundTotal: '0.0000',
+              systemNetTotal: '4850.0000',
+              terminalEntries: [
+                PosCashCardReconciliationEntry(id: 'e1', label: 'BBVA', amount: '2500.0000'),
+                PosCashCardReconciliationEntry(id: 'e2', label: 'Clip', amount: '2350.0000'),
+              ],
+              terminalTotal: '4850.0000',
+              difference: '0.0000',
+              status: PosCashCardReconciliationStatus.reconciled,
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('CONCILIACIÓN DE TARJETAS'), findsOneWidget);
+        expect(find.text('Registrado en ACCESS GO'), findsOneWidget);
+        expect(find.text(r'$4850.00'), findsWidgets); // Sistema + Terminales.
+        expect(find.text('BBVA'), findsOneWidget);
+        expect(find.text('Clip'), findsOneWidget);
+        expect(find.text('Conciliado'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'the result dialog shows a pending reconciliation as "Pendiente de conciliar", never a '
+      'fabricated shortage figure',
+      (tester) async {
+        final cashGateway = _FakeCashGateway(
+          closeResult: closedWithReconciliation(
+            const PosCashCardReconciliation(
+              systemGrossTotal: '300.0000',
+              systemRefundTotal: '0.0000',
+              systemNetTotal: '300.0000',
+              terminalEntries: [],
+              terminalTotal: '0.0000',
+              difference: '-300.0000',
+              status: PosCashCardReconciliationStatus.pending,
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Pendiente de conciliar'), findsOneWidget);
+        // The status banner never shows the pending row's own numeric
+        // `difference` as if it were a real shortage.
+        expect(find.text(r'-$300.00'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'the result dialog shows "Sin ventas con tarjeta en este turno." for a not_applicable '
+      'reconciliation, and "no disponible" for a pre-TASK-16.14A close',
+      (tester) async {
+        final noCardSales = _FakeCashGateway(
+          closeResult: closedWithReconciliation(
+            const PosCashCardReconciliation(
+              systemGrossTotal: '0.0000',
+              systemRefundTotal: '0.0000',
+              systemNetTotal: '0.0000',
+              terminalEntries: [],
+              terminalTotal: '0.0000',
+              difference: '0.0000',
+              status: PosCashCardReconciliationStatus.notApplicable,
+            ),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: noCardSales,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('pos-caja-card-reconciliation-not-applicable')),
+          findsOneWidget,
+        );
+
+        // A session closed before TASK 16.14A (`cardReconciliation: null`,
+        // but every other TASK 16.14 field present — a genuine commercial
+        // close, just an older one) shows the distinct "no disponible"
+        // notice, never conflated with "no card sales".
+        final legacy = _FakeCashGateway(closeResult: closedWithReconciliation(null));
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: legacy,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-close-button')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-caja-counted-input')), '500');
+        await tester.tap(find.byKey(const Key('pos-caja-confirm-close')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('pos-caja-card-reconciliation-unavailable')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'Cortes de caja history reopens a closed session and shows the exact frozen card '
+      'reconciliation',
+      (tester) async {
+        final closed = closedWithReconciliation(
+          const PosCashCardReconciliation(
+            systemGrossTotal: '1000.0000',
+            systemRefundTotal: '0.0000',
+            systemNetTotal: '1000.0000',
+            terminalEntries: [PosCashCardReconciliationEntry(id: 'e1', label: 'Clip', amount: '950.0000')],
+            terminalTotal: '950.0000',
+            difference: '-50.0000',
+            status: PosCashCardReconciliationStatus.discrepancy,
+            note: 'Ticket pendiente de aclaración.',
+          ),
+        );
+        final cashGateway = _FakeCashGateway(
+          historyResult: PosCashSessionHistoryPage(items: [closed], nextCursor: null),
+          summaryResult: PosCashSessionSummary(
+            session: closed,
+            openingAmount: '500.0000',
+            cashSalesTotal: '0.0000',
+            cashSalesCount: 0,
+            cashInTotal: '0.0000',
+            cashOutTotal: '0.0000',
+            expectedCash: '500.0000',
+            withdrawalTotal: '0.0000',
+            expenseTotal: '0.0000',
+            externalIncomeTotal: '0.0000',
+            cashRefundTotal: '0.0000',
+            cashRefundCount: 0,
+            paymentMethodTotals: const [],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        await tester.tap(find.byKey(const Key('pos-caja-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cortes de caja'));
+        await tester.pumpAndSettle();
+        final expectedClosedLabel = 'Cerrada — ${_expectCajaDate(DateTime.utc(2026, 9, 15, 18))}';
+        await tester.tap(find.text(expectedClosedLabel));
+        await tester.pumpAndSettle();
+        expect(find.text('CONCILIACIÓN DE TARJETAS'), findsOneWidget);
+        expect(find.text('Clip'), findsOneWidget);
+        expect(find.text('Faltante en terminal'), findsOneWidget);
+        expect(find.textContaining('Ticket pendiente de aclaración.'), findsWidgets);
+      },
+    );
+  });
+
   group('Caja (TASK 12.7) — movements/reversal', () {
     testWidgets(
       'a client-postable movement can be reversed, and the drawer reloads with the '
@@ -5091,6 +5520,7 @@ void main() {
             externalIncomeTotal: '0.0000',
             cashRefundTotal: '0.0000',
             cashRefundCount: 0,
+            paymentMethodTotals: const [],
           ),
         );
         await _pump(
@@ -9158,7 +9588,15 @@ class _FakeCashGateway implements PosCashGateway {
     })
   >
   movementCalls = [];
-  final List<({String cashSessionId, String declaredClosingAmount, String? discrepancyReason})>
+  final List<
+    ({
+      String cashSessionId,
+      String declaredClosingAmount,
+      String? discrepancyReason,
+      List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+      String? cardReconciliationNote,
+    })
+  >
   closeCalls = [];
   final List<String> registersForBranchCalls = [];
 
@@ -9230,6 +9668,7 @@ class _FakeCashGateway implements PosCashGateway {
         externalIncomeTotal: '0.0000',
         cashRefundTotal: '0.0000',
         cashRefundCount: 0,
+        paymentMethodTotals: const [],
       );
 
   @override
@@ -9275,11 +9714,15 @@ class _FakeCashGateway implements PosCashGateway {
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
     String? discrepancyReason,
+    List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+    String? cardReconciliationNote,
   }) async {
     closeCalls.add((
       cashSessionId: cashSessionId,
       declaredClosingAmount: declaredClosingAmount,
       discrepancyReason: discrepancyReason,
+      cardReconciliationEntries: cardReconciliationEntries,
+      cardReconciliationNote: cardReconciliationNote,
     ));
     if (closeFailure != null) throw closeFailure!;
     final closed =
@@ -9425,6 +9868,8 @@ class _ThrowingOpenSessionCashGateway implements PosCashGateway {
     required String declaredClosingAmount,
     List<PosCashDenominationCount>? denominationCounts,
     String? discrepancyReason,
+    List<PosCashCardReconciliationEntry>? cardReconciliationEntries,
+    String? cardReconciliationNote,
   }) => Future.error(StateError('not used'));
   @override
   Future<PosCashSessionHistoryPage> listSessions({

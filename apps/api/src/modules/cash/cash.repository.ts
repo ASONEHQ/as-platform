@@ -6,6 +6,7 @@ import {
   CashError,
   cashMovementDirection,
   type CashAuditLogEntry,
+  type CashCardReconciliation,
   type CashMovementCategory,
   type CashMovementRow,
   type CashMovementType,
@@ -61,7 +62,7 @@ function formatMoney(units: bigint): string {
 const REGISTER_COLUMNS =
   'id,company_id,branch_id,code,name,status,device_id,created_by,updated_by,version,created_at,updated_at,deleted_at';
 const SESSION_COLUMNS =
-  'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,cash_sales_total,cash_sales_count,cash_in_total,cash_out_total,withdrawal_total,expense_total,external_income_total,cash_refund_total,cash_refund_count,payment_method_totals,operational_summary,discrepancy_reason,version,created_at,updated_at';
+  'id,company_id,branch_id,cash_register_id,opened_by,opened_at,opening_amount,currency_code,status,closed_by,closed_at,declared_closing_amount,expected_closing_amount,discrepancy_amount,denomination_counts,cash_sales_total,cash_sales_count,cash_in_total,cash_out_total,withdrawal_total,expense_total,external_income_total,cash_refund_total,cash_refund_count,payment_method_totals,operational_summary,discrepancy_reason,card_reconciliation,version,created_at,updated_at';
 const MOVEMENT_COLUMNS =
   'id,company_id,branch_id,cash_session_id,movement_type,amount,currency_code,reason_code,note,reference_type,reference_id,occurred_at,created_by,device_id,reversal_of_id,created_at,category';
 const PARTIAL_CLOSE_COLUMNS =
@@ -110,6 +111,7 @@ interface SessionDb {
   payment_method_totals: unknown;
   operational_summary: CashPartialCloseOperationalSummary | null;
   discrepancy_reason: string | null;
+  card_reconciliation: unknown;
   version: string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -192,6 +194,31 @@ function paymentMethodTotals(raw: unknown): readonly CashPaymentMethodTotal[] | 
       ticketCount: Number(entry.ticketCount),
     }));
 }
+function cardReconciliation(raw: unknown): CashCardReconciliation | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const entries = Array.isArray(value.terminalEntries)
+    ? value.terminalEntries
+        .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+        .map((entry) => ({
+          id: String(entry.id),
+          label: String(entry.label),
+          amount: String(entry.amount),
+          reference: entry.reference === null || entry.reference === undefined ? null : String(entry.reference),
+          note: entry.note === null || entry.note === undefined ? null : String(entry.note),
+        }))
+    : [];
+  return {
+    systemGrossTotal: String(value.systemGrossTotal),
+    systemRefundTotal: String(value.systemRefundTotal),
+    systemNetTotal: String(value.systemNetTotal),
+    terminalEntries: entries,
+    terminalTotal: String(value.terminalTotal),
+    difference: String(value.difference),
+    status: value.status as CashCardReconciliation['status'],
+    note: value.note === null || value.note === undefined ? null : String(value.note),
+  };
+}
 function session(row: SessionDb): CashSessionRow {
   return {
     id: row.id,
@@ -221,6 +248,7 @@ function session(row: SessionDb): CashSessionRow {
     paymentMethodTotals: paymentMethodTotals(row.payment_method_totals),
     operationalSummary: row.operational_summary ?? null,
     discrepancyReason: row.discrepancy_reason,
+    cardReconciliation: cardReconciliation(row.card_reconciliation),
     version: BigInt(row.version),
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -741,6 +769,12 @@ export class CashRepository {
       paymentMethodTotals: readonly CashPaymentMethodTotal[];
       operationalSummary: CashPartialCloseOperationalSummary | null;
       discrepancyReason: string | null;
+      // TASK 16.14A — always non-null going forward (even a zero-card-
+      // sales session gets a `status: 'not_applicable'` object); see
+      // `cash.ts`'s own doc comment on the column for why it's typed
+      // nullable at the schema level anyway (backward compatibility with
+      // pre-16.14A closes only).
+      cardReconciliation: CashCardReconciliation;
     },
   ): Promise<CashSessionRow> {
     const row = result<SessionDb>(
@@ -765,6 +799,7 @@ export class CashRepository {
            payment_method_totals=$19::jsonb,
            operational_summary=$20::jsonb,
            discrepancy_reason=$21,
+           card_reconciliation=$22::jsonb,
            updated_at=$4,
            version=version+1
          where company_id=$1 and id=$2 and version=$9
@@ -791,6 +826,7 @@ export class CashRepository {
           JSON.stringify(input.paymentMethodTotals),
           input.operationalSummary === null ? null : JSON.stringify(input.operationalSummary),
           input.discrepancyReason,
+          JSON.stringify(input.cardReconciliation),
         ],
       ),
     ).rows[0];

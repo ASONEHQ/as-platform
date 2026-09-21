@@ -60,6 +60,9 @@ function sessionValue(overrides?: Readonly<Record<string, unknown>>): Readonly<R
     paymentMethodTotals: null,
     operationalSummary: null,
     discrepancyReason: null,
+    // TASK 16.14A — same "null on this default open-session fixture"
+    // precedent as every other closure-only field above.
+    cardReconciliation: null,
     version: 1n,
     ...overrides,
   };

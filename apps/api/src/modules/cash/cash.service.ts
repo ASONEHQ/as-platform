@@ -16,12 +16,15 @@ import {
   canonicalCashDenominationsForCurrency,
   CashError,
   type CashAuditLogEntry,
+  type CashCardReconciliation,
+  type CashCardReconciliationEntry,
   type CashMovementCategory,
   cashMovementCategories,
   cashMovementCategoryDirection,
   cashMovementDirection,
   type CashMovementRow,
   type CashMutationContext,
+  type CashPaymentMethodTotal,
   type CashRegisterRow,
   type CashSessionPartialCloseRow,
   type CashSessionRow,
@@ -71,6 +74,103 @@ function validateDiscrepancyReason(value: string | undefined): string | null {
   if (clean.length > 1000) throw new CashError('validation_error', 'discrepancy_reason is too long.');
   return clean;
 }
+// TASK 16.14A — the methods that belong to "terminal settlement": a live
+// Mercado Pago Point dispatch (`card_terminal`) AND an operator-recorded
+// card charge with no processor round-trip (`card_manual`, §15 — the
+// exact "real card terminal, no live API integration" case this feature
+// reconciles). Both are real money a physical terminal should have
+// reported, so both count toward the system total; `cash`/`other` never
+// do.
+const CARD_RECONCILIATION_METHODS: ReadonlySet<string> = new Set(['card_terminal', 'card_manual']);
+
+/** TASK 16.14A §7/§19 — one operator-entered terminal settlement line.
+ * `label` is free text (never validated against a registry — see
+ * `cash.ts`'s own doc comment on why); `amount` must be a real,
+ * non-negative money value. `reference`/`note` are optional free text,
+ * capped generously but never allowed to smuggle in anything
+ * PCI-sensitive — this function has no field that could even hold a PAN
+ * or CVV, so there is nothing to strip. */
+function validateCardReconciliationEntry(
+  input: { label: string; amount: string; reference?: string; note?: string },
+): CashCardReconciliationEntry {
+  const label = nonBlank(input.label, 'card_reconciliation.entries[].label');
+  const amount = nonNegativeAmount(input.amount, 'card_reconciliation.entries[].amount');
+  const reference = input.reference?.trim();
+  const note = input.note?.trim();
+  if (reference !== undefined && reference.length > 200)
+    throw new CashError('validation_error', 'card_reconciliation.entries[].reference is too long.');
+  if (note !== undefined && note.length > 500)
+    throw new CashError('validation_error', 'card_reconciliation.entries[].note is too long.');
+  return {
+    id: randomUUID(),
+    label,
+    amount,
+    reference: reference === undefined || reference.length === 0 ? null : reference,
+    note: note === undefined || note.length === 0 ? null : note,
+  };
+}
+
+/** TASK 16.14A §10 — the presence of `input.cardReconciliation` itself
+ * (even `{ entries: [] }`) is the "operator attempted reconciliation"
+ * signal, entirely separate from whether any entries were actually
+ * typed — see `CashCardReconciliationStatus`'s own doc comment for why
+ * `pending` and `reconciled`/`discrepancy` with a zero terminal total are
+ * two genuinely different, never-conflated states. */
+function validateCardReconciliationInput(
+  input: { entries: readonly { label: string; amount: string; reference?: string; note?: string }[]; note?: string } | undefined,
+): { entries: readonly CashCardReconciliationEntry[]; note: string | null } | null {
+  if (input === undefined) return null;
+  if (input.entries.length > 20)
+    throw new CashError('validation_error', 'card_reconciliation.entries cannot exceed 20 lines.');
+  const entries = input.entries.map(validateCardReconciliationEntry);
+  const note = input.note?.trim();
+  if (note !== undefined && note.length > 1000)
+    throw new CashError('validation_error', 'card_reconciliation.note is too long.');
+  return { entries, note: note === undefined || note.length === 0 ? null : note };
+}
+
+/** TASK 16.14A §5/§6/§8 — derives the system card gross/refund/net totals
+ * from the SAME `payment_method_totals` rows already computed for the
+ * window (never a second query), sums the operator's terminal entries,
+ * and computes `card_reconciliation` per this task's own exact formula:
+ * `difference = terminalTotal - systemNetTotal`. Entirely independent of
+ * `expected_closing_amount`/`discrepancy_amount` (§3) — nothing here
+ * reads or writes a single cash-movement figure. */
+function buildCardReconciliation(
+  paymentMethodTotals: readonly CashPaymentMethodTotal[],
+  reconciliation: { entries: readonly CashCardReconciliationEntry[]; note: string | null } | null,
+): CashCardReconciliation {
+  let grossUnits = 0n;
+  let refundUnits = 0n;
+  for (const row of paymentMethodTotals) {
+    if (!CARD_RECONCILIATION_METHODS.has(row.method)) continue;
+    grossUnits += moneyUnits(row.grossSalesTotal);
+    refundUnits += moneyUnits(row.refundsTotal);
+  }
+  const netUnits = grossUnits - refundUnits;
+  let terminalUnits = 0n;
+  for (const entry of reconciliation?.entries ?? []) terminalUnits += moneyUnits(entry.amount);
+  const differenceUnits = terminalUnits - netUnits;
+  const status: CashCardReconciliation['status'] =
+    grossUnits === 0n && reconciliation === null
+      ? 'not_applicable'
+      : reconciliation === null
+        ? 'pending'
+        : differenceUnits === 0n
+          ? 'reconciled'
+          : 'discrepancy';
+  return {
+    systemGrossTotal: formatMoney(grossUnits),
+    systemRefundTotal: formatMoney(refundUnits),
+    systemNetTotal: formatMoney(netUnits),
+    terminalEntries: reconciliation?.entries ?? [],
+    terminalTotal: formatMoney(terminalUnits),
+    difference: formatMoney(differenceUnits),
+    status,
+    note: reconciliation?.note ?? null,
+  };
+}
+
 /** Part J — validates an optional bills/coins breakdown against the
  * canonical AS POS V1 denomination set and requires it to sum to exactly
  * `declaredClosingAmount` (the same figure the cashier would otherwise
@@ -182,6 +282,14 @@ export interface CashSessionSummary {
   cashRefundTotal: string;
   cashRefundCount: number;
   expectedCash: string;
+  // TASK 16.14A — a LIVE (never persisted) preview of the exact same
+  // per-method breakdown `closeSession` freezes, so the close dialog can
+  // show "Registrado en ACCESS GO: $X" for card sales BEFORE the operator
+  // confirms — mirrors `expectedCash` above's own existing "live preview,
+  // backend recomputes authoritatively at close" pattern. Never trusted
+  // back from the client: `closeSession` always recomputes this itself,
+  // under lock, from the window it actually closes.
+  paymentMethodTotals: readonly CashPaymentMethodTotal[];
 }
 
 export class CashService {
@@ -606,6 +714,15 @@ export class CashService {
   public async summary(companyId: string, branchIds: readonly string[], cashSessionId: string): Promise<CashSessionSummary> {
     const sessionRow = await this.session(companyId, branchIds, cashSessionId);
     const movements = await this.repository.movementsForSession(companyId, sessionRow.id);
+    // TASK 16.14A — live, not yet frozen; see `CashSessionSummary.
+    // paymentMethodTotals`'s own doc comment. Window end is "now", not
+    // `sessionRow.closedAt` (an open session has none) — the same
+    // still-open-session live-preview shape `expectedCash` below already
+    // has.
+    const paymentMethodTotals =
+      sessionRow.status === 'closed'
+        ? (sessionRow.paymentMethodTotals ?? [])
+        : await this.repository.paymentMethodTotals(companyId, sessionRow.branchId, sessionRow.openedAt, new Date());
     let expectedUnits = 0n;
     let cashSalesUnits = 0n;
     let cashSalesCount = 0;
@@ -653,6 +770,7 @@ export class CashService {
       cashRefundTotal: formatMoney(cashRefundUnits),
       cashRefundCount,
       expectedCash: formatMoney(expectedUnits),
+      paymentMethodTotals,
     };
   }
 
@@ -681,10 +799,20 @@ export class CashService {
       // conditions the close on this field's presence or on the size of
       // the eventual discrepancy — it is pure, optional audit evidence.
       discrepancyReason?: string;
+      // TASK 16.14A §10 — `undefined` = the operator never attempted
+      // card-terminal reconciliation (→ `pending`, when card sales exist);
+      // present (even `{ entries: [] }`) = they did, however that turns
+      // out (→ `reconciled`/`discrepancy`). See
+      // `validateCardReconciliationInput`'s own doc comment.
+      cardReconciliation?: {
+        entries: readonly { label: string; amount: string; reference?: string; note?: string }[];
+        note?: string;
+      };
     },
   ): Promise<{ value: CashSessionRow; replayed: boolean }> {
     const declaredClosingAmount = nonNegativeAmount(input.declaredClosingAmount, 'declared_closing_amount');
     const discrepancyReason = validateDiscrepancyReason(input.discrepancyReason);
+    const cardReconciliationInput = validateCardReconciliationInput(input.cardReconciliation);
     // TASK 16.11 — the denomination set depends on the SESSION's own
     // currency (see `canonicalCashDenominationsForCurrency`'s own doc
     // comment), which is only known once the session row is loaded
@@ -700,6 +828,12 @@ export class CashService {
       declaredClosingAmount,
       denominationCounts: input.denominationCounts,
       discrepancyReason,
+      // TASK 16.14A — the RAW input, exactly like `denominationCounts`
+      // above (never the validated `cardReconciliationInput`, whose
+      // entries each carry a freshly `randomUUID()`-generated `id` that
+      // would make the hash different on every single call, including a
+      // genuine retry of the identical request — breaking idempotency).
+      cardReconciliation: input.cardReconciliation,
     });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
@@ -794,6 +928,14 @@ export class CashService {
             sessionRow.openedAt,
             context.timestamp,
           );
+          // TASK 16.14A — always computed, even with zero card sales (see
+          // `buildCardReconciliation`'s own doc comment on the resulting
+          // `not_applicable` status). Entirely derived from
+          // `paymentMethodTotals` above (already authoritative) plus the
+          // operator's own validated terminal entries — never reads or
+          // writes `expectedUnits`/`expectedClosingAmount`/
+          // `discrepancyAmount` above (§3's cash-isolation requirement).
+          const cardReconciliation = buildCardReconciliation(paymentMethodTotals, cardReconciliationInput);
           const closed = await this.repository.closeSession(client, context.companyId, sessionRow.id, closingRow.version, {
             closedBy: context.actorId,
             closedAt: context.timestamp,
@@ -813,6 +955,7 @@ export class CashService {
             paymentMethodTotals,
             operationalSummary,
             discrepancyReason,
+            cardReconciliation,
           });
           await this.repository.auditAndPublish(client, context, {
             action: 'cash_session.closed',
@@ -831,6 +974,13 @@ export class CashService {
               // every other closure field above; never sensitive/auth
               // data, purely the operator's own optional explanation.
               discrepancy_reason: closed.discrepancyReason,
+              // TASK 16.14A §18 — status/totals/note only, never any
+              // field that could carry PCI-sensitive data (there is none
+              // in this shape to begin with — see
+              // `CashCardReconciliationEntry`'s own doc comment).
+              card_reconciliation_status: closed.cardReconciliation?.status ?? null,
+              card_reconciliation_difference: closed.cardReconciliation?.difference ?? null,
+              card_reconciliation_note: closed.cardReconciliation?.note ?? null,
               version: closed.version.toString(),
             },
           });
