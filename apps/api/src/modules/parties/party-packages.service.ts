@@ -1,11 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 
-import { normalizeCurrencyCode } from '@asone/database';
+import { normalizeCurrencyCode, type ProductTaxCode } from '@asone/database';
 
 import { computePartyQuote, nonBlank, nonNegativeInteger, nonNegativeMoney, type PartyQuoteBreakdown } from './parties.pricing.js';
 import type { PartiesRepository } from './parties.repository.js';
-import { PartyError, type PartyMutationContext, type PartyPackageRow, type PartyPackageStatus } from './parties.types.js';
+import {
+  PartyError,
+  partyPackageTaxCodes,
+  type PartyMutationContext,
+  type PartyPackageRow,
+  type PartyPackageStatus,
+} from './parties.types.js';
+
+function normalizeTaxCode(value: string): ProductTaxCode {
+  if (!partyPackageTaxCodes.includes(value as (typeof partyPackageTaxCodes)[number]))
+    throw new PartyError('validation_error', `tax_code must be one of: ${partyPackageTaxCodes.join(', ')}.`);
+  return value as ProductTaxCode;
+}
 
 function hash(value: object): string {
   return createHash('sha256')
@@ -53,6 +65,7 @@ export class PartyPackagesService {
       adultExtraCost?: string;
       capacityMax?: number;
       extraHalfHourCost?: string;
+      taxCode?: string;
       includes?: unknown;
       restrictions?: unknown;
     },
@@ -72,6 +85,7 @@ export class PartyPackagesService {
     const adultExtraCost = nonNegativeMoney(input.adultExtraCost ?? '0', 'adult_extra_cost');
     const capacityMax = input.capacityMax === undefined ? null : nonNegativeInteger(input.capacityMax, 'capacity_max');
     const extraHalfHourCost = nonNegativeMoney(input.extraHalfHourCost ?? '0', 'extra_half_hour_cost');
+    const taxCode = normalizeTaxCode(input.taxCode ?? 'IVA_GENERAL');
     const includes = jsonObject(input.includes, 'includes');
     const restrictions = jsonObject(input.restrictions, 'restrictions');
     const id = input.id ?? randomUUID();
@@ -109,6 +123,7 @@ export class PartyPackagesService {
             adultExtraCost,
             capacityMax,
             extraHalfHourCost,
+            taxCode,
             includes,
             restrictions,
             actorId: context.actorId,
@@ -160,6 +175,7 @@ export class PartyPackagesService {
       adultExtraCost?: string;
       capacityMax?: number | null;
       extraHalfHourCost?: string;
+      taxCode?: string;
       includes?: unknown;
       restrictions?: unknown;
     },
@@ -192,6 +208,7 @@ export class PartyPackagesService {
         ...(input.extraHalfHourCost === undefined
           ? {}
           : { extraHalfHourCost: nonNegativeMoney(input.extraHalfHourCost, 'extra_half_hour_cost') }),
+        ...(input.taxCode === undefined ? {} : { taxCode: normalizeTaxCode(input.taxCode) }),
         ...(input.includes === undefined ? {} : { includes: jsonObject(input.includes, 'includes') }),
         ...(input.restrictions === undefined ? {} : { restrictions: jsonObject(input.restrictions, 'restrictions') }),
         updatedBy: context.actorId,
@@ -234,5 +251,6 @@ export function packageQuoteInput(
     children: input.children,
     adults: input.adults,
     extraHalfHours: input.extraHalfHours,
+    taxCode: pkg.taxCode,
   });
 }

@@ -5919,6 +5919,382 @@ SQL, no developer involvement:
    la membresía** to **Suspendido** (or **Deshabilitado**) — takes
    effect immediately, server-side, on their very next request.
 
+## TASK 16.19 — Fiestas / Reservaciones Commercial V1: gap closure over the existing TASK 14.3 domain (2026-09-22)
+
+**§0 Headline finding — this was NOT a greenfield build.** Before writing
+any code, this task's own Phase 1/2 forensic audit (mandatory:
+"DO NOT CODE FIRST") found that TASK 14.3 (Wave 1, Part A) had already
+delivered a complete, production-grade "Fiestas" domain: a fully-
+normalized Postgres schema (`party_rooms`/`party_packages`/
+`party_reservations`/`party_reservation_snacks`/`_socks`/`_payments`/
+`_documents`), a database-enforced GIST exclusion constraint preventing
+double-booked rooms, a ~5,400-line Fastify module (20 routes, a 5-state
+reservation lifecycle, a real quoting engine, real cash-session-backed
+payments reusing `CashRepository.insertMovement`, on-demand HTML
+document generation), four real permission codes already wired into
+role templates and system-role sync, a full Flutter admin UI (List/
+Calendar/Quoter/Settings) against a real typed gateway, a dashboard
+integration, and a 814-line backend integration test suite. This task
+is therefore scoped as an **extension closing genuine, forensically-
+confirmed gaps** in that domain — never a rebuild, never a duplicate
+architecture, per this task's own explicit instruction.
+
+**§1 Legacy forensic audit (`AS POS V1.html`).** The legacy Fiestas
+module is real, non-trivial UI/business LOGIC with **zero real
+persistence** — its own code comments admit "lo operativo aún no se
+guarda" (operational data isn't saved yet); every reservation/room/
+package lives only in an in-memory JS array, wiped on refresh. It also
+ships a hardcoded master-bypass credential (`ASPOS_MASTER.pin='2604'`,
+`pass='asmaster2604'`) that functions as a universal admin skeleton key
+for the whole legacy app — explicitly NOT recreated here or anywhere in
+ACCESS GO. Genuinely reusable as a business-capability REFERENCE (never
+copied structurally): the room/package data model's richness (capacity
+split kids/adults, hours, buffer time, per-package included food/decor/
+entertainment/gift catalogs), the conflict-detection interval-overlap
+algorithm, the quotation price formula, and the 15-clause Spanish
+contract's legal shape (its literal Querétaro-jurisdiction text was
+deliberately NOT ported — see §6). Also confirmed fake/dishonest and
+deliberately not recreated: "PDF download" (just `window.print()` with
+a toast telling the user to manually pick "Save as PDF" — no real PDF
+generation), "WhatsApp send" (opens `wa.me` with text only, no real
+attachment), and inconsistent create/edit/delete PIN gating across
+fiestas/salones/paquetes/calcetas (ACCESS GO's four real permission
+codes replace all of this with one consistent, server-enforced policy).
+
+**§2 Genuine gaps closed by this task** (grounded in the task's own
+45-phase spec, not the audit's broader wishlist — see §7 for what was
+deliberately NOT built and why):
+
+1. **Capacity enforcement** (Phase 8/30) — `party_rooms.capacity_*`/
+   `party_packages.capacity_max` existed since TASK 14.3 but were never
+   checked against an actual booking. `assertWithinCapacity`
+   (`parties.pricing.ts`) now rejects (`capacity_exceeded`, HTTP 422) a
+   `createReservation`/`updateReservation` whose children+adults exceeds
+   whichever capacity fields are actually configured — each rule only
+   fires when its own field is non-null, never treating an unconfigured
+   limit as zero.
+2. **Adults persisted on the reservation** — `computePartyQuote` always
+   accepted an `adults` input (it drives `adultsExtra` pricing exactly
+   like `childrenCount` drives `childrenExtra`), but TASK 14.3 never
+   persisted it, silently discarding it after the quote was computed —
+   making capacity enforcement, an honest guest count on documents, and
+   a correct quote recompute on edit all impossible. New
+   `party_reservations.adults_count` column (mirrors `children_count`
+   exactly); `updateReservation`'s own quote-recompute now correctly
+   falls back to the CURRENT persisted value when an edit doesn't touch
+   it, fixing a real pre-existing bug where an unrelated edit silently
+   recomputed the quote as if adults were always 0.
+3. **Per-room package eligibility** (Phase 6 "room usage") — TASK 14.3's
+   own schema doc comment explicitly flagged legacy's per-room
+   `salonesDisponibles[]` restriction as a deliberately deferred
+   simplification. Recovered as `party_packages.restrictions.
+   eligibleRoomIds?: string[]` (the same flexible `restrictions` jsonb
+   column already used for day/hour rules — no new table) —
+   absent/empty means every room in the package's branch scope is
+   eligible (backward compatible with every pre-existing package); a
+   non-empty list narrows it. Enforced server-side
+   (`isRoomEligibleForPackage`, `package_room_not_eligible`, HTTP 422)
+   on create AND on any edit that changes the room; a Flutter
+   multi-select chip picker in the package admin form lets an operator
+   set it without touching raw JSON.
+4. **Tax on party pricing** (Phase 10: "package + guest counts + extras
+   + discounts + **taxes** = total" — TASK 14.3 computed everything up
+   to "extras" and stopped there, with no tax at all). New
+   `party_packages.tax_code` (`IVA_GENERAL`/`IVA_EXEMPT`, same
+   classification `products.tax_code` already carries, same
+   `ivaBasisPointsForTaxCode` rate table — no new tax engine).
+   `computePartyQuote` now returns a full `subtotal`/`discountTotal`
+   (always `0.0000` today, see §7)/`taxTotal`/`total` breakdown, shown
+   in the Cotizador and the reservation detail view.
+   `party_reservation_snacks` gained `tax_snapshot`/`tax_total`
+   (mirrors `sale_items.tax_snapshot` exactly): a snack's tax code
+   resolves from its linked product's own real `tax_code` when one
+   exists, or the reservation's own package `tax_code` as the honest
+   default for a custom, catalog-less snack. `party_reservations.
+   quoted_total` KEEPS its existing role ("the total amount owed" — the
+   same field `balance`/cash-cut `contracted_value`/every existing
+   consumer already reads) — only its computed VALUE becomes more
+   correct (now genuinely includes tax, where before it silently didn't).
+5. **Contract/document snapshot stability** (Phase 21: "an already-
+   issued contract must not silently mutate... use snapshots"). Before
+   this task, `generateDocument` always live-joined `party_rooms`/
+   `party_packages` at generation time — renaming a room or editing a
+   package after booking silently changed the text of every past
+   reservation's contract. New `party_reservations.room_name_snapshot`/
+   `package_name_snapshot`, frozen at booking time exactly like
+   `customer_display_name` already was; `generateDocument` now prefers
+   the snapshot, falling back to a live join only for a reservation
+   booked before this migration (which has none yet — a one-time,
+   additive backfill in migration `0039_handy_post.sql` populates it
+   from each existing reservation's room/package as they stand today).
+6. **Document content — Spanish, not English** (Phase 37: "Use Spanish
+   customer-facing copy"). TASK 14.3's contract/waiver generator was
+   entirely in English — unusable as-is for the Spanish-speaking
+   tenants this whole domain exists for. Rewritten in Spanish with a
+   fuller, still genuinely generic (non-INFLAPARK-specific — this
+   task's own absolute constraint) set of real party-venue service
+   terms; the legacy's own 15-clause Querétaro-jurisdiction legal text
+   was deliberately NOT reproduced verbatim (tenant-specific legal text
+   must never be hardcoded into shared code — see §7 for the disclosed
+   follow-up this implies).
+7. **Dashboard Event KPIs** (Phase 30) — before this task, the
+   dashboard exposed only today's reservation count/list and a
+   standing (never date-scoped) outstanding-balance figure. New
+   `DashboardRepository.partyKpis` (four small, real SQL aggregates,
+   scoped exactly like `partyReservationCount` itself) adds: upcoming
+   (non-cancelled, `event_date` after today) reservation count, today's
+   status breakdown, today's event revenue (non-cancelled, per
+   currency), today's deposits actually collected (attributed to the
+   day the payment was recorded, not the event date), and today's
+   completed/cancelled counts — all rendered as new dashboard metric
+   cards.
+8. **Detail-view completeness** (Phase 17 "avoid requiring the operator
+   to navigate through multiple admin screens") — the reservation
+   detail dialog was missing `notes`, `adultsCount`, and the seller/
+   responsible-user name entirely; now shown in its summary line (seller
+   resolved from the already-loaded user roster, mirroring the
+   Calendar's own `_sellerLabel` pattern — never a second network call),
+   plus a subtotal/tax breakdown alongside the existing total/paid/
+   balance figures. A new "Hoy" filter chip in the Lista tab gives a
+   one-tap "just today's events" view without leaving the admin screen
+   for the calendar.
+9. **Flutter test coverage** (Phase 42 — TASK 14.3 shipped this whole
+   domain's UI with ZERO direct widget test coverage, only indirect
+   dashboard/permission-catalogue tests). Five new test cases added to
+   the existing Fiestas group in `pos_shell_test.dart` (the codebase's
+   own established convention — one shared mega test file per shell
+   surface, not a separate file, since the fixtures/harness this domain
+   needs are file-private): detail-view notes/adults/seller display,
+   the 422 `capacity_exceeded` honest-rejection message, the "Hoy"
+   filter's real query parameters, the package form's tax-code +
+   room-eligibility picker submitting the real payload, and
+   `party.payment.record` gating "Registrar pago" separately from
+   `party.manage`. Writing these surfaced and fixed a genuine,
+   previously-untested `RenderFlex` overflow in the reservation-detail
+   status-change dropdown (`DropdownButtonFormField` was sizing itself
+   to its widest possible item — "Pendiente de anticipo" — inside a
+   fixed 180px box; fixed with `isExpanded: true` + item-level
+   ellipsis, the standard fix for this exact class of Flutter bug).
+10. **Live release-build browser certification found and fixed two
+    further genuine bugs no unit/widget/integration test could have
+    caught** (Phase 43's own reason for existing): against a real
+    `flutter build web --release` bundle, the real API, and the real
+    `Freshness QA Retail` QA tenant (never an INFLAPARK fixture) —
+      * The new package-form room-eligibility picker
+        (`_PackageFormDialog._loadRooms`) called `listRooms(...,
+        limit: 200)`, but `GET /api/v1/party-rooms`'s own real schema
+        caps `limit` at 100 — every real call 400'd, silently swallowed
+        by this method's own non-fatal catch, so the picker always
+        showed "No hay salones registrados todavía." even with real
+        rooms present. Fixed to `limit: 100`.
+      * A real 422 `capacity_exceeded` rejection from
+        `POST /party-reservations` showed the generic "No fue posible
+        completar la solicitud." instead of the honest, already-written
+        message `posPartyErrorMessage` provides — because
+        `AppFailure.fromCode` (`app_error.dart`, the codec every real
+        HTTP error response actually passes through) had no case for
+        `capacity_exceeded`/`package_room_not_eligible`, so its own `_`
+        default silently reset `code` to `'unknown'` before
+        `posPartyErrorMessage`'s switch ever saw the real code — the
+        exact same class of bug TASK 16.6B already found and fixed once
+        for `price_conflict`. Every widget test for these two codes
+        (this task's own new ones included) constructs the
+        `ApiException`/`AppFailure` directly and so never exercises
+        `fromCode`, which is exactly why only a REAL HTTP response
+        caught it. Fixed by adding both cases to `fromCode`, plus two
+        new regression tests in `app_error_test.dart` (mirroring that
+        file's own existing `price_conflict` case) so this specific
+        class of gap cannot recur silently for these two codes again.
+    Both fixes were verified live end-to-end after a fresh rebuild:
+    created a real room (capacity 10 children/5 adults/12 total) and a
+    real package (IVA general, restricted to that one room) through the
+    UI; the Cotizador correctly computed Subtotal 2000.00 / Impuestos
+    320.00 (16%) / Total 2320.00 MXN; a 15-guest booking was correctly
+    rejected with the exact honest capacity message; a 12-guest booking
+    (exactly at capacity) was correctly accepted with the same
+    2320.00 MXN total; a real 500.00 MXN deposit was recorded and the
+    balance correctly dropped to 1820.00 MXN; the generated contract
+    document was fully Spanish, showed the frozen room/package name
+    snapshots and the same subtotal/tax/total figures, and contained
+    none of the placeholder English text TASK 14.3 originally shipped.
+
+**§3 Schema changes** — one migration,
+`packages/database/drizzle/0039_handy_post.sql` (additive only,
+existing-tenant-safe):
+  * `party_packages.tax_code text not null default 'IVA_GENERAL'` (+
+    check constraint, mirrors `products.tax_code` exactly).
+  * `party_reservations.adults_count integer not null default 0`,
+    `room_name_snapshot text`, `package_name_snapshot text`,
+    `subtotal_amount numeric(19,4)`, `discount_total numeric(19,4) not
+    null default 0`, `tax_total numeric(19,4) not null default 0`.
+  * `party_reservation_snacks.tax_snapshot jsonb`, `tax_total
+    numeric(19,4) not null default 0`.
+  * A hand-appended, one-time backfill `UPDATE` (same convention as
+    TASK 14.3's own hand-appended GIST constraint) populates
+    `room_name_snapshot`/`package_name_snapshot`/`subtotal_amount` for
+    every pre-existing reservation from its room/package as they stand
+    today (the best available truth for a row that never had a
+    snapshot) — `subtotal_amount` set equal to the row's own existing
+    `quoted_total`, since every pre-migration reservation was booked
+    with zero tax/discount, so subtotal already equaled the amount
+    actually charged. No existing tenant's `quoted_total` VALUE is
+    changed by this migration; only new reservations compute it
+    correctly with tax included going forward.
+
+**§4 Backend files changed:**
+`packages/database/src/schema/parties.ts`, `packages/errors/src/
+index.ts` (+2 error codes), `apps/api/src/modules/parties/
+parties.types.ts`, `parties.pricing.ts` (+`assertWithinCapacity`/
+`isRoomEligibleForPackage`/`resolveSnackTaxCode`/`computeLineTax`, tax
+added to `computePartyQuote`), `parties.repository.ts` (new columns
+threaded through every insert/update/decode), `parties.http-errors.ts`
+(+2 status mappings, 422), `party-reservations.service.ts` (capacity/
+eligibility checks, tax-aware quoting, snapshot freezing, Spanish
+document generator), `party-reservations.routes.ts` (+response fields),
+`party-packages.service.ts`/`.routes.ts` (+`tax_code`),
+`dashboard.repository.ts` (+`partyKpis`), `dashboard.service.ts`,
+`dashboard.types.ts`, `dashboard.routes.ts`.
+
+**§5 Flutter files changed:**
+`pos_parties_models.dart` (+`taxCode`/`eligibleRoomIds` on
+`PosPartyPackage`, +`adultsCount`/`roomNameSnapshot`/
+`packageNameSnapshot`/`subtotalAmount`/`discountTotal`/`taxTotal` on
+`PosPartyReservation`, +breakdown fields on `PosPartyQuote`/
+`PosPartyBalance`, +`taxTotal` on `PosPartySnack`),
+`pos_parties_gateway.dart` (+2 honest error messages),
+`pos_dashboard_gateway.dart` (+6 KPI fields), `pos_shell.dart` (detail
+dialog summary/finance section, Cotizador breakdown, package form tax
+code + room-eligibility picker, Lista "Hoy" filter, dashboard KPI
+cards, the status-dropdown overflow fix, the `limit: 100` room-listing
+fix), `core/errors/app_error.dart` (+2 error-code cases — see §2 item
+10).
+
+**§6 Tests.** Backend: `parties.pricing.test.ts` extended (tax-inclusive
+quote assertions across all 5 pre-existing cases + new IVA_EXEMPT case,
++7 `assertWithinCapacity` cases, +4 `isRoomEligibleForPackage` cases,
++2 `resolveSnackTaxCode`/`computeLineTax` cases) — 23 tests, all
+passing. `parties.integration.test.ts` — every pre-existing
+`quotedTotal`/snack-`lineTotal` assertion updated to the new,
+tax-inclusive correct value (the underlying behavior changed
+correctly; the tests were stale, not wrong to have existed) — 20 tests,
+all passing. `cash-operational-summary.integration.test.ts` — same
+tax-inclusive update to its own `contractedValue`/
+`outstandingForNewReservations` assertions — 11 tests, all passing,
+including the pre-existing "Eventos de hoy uses the branch-local
+calendar day" case (confirmed already correct, untouched by this task
+— see §7). `dashboard.integration.test.ts` — unaffected, still passing.
+Flutter: 5 new Fiestas test cases (§2 item 9) plus every pre-existing
+Fiestas/dashboard fixture construction updated for the new required
+model fields, plus 2 new `app_error_test.dart` regression cases (§2
+item 10) — the full suite (1082+ tests across every `test/*.dart` file
+in the app, not just the Fiestas-related ones) passes.
+
+**§7 Deliberately NOT built, and why (disclosed, not silently
+dropped):**
+  * **Automatic product/category-scoped promotions applied to party
+    packages.** The platform's real pricing engine
+    (`promotions/pricing.service.ts`) scopes automatic promotions by
+    `productId`/`categoryId` — a party package is not a catalog
+    product, so that scope model doesn't generalize without a separate,
+    larger schema decision (e.g. a package-eligible-promotion concept)
+    that touches a shared domain Sales also depends on. Coupon-code
+    redemption specifically was also evaluated and deliberately not
+    wired in this pass: the platform's real `coupon_redemptions` usage
+    ledger is keyed to `sale_id` (a required column), so counting a
+    coupon's remaining uses correctly for a party reservation would
+    require either a schema change to that shared, financially-
+    sensitive table or a parallel, less-safe tracking mechanism — both
+    judged out of a single task's safe scope. `discountTotal` remains a
+    real, present field in every quote/reservation (always `0.0000`
+    today), so wiring in an actual discount mechanism later is additive,
+    not a breaking reshape.
+  * **Signed/uploaded contract/waiver storage or e-signature capture.**
+    Legacy never had real e-signature either (its own "signed upload"
+    slot was a manual base64 file attach, never validated). Phase 22's
+    own text allows this: "If current scope is print/generate/
+    acknowledge: label it honestly" — the current scope IS exactly
+    that, honestly labeled (§6's Spanish rewrite never claims a
+    signature was captured).
+  * **A tenant-configurable legal-terms admin UI.** The contract clause
+    text is now genuinely generic Spanish business terms (not
+    INFLAPARK-specific), satisfying "do not hardcode a tenant's legal
+    text into shared code" — but no existing "tenant document
+    configuration" surface was found to hook a per-tenant override into
+    within this task's scope (Phase 21 itself only requires this "if
+    present").
+  * **Customer-facing self-service booking, notifications (SMS/email/
+    WhatsApp), recurring/multi-room bookings, deeper occupancy/
+    conversion-funnel reporting.** None of these are named anywhere in
+    this task's own 45-phase spec — they were flagged by an earlier
+    architecture-audit pass as plausible FUTURE extensions, not as
+    genuine gaps this task was asked to close, and building them now
+    would be scope creep beyond what was requested.
+  * **Flutter-side branch-local timezone conversion for the dashboard's
+    "today."** Investigated and found to be an ALREADY-DISCLOSED,
+    deliberate TASK 14.5 design decision (`_DashboardState.initState`'s
+    own doc comment): no IANA per-branch timezone library exists
+    anywhere in this Flutter codebase's dependencies, so "today" is
+    resolved once from the device's own real wall clock — a genuine
+    "today," never a naive UTC assumption, just not branch-timezone-
+    aware. The BACKEND'S own analogous concept (cash-cut's "Eventos de
+    hoy") already IS branch-timezone-correct server-side (confirmed by
+    this task's own verification pass and its own passing, pre-existing
+    test — see §6) — this gap is Flutter-display-only, not a financial-
+    correctness issue, and retrofitting a new timezone dependency into
+    Flutter for one screen's display convenience was judged out of this
+    task's scope, consistent with the original author's own explicit
+    reasoning.
+
+## HOW TO CREATE AND COMPLETE AN EVENT
+
+The real, commercial ACCESS GO flow an operator uses today, end to end:
+
+1. **One-time setup** (Administración or a manager with `party.manage`):
+   **Fiestas → Ajustes → Salones**: create each real event space (name,
+   capacity). **Fiestas → Ajustes → Paquetes**: create each real
+   package (price, included guests, extra-guest/extra-time costs, tax
+   classification, and optionally restrict it to specific salones via
+   the room-eligibility picker).
+2. **Quote** (optional but recommended): **Fiestas → Cotizador** — pick
+   a package, enter guest counts/extra time, see the real subtotal/tax/
+   total breakdown computed server-side. "Convertir a reservación"
+   carries the quote straight into a new reservation form.
+3. **Reserve**: **Fiestas → Lista → Nueva reservación** — pick or
+   search a customer (or leave it a walk-in), enter the celebrant/
+   guest counts/date/time/room/package/seller/notes. The backend
+   re-validates room availability AND capacity/eligibility before
+   saving — a conflicting, over-capacity, or ineligible-room booking is
+   rejected with the real reason, never silently accepted.
+4. **Track the event day**: use the "Hoy" filter in Lista, or the
+   Calendario tab, to see today's reservations at a glance. Open a
+   reservation to see its full detail: customer, celebrant, room,
+   package, guest counts, seller, notes, and the real subtotal/tax/
+   total/paid/balance figures.
+5. **Take payments**: from the reservation detail, "Registrar pago"
+   (requires `party.payment.record`) records a deposit/balance/
+   additional payment against a real, open cash session — the same
+   real cash-drawer truth every other payment in the app posts through,
+   never a second ledger.
+6. **Add snacks/socks**: from the detail view's Snacks/Calcetas tabs,
+   add catalog-linked or custom line items (snacks are taxed like any
+   other sellable item); deduct sock stock for real, one-way,
+   inventory-tracked sizes.
+7. **Generate documents**: the Documentos tab prints a real contract or
+   waiver, generated fresh from the reservation's own frozen data —
+   safe to reprint anytime, and an already-issued document's room/
+   package names never silently change even if that room/package is
+   later renamed or edited.
+8. **Move the reservation through its lifecycle**: Apartada → Pendiente
+   de anticipo/Confirmada → Completada, or Cancelar at any point before
+   completion (an honest surface of any prior payments — never an
+   automatic refund; a manager handles any actual refund separately).
+9. **Review the numbers**: the Dashboard's Fiestas cards show today's
+   count, upcoming count, today's revenue/deposits collected, and
+   today's completed/cancelled counts; a cash session's own corte
+   (partial or final close) shows the real Eventos section (contracted
+   value, deposits collected, outstanding, reservations occurring
+   today) for that specific session/branch.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

@@ -155,6 +155,12 @@ class PosDashboardSummary {
     required this.openCashSessionCount,
     required this.openCashSessions,
     required this.outstandingPartyBalances,
+    required this.upcomingPartyReservationCount,
+    required this.partyStatusBreakdown,
+    required this.eventRevenueToday,
+    required this.depositsCollectedToday,
+    required this.completedPartyReservationsToday,
+    required this.cancelledPartyReservationsToday,
     required this.clockedInEmployeeCount,
     required this.outOfStockVariantCount,
     required this.birthdaysToday,
@@ -194,6 +200,22 @@ class PosDashboardSummary {
           .whereType<Map<String, Object?>>()
           .map(PosDashboardCurrencyAmount.fromJson)
           .toList(growable: false),
+      // TASK 16.19 (Phase 30 "Event KPIs").
+      upcomingPartyReservationCount: (parties['upcoming_count'] as num?)?.toInt() ?? 0,
+      partyStatusBreakdown: (parties['status_breakdown'] as Map<String, Object?>?)?.map(
+            (key, value) => MapEntry(key, (value as num?)?.toInt() ?? 0),
+          ) ??
+          const {},
+      eventRevenueToday: (parties['revenue_today'] as List<Object?>? ?? const [])
+          .whereType<Map<String, Object?>>()
+          .map(PosDashboardCurrencyAmount.fromJson)
+          .toList(growable: false),
+      depositsCollectedToday: (parties['deposits_collected_today'] as List<Object?>? ?? const [])
+          .whereType<Map<String, Object?>>()
+          .map(PosDashboardCurrencyAmount.fromJson)
+          .toList(growable: false),
+      completedPartyReservationsToday: (parties['completed_today'] as num?)?.toInt() ?? 0,
+      cancelledPartyReservationsToday: (parties['cancelled_today'] as num?)?.toInt() ?? 0,
       clockedInEmployeeCount: (attendance['clocked_in_count']! as num).toInt(),
       outOfStockVariantCount: (inventoryAlerts['out_of_stock_variant_count']! as num).toInt(),
       birthdaysToday: ((json['birthdays_today'] as Map<String, Object?>?)?['customers'] as List<Object?>? ?? const [])
@@ -214,6 +236,18 @@ class PosDashboardSummary {
   final int openCashSessionCount;
   final List<PosDashboardOpenCashSession> openCashSessions;
   final List<PosDashboardCurrencyAmount> outstandingPartyBalances;
+
+  /// TASK 16.19 (Phase 30 "Event KPIs") — active (non-cancelled)
+  /// reservations with an `event_date` after [date]. [partyStatusBreakdown]
+  /// is TODAY's reservations grouped by status (status code -> count).
+  /// [eventRevenueToday]/[depositsCollectedToday] are real per-currency
+  /// sums, never a single blended total.
+  final int upcomingPartyReservationCount;
+  final Map<String, int> partyStatusBreakdown;
+  final List<PosDashboardCurrencyAmount> eventRevenueToday;
+  final List<PosDashboardCurrencyAmount> depositsCollectedToday;
+  final int completedPartyReservationsToday;
+  final int cancelledPartyReservationsToday;
   final int clockedInEmployeeCount;
   final int outOfStockVariantCount;
   final List<PosDashboardBirthdayCustomer> birthdaysToday;

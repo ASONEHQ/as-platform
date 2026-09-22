@@ -241,15 +241,19 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     expect(created.value.status).toBe('held');
     expect(created.value.customerDisplayName).toBe('Ana Reyes');
     expect(created.value.customerPhone).toBe('5551234567');
-    // base 3500 + childrenExtra (2*80=160) + adultsExtra(0) + timeExtra(0) = 3660
-    expect(created.value.quotedTotal).toBe('3660.0000');
+    // base 3500 + childrenExtra (2*80=160) + adultsExtra(0) + timeExtra(0) =
+    // subtotal 3660; TASK 16.19 adds tax on top — the package defaults to
+    // IVA_GENERAL (16%): 3660 * 1.16 = 4245.60.
+    expect(created.value.subtotalAmount).toBe('3660.0000');
+    expect(created.value.taxTotal).toBe('585.6000');
+    expect(created.value.quotedTotal).toBe('4245.6000');
 
     // Restart-persistence honesty check: read back via a FRESH query, not
     // any in-process cache — a genuinely new repository instance over the
     // SAME real Postgres connection pool.
     const freshRepository = new PartiesRepository(database);
     const reread = await freshRepository.reservation(companyId, created.value.id);
-    expect(reread?.quotedTotal).toBe('3660.0000');
+    expect(reread?.quotedTotal).toBe('4245.6000');
   });
 
   it('edits a reservation (children_count change recomputes quotedTotal; notes/celebrant update)', async () => {
@@ -262,7 +266,8 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
       endTime: '11:00',
       childrenCount: 5,
     });
-    expect(created.value.quotedTotal).toBe('3500.0000');
+    // subtotal 3500 (within included counts), tax 16% = 560.00.
+    expect(created.value.quotedTotal).toBe('4060.0000');
 
     const updated = await reservations.updateReservation(context(companyId, userId), branchIds, created.value.id, created.value.version, {
       childrenCount: 15, // 5 over included -> 5*80=400 extra
@@ -270,7 +275,9 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     });
     expect(updated.childrenCount).toBe(15);
     expect(updated.notes).toBe('Bring extra chairs');
-    expect(updated.quotedTotal).toBe('3900.0000');
+    // subtotal 3900 (3500 + 400 extra), tax 16% = 624.00.
+    expect(updated.subtotalAmount).toBe('3900.0000');
+    expect(updated.quotedTotal).toBe('4524.0000');
     expect(updated.version).toBe(created.value.version + 1n);
   });
 
@@ -399,12 +406,16 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     const pkg = await packages.packageRow(companyId, branchIds, packageId);
     const breakdown = packageQuoteInput(pkg, { children: 15, adults: 8, extraHalfHours: 2 });
     // 15 children (10 included -> 5 extra @80 = 400), 8 adults (5 included -> 3 extra @50=150), 2 extra half hours @250=500
+    // TASK 16.19: subtotal 4550, tax 16% = 728.00, total 5278.00.
     expect(breakdown).toEqual({
       base: '3500.0000',
       childrenExtra: '400.0000',
       adultsExtra: '150.0000',
       timeExtra: '500.0000',
-      total: '4550.0000',
+      subtotal: '4550.0000',
+      discountTotal: '0.0000',
+      taxTotal: '728.0000',
+      total: '5278.0000',
     });
   });
 
@@ -442,10 +453,12 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     });
 
     it('records a deposit, verifies the balance reflects it, then records a second payment and verifies cumulative totals', async () => {
+      // childrenCount:10 is exactly the included count -> subtotal 3500,
+      // tax 16% = 560.00, quotedTotal (grand total) 4060.00 (TASK 16.19).
       const before = await reservations.balance(companyId, branchIds, reservationId);
-      expect(before.quotedTotal).toBe('3500.0000');
+      expect(before.quotedTotal).toBe('4060.0000');
       expect(before.totalPaid).toBe('0.0000');
-      expect(before.outstandingBalance).toBe('3500.0000');
+      expect(before.outstandingBalance).toBe('4060.0000');
 
       const deposit = await reservations.recordPayment(context(companyId, userId), branchIds, `pay-deposit-${randomUUID()}`, reservationId, {
         purpose: 'deposit',
@@ -457,17 +470,17 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
 
       const afterDeposit = await reservations.balance(companyId, branchIds, reservationId);
       expect(afterDeposit.totalPaid).toBe('1000.0000');
-      expect(afterDeposit.outstandingBalance).toBe('2500.0000');
+      expect(afterDeposit.outstandingBalance).toBe('3060.0000');
 
       const balancePayment = await reservations.recordPayment(context(companyId, userId), branchIds, `pay-balance-${randomUUID()}`, reservationId, {
         purpose: 'balance',
-        amount: '2500.0000',
+        amount: '3060.0000',
         cashSessionId,
       });
-      expect(balancePayment.value.amountSnapshot).toBe('2500.0000');
+      expect(balancePayment.value.amountSnapshot).toBe('3060.0000');
 
       const finalBalance = await reservations.balance(companyId, branchIds, reservationId);
-      expect(finalBalance.totalPaid).toBe('3500.0000');
+      expect(finalBalance.totalPaid).toBe('4060.0000');
       expect(finalBalance.outstandingBalance).toBe('0.0000');
 
       // Verify the real cash movement was actually posted, thin-linked
@@ -493,7 +506,12 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
         quantity: '2',
       });
       expect(customSnack.productId).toBeNull();
-      expect(customSnack.lineTotal).toBe('25.0000');
+      // TASK 16.19: a custom, catalog-less snack is taxed at the
+      // reservation's own package tax code (IVA_GENERAL, 16%, since this
+      // package fixture doesn't set one) — 12.50*2=25.00 subtotal, +16% tax
+      // = 29.00 tax-inclusive line total.
+      expect(customSnack.taxTotal).toBe('4.0000');
+      expect(customSnack.lineTotal).toBe('29.0000');
 
       const list = await reservations.listSnacks(companyId, branchIds, reservationId);
       expect(list).toHaveLength(2);
@@ -570,7 +588,7 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
       });
       expect(result.value.reservation.status).toBe('cancelled');
       expect(result.value.hasPriorPayments).toBe(true);
-      expect(result.value.totalPaid).toBe('3500.0000');
+      expect(result.value.totalPaid).toBe('4060.0000');
       expect(result.value.reservation.cancellationReason).toBe('customer_request');
       expect(result.value.reservation.cancelledBy).toBe(userId);
       expect(result.value.reservation.cancelledAt).not.toBeNull();

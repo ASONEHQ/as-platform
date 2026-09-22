@@ -28,6 +28,12 @@ String posPartyErrorMessage(ApiException error, {String? fallback}) {
       return 'No hay inventario suficiente para descontar esas calcetas.';
     case 'inventory_location_not_found':
       return 'No se encontró una ubicación de inventario válida para esa talla.';
+    // TASK 16.19 — capacity/eligibility are honest "this can't be booked
+    // as requested" rejections, never a generic/misleading message.
+    case 'capacity_exceeded':
+      return 'El número de invitados excede el aforo del salón o del paquete seleccionado.';
+    case 'package_room_not_eligible':
+      return 'Este paquete no está disponible para el salón seleccionado.';
     case 'resource_conflict':
       return fallback ?? 'La operación no se pudo completar porque el recurso está en un estado inesperado.';
     default:

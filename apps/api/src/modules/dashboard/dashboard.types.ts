@@ -122,6 +122,23 @@ export interface DashboardSummary {
    * not a single day's figure). */
   readonly outstandingPartyBalances: readonly CurrencyAmount[];
 
+  /** TASK 16.19 (Phase 30 "Event KPIs") — see
+   * `DashboardRepository.partyKpis`'s own doc comment for exact scope of
+   * each figure. `upcomingPartyReservationCount` is active (non-
+   * cancelled) reservations with `event_date` after `date`;
+   * `partyStatusBreakdown` is TODAY's reservations grouped by status;
+   * `eventRevenueToday`/`depositsCollectedToday` are real per-currency
+   * sums, never a single blended total; `completed`/`cancelledToday` are
+   * today's own counts (also derivable from `partyStatusBreakdown`,
+   * exposed directly too since they're the two figures Phase 30 names
+   * explicitly). */
+  readonly upcomingPartyReservationCount: number;
+  readonly partyStatusBreakdown: Readonly<Record<string, number>>;
+  readonly eventRevenueToday: readonly CurrencyAmount[];
+  readonly depositsCollectedToday: readonly CurrencyAmount[];
+  readonly completedPartyReservationsToday: number;
+  readonly cancelledPartyReservationsToday: number;
+
   /** Employees whose most recent punch for `date` is `clock_in` (i.e. no
    * later `clock_out` the same day) — see
    * `DashboardRepository.clockedInEmployeeCount`'s own doc comment. */

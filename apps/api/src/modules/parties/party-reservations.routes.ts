@@ -60,13 +60,19 @@ function reservationHttp(value: PartyReservationRow): Readonly<Record<string, un
     celebrant_age: value.celebrantAge,
     room_id: value.roomId,
     package_id: value.packageId,
+    room_name_snapshot: value.roomNameSnapshot,
+    package_name_snapshot: value.packageNameSnapshot,
     event_date: value.eventDate,
     start_time: value.startTime,
     end_time: value.endTime,
     children_count: value.childrenCount,
+    adults_count: value.adultsCount,
     seller_user_id: value.sellerUserId,
     status: value.status,
     account_status: value.accountStatus,
+    subtotal_amount: value.subtotalAmount,
+    discount_total: value.discountTotal,
+    tax_total: value.taxTotal,
     quoted_total: value.quotedTotal,
     currency_code: value.currencyCode,
     notes: value.notes,
@@ -87,6 +93,8 @@ function snackHttp(value: PartyReservationSnackRow): Readonly<Record<string, unk
     unit_price_snapshot: value.unitPriceSnapshot,
     quantity: value.quantity,
     line_total: value.lineTotal,
+    tax_snapshot: value.taxSnapshot,
+    tax_total: value.taxTotal,
     created_at: value.createdAt.toISOString(),
   };
 }
@@ -652,7 +660,14 @@ export function registerPartyReservationRoutes(
         const value = await service.balance(auth.companyId, auth.permittedBranchIds, request.params.id);
         return reply.send(
           successResponse(
-            { quoted_total: value.quotedTotal, total_paid: value.totalPaid, outstanding_balance: value.outstandingBalance },
+            {
+              subtotal_amount: value.subtotalAmount,
+              discount_total: value.discountTotal,
+              tax_total: value.taxTotal,
+              quoted_total: value.quotedTotal,
+              total_paid: value.totalPaid,
+              outstanding_balance: value.outstandingBalance,
+            },
             request.requestContext,
           ),
         );

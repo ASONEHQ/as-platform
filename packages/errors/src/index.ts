@@ -168,6 +168,17 @@ export const infrastructureErrorCodes = [
   // reservation.
   'party_conflict',
   'invalid_reservation_state',
+  // TASK 16.19 — same rationale as the two codes immediately above: every
+  // other new failure this task introduces reuses an existing generic
+  // code (`resource_not_found`, `validation_error`), but these two are
+  // genuinely new semantic concepts a generic code cannot express.
+  // `capacity_exceeded` is a booking rejected because children+adults
+  // exceeds the room's or package's own configured capacity;
+  // `package_room_not_eligible` is a booking rejected because the chosen
+  // package is restricted (via `party_packages.restrictions.
+  // eligibleRoomIds`) to a different set of rooms than the one selected.
+  'capacity_exceeded',
+  'package_room_not_eligible',
   // TASK 14.4 (Wave 2): every other new-domain failure this wave reuses
   // an existing generic code (`resource_not_found`, `resource_conflict`,
   // `validation_error`, `version_conflict`, `idempotency_conflict`,

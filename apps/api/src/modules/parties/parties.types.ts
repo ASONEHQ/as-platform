@@ -67,6 +67,9 @@ export interface PartyRoomRow {
   updatedAt: Date;
 }
 
+export const partyPackageTaxCodes = ['IVA_GENERAL', 'IVA_EXEMPT'] as const;
+export type PartyPackageTaxCode = (typeof partyPackageTaxCodes)[number];
+
 export interface PartyPackageRow {
   id: string;
   companyId: string;
@@ -84,6 +87,7 @@ export interface PartyPackageRow {
   adultExtraCost: string;
   capacityMax: number | null;
   extraHalfHourCost: string;
+  taxCode: PartyPackageTaxCode;
   includes: Readonly<Record<string, unknown>> | null;
   restrictions: Readonly<Record<string, unknown>> | null;
   createdBy: string;
@@ -105,13 +109,19 @@ export interface PartyReservationRow {
   celebrantAge: number | null;
   roomId: string;
   packageId: string;
+  roomNameSnapshot: string | null;
+  packageNameSnapshot: string | null;
   eventDate: string;
   startTime: string;
   endTime: string;
   childrenCount: number;
+  adultsCount: number;
   sellerUserId: string | null;
   status: PartyReservationStatus;
   accountStatus: PartyAccountStatus;
+  subtotalAmount: string | null;
+  discountTotal: string;
+  taxTotal: string;
   quotedTotal: string;
   currencyCode: string;
   notes: string | null;
@@ -134,6 +144,8 @@ export interface PartyReservationSnackRow {
   unitPriceSnapshot: string;
   quantity: string;
   lineTotal: string;
+  taxSnapshot: Readonly<Record<string, unknown>> | null;
+  taxTotal: string;
   createdAt: Date;
 }
 
@@ -188,7 +200,10 @@ export type PartyErrorCode =
   | 'party_conflict'
   | 'invalid_reservation_state'
   | 'insufficient_inventory'
-  | 'inventory_location_not_found';
+  | 'inventory_location_not_found'
+  // TASK 16.19
+  | 'capacity_exceeded'
+  | 'package_room_not_eligible';
 
 export class PartyError extends Error {
   constructor(

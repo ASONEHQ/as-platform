@@ -30,5 +30,30 @@ void main() {
       expect(failure.kind, AppErrorKind.unknown);
       expect(failure.message, 'No fue posible completar la solicitud.');
     });
+
+    // TASK 16.19 — the exact same class of bug TASK 16.6B already found
+    // and fixed once for `price_conflict`, reproduced live: a real 422
+    // `capacity_exceeded` response from `POST /party-reservations` showed
+    // the generic "No fue posible completar la solicitud." instead of the
+    // real, already-written honest message, because these two codes had
+    // no case here — `posPartyErrorMessage`'s own switch (which DOES
+    // handle them) never got the real code to match against, only
+    // `'unknown'`. Caught only by live browser certification against the
+    // real API — every widget test for this (`pos_shell_test.dart`'s own
+    // "a 422 capacity_exceeded response surfaces..." case) constructs the
+    // `ApiException`/`AppFailure` directly and so never exercises
+    // `fromCode` itself, exactly like this file's own header doc comment
+    // already warns.
+    test('capacity_exceeded decodes to its own real code, never the generic "unknown" fallback', () {
+      final failure = AppFailure.fromCode('capacity_exceeded');
+      expect(failure.code, 'capacity_exceeded');
+      expect(failure.kind, AppErrorKind.validation);
+    });
+
+    test('package_room_not_eligible decodes to its own real code, never the generic "unknown" fallback', () {
+      final failure = AppFailure.fromCode('package_room_not_eligible');
+      expect(failure.code, 'package_room_not_eligible');
+      expect(failure.kind, AppErrorKind.validation);
+    });
   });
 }

@@ -158,12 +158,31 @@ export const partyPackages = pgTable(
     // TASK 14.3 Part A.7 (Cotizador): extra-time pricing, recovered from
     // legacy `tiempo.costoMediaHoraExtra`.
     extraHalfHourCost: numeric('extra_half_hour_cost', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 16.19 — the same explicit tax CLASSIFICATION `products.tax_code`
+    // already carries (`packages/database/src/catalog/pricing.ts`'s
+    // `ProductTaxCode`/`ivaBasisPointsForTaxCode`), reused rather than a
+    // second tax concept: a party package is priced and taxed exactly like
+    // a sellable line, closing Phase 10's explicit "...+ taxes = total"
+    // requirement, which TASK 14.3 (Wave 1, Part A) did not yet implement.
+    taxCode: text('tax_code').notNull().default('IVA_GENERAL'),
     // Structured-but-flexible recovery of legacy's rich nested
     // alimentos/pastel/decoracion/entretenimiento/regalos objects — kept
     // as reviewable JSON rather than one rigid column per legacy field
     // (a deliberate scope decision for this wave; see
     // `docs/LEGACY_MISSING_PORTS.md`). Always a JSON object when present.
     includes: jsonb('includes').$type<Readonly<Record<string, unknown>>>(),
+    // TASK 16.19 — `restrictions.eligibleRoomIds?: string[]` is the real,
+    // finer-grained recovery of legacy's per-room `salonesDisponibles[]`
+    // restriction this table's own original doc comment (below) flagged
+    // as a deliberately deferred simplification. Kept inside this same
+    // flexible jsonb column (not a new join table) for the same reason
+    // `includes` already is: absent/empty means "every room in this
+    // package's own branch scope is eligible" (backward compatible with
+    // every package created before this task), a non-empty array narrows
+    // eligibility to exactly those room ids. Validated shape (array of
+    // non-blank strings) at the service layer, not by a DB check
+    // constraint, matching `includes`'/`restrictions`' own established
+    // "structurally an object, semantically validated in code" contract.
     restrictions: jsonb('restrictions').$type<Readonly<Record<string, unknown>>>(),
     createdBy: uuid('created_by').notNull(),
     updatedBy: uuid('updated_by').notNull(),
@@ -206,6 +225,7 @@ export const partyPackages = pgTable(
       'party_packages_capacity_max_ck',
       sql`${table.capacityMax} is null or ${table.capacityMax} >= 0`,
     ),
+    check('party_packages_tax_code_ck', sql`${table.taxCode} in ('IVA_GENERAL', 'IVA_EXEMPT')`),
     check('party_packages_version_ck', sql`${table.version} >= 1`),
     check(
       'party_packages_includes_object_ck',
@@ -239,20 +259,59 @@ export const partyReservations = pgTable(
     celebrantAge: integer('celebrant_age'),
     roomId: uuid('room_id').notNull(),
     packageId: uuid('package_id').notNull(),
+    // TASK 16.19 — `room.name`/`package.name` AS THEY WERE at booking
+    // time, frozen exactly like `customerDisplayName`/`customerPhone`
+    // above already are. Before this task, `generateDocument` always
+    // live-joined `party_rooms`/`party_packages`, so renaming a room or
+    // editing a package after booking silently changed the text of an
+    // already-issued contract/waiver — a real violation of the "an
+    // already-issued contract must not silently mutate" requirement.
+    // Nullable so a reservation created before this migration (which has
+    // no snapshot) keeps falling back to a live join, never breaking.
+    roomNameSnapshot: text('room_name_snapshot'),
+    packageNameSnapshot: text('package_name_snapshot'),
     eventDate: date('event_date', { mode: 'string' }).notNull(),
     startTime: time('start_time').notNull(),
     endTime: time('end_time').notNull(),
     childrenCount: integer('children_count').notNull().default(0),
+    // TASK 16.19 — `computePartyQuote` always accepted an `adults` input
+    // (it drives `adultsExtra` pricing exactly like `childrenCount`
+    // drives `childrenExtra`), but TASK 14.3 never persisted it on the
+    // reservation itself — the count used to derive `quotedTotal` was
+    // silently discarded after booking, making it impossible to later
+    // enforce room/package capacity, show real guest counts on a
+    // contract, or correctly recompute the quote on an edit. Real column
+    // now, mirroring `childrenCount` exactly.
+    adultsCount: integer('adults_count').notNull().default(0),
     // Recovery doc Capability 10 (Seller assignment) — a real, nullable FK
     // into the actual staff/membership relation, never an arbitrary
     // string the legacy stored.
     sellerUserId: uuid('seller_user_id'),
     status: text('status').notNull().default('held'),
     accountStatus: text('account_status').notNull().default('open'),
+    // TASK 16.19 — itemized breakdown of `quotedTotal` (Phase 10: "package
+    // + guest counts + extras + taxes = total", clearly distinguishing
+    // SUBTOTAL/TAX/TOTAL). `subtotalAmount` is the package+extras amount
+    // before tax; `discountTotal` is reserved for a future authorized
+    // discount (always `0` today — no discount mechanism is wired into
+    // party pricing yet, see `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK
+    // 16.19 section for why that is a disclosed follow-up, not silently
+    // dropped); `taxTotal` is this reservation's own frozen tax amount.
+    // Nullable (`subtotalAmount`) only so a pre-migration reservation
+    // (which has no breakdown) can be told apart from a genuine zero.
+    subtotalAmount: numeric('subtotal_amount', { precision: 19, scale: 4 }),
+    discountTotal: numeric('discount_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
     // The Cotizador's price snapshot at booking time (recovery doc
     // Capability 7) — deliberately frozen, never recomputed from the
     // package's live price after booking (a later package price change
     // must not silently alter an already-booked reservation's total).
+    // TASK 16.19: now the true GRAND total (subtotal − discount + tax),
+    // not merely the untaxed package+extras amount — every existing
+    // consumer (`balance`, cash-cut `contracted_value`, this row's own
+    // `party_reservations_quoted_total_ck`) already treats this field as
+    // "the total amount the customer owes," so its ROLE is unchanged,
+    // only its computed VALUE becomes more correct.
     quotedTotal: numeric('quoted_total', { precision: 19, scale: 4 }).notNull(),
     currencyCode: char('currency_code', { length: 3 }).notNull(),
     notes: text('notes'),
@@ -328,6 +387,13 @@ export const partyReservations = pgTable(
     ),
     check('party_reservations_account_status_ck', sql`${table.accountStatus} in ('open', 'closed')`),
     check('party_reservations_children_count_ck', sql`${table.childrenCount} >= 0`),
+    check('party_reservations_adults_count_ck', sql`${table.adultsCount} >= 0`),
+    check(
+      'party_reservations_subtotal_amount_ck',
+      sql`${table.subtotalAmount} is null or ${table.subtotalAmount} >= 0`,
+    ),
+    check('party_reservations_discount_total_ck', sql`${table.discountTotal} >= 0`),
+    check('party_reservations_tax_total_ck', sql`${table.taxTotal} >= 0`),
     check('party_reservations_quoted_total_ck', sql`${table.quotedTotal} >= 0`),
     check('party_reservations_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check('party_reservations_celebrant_age_ck', sql`${table.celebrantAge} is null or ${table.celebrantAge} >= 0`),
@@ -376,7 +442,22 @@ export const partyReservationSnacks = pgTable(
     nameSnapshot: text('name_snapshot').notNull(),
     unitPriceSnapshot: numeric('unit_price_snapshot', { precision: 19, scale: 4 }).notNull(),
     quantity: numeric('quantity', { precision: 19, scale: 6 }).notNull(),
+    // TASK 16.19 — `lineTotal` is now tax-INCLUSIVE (pretax subtotal +
+    // `taxTotal`), mirroring `sale_items.line_total`'s own established
+    // meaning exactly. A pre-migration row has `taxTotal` default `0`, so
+    // its existing `lineTotal` value is unchanged by this redefinition —
+    // it was always implicitly untaxed.
     lineTotal: numeric('line_total', { precision: 19, scale: 4 }).notNull(),
+    // TASK 16.19 — closes the documented gap: snack pricing inside a
+    // party reservation previously bypassed the platform's tax engine
+    // entirely (no `tax_snapshot`, unlike `sale_items`). Resolved from
+    // the linked product's own real `tax_code` when `productId` is set;
+    // for a genuinely custom, catalog-less snack, the reservation's own
+    // package `tax_code` is used as the honest default (see
+    // `party-reservations.service.ts`'s `addSnack`). Same `{tax_code,
+    // basis_points}` shape as `sale_items.taxSnapshot`, not a new format.
+    taxSnapshot: jsonb('tax_snapshot').$type<Readonly<Record<string, unknown>>>(),
+    taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
     createdAt: createdAtColumn(),
   },
   (table) => [
@@ -391,6 +472,11 @@ export const partyReservationSnacks = pgTable(
     check('party_reservation_snacks_unit_price_ck', sql`${table.unitPriceSnapshot} >= 0`),
     check('party_reservation_snacks_quantity_positive_ck', sql`${table.quantity} > 0`),
     check('party_reservation_snacks_line_total_ck', sql`${table.lineTotal} >= 0`),
+    check('party_reservation_snacks_tax_total_ck', sql`${table.taxTotal} >= 0`),
+    check(
+      'party_reservation_snacks_tax_snapshot_object_ck',
+      sql`${table.taxSnapshot} is null or jsonb_typeof(${table.taxSnapshot}) = 'object'`,
+    ),
   ],
 );
 

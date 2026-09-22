@@ -256,6 +256,27 @@ class AppFailure {
       'No se encontró una ubicación de inventario válida para esa talla.',
       code: 'inventory_location_not_found',
     ),
+    // TASK 16.19 — found via live browser certification: without an entry
+    // here, this switch's own `_` default silently resets `code` to
+    // `'unknown'` (the default-constructor value — the `_` branch below
+    // never passes a `code:` argument), so `posPartyErrorMessage`'s own
+    // `capacity_exceeded`/`package_room_not_eligible` cases could never
+    // actually match a REAL backend 422 response — only a widget test
+    // that constructs `AppFailure` directly (bypassing `fromCode`) could.
+    // Every reservation-creation/edit form showed the generic
+    // "No fue posible completar la solicitud." instead of the real,
+    // honest, already-written message — mirrors TASK 16.6B's own
+    // identical finding/fix for `price_conflict` above.
+    'capacity_exceeded' => const AppFailure(
+      AppErrorKind.validation,
+      'El número de invitados excede el aforo del salón o del paquete seleccionado.',
+      code: 'capacity_exceeded',
+    ),
+    'package_room_not_eligible' => const AppFailure(
+      AppErrorKind.validation,
+      'Este paquete no está disponible para el salón seleccionado.',
+      code: 'package_room_not_eligible',
+    ),
     // TASK 14.4 Wave 2: "People" (Empleados/Horarios/Checador/Nómina) —
     // the four genuinely new codes `people.types.ts`'s `PeopleErrorCode`
     // introduces beyond the generic ones already mapped above

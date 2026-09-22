@@ -85,6 +85,104 @@ export class DashboardRepository {
     }));
   }
 
+  /** TASK 16.19 (Phase 30 "Event KPIs") — the additional party/event
+   * figures Phase 30 explicitly asks for that `partyReservationCount`/
+   * `outstandingPartyBalances` didn't yet cover: how many reservations
+   * are upcoming (beyond today), today's status breakdown, today's event
+   * revenue and deposits actually collected today, and today's
+   * completed/cancelled counts. Scoped exactly like `partyReservationCount`
+   * itself (`appendBranchScope` — company + permitted branches + optional
+   * single branch), never company-wide-only like `outstandingPartyBalances`
+   * (which is deliberately a standing-exposure figure, not a per-day one —
+   * see that method's own doc comment). Four small, real SQL aggregates —
+   * never an unbounded fetch-and-reduce in Node. */
+  public async partyKpis(
+    companyId: string,
+    branchIds: readonly string[],
+    branchId: string | undefined,
+    date: string,
+  ): Promise<{
+    upcomingReservationCount: number;
+    statusBreakdown: Readonly<Record<string, number>>;
+    eventRevenueToday: { currencyCode: string; amount: string }[];
+    depositsCollectedToday: { currencyCode: string; amount: string }[];
+    completedTodayCount: number;
+    cancelledTodayCount: number;
+  }> {
+    const upcomingWhere: string[] = [];
+    const upcomingValues: unknown[] = [];
+    appendBranchScope(upcomingWhere, upcomingValues, companyId, branchIds, branchId);
+    upcomingValues.push(date);
+    upcomingWhere.push(`event_date > $${String(upcomingValues.length)}`, `status <> 'cancelled'`);
+    const upcomingRow = result<{ count: string }>(
+      await this.database.pool.query(
+        `select count(*)::text as count from party_reservations where ${upcomingWhere.join(' and ')}`,
+        upcomingValues,
+      ),
+    ).rows[0];
+
+    const todayWhere: string[] = [];
+    const todayValues: unknown[] = [];
+    appendBranchScope(todayWhere, todayValues, companyId, branchIds, branchId);
+    todayValues.push(date);
+    todayWhere.push(`event_date = $${String(todayValues.length)}`);
+
+    const statusRows = result<{ status: string; count: string }>(
+      await this.database.pool.query(
+        `select status, count(*)::text as count from party_reservations where ${todayWhere.join(' and ')} group by status`,
+        todayValues,
+      ),
+    ).rows;
+    const statusBreakdown: Record<string, number> = {};
+    for (const row of statusRows) statusBreakdown[row.status] = Number(row.count);
+
+    const revenueRows = result<{ currency_code: string; amount: string }>(
+      await this.database.pool.query(
+        `select currency_code, coalesce(sum(quoted_total),0)::text as amount
+         from party_reservations where ${todayWhere.join(' and ')} and status <> 'cancelled'
+         group by currency_code`,
+        todayValues,
+      ),
+    ).rows;
+
+    // Deposits are attributed to the day they were actually COLLECTED
+    // (`party_reservation_payments.created_at`), not the reservation's
+    // own `event_date` — a deposit taken today for an event next month
+    // is real cash received today. `party_reservation_payments` already
+    // carries its own `branch_id` (no join needed for branch scoping).
+    const depositWhere: string[] = [];
+    const depositValues: unknown[] = [];
+    depositValues.push(companyId);
+    depositWhere.push(`p.company_id = $${String(depositValues.length)}`);
+    depositValues.push(branchIds);
+    depositWhere.push(`p.branch_id = any($${String(depositValues.length)}::uuid[])`);
+    if (branchId !== undefined) {
+      depositValues.push(branchId);
+      depositWhere.push(`p.branch_id = $${String(depositValues.length)}`);
+    }
+    depositValues.push(date);
+    depositWhere.push(`p.purpose = 'deposit'`, `(p.created_at at time zone 'UTC')::date = $${String(depositValues.length)}`);
+    const depositRows = result<{ currency_code: string; amount: string }>(
+      await this.database.pool.query(
+        `select r.currency_code, coalesce(sum(p.amount_snapshot),0)::text as amount
+         from party_reservation_payments p
+         join party_reservations r on r.company_id = p.company_id and r.id = p.reservation_id
+         where ${depositWhere.join(' and ')}
+         group by r.currency_code`,
+        depositValues,
+      ),
+    ).rows;
+
+    return {
+      upcomingReservationCount: Number(upcomingRow?.count ?? '0'),
+      statusBreakdown,
+      eventRevenueToday: revenueRows.map((row) => ({ currencyCode: row.currency_code, amount: row.amount })),
+      depositsCollectedToday: depositRows.map((row) => ({ currencyCode: row.currency_code, amount: row.amount })),
+      completedTodayCount: statusBreakdown['completed'] ?? 0,
+      cancelledTodayCount: statusBreakdown['cancelled'] ?? 0,
+    };
+  }
+
   /** Employees whose most recent punch ON `date` is `clock_in` — i.e. no
    * later `clock_out` the same day. A real, computed "currently on shift"
    * figure (never a fabricated headcount): `distinct on (employee_id)`

@@ -54,6 +54,7 @@ function packageHttp(value: PartyPackageRow): Readonly<Record<string, unknown>> 
     adult_extra_cost: value.adultExtraCost,
     capacity_max: value.capacityMax,
     extra_half_hour_cost: value.extraHalfHourCost,
+    tax_code: value.taxCode,
     includes: value.includes,
     restrictions: value.restrictions,
     version: Number(value.version),
@@ -79,6 +80,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
       adult_extra_cost?: string;
       capacity_max?: number;
       extra_half_hour_cost?: string;
+      tax_code?: string;
       includes?: Record<string, unknown>;
       restrictions?: Record<string, unknown>;
     };
@@ -107,6 +109,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             adult_extra_cost: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
             capacity_max: { type: 'integer', minimum: 0 },
             extra_half_hour_cost: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
+            tax_code: { type: 'string', enum: ['IVA_GENERAL', 'IVA_EXEMPT'] },
             includes: jsonObjectSchema,
             restrictions: jsonObjectSchema,
           },
@@ -139,6 +142,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             ...(body.adult_extra_cost === undefined ? {} : { adultExtraCost: body.adult_extra_cost }),
             ...(body.capacity_max === undefined ? {} : { capacityMax: body.capacity_max }),
             ...(body.extra_half_hour_cost === undefined ? {} : { extraHalfHourCost: body.extra_half_hour_cost }),
+            ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
             ...(body.includes === undefined ? {} : { includes: body.includes }),
             ...(body.restrictions === undefined ? {} : { restrictions: body.restrictions }),
           },
@@ -220,6 +224,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
       adult_extra_cost?: string;
       capacity_max?: number | null;
       extra_half_hour_cost?: string;
+      tax_code?: string;
       includes?: Record<string, unknown> | null;
       restrictions?: Record<string, unknown> | null;
     };
@@ -245,6 +250,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             adult_extra_cost: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
             capacity_max: { type: ['integer', 'null'], minimum: 0 },
             extra_half_hour_cost: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,4})?$' },
+            tax_code: { type: 'string', enum: ['IVA_GENERAL', 'IVA_EXEMPT'] },
             includes: { anyOf: [jsonObjectSchema, { type: 'null' }] },
             restrictions: { anyOf: [jsonObjectSchema, { type: 'null' }] },
           },
@@ -306,6 +312,9 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
               children_extra: breakdown.childrenExtra,
               adults_extra: breakdown.adultsExtra,
               time_extra: breakdown.timeExtra,
+              subtotal: breakdown.subtotal,
+              discount_total: breakdown.discountTotal,
+              tax_total: breakdown.taxTotal,
               total: breakdown.total,
             },
             request.requestContext,

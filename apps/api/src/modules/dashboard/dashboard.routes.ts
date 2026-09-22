@@ -100,6 +100,12 @@ function summaryHttp(summary: DashboardSummary): Readonly<Record<string, unknown
     parties: {
       count: summary.partyReservationCount,
       reservations: summary.partyReservations.map(partyReservationHttp),
+      upcoming_count: summary.upcomingPartyReservationCount,
+      status_breakdown: summary.partyStatusBreakdown,
+      revenue_today: summary.eventRevenueToday.map(currencyAmountHttp),
+      deposits_collected_today: summary.depositsCollectedToday.map(currencyAmountHttp),
+      completed_today: summary.completedPartyReservationsToday,
+      cancelled_today: summary.cancelledPartyReservationsToday,
     },
     cash_sessions: {
       open_count: summary.openCashSessionCount,

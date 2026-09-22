@@ -62,11 +62,11 @@ function dateOnly(value: Date | string): string {
 const ROOM_COLUMNS =
   'id,company_id,branch_id,code,name,status,capacity_children,capacity_adults,capacity_total,color,notes,created_by,updated_by,version,created_at,updated_at';
 const PACKAGE_COLUMNS =
-  'id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,includes,restrictions,created_by,updated_by,version,created_at,updated_at';
+  'id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,tax_code,includes,restrictions,created_by,updated_by,version,created_at,updated_at';
 const RESERVATION_COLUMNS =
-  'id,company_id,branch_id,reservation_number,customer_id,customer_display_name,customer_phone,celebrant_name,celebrant_age,room_id,package_id,event_date,start_time,end_time,children_count,seller_user_id,status,account_status,quoted_total,currency_code,notes,cancelled_at,cancelled_by,cancellation_reason,created_by,updated_by,version,created_at,updated_at';
+  'id,company_id,branch_id,reservation_number,customer_id,customer_display_name,customer_phone,celebrant_name,celebrant_age,room_id,package_id,room_name_snapshot,package_name_snapshot,event_date,start_time,end_time,children_count,adults_count,seller_user_id,status,account_status,subtotal_amount,discount_total,tax_total,quoted_total,currency_code,notes,cancelled_at,cancelled_by,cancellation_reason,created_by,updated_by,version,created_at,updated_at';
 const SNACK_COLUMNS =
-  'id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,created_at';
+  'id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,tax_snapshot,tax_total,created_at';
 const SOCK_COLUMNS =
   'id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,stock_deducted_at,created_at';
 const PAYMENT_COLUMNS =
@@ -108,6 +108,7 @@ interface PackageDb {
   adult_extra_cost: string;
   capacity_max: number | null;
   extra_half_hour_cost: string;
+  tax_code: string;
   includes: Readonly<Record<string, unknown>> | null;
   restrictions: Readonly<Record<string, unknown>> | null;
   created_by: string;
@@ -128,13 +129,19 @@ interface ReservationDb {
   celebrant_age: number | null;
   room_id: string;
   package_id: string;
+  room_name_snapshot: string | null;
+  package_name_snapshot: string | null;
   event_date: Date | string;
   start_time: string;
   end_time: string;
   children_count: number;
+  adults_count: number;
   seller_user_id: string | null;
   status: string;
   account_status: string;
+  subtotal_amount: string | null;
+  discount_total: string;
+  tax_total: string;
   quoted_total: string;
   currency_code: string;
   notes: string | null;
@@ -156,6 +163,8 @@ interface SnackDb {
   unit_price_snapshot: string;
   quantity: string;
   line_total: string;
+  tax_snapshot: Readonly<Record<string, unknown>> | null;
+  tax_total: string;
   created_at: Date | string;
 }
 interface SockDb {
@@ -231,6 +240,7 @@ function packageRow(row: PackageDb): PartyPackageRow {
     adultExtraCost: row.adult_extra_cost,
     capacityMax: row.capacity_max,
     extraHalfHourCost: row.extra_half_hour_cost,
+    taxCode: row.tax_code as PartyPackageRow['taxCode'],
     includes: row.includes,
     restrictions: row.restrictions,
     createdBy: row.created_by,
@@ -253,13 +263,19 @@ function reservation(row: ReservationDb): PartyReservationRow {
     celebrantAge: row.celebrant_age,
     roomId: row.room_id,
     packageId: row.package_id,
+    roomNameSnapshot: row.room_name_snapshot,
+    packageNameSnapshot: row.package_name_snapshot,
     eventDate: dateOnly(row.event_date),
     startTime: row.start_time,
     endTime: row.end_time,
     childrenCount: row.children_count,
+    adultsCount: row.adults_count,
     sellerUserId: row.seller_user_id,
     status: row.status as PartyReservationStatus,
     accountStatus: row.account_status as PartyAccountStatus,
+    subtotalAmount: row.subtotal_amount,
+    discountTotal: row.discount_total,
+    taxTotal: row.tax_total,
     quotedTotal: row.quoted_total,
     currencyCode: row.currency_code,
     notes: row.notes,
@@ -283,6 +299,8 @@ function snack(row: SnackDb): PartyReservationSnackRow {
     unitPriceSnapshot: row.unit_price_snapshot,
     quantity: row.quantity,
     lineTotal: row.line_total,
+    taxSnapshot: row.tax_snapshot,
+    taxTotal: row.tax_total,
     createdAt: new Date(row.created_at),
   };
 }
@@ -630,6 +648,7 @@ export class PartiesRepository {
       adultExtraCost: string;
       capacityMax: number | null;
       extraHalfHourCost: string;
+      taxCode: string;
       includes: Readonly<Record<string, unknown>> | null;
       restrictions: Readonly<Record<string, unknown>> | null;
       actorId: string;
@@ -641,8 +660,8 @@ export class PartiesRepository {
         `insert into party_packages
          (id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,
           children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,
-          includes,restrictions,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18,$18,$19,$19)
+          tax_code,includes,restrictions,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19,$19,$20,$20)
          returning ${PACKAGE_COLUMNS}`,
         [
           input.id,
@@ -660,6 +679,7 @@ export class PartiesRepository {
           input.adultExtraCost,
           input.capacityMax,
           input.extraHalfHourCost,
+          input.taxCode,
           input.includes === null ? null : JSON.stringify(input.includes),
           input.restrictions === null ? null : JSON.stringify(input.restrictions),
           input.actorId,
@@ -728,6 +748,7 @@ export class PartiesRepository {
       adultExtraCost?: string;
       capacityMax?: number | null;
       extraHalfHourCost?: string;
+      taxCode?: string;
       includes?: Readonly<Record<string, unknown>> | null;
       restrictions?: Readonly<Record<string, unknown>> | null;
       updatedBy: string;
@@ -755,6 +776,7 @@ export class PartiesRepository {
     if (input.adultExtraCost !== undefined) set('adult_extra_cost', input.adultExtraCost);
     if (input.capacityMax !== undefined) set('capacity_max', input.capacityMax);
     if (input.extraHalfHourCost !== undefined) set('extra_half_hour_cost', input.extraHalfHourCost);
+    if (input.taxCode !== undefined) set('tax_code', input.taxCode);
     if (input.includes !== undefined) setJson('includes', input.includes);
     if (input.restrictions !== undefined) setJson('restrictions', input.restrictions);
     values.push(expectedVersion.toString());
@@ -785,11 +807,17 @@ export class PartiesRepository {
       celebrantAge: number | null;
       roomId: string;
       packageId: string;
+      roomNameSnapshot: string;
+      packageNameSnapshot: string;
       eventDate: string;
       startTime: string;
       endTime: string;
       childrenCount: number;
+      adultsCount: number;
       sellerUserId: string | null;
+      subtotalAmount: string;
+      discountTotal: string;
+      taxTotal: string;
       quotedTotal: string;
       currencyCode: string;
       notes: string | null;
@@ -801,10 +829,11 @@ export class PartiesRepository {
       await client.query(
         `insert into party_reservations
          (id,company_id,branch_id,reservation_number,customer_id,customer_display_name,customer_phone,
-          celebrant_name,celebrant_age,room_id,package_id,event_date,start_time,end_time,children_count,
-          seller_user_id,status,account_status,quoted_total,currency_code,notes,created_by,updated_by,
-          created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'held','open',$17,$18,$19,$20,$20,$21,$21)
+          celebrant_name,celebrant_age,room_id,package_id,room_name_snapshot,package_name_snapshot,
+          event_date,start_time,end_time,children_count,adults_count,
+          seller_user_id,status,account_status,subtotal_amount,discount_total,tax_total,quoted_total,
+          currency_code,notes,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'held','open',$20,$21,$22,$23,$24,$25,$26,$26,$27,$27)
          returning ${RESERVATION_COLUMNS}`,
         [
           input.id,
@@ -818,11 +847,17 @@ export class PartiesRepository {
           input.celebrantAge,
           input.roomId,
           input.packageId,
+          input.roomNameSnapshot,
+          input.packageNameSnapshot,
           input.eventDate,
           input.startTime,
           input.endTime,
           input.childrenCount,
+          input.adultsCount,
           input.sellerUserId,
+          input.subtotalAmount,
+          input.discountTotal,
+          input.taxTotal,
           input.quotedTotal,
           input.currencyCode,
           input.notes,
@@ -961,11 +996,17 @@ export class PartiesRepository {
       celebrantAge?: number | null;
       roomId?: string;
       packageId?: string;
+      roomNameSnapshot?: string;
+      packageNameSnapshot?: string;
       eventDate?: string;
       startTime?: string;
       endTime?: string;
       childrenCount?: number;
+      adultsCount?: number;
       sellerUserId?: string | null;
+      subtotalAmount?: string;
+      discountTotal?: string;
+      taxTotal?: string;
       quotedTotal?: string;
       notes?: string | null;
       updatedBy: string;
@@ -985,11 +1026,17 @@ export class PartiesRepository {
     if (input.celebrantAge !== undefined) set('celebrant_age', input.celebrantAge);
     if (input.roomId !== undefined) set('room_id', input.roomId);
     if (input.packageId !== undefined) set('package_id', input.packageId);
+    if (input.roomNameSnapshot !== undefined) set('room_name_snapshot', input.roomNameSnapshot);
+    if (input.packageNameSnapshot !== undefined) set('package_name_snapshot', input.packageNameSnapshot);
     if (input.eventDate !== undefined) set('event_date', input.eventDate);
     if (input.startTime !== undefined) set('start_time', input.startTime);
     if (input.endTime !== undefined) set('end_time', input.endTime);
     if (input.childrenCount !== undefined) set('children_count', input.childrenCount);
+    if (input.adultsCount !== undefined) set('adults_count', input.adultsCount);
     if (input.sellerUserId !== undefined) set('seller_user_id', input.sellerUserId);
+    if (input.subtotalAmount !== undefined) set('subtotal_amount', input.subtotalAmount);
+    if (input.discountTotal !== undefined) set('discount_total', input.discountTotal);
+    if (input.taxTotal !== undefined) set('tax_total', input.taxTotal);
     if (input.quotedTotal !== undefined) set('quoted_total', input.quotedTotal);
     if (input.notes !== undefined) set('notes', input.notes);
     values.push(expectedVersion.toString());
@@ -1058,14 +1105,17 @@ export class PartiesRepository {
       unitPriceSnapshot: string;
       quantity: string;
       lineTotal: string;
+      taxSnapshot: Readonly<Record<string, unknown>> | null;
+      taxTotal: string;
       timestamp: Date;
     },
   ): Promise<PartyReservationSnackRow> {
     const row = result<SnackDb>(
       await client.query(
         `insert into party_reservation_snacks
-         (id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         (id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,
+          tax_snapshot,tax_total,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
          returning ${SNACK_COLUMNS}`,
         [
           input.id,
@@ -1076,6 +1126,8 @@ export class PartiesRepository {
           input.unitPriceSnapshot,
           input.quantity,
           input.lineTotal,
+          input.taxSnapshot === null ? null : JSON.stringify(input.taxSnapshot),
+          input.taxTotal,
           input.timestamp,
         ],
       ),
@@ -1263,10 +1315,13 @@ export class PartiesRepository {
     return row === undefined ? null : { displayName: row.display_name, phone: row.phone };
   }
 
-  public async productForSnapshot(companyId: string, productId: string): Promise<{ name: string; price: string } | null> {
-    const row = result<{ name: string; amount: string | null }>(
+  public async productForSnapshot(
+    companyId: string,
+    productId: string,
+  ): Promise<{ name: string; price: string; taxCode: string } | null> {
+    const row = result<{ name: string; amount: string | null; tax_code: string }>(
       await this.database.pool.query(
-        `select p.name, pp.amount
+        `select p.name, pp.amount, p.tax_code
          from products p
          left join product_prices pp on pp.company_id=p.company_id and pp.product_id=p.id and pp.status='active'
          where p.company_id=$1 and p.id=$2`,
@@ -1274,7 +1329,7 @@ export class PartiesRepository {
       ),
     ).rows[0];
     if (row === undefined) return null;
-    return { name: row.name, price: row.amount ?? '0.0000' };
+    return { name: row.name, price: row.amount ?? '0.0000', taxCode: row.tax_code };
   }
 
   public async organizationForReservation(

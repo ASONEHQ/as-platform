@@ -152,6 +152,7 @@ class PosPartyPackage {
     required this.adultExtraCost,
     required this.capacityMax,
     required this.extraHalfHourCost,
+    required this.taxCode,
     required this.includes,
     required this.restrictions,
     required this.version,
@@ -175,6 +176,7 @@ class PosPartyPackage {
     adultExtraCost: json['adult_extra_cost']! as String,
     capacityMax: json['capacity_max'] as int?,
     extraHalfHourCost: json['extra_half_hour_cost']! as String,
+    taxCode: json['tax_code'] as String? ?? 'IVA_GENERAL',
     includes: json['includes'] is Map<String, Object?> ? json['includes']! as Map<String, Object?> : null,
     restrictions: json['restrictions'] is Map<String, Object?> ? json['restrictions']! as Map<String, Object?> : null,
     version: json['version']! as int,
@@ -199,11 +201,32 @@ class PosPartyPackage {
   final String adultExtraCost;
   final int? capacityMax;
   final String extraHalfHourCost;
+
+  /// `IVA_GENERAL` (16%) | `IVA_EXEMPT` (0%) — the same tax classification
+  /// `products.tax_code` already carries (TASK 16.19).
+  final String taxCode;
   final Map<String, Object?>? includes;
   final Map<String, Object?>? restrictions;
   final int version;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  /// `restrictions.eligibleRoomIds` (TASK 16.19, Phase 6 "room usage") —
+  /// `null`/empty means every room in this package's own branch scope is
+  /// eligible; a non-empty list narrows it to exactly those room ids.
+  /// Mirrors `isRoomEligibleForPackage` (`parties.pricing.ts`) exactly —
+  /// this getter is a UI convenience only, never the enforcement source.
+  List<String>? get eligibleRoomIds {
+    final raw = restrictions?['eligibleRoomIds'];
+    if (raw is! List<Object?>) return null;
+    final ids = raw.whereType<String>().toList(growable: false);
+    return ids.isEmpty ? null : ids;
+  }
+
+  bool isEligibleForRoom(String roomId) {
+    final ids = eligibleRoomIds;
+    return ids == null || ids.contains(roomId);
+  }
 }
 
 class PosPartyPackageInput {
@@ -222,6 +245,7 @@ class PosPartyPackageInput {
     this.adultExtraCost,
     this.capacityMax,
     this.extraHalfHourCost,
+    this.taxCode,
     this.includes,
     this.restrictions,
   });
@@ -240,6 +264,7 @@ class PosPartyPackageInput {
   final String? adultExtraCost;
   final int? capacityMax;
   final String? extraHalfHourCost;
+  final String? taxCode;
   final Map<String, Object?>? includes;
   final Map<String, Object?>? restrictions;
 
@@ -258,6 +283,7 @@ class PosPartyPackageInput {
     if (adultExtraCost != null) 'adult_extra_cost': adultExtraCost,
     if (capacityMax != null) 'capacity_max': capacityMax,
     if (extraHalfHourCost != null) 'extra_half_hour_cost': extraHalfHourCost,
+    if (taxCode != null) 'tax_code': taxCode,
     if (includes != null) 'includes': includes,
     if (restrictions != null) 'restrictions': restrictions,
   };
@@ -275,6 +301,9 @@ class PosPartyQuote {
     required this.childrenExtra,
     required this.adultsExtra,
     required this.timeExtra,
+    required this.subtotal,
+    required this.discountTotal,
+    required this.taxTotal,
     required this.total,
   });
 
@@ -285,6 +314,11 @@ class PosPartyQuote {
     childrenExtra: json['children_extra']! as String,
     adultsExtra: json['adults_extra']! as String,
     timeExtra: json['time_extra']! as String,
+    // Fall back to `total` for a stale/cached response shape that
+    // predates TASK 16.19's tax breakdown — never a hard crash.
+    subtotal: json['subtotal'] as String? ?? json['total']! as String,
+    discountTotal: json['discount_total'] as String? ?? '0.0000',
+    taxTotal: json['tax_total'] as String? ?? '0.0000',
     total: json['total']! as String,
   );
 
@@ -294,6 +328,13 @@ class PosPartyQuote {
   final String childrenExtra;
   final String adultsExtra;
   final String timeExtra;
+
+  /// package + extras, before tax (TASK 16.19).
+  final String subtotal;
+  final String discountTotal;
+  final String taxTotal;
+
+  /// subtotal − discountTotal + taxTotal — the grand total.
   final String total;
 }
 
@@ -313,13 +354,19 @@ class PosPartyReservation {
     required this.celebrantAge,
     required this.roomId,
     required this.packageId,
+    required this.roomNameSnapshot,
+    required this.packageNameSnapshot,
     required this.eventDate,
     required this.startTime,
     required this.endTime,
     required this.childrenCount,
+    required this.adultsCount,
     required this.sellerUserId,
     required this.status,
     required this.accountStatus,
+    required this.subtotalAmount,
+    required this.discountTotal,
+    required this.taxTotal,
     required this.quotedTotal,
     required this.currencyCode,
     required this.notes,
@@ -342,13 +389,19 @@ class PosPartyReservation {
     celebrantAge: json['celebrant_age'] as int?,
     roomId: json['room_id']! as String,
     packageId: json['package_id']! as String,
+    roomNameSnapshot: json['room_name_snapshot'] as String?,
+    packageNameSnapshot: json['package_name_snapshot'] as String?,
     eventDate: json['event_date']! as String,
     startTime: json['start_time']! as String,
     endTime: json['end_time']! as String,
     childrenCount: json['children_count']! as int,
+    adultsCount: json['adults_count'] as int? ?? 0,
     sellerUserId: json['seller_user_id'] as String?,
     status: json['status']! as String,
     accountStatus: json['account_status']! as String,
+    subtotalAmount: json['subtotal_amount'] as String?,
+    discountTotal: json['discount_total'] as String? ?? '0.0000',
+    taxTotal: json['tax_total'] as String? ?? '0.0000',
     quotedTotal: json['quoted_total']! as String,
     currencyCode: json['currency_code']! as String,
     notes: json['notes'] as String?,
@@ -371,11 +424,21 @@ class PosPartyReservation {
   final String roomId;
   final String packageId;
 
+  /// The room/package NAME as it was at booking time (TASK 16.19) — the
+  /// display name to use everywhere in the UI, never a live room/package
+  /// lookup, so a later rename never rewrites this reservation's own
+  /// history. `null` only for a reservation booked before this task
+  /// shipped (no snapshot exists yet) — callers should fall back to a
+  /// live room/package name lookup in that case only.
+  final String? roomNameSnapshot;
+  final String? packageNameSnapshot;
+
   /// `YYYY-MM-DD`.
   final String eventDate;
   final String startTime;
   final String endTime;
   final int childrenCount;
+  final int adultsCount;
   final String? sellerUserId;
 
   /// `held` | `pending_deposit` | `confirmed` | `completed` | `cancelled`.
@@ -383,6 +446,14 @@ class PosPartyReservation {
 
   /// `open` | `closed`.
   final String accountStatus;
+
+  /// package + extras, before tax (TASK 16.19) — `null` only for a
+  /// reservation booked before this task shipped.
+  final String? subtotalAmount;
+  final String discountTotal;
+  final String taxTotal;
+
+  /// The grand total the customer owes (subtotal − discount + tax).
   final String quotedTotal;
   final String currencyCode;
   final String? notes;
@@ -454,6 +525,7 @@ class PosPartySnack {
     required this.unitPriceSnapshot,
     required this.quantity,
     required this.lineTotal,
+    required this.taxTotal,
     required this.createdAt,
   });
 
@@ -465,6 +537,7 @@ class PosPartySnack {
     unitPriceSnapshot: json['unit_price_snapshot']! as String,
     quantity: json['quantity']! as String,
     lineTotal: json['line_total']! as String,
+    taxTotal: json['tax_total'] as String? ?? '0.0000',
     createdAt: DateTime.parse(json['created_at']! as String),
   );
 
@@ -474,7 +547,10 @@ class PosPartySnack {
   final String nameSnapshot;
   final String unitPriceSnapshot;
   final String quantity;
+
+  /// Tax-inclusive (subtotal + [taxTotal]) — TASK 16.19.
   final String lineTotal;
+  final String taxTotal;
   final DateTime createdAt;
 }
 
@@ -585,14 +661,27 @@ class PosPartyPayment {
 }
 
 class PosPartyBalance {
-  const PosPartyBalance({required this.quotedTotal, required this.totalPaid, required this.outstandingBalance});
+  const PosPartyBalance({
+    required this.subtotalAmount,
+    required this.discountTotal,
+    required this.taxTotal,
+    required this.quotedTotal,
+    required this.totalPaid,
+    required this.outstandingBalance,
+  });
 
   factory PosPartyBalance.fromJson(Map<String, Object?> json) => PosPartyBalance(
+    subtotalAmount: json['subtotal_amount'] as String?,
+    discountTotal: json['discount_total'] as String? ?? '0.0000',
+    taxTotal: json['tax_total'] as String? ?? '0.0000',
     quotedTotal: json['quoted_total']! as String,
     totalPaid: json['total_paid']! as String,
     outstandingBalance: json['outstanding_balance']! as String,
   );
 
+  final String? subtotalAmount;
+  final String discountTotal;
+  final String taxTotal;
   final String quotedTotal;
   final String totalPaid;
   final String outstandingBalance;

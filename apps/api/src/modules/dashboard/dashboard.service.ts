@@ -121,6 +121,7 @@ export class DashboardService {
       outstandingTotals,
       clockedInEmployeeCount,
       birthdaysToday,
+      partyKpis,
     ] = await Promise.all([
       this.reportsService.salesReport(companyId, branchIds, filter),
       // Same real `salesReport` service/query as today's figure above —
@@ -151,6 +152,7 @@ export class DashboardService {
       this.repository.outstandingPartyBalances(companyId, branchIds),
       this.repository.clockedInEmployeeCount(companyId, branchIds, input.branchId, input.date),
       this.repository.birthdaysOn(companyId, input.date),
+      this.repository.partyKpis(companyId, branchIds, input.branchId, input.date),
     ]);
 
     const roomNameById = new Map(roomsPage.items.map((room) => [room.id, room.name]));
@@ -198,6 +200,12 @@ export class DashboardService {
       openCashSessionCount: openCashSessions.length,
       openCashSessions,
       outstandingPartyBalances,
+      upcomingPartyReservationCount: partyKpis.upcomingReservationCount,
+      partyStatusBreakdown: partyKpis.statusBreakdown,
+      eventRevenueToday: partyKpis.eventRevenueToday,
+      depositsCollectedToday: partyKpis.depositsCollectedToday,
+      completedPartyReservationsToday: partyKpis.completedTodayCount,
+      cancelledPartyReservationsToday: partyKpis.cancelledTodayCount,
       clockedInEmployeeCount,
       outOfStockVariantCount: inventoryReport.outOfStockVariantCount,
       birthdaysToday,

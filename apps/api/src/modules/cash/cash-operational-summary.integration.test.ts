@@ -315,14 +315,16 @@ integration('PostgreSQL cash partial-close operational summary (TASK 16.13)', { 
             childrenCount: 10,
           },
         );
-        expect(created.value.quotedTotal).toBe('2000.0000');
+        // TASK 16.19: subtotal 2000 (within included counts), tax 16% =
+        // 320.00, quotedTotal (grand total) 2320.00.
+        expect(created.value.quotedTotal).toBe('2320.0000');
         await reservations.recordPayment(partyContext(new Date('2026-09-10T09:16:00.000Z')), branchIds, `dep-${randomUUID()}`, created.value.id, {
           purpose: 'deposit',
           amount: '500.0000',
           cashSessionId: opened.value.id,
         });
         const balance = await reservations.balance(companyId, branchIds, created.value.id);
-        expect(balance.outstandingBalance).toBe('1500.0000');
+        expect(balance.outstandingBalance).toBe('1820.0000');
 
         // --- First partial close ----------------------------------------
         const cut1 = await cash.partialClose(cashContext(new Date('2026-09-10T09:20:00.000Z')), branchIds, `cut1-${randomUUID()}`, opened.value.id);
@@ -345,9 +347,9 @@ integration('PostgreSQL cash partial-close operational summary (TASK 16.13)', { 
         // Events: genuinely independent of pos/cafeteria — never summed
         // into `pos.grossSales` (450 stays 450, not 450+500=950).
         expect(summary1.events.reservationsCreated).toBe(1);
-        expect(summary1.events.contractedValue).toBe('2000.0000');
+        expect(summary1.events.contractedValue).toBe('2320.0000');
         expect(summary1.events.collectedForNewReservations).toBe('500.0000');
-        expect(summary1.events.outstandingForNewReservations).toBe('1500.0000');
+        expect(summary1.events.outstandingForNewReservations).toBe('1820.0000');
         expect(summary1.events.depositsCollected).toBe('500.0000');
         expect(summary1.events.totalCollected).toBe('500.0000');
         expect(summary1.events.cancelledCount).toBe(0);

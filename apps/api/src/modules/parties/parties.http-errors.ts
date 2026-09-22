@@ -14,6 +14,14 @@ const partyErrorStatus: Readonly<Record<string, number>> = {
   invalid_reservation_state: 409,
   insufficient_inventory: 409,
   inventory_location_not_found: 500,
+  // TASK 16.19 — both are honest "this request cannot be satisfied as
+  // submitted" rejections against real, current state (room/package
+  // capacity, package-to-room eligibility), the same class of error
+  // `validation_error` already represents elsewhere in this table — 422
+  // (Unprocessable Entity), not 409 (a state a retry could resolve) or
+  // 400 (malformed input the JSON-schema layer already rejects earlier).
+  capacity_exceeded: 422,
+  package_room_not_eligible: 422,
 };
 
 // Mirrors `cash.http-errors.ts`'s own table exactly — recording a

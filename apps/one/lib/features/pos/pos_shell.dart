@@ -3885,6 +3885,15 @@ class _DashboardReady extends StatelessWidget {
         : summary.outstandingPartyBalances
               .map((entry) => _formatDashboardMoney(entry.amount, entry.currencyCode))
               .join('\n');
+    // TASK 16.19 (Phase 30 "Event KPIs") — same "empty list means
+    // genuinely zero, never a fabricated currency" convention as
+    // [salesTotal]/[outstandingTotal] above.
+    final eventRevenueTotal = summary.eventRevenueToday.isEmpty
+        ? '0'
+        : summary.eventRevenueToday.map((entry) => _formatDashboardMoney(entry.amount, entry.currencyCode)).join('\n');
+    final depositsCollectedTotal = summary.depositsCollectedToday.isEmpty
+        ? '0'
+        : summary.depositsCollectedToday.map((entry) => _formatDashboardMoney(entry.amount, entry.currencyCode)).join('\n');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -3926,6 +3935,36 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Fiestas de hoy',
                   value: '${summary.partyReservationCount}',
                   caption: 'reservación(es)',
+                ),
+                // TASK 16.19 (Phase 30 "Event KPIs" — upcoming events,
+                // revenue, deposits collected, completed/cancelled).
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-parties-upcoming'),
+                  icon: Icons.event_available_outlined,
+                  label: 'Fiestas próximas',
+                  value: '${summary.upcomingPartyReservationCount}',
+                  caption: 'reservación(es) por venir',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-parties-revenue'),
+                  icon: Icons.attach_money_outlined,
+                  label: 'Ingreso de fiestas de hoy',
+                  value: eventRevenueTotal,
+                  caption: 'contratado hoy, no cancelado',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-parties-deposits'),
+                  icon: Icons.savings_outlined,
+                  label: 'Anticipos cobrados hoy',
+                  value: depositsCollectedTotal,
+                  caption: 'depósitos de fiestas',
+                ),
+                _DashboardMetricCard(
+                  key: const Key('pos-dashboard-metric-parties-completed'),
+                  icon: Icons.check_circle_outline,
+                  label: 'Fiestas completadas hoy',
+                  value: '${summary.completedPartyReservationsToday}',
+                  caption: '${summary.cancelledPartyReservationsToday} cancelada(s) hoy',
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-cash-sessions'),
@@ -24669,6 +24708,14 @@ class _FiestasListaState extends State<_FiestasLista> {
   Map<String, PosPartyPackage> _packagesById = const {};
   String? _statusFilter;
   String? _roomFilter;
+  // TASK 16.19 (Phase 17 "event-day operations... avoid requiring the
+  // operator to navigate through multiple admin screens") — a fast,
+  // one-tap way to see just today's events without leaving the admin
+  // list for a dedicated screen. Device-local "today", the same
+  // established convention `_DashboardState`'s own `_today` already uses
+  // for the identical reason (see that field's own doc comment: no IANA
+  // per-branch timezone library exists in this codebase yet).
+  bool _todayOnly = false;
 
   bool get _canRead => widget.context.permissions.contains('party.read');
   bool get _canManage => widget.context.permissions.contains('party.manage');
@@ -24689,10 +24736,13 @@ class _FiestasListaState extends State<_FiestasLista> {
     try {
       final roomsPage = await widget.partiesGateway.listRooms(branchId: _branchId, limit: 100);
       final packagesPage = await widget.partiesGateway.listPackages(limit: 100);
+      final todayIso = _todayOnly ? _isoDate(DateTime.now()) : null;
       final page = await widget.partiesGateway.listReservations(
         branchId: _branchId,
         status: _statusFilter,
         roomId: _roomFilter,
+        eventDateFrom: todayIso,
+        eventDateTo: todayIso,
         limit: 100,
       );
       if (!mounted) return;
@@ -24723,10 +24773,13 @@ class _FiestasListaState extends State<_FiestasLista> {
     if (cursor == null || _loadingMore) return;
     setState(() => _loadingMore = true);
     try {
+      final todayIso = _todayOnly ? _isoDate(DateTime.now()) : null;
       final page = await widget.partiesGateway.listReservations(
         branchId: _branchId,
         status: _statusFilter,
         roomId: _roomFilter,
+        eventDateFrom: todayIso,
+        eventDateTo: todayIso,
         cursor: cursor,
         limit: 100,
       );
@@ -24843,6 +24896,20 @@ class _FiestasListaState extends State<_FiestasLista> {
                   unawaited(_load());
                 },
               ),
+            ),
+            const SizedBox(width: 10),
+            // TASK 16.19 (Phase 17) — a fast, one-tap "just today's
+            // events" filter, so an operator doesn't have to scan the
+            // whole list or open the calendar for the common day-of
+            // question "what's happening today".
+            FilterChip(
+              key: const Key('pos-fiestas-filter-today'),
+              label: const Text('Hoy'),
+              selected: _todayOnly,
+              onSelected: (selected) {
+                setState(() => _todayOnly = selected);
+                unawaited(_load());
+              },
             ),
           ],
         ),
@@ -25361,6 +25428,16 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                   _QuoteLine(label: 'Adultos extra', amount: _quote!.adultsExtra, currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Tiempo extra', amount: _quote!.timeExtra, currency: _quote!.currencyCode),
                   const SizedBox(height: 6),
+                  _QuoteLine(label: 'Subtotal', amount: _quote!.subtotal, currency: _quote!.currencyCode),
+                  // TASK 16.19 (Phase 10: "Clearly distinguish SUBTOTAL /
+                  // DISCOUNT / TAX / TOTAL") — discount is always zero
+                  // today (no discount mechanism is wired into party
+                  // pricing yet), so the line is only shown when there's
+                  // actually something to show, matching this screen's own
+                  // existing "never a misleading -0.00" convention.
+                  if (double.tryParse(_quote!.discountTotal) != null && double.parse(_quote!.discountTotal) > 0)
+                    _QuoteLine(label: 'Descuento', amount: '-${_quote!.discountTotal}', currency: _quote!.currencyCode),
+                  _QuoteLine(label: 'Impuestos', amount: _quote!.taxTotal, currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Total', amount: _quote!.total, currency: _quote!.currencyCode, emphasize: true),
                   if (_canManage) ...[
                     const SizedBox(height: 14),
@@ -25989,8 +26066,18 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
   late final _capacityMaxController = TextEditingController(text: widget.existing?.capacityMax?.toString() ?? '');
   late final _extraHalfHourController = TextEditingController(text: widget.existing?.extraHalfHourCost ?? '0');
   late String _status = widget.existing?.status ?? 'active';
+  // TASK 16.19 — the same tax classification `products.tax_code` already
+  // carries. Defaults to 'IVA_GENERAL', matching the backend's own
+  // default for a package created before this field existed.
+  late String _taxCode = widget.existing?.taxCode ?? 'IVA_GENERAL';
   late final List<_JsonTagRow> _includeRows = _rowsFrom(widget.existing?.includes);
   late final List<_JsonTagRow> _restrictionRows = _rowsFrom(widget.existing?.restrictions);
+  // TASK 16.19 (Phase 6 "room usage") — per-room package eligibility.
+  // Empty selection = every room in this package's branch scope is
+  // eligible (the backward-compatible default `isRoomEligibleForPackage`
+  // itself treats an absent/empty list as).
+  late Set<String> _eligibleRoomIds = {...?widget.existing?.eligibleRoomIds};
+  List<PosPartyRoom> _availableRooms = const [];
   bool _busy = false;
   String? _error;
 
@@ -25999,6 +26086,35 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
   static List<_JsonTagRow> _rowsFrom(Map<String, Object?>? map) {
     if (map == null || map.isEmpty) return [_JsonTagRow()];
     return [for (final entry in map.entries) _JsonTagRow(key: entry.key, value: '${entry.value}')];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRooms());
+  }
+
+  /// TASK 16.19 — real rooms for the eligibility picker, scoped to this
+  /// package's own branch (`null` branchId — a company-wide package —
+  /// lists every room the actor's session already permits, matching
+  /// `_FiestasAjustes`' own room-listing scope). A failure here is
+  /// non-fatal: the picker just shows no rooms, never blocking the rest
+  /// of the form.
+  Future<void> _loadRooms() async {
+    try {
+      // `limit: 100` — the real `GET /api/v1/party-rooms` route caps
+      // `limit` at 100 (`party-rooms.routes.ts`'s own schema); this was
+      // discovered as a genuine bug via live browser certification (a
+      // `limit: 200` request failed with a real 400 `validation_error`,
+      // silently swallowed by this method's own non-fatal catch below —
+      // the picker just showed "no rooms" instead of surfacing a real
+      // wiring bug).
+      final page = await widget.partiesGateway.listRooms(branchId: widget.branchId, limit: 100);
+      if (!mounted) return;
+      setState(() => _availableRooms = page.items);
+    } on Object {
+      // Non-fatal — see doc comment above.
+    }
   }
 
   @override
@@ -26027,6 +26143,19 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
       entries[key] = row.valueController.text.trim();
     }
     return entries.isEmpty ? null : entries;
+  }
+
+  /// TASK 16.19 — merges the free-text `restrictions` tag editor with the
+  /// real `eligibleRoomIds` picker into ONE `restrictions` JSON object
+  /// (the same column both live in — see `party_packages.restrictions`'
+  /// own doc comment). An empty room selection omits the key entirely
+  /// (never an empty-array `eligibleRoomIds: []`, which `_mapFrom`/the
+  /// backend both already treat identically to "absent" — this just keeps
+  /// the payload itself minimal).
+  Map<String, Object?>? _restrictionsPayload() {
+    final base = _mapFrom(_restrictionRows) ?? <String, Object?>{};
+    if (_eligibleRoomIds.isNotEmpty) base['eligibleRoomIds'] = _eligibleRoomIds.toList(growable: false);
+    return base.isEmpty ? null : base;
   }
 
   Future<void> _submit() async {
@@ -26072,8 +26201,9 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
             adultExtraCost: costOrZero(_adultExtraController),
             capacityMax: parseIntOrNull(_capacityMaxController.text),
             extraHalfHourCost: costOrZero(_extraHalfHourController),
+            taxCode: _taxCode,
             includes: _mapFrom(_includeRows),
-            restrictions: _mapFrom(_restrictionRows),
+            restrictions: _restrictionsPayload(),
           ),
           version: widget.existing!.version,
         );
@@ -26092,8 +26222,9 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
             adultExtraCost: costOrZero(_adultExtraController),
             capacityMax: parseIntOrNull(_capacityMaxController.text),
             extraHalfHourCost: costOrZero(_extraHalfHourController),
+            taxCode: _taxCode,
             includes: _mapFrom(_includeRows),
-            restrictions: _mapFrom(_restrictionRows),
+            restrictions: _restrictionsPayload(),
           ),
         );
       }
@@ -26277,6 +26408,20 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                // TASK 16.19 (Phase 10 "...+ taxes = total") — the same
+                // tax classification a product carries, applied to this
+                // package's own price + extras.
+                DropdownButtonFormField<String>(
+                  key: const Key('pos-fiestas-package-tax-code'),
+                  initialValue: _taxCode,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Impuesto'),
+                  items: const [
+                    DropdownMenuItem(value: 'IVA_GENERAL', child: Text('IVA general (16%)')),
+                    DropdownMenuItem(value: 'IVA_EXEMPT', child: Text('Exento de IVA')),
+                  ],
+                  onChanged: (value) => setState(() => _taxCode = value ?? _taxCode),
+                ),
                 if (_isEdit) ...[
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
@@ -26287,6 +26432,43 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
                     onChanged: (value) => setState(() => _status = value ?? _status),
                   ),
                 ],
+                const SizedBox(height: 16),
+                // TASK 16.19 (Phase 6 "room usage") — recovers legacy's
+                // per-room package restriction. Empty selection (the
+                // default) means every room is eligible — never a
+                // required choice.
+                Text('Salones disponibles', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text(
+                  _eligibleRoomIds.isEmpty
+                      ? 'Disponible en todos los salones (ninguna restricción).'
+                      : 'Disponible solo en los salones seleccionados.',
+                  style: TextStyle(color: palette.textMuted, fontSize: 11),
+                ),
+                const SizedBox(height: 8),
+                if (_availableRooms.isEmpty)
+                  Text('No hay salones registrados todavía.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+                else
+                  Wrap(
+                    key: const Key('pos-fiestas-package-eligible-rooms'),
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final room in _availableRooms)
+                        FilterChip(
+                          key: Key('pos-fiestas-package-eligible-room-${room.id}'),
+                          label: Text(room.name),
+                          selected: _eligibleRoomIds.contains(room.id),
+                          onSelected: (selected) => setState(() {
+                            if (selected) {
+                              _eligibleRoomIds.add(room.id);
+                            } else {
+                              _eligibleRoomIds.remove(room.id);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
                 const SizedBox(height: 16),
                 _tagEditor('Incluye', _includeRows, const Key('pos-fiestas-package-includes-add')),
                 const SizedBox(height: 16),
@@ -27422,6 +27604,16 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
   bool get _canCancel => widget.context.permissions.contains('party.cancel');
   bool get _canRecordPayment => widget.context.permissions.contains('party.payment.record');
 
+  /// TASK 16.19 — the seller/responsible-user name for this reservation.
+  /// Mirrors `_FiestasCalendario._sellerLabel`'s exact pattern: a plain
+  /// lookup against the already-loaded `controller.users` roster, never a
+  /// second network call.
+  String _sellerLabel(String? id) {
+    if (id == null) return 'Sin vendedor asignado';
+    final user = widget.controller.users.items.where((u) => u.id == id).firstOrNull;
+    return user?.displayName ?? id;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -27690,14 +27882,28 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
           runSpacing: 4,
           children: [
             Text('${reservation.eventDate} · ${_hhmm(reservation.startTime)}-${_hhmm(reservation.endTime)}', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
-            Text(_room?.name ?? 'Salón', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
-            Text(_package?.name ?? 'Paquete', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
-            Text('${reservation.childrenCount} niños', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            // TASK 16.19 — prefer the frozen snapshot (never a live room/
+            // package lookup, so a later rename never rewrites what this
+            // reservation actually showed at the time it's viewed); the
+            // live `_room`/`_package` fetch remains only as a fallback for
+            // a pre-TASK-16.19 reservation with no snapshot yet.
+            Text(reservation.roomNameSnapshot ?? _room?.name ?? 'Salón', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text(reservation.packageNameSnapshot ?? _package?.name ?? 'Paquete', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text('${reservation.childrenCount} niños · ${reservation.adultsCount} adultos', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            Text(_sellerLabel(reservation.sellerUserId), style: TextStyle(color: palette.textSecondary, fontSize: 12)),
           ],
         ),
         if (reservation.customerDisplayName != null) ...[
           const SizedBox(height: 4),
           Text('Cliente: ${reservation.customerDisplayName}', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+        ],
+        if (reservation.notes?.isNotEmpty == true) ...[
+          const SizedBox(height: 4),
+          Text(
+            'Notas: ${reservation.notes}',
+            key: const Key('pos-fiestas-detail-notes'),
+            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+          ),
         ],
         const SizedBox(height: 10),
         Row(
@@ -27707,11 +27913,21 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
             if (_canManage && allowedNext.isNotEmpty) ...[
               SizedBox(
                 width: 180,
+                // `isExpanded: true` — without it, `DropdownButtonFormField`
+                // sizes its internal row to the WIDEST item's intrinsic
+                // width (here "Pendiente de anticipo"), not the fixed
+                // SizedBox it's actually constrained to, overflowing the
+                // 180px box. `isExpanded: true` fills the available width
+                // instead and lets a long label ellipsize cleanly.
                 child: DropdownButtonFormField<String>(
                   key: const Key('pos-fiestas-detail-status-select'),
                   initialValue: _pendingStatus,
+                  isExpanded: true,
                   decoration: const InputDecoration(isDense: true, labelText: 'Cambiar a'),
-                  items: [for (final status in allowedNext) DropdownMenuItem(value: status, child: Text(_partyStatusLabel(status)))],
+                  items: [
+                    for (final status in allowedNext)
+                      DropdownMenuItem(value: status, child: Text(_partyStatusLabel(status), overflow: TextOverflow.ellipsis)),
+                  ],
                   onChanged: (value) => setState(() => _pendingStatus = value),
                 ),
               ),
@@ -27737,6 +27953,17 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
         Text('Finanzas', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
         const SizedBox(height: 6),
         if (_balance != null) ...[
+          // TASK 16.19 — the subtotal/tax breakdown, shown only when
+          // present (a reservation booked before TASK 16.19 has no
+          // subtotal snapshot — `_balance!.subtotalAmount == null` then,
+          // and the section falls back to just the grand total exactly
+          // like it always has).
+          if (_balance!.subtotalAmount != null) ...[
+            _QuoteLine(label: 'Subtotal', amount: _balance!.subtotalAmount!, currency: reservation.currencyCode),
+            if (double.tryParse(_balance!.discountTotal) != null && double.parse(_balance!.discountTotal) > 0)
+              _QuoteLine(label: 'Descuento', amount: '-${_balance!.discountTotal}', currency: reservation.currencyCode),
+            _QuoteLine(label: 'Impuestos', amount: _balance!.taxTotal, currency: reservation.currencyCode),
+          ],
           _QuoteLine(label: 'Total cotizado', amount: _balance!.quotedTotal, currency: reservation.currencyCode),
           _QuoteLine(label: 'Pagado', amount: _balance!.totalPaid, currency: reservation.currencyCode),
           _QuoteLine(label: 'Saldo pendiente', amount: _balance!.outstandingBalance, currency: reservation.currencyCode, emphasize: true),
