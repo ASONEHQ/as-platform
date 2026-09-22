@@ -6637,36 +6637,10 @@ half-migrated"), the following were identified but intentionally left
 for a future task rather than built speculatively inside this already-
 large change:
 
-- **A dedicated correction/reversal action for an over/under-issued
-  consumable** (Part D6's "compensating ledger entry, never rewritten
-  history"). The platform already has a real, generic, tested
-  mechanism for exactly this shape of correction —
-  `InventoryReversalService`/`POST /api/v1/inventory/movements/:id/reversals`,
-  which posts a real compensating `reversal` movement against ANY
-  eligible posted movement. It currently allow-lists
-  `opening_balance`/`adjustment`/`receipt` movement types; extending
-  that allow-list to `issue` movements scoped specifically to
-  `reference_type in ('party_reservation_sock','party_reservation_snack')`
-  (never a blanket `issue` allowance, which would also affect the
-  unrelated inventory-reservations-fulfillment `issue` movements) is a
-  small, well-precedented, low-risk addition — but wiring it, plus the
-  reservation-row-state reset (back to `'pending'`) it implies, plus
-  Flutter UI for it, was judged more than this already-large task
-  should add without its own explicit go/no-go, especially since the
-  live acceptance test's own correction/reversal requirement is
-  already satisfiable today by a manager using the existing generic
-  reversal endpoint directly against the movement id (visible via
-  `inventory_movements.reference_id`), just without a dedicated party-
-  specific UI shortcut yet.
-- **A package-admin UI for visually configuring `included_consumables`**
-  — the field is fully real and functional end-to-end (backend
-  validation, auto-population at booking time, the live E2E
-  certification's own 25+25 package was configured this way), but
-  today it's set via the JSON-shaped API body, not a dedicated Flutter
-  form with product-picker rows. `party_packages.includes`/
-  `restrictions` have the identical "real field, JSON-only editing"
-  status already (a pre-existing, pre-16.20 pattern this task did not
-  regress).
+- Both items originally disclosed here — a dedicated party-specific
+  correction/reversal shortcut, and a visual package-admin form for
+  `included_consumables` — were closed by **TASK 16.20A**, see that
+  section below. Neither limitation applies any longer.
 - Everything named as a genuine **G** in §5 (membership checkout
   benefits, offline POS resilience, a real notification feed,
   customer-tier coupon targeting) — none of these appear anywhere in
@@ -6690,3 +6664,174 @@ notes). `main` untouched; all work on `release/as-pos-v1` only; Mercado
 Pago untouched and still paused; no INFLAPARK production data created
 or modified — all live certification used the generic "Freshness QA
 Retail" QA tenant with purpose-built `E2E-`prefixed fixtures.
+
+## TASK 16.20A — Event Consumables Admin + Correction UX Closure (2026-09-22)
+
+**§0 Scope.** Closes the two limitations TASK 16.20 itself disclosed
+(§6 above, now removed): (1) a real, catalog-backed Flutter admin UI
+for a package's `included_consumables` — never JSON, never a typed
+UUID; (2) a party-specific "Corregir entrega" correction workflow for
+an already-issued sock/snack, reusing a compensating-ledger design
+(never editing/deleting the original movement). Starting checkpoint:
+`2e240be` on `release/as-pos-v1` (TASK 16.20's own commit). No new
+migration — `productVariantId` was added only as an optional field on
+the existing `PartyPackageIncludedConsumable` jsonb-array element
+shape (not a new column), and the correction feature reuses TASK
+16.20's own `issued_quantity` columns.
+
+**§1 Package consumables admin UI.** `_PackageFormDialog`'s new
+"CONSUMIBLES INCLUIDOS" section: real product picker
+(`_ProductSelectorDialog`, reusing the existing Catálogo admin
+gateways — never a duplicate "party product" catalog), a variant
+picker shown only when a product genuinely has more than one active
+variant, an editable quantity per row, a remove button, and a
+human-readable "Incluye: • 25 × Calceta antiderrapantes" display on
+the package list (`_formatConsumableQuantity`) — never serialized
+JSON. Works identically for create and edit; editing loads the
+package's real existing rows. Duplicate-product rejection
+(`_addConsumable`'s `alreadyPresent` check) blocks a second row for
+the same product+variant with an honest notice, never a silent merge.
+An empty tenant catalog shows "No hay productos disponibles. Crea
+primero un producto en Catálogo." (`_checkCatalogEmpty`) — never a
+fake product.
+
+**§2 Historical snapshot safety (mandatory).** A package's
+`included_consumables` is read live at reservation-creation time
+(`resolveConsumableVariant`) and frozen into that reservation's own
+sock/snack rows; editing the package afterward never touches an
+already-created reservation's plan. Proven twice: (a) a dedicated
+backend integration test (`parties.integration.test.ts`, "TASK 16.20A
+— package consumables") creates a reservation at 25/25, edits the
+package to 30/20, and asserts the first reservation's rows are
+byte-for-byte unchanged (same row id, same quantities) while a new
+second reservation gets 30/20; (b) live, against the real
+"Freshness QA Retail" tenant — see §6.
+
+**§3 Correction workflow.** `postPartySockCorrection`/
+`postPartySnackCorrection` (`party-sock-deduction.ts`/
+`party-snack-deduction.ts`) post a NEW delta-only movement against the
+same `reference_type`/`reference_id` as the original issue — a
+`return` movement for a downward correction, another `issue` movement
+for an upward one — and update only `issued_quantity`, never the
+original movement, never the billed `quantity`/`unitPriceSnapshot`/
+`lineTotal` (Part 13's financial-safety separation). Deliberately NOT
+built on `InventoryReversalService`'s generic `reversal` movement type,
+which only supports reversing a movement's FULL original quantity
+exactly once (see that service's own doc comment) — insufficient for
+a second, later correction of the same line. The Flutter "Corregir
+entrega" dialog (`_ConsumableCorrectionDialog`) shows Producto/
+Cantidad registrada/an editable Cantidad correcta/a live plain-language
+inventory-consequence preview, and requires explicit confirmation;
+offered only once a line is already `'deducted'` (mirrors the
+existing `canDeduct`'s own "pending only" gating, inverted). Reuses
+`party.manage` — no new permission — matching `deduct`'s own existing
+gate.
+
+**§4 Idempotency and traceability.** The delta is always computed
+server-side from a fresh, row-locked read (`correctSock`/
+`correctSnack` in `party-reservations.service.ts`) — never a
+client-submitted delta — so an identical retry naturally computes a
+zero delta and posts nothing; two corrections of the same line
+therefore can never race into two compensating movements. Every
+movement for a line (`issue`, `return`, a later `issue` again) shares
+one `reference_id`, so Kardex traceability needs no DB inspection: a
+manager sees the full history via the same real inventory-movements
+query TASK 16.20 already certified for the original issue.
+
+**§5 Backend test coverage.** `parties.integration.test.ts` gained two
+new describe blocks (14 new tests, 49/49 total in the file, all
+passing): package-consumables validation (bogus `productId`,
+mismatched `productVariantId`, duplicate rejection, zero-quantity
+rejection, valid persistence, and the §2 snapshot-safety proof), and
+the correction workflow (downward, retry-idempotency, upward,
+insufficient-stock-upward rejection, never-delivered rejection, snack
+correction, cross-tenant rejection, and a concurrent-correction test
+asserting a coherent final state with exactly the expected number of
+movements). Full API unit suite: 603/603. Targeted regression:
+`inventory`+`catalog` integration suites, 175/175 (both domains the
+correction/validation logic depends on directly).
+
+**§6 Live certification (generic tenant, never INFLAPARK).** Against
+the same "Freshness QA Retail" tenant TASK 16.20 used, through the
+real release Flutter web build and the real running API:
+- Edited the real `PKG-QA` package's consumables via the new UI live;
+  confirmed persistence (25 × Calceta E2E / 25 × Bebida E2E) and the
+  human-readable "Incluye" line on the package list.
+- Attempted to re-add the same sock product a second time: this
+  surfaced a **real bug**, found live — the naive duplicate check
+  compared `productVariantId` by exact equality, and the package's
+  own pre-existing row (set via TASK 16.20's original JSON-body path,
+  which never recorded a `productVariantId`) didn't match the
+  picker's newly-resolved default-variant id, so a second row was
+  silently added. Fixed (`_addConsumable`'s duplicate check now treats
+  an absent stored variant id as occupying that product's one slot)
+  and covered by a new dedicated regression test
+  (`pos_shell_test.dart`, "a legacy row with no stored variant id
+  still blocks re-adding the same product"); re-verified live after
+  the fix.
+- Created "E2E Reservation A" (25/25 plan, confirmed via both the
+  Calcetas and Snacks tabs) while `PKG-QA` was still 25/25; confirmed
+  real inventory (75 socks / 80 drinks) was unchanged by creation.
+  Edited `PKG-QA` to 30/20 live. Re-opened Reservation A: **still
+  25/25, unchanged** — the mandatory §2 proof, live. Created "E2E
+  Reservation B": **30/20**, confirming a package edit only affects
+  future reservations.
+- Issued 25 socks for Reservation A live ("Entregar"); confirmed real
+  stock dropped 75→50. Used "Corregir entrega" to correct to 23: the
+  dialog previewed "Se regresarán 2 unidades al inventario" before
+  confirming; stock moved 50→52; the Kardex query showed the original
+  `issue 25` movement untouched plus a new `return 2` movement, both
+  sharing the same `reference_id`. Retried the identical correction
+  (23→23): stock stayed 52, still exactly 2 movements — idempotency
+  confirmed live, no duplicate. Corrected upward back to 25: dialog
+  previewed "Se descontarán 2 unidades adicionales"; stock moved
+  52→50; a third movement (`issue 2`, same `reference_id`) appeared —
+  the full down/retry/up cycle, live.
+- Issuing/correcting the snack line hit a second **real bug**, found
+  live: typing a malformed many-decimal value into the correction
+  field rendered the delta preview in scientific notation
+  ("2.2000000043931323e-7"), via `double.toString()`'s own default
+  behavior — never acceptable in a quantity-adjacent UI. Fixed
+  (`_formatConsumableQuantity` now uses `toStringAsFixed(6)`,
+  matching the backend's own `numeric(19,6)` precision, trimming
+  trailing zeros) and covered by a new dedicated widget test
+  asserting no `e-`/`E-` ever appears in the preview. The underlying
+  correction workflow itself (downward preview, confirmation,
+  compensating movement) was independently verified live for the
+  snack line at valid quantities before this edge case was found.
+- **Honest limitation**: the full live session for this task's own
+  certification ran into pre-existing, environment-specific session
+  fragility unrelated to this task's own code (the local browser
+  automation's cross-origin session occasionally 403'd on
+  `/auth/branch-switches`, and the 15-minute access-token lifetime
+  expired mid-session at least once) — neither `auth.routes.ts` nor
+  any session/branch-switch code was touched by this task. This
+  interrupted the snack line's own re-verification of the fixed
+  scientific-notation display after the rebuild; that specific fix is
+  proven by its own deterministic widget test instead of a second live
+  pass. Every other item in this section — including both real bugs
+  found and fixed — was independently confirmed live, with the
+  corresponding database state inspected afterward (never used to
+  fake a scenario).
+
+**§7 Flutter test coverage.** `pos_shell_test.dart`'s own TASK 16.20A
+group: 14 tests (product-picker add, duplicate rejection incl. the
+live-found legacy-row case, edit-loads-existing-and-saves-shorter-list,
+empty-catalog honest guidance, human-readable display, downward/
+upward correction with live preview text, idempotent-retry-safe
+gating (`canManage`, already-delivered-only), permission-denial,
+backend-error-surfacing for both consumable kinds, multi-variant
+picker, and the scientific-notation regression). Full
+`pos_shell_test.dart` suite: 254/254 passing (240 pre-existing +
+14 new), confirming zero regression anywhere else in the app. `flutter
+analyze`: clean (only pre-existing, unrelated info/warning-level
+lints). `flutter build web --release`: clean, twice (once for the
+duplicate-check fix, once for the scientific-notation fix), both used
+for live certification.
+
+**§8 main/Mercado Pago/production.** `main` untouched; all work on
+`release/as-pos-v1` only. Mercado Pago untouched and still paused. No
+production deploy, no DigitalOcean changes, no DNS changes. No
+INFLAPARK production data created or modified — all live certification
+used the generic "Freshness QA Retail" QA tenant with purpose-built
+`E2E Reservation A`/`E2E Reservation B` fixtures.

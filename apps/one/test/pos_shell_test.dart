@@ -6,6 +6,7 @@ import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/money.dart';
 import 'package:as_one/features/pos/pos_auth_gateway.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
+import 'package:as_one/features/pos/pos_catalog_admin_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
 import 'package:as_one/features/pos/pos_loyalty_gateway.dart';
 import 'package:as_one/features/pos/pos_memberships_gateway.dart';
@@ -14,6 +15,7 @@ import 'package:as_one/features/pos/pos_navigation.dart';
 import 'package:as_one/features/pos/pos_parties_gateway.dart';
 import 'package:as_one/features/pos/pos_parties_models.dart';
 import 'package:as_one/features/pos/pos_payments_gateway.dart';
+import 'package:as_one/features/pos/pos_product_variants_gateway.dart';
 import 'package:as_one/features/pos/pos_promotions_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
 import 'package:as_one/features/pos/pos_read_gateway.dart';
@@ -8429,6 +8431,684 @@ void main() {
     });
   });
 
+  // TASK 16.20A — real, catalog-backed package consumables admin (never
+  // JSON/UUIDs) and the party-specific "Corregir entrega" correction
+  // workflow (a compensating-ledger movement, never a silent mutation of
+  // the original issue).
+  group('TASK 16.20A — event consumables admin + correction UX', () {
+    testWidgets('adding a consumable via the real product picker and saving sends its real product/variant id — never JSON or a typed UUID', (
+      tester,
+    ) async {
+      final catalogGateway = _FakeCatalogAdminGateway(
+        products: [_fixtureCatalogProduct(id: 'product-socks', code: 'SOCKS', name: 'Calcetas antiderrapantes')],
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: const []);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        catalogAdminGateway: catalogGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-code')), 'PKG-NEW');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-name')), 'Paquete Nuevo');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-price')), '2000');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-duration')), '90');
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-fiestas-consumable-product-search')), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Calcetas');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-consumable-product-result-product-socks')));
+      await tester.pumpAndSettle();
+
+      // The catalog product's own name is what appears — never its id.
+      expect(find.text('Calcetas antiderrapantes'), findsOneWidget);
+      expect(find.textContaining('product-socks'), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), '25');
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.createPackageCalls, hasLength(1));
+      final sent = partiesGateway.createPackageCalls.single.includedConsumables;
+      expect(sent, isNotNull);
+      expect(sent!.single.productId, 'product-socks');
+      expect(sent.single.quantity, 25);
+      expect(sent.single.kind, 'sock');
+    });
+
+    testWidgets('adding the same product twice is rejected — no duplicate row, no duplicate payload entry', (tester) async {
+      final catalogGateway = _FakeCatalogAdminGateway(
+        products: [_fixtureCatalogProduct(id: 'product-drink', code: 'DRINK', name: 'Refresco', tracksInventory: false)],
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: const []);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        catalogAdminGateway: catalogGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-new')));
+      await tester.pumpAndSettle();
+
+      Future<void> addDrink() async {
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-add-snack')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-package-add-snack')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Refresco');
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-consumable-product-result-product-drink')));
+        await tester.pumpAndSettle();
+      }
+
+      await addDrink();
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), findsOneWidget);
+
+      await addDrink();
+      // Still exactly one row — the second add was rejected with an
+      // honest notice, never silently merged or duplicated.
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-1')), findsNothing);
+      expect(find.textContaining('ya está en la lista'), findsOneWidget);
+    });
+
+    // TASK 16.20A — regression found via THIS task's own live
+    // certification: a package whose `included_consumables` was set
+    // through the legacy pre-UI JSON-body API (real "Freshness QA
+    // Retail" data) stores a row with NO `productVariantId` at all.
+    // Re-adding that same product through the real picker resolves a
+    // real (non-null) default-variant id, which the naive "exact id
+    // equality" duplicate check missed entirely — it silently added a
+    // second row for the identical product. Never trust an absent
+    // stored variant id to mean "genuinely different".
+    testWidgets('a legacy row with no stored variant id still blocks re-adding the same product via the picker', (tester) async {
+      final catalogGateway = _FakeCatalogAdminGateway(
+        products: [_fixtureCatalogProduct(id: 'product-socks', code: 'SOCKS', name: 'Calcetas antiderrapantes')],
+      );
+      final existing = _fixturePartyPackage(
+        includedConsumables: const [
+          // No productVariantId — exactly the legacy-data shape.
+          PosPartyIncludedConsumable(kind: 'sock', label: 'Calcetas antiderrapantes', quantity: 25, productId: 'product-socks', size: 'Unica'),
+        ],
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: [existing]);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        catalogAdminGateway: catalogGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-edit-package-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), findsOneWidget);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Calcetas');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-consumable-product-result-product-socks')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-consumable-quantity-1')), findsNothing);
+      expect(find.textContaining('ya está en la lista'), findsOneWidget);
+    });
+
+    testWidgets('editing an existing package loads its real consumables into the editor, and removing one saves the shorter list', (
+      tester,
+    ) async {
+      final existing = _fixturePartyPackage(
+        includedConsumables: const [
+          PosPartyIncludedConsumable(kind: 'sock', label: 'Calcetas antiderrapantes', quantity: 25, productId: 'product-socks', size: 'Calcetas antiderrapantes'),
+          PosPartyIncludedConsumable(kind: 'snack', label: 'Refresco', quantity: 25, productId: 'product-drink'),
+        ],
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: [existing]);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-edit-package-1')));
+      await tester.pumpAndSettle();
+
+      // Both previously-configured lines are already there — never a
+      // blank/JSON editor for an existing package.
+      expect(find.text('Calcetas antiderrapantes'), findsOneWidget);
+      expect(find.text('Refresco'), findsOneWidget);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-consumable-remove-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-consumable-remove-1')));
+      await tester.pumpAndSettle();
+      expect(find.text('Refresco'), findsNothing);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.updatePackageCalls, hasLength(1));
+      final sent = partiesGateway.updatePackageCalls.single.input.includedConsumables;
+      expect(sent, isNotNull);
+      expect(sent!.length, 1);
+      expect(sent.single.productId, 'product-socks');
+    });
+
+    testWidgets('an empty tenant catalog shows the honest "no hay productos" guidance — never a fake product', (tester) async {
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: const []);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        catalogAdminGateway: _FakeCatalogAdminGateway(),
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-new')));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-add-sock')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-consumable-catalog-empty')), findsOneWidget);
+      expect(find.textContaining('No hay productos disponibles'), findsOneWidget);
+    });
+
+    testWidgets('a package display shows a human-readable "Incluye" line — never serialized JSON', (tester) async {
+      final withConsumables = _fixturePartyPackage(
+        includedConsumables: const [
+          PosPartyIncludedConsumable(kind: 'sock', label: 'Calcetas antiderrapantes', quantity: 25, productId: 'product-socks'),
+        ],
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: [withConsumables]);
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Incluye:'), findsOneWidget);
+      expect(find.textContaining('25 × Calcetas antiderrapantes'), findsOneWidget);
+      expect(find.textContaining('{'), findsNothing);
+    });
+
+    testWidgets('correcting a delivered sock downward shows the entrada preview and calls correctSock with the corrected quantity', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final sock = PosPartySock(
+        id: 'sock-99',
+        reservationId: 'reservation-1',
+        size: 'M',
+        quantity: 25,
+        productVariantId: 'variant-1',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: 25,
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: [sock],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calcetas'));
+      await tester.pumpAndSettle();
+
+      // Already delivered: no "Entregar" action any more, but a
+      // "Corregir entrega" one now is.
+      expect(find.byKey(const Key('pos-fiestas-sock-deduct-sock-99')), findsNothing);
+      await tester.tap(find.byKey(const Key('pos-fiestas-sock-correct-sock-99')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Cantidad registrada: 25'), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('pos-fiestas-correction-quantity-field')), '23');
+      await tester.pump();
+      // The dialog previews the exact compensating movement before
+      // confirmation — never a silent mutation.
+      expect(find.textContaining('Se regresarán 2 unidades al inventario'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-correction-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.correctSockCalls, [(reservationId: 'reservation-1', sockId: 'sock-99', correctedQuantity: 23)]);
+    });
+
+    testWidgets('correcting a delivered snack upward shows the salida preview and calls correctSnack with the corrected quantity', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final snack = PosPartySnack(
+        id: 'snack-1',
+        reservationId: 'reservation-1',
+        productId: 'product-1',
+        nameSnapshot: 'Refresco',
+        unitPriceSnapshot: '0.00',
+        quantity: '23',
+        lineTotal: '0.00',
+        taxTotal: '0.00',
+        productVariantId: 'variant-2',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: '23',
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: [snack],
+          socks: const [],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-snack-correct-snack-1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-correction-quantity-field')), '25');
+      await tester.pump();
+      expect(find.textContaining('Se descontarán 2 unidades adicionales del inventario'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-correction-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.correctSnackCalls, [(reservationId: 'reservation-1', snackId: 'snack-1', correctedQuantity: '25')]);
+    });
+
+    // TASK 16.20A — regression found live during this task's own
+    // certification: typing a many-decimal value into the correction
+    // field (e.g. a stray extra digit) previously rendered the delta
+    // preview in scientific notation ("2.2000000043931323e-7"), via
+    // plain `double.toString()`. Never acceptable in a quantity-
+    // adjacent UI — `_formatConsumableQuantity` now uses a fixed-point
+    // format instead.
+    testWidgets('the correction preview never renders scientific notation, even for a many-decimal delta', (tester) async {
+      final reservation = _fixturePartyReservation();
+      final snack = PosPartySnack(
+        id: 'snack-1',
+        reservationId: 'reservation-1',
+        productId: 'product-1',
+        nameSnapshot: 'Refresco',
+        unitPriceSnapshot: '0.00',
+        quantity: '25',
+        lineTotal: '0.00',
+        taxTotal: '0.00',
+        productVariantId: 'variant-2',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: '25',
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: [snack],
+          socks: const [],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-snack-correct-snack-1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-correction-quantity-field')), '25.00000022');
+      await tester.pump();
+
+      // The 7th decimal digit is below the platform's own 6-decimal
+      // precision (`numeric(19,6)`), so it rounds to a clean "0" —
+      // never scientific notation, and never a raw float artifact.
+      expect(find.textContaining('e-'), findsNothing);
+      expect(find.textContaining('E-'), findsNothing);
+      expect(find.textContaining('Se descontarán 0 unidades adicionales del inventario'), findsOneWidget);
+    });
+
+    testWidgets('"Corregir entrega" is never offered for a pending (not-yet-delivered) line', (tester) async {
+      final reservation = _fixturePartyReservation();
+      final pendingSock = PosPartySock(
+        id: 'sock-pending',
+        reservationId: 'reservation-1',
+        size: 'M',
+        quantity: 25,
+        productVariantId: 'variant-1',
+        stockDeducted: 'pending',
+        stockDeductedAt: null,
+        issuedQuantity: null,
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: [pendingSock],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calcetas'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-sock-correct-sock-pending')), findsNothing);
+    });
+
+    testWidgets('"Corregir entrega" is not offered without party.manage — permission-gated like every other party action', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final deliveredSock = PosPartySock(
+        id: 'sock-99',
+        reservationId: 'reservation-1',
+        size: 'M',
+        quantity: 25,
+        productVariantId: 'variant-1',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: 25,
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: [deliveredSock],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      // No `manage: true` — a read-only actor.
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calcetas'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-sock-correct-sock-99')), findsNothing);
+    });
+
+    testWidgets('a backend correction error (e.g. insufficient stock) surfaces the real message — never a silent failure', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final sock = PosPartySock(
+        id: 'sock-99',
+        reservationId: 'reservation-1',
+        size: 'M',
+        quantity: 25,
+        productVariantId: 'variant-1',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: 23,
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: [sock],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+        correctSockFailure: const ApiException(
+          AppFailure(AppErrorKind.validation, 'Available inventory is insufficient to correct sock size "M".', code: 'insufficient_inventory'),
+          statusCode: 422,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calcetas'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-sock-correct-sock-99')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-correction-quantity-field')), '100');
+      await tester.tap(find.byKey(const Key('pos-fiestas-correction-confirm')));
+      await tester.pumpAndSettle();
+
+      // `posPartyErrorMessage` maps `insufficient_inventory` to its own
+      // honest, specific Spanish message — never the raw backend text.
+      expect(find.textContaining('No hay inventario suficiente'), findsOneWidget);
+    });
+
+    testWidgets('a snack correction error surfaces honestly too — the same gating applies to both consumable kinds', (tester) async {
+      final reservation = _fixturePartyReservation();
+      final snack = PosPartySnack(
+        id: 'snack-1',
+        reservationId: 'reservation-1',
+        productId: 'product-1',
+        nameSnapshot: 'Refresco',
+        unitPriceSnapshot: '0.00',
+        quantity: '23',
+        lineTotal: '0.00',
+        taxTotal: '0.00',
+        productVariantId: 'variant-2',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: '23',
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: [snack],
+          socks: const [],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+        correctSnackFailure: const ApiException(
+          AppFailure(AppErrorKind.validation, 'ignored', code: 'insufficient_inventory'),
+          statusCode: 422,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-snack-correct-snack-1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-correction-quantity-field')), '1000');
+      await tester.tap(find.byKey(const Key('pos-fiestas-correction-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('No hay inventario suficiente'), findsOneWidget);
+    });
+
+    testWidgets('a product with more than one active variant offers a real variant picker — the chosen variant id is sent, never a typed UUID', (
+      tester,
+    ) async {
+      final catalogGateway = _FakeCatalogAdminGateway(
+        products: [_fixtureCatalogProduct(id: 'product-drink', code: 'DRINK', name: 'Refresco', tracksInventory: true)],
+      );
+      final variantsGateway = _FakeProductVariantsGateway(
+        variantsByProduct: {
+          'product-drink': [
+            _fixtureProductVariant(id: 'variant-cola', productId: 'product-drink', name: 'Cola', sku: 'DRINK-COLA'),
+            _fixtureProductVariant(id: 'variant-naranja', productId: 'product-drink', name: 'Naranja', sku: 'DRINK-NARANJA'),
+          ],
+        },
+      );
+      final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], packagesResult: const []);
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        catalogAdminGateway: catalogGateway,
+        productVariantsGateway: variantsGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paquetes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-code')), 'PKG-VARIANT');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-name')), 'Paquete Variantes');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-price')), '2000');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-package-duration')), '90');
+
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-add-snack')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-add-snack')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Refresco');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-consumable-product-result-product-drink')));
+      await tester.pumpAndSettle();
+
+      // The variant step shows real names — never asks for a variant id.
+      expect(find.byKey(const Key('pos-fiestas-consumable-variant-result-variant-naranja')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-fiestas-consumable-variant-result-variant-naranja')));
+      await tester.pumpAndSettle();
+      expect(find.text('Naranja'), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-quantity-0')), '10');
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.tap(find.byKey(const Key('pos-fiestas-package-save')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.createPackageCalls, hasLength(1));
+      final sent = partiesGateway.createPackageCalls.single.includedConsumables!.single;
+      expect(sent.productId, 'product-drink');
+      expect(sent.productVariantId, 'variant-naranja');
+    });
+  });
+
   // TASK 14.5A: the confirmed gap this task closed — the real print call
   // sites in `pos_shell.dart` now actually fetch and thread
   // `receipts.header_text`/`receipts.footer_text` through to
@@ -8937,6 +9617,12 @@ Future<void> _pump(
   PosPartiesGateway? partiesGateway,
   PosAuthGateway? authGateway,
   PosSettingsGateway? settingsGateway,
+  // TASK 16.20A: defaults to the honest empty-catalog fakes — every
+  // pre-existing test keeps seeing no products in the Fiestas package
+  // consumables picker; the dedicated consumables-admin tests below
+  // inject their own explicit fakes instead.
+  PosCatalogAdminGateway? catalogAdminGateway,
+  PosProductVariantsGateway? productVariantsGateway,
   Future<void> Function(String? branchId)? onBranchSelected,
 }) async {
   tester.view.physicalSize = size;
@@ -8995,6 +9681,8 @@ Future<void> _pump(
         // the dedicated branding-wiring tests below inject their own
         // recording fake instead.
         settingsGateway: settingsGateway ?? const EmptyPosSettingsGateway(),
+        catalogAdminGateway: catalogAdminGateway ?? const EmptyPosCatalogAdminGateway(),
+        productVariantsGateway: productVariantsGateway ?? const EmptyPosProductVariantsGateway(),
         onLogout: () {},
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
@@ -11148,6 +11836,8 @@ class _FakePartiesGateway implements PosPartiesGateway {
     this.balanceResult,
     this.cancelResult,
     this.detailResult,
+    this.correctSockFailure,
+    this.correctSnackFailure,
   });
 
   final List<PosPartyRoom>? roomsResult;
@@ -11171,6 +11861,11 @@ class _FakePartiesGateway implements PosPartiesGateway {
   // [reservationsResult] — `reservationDetail` is a genuinely separate
   // endpoint from `listReservations`, never derived from it.
   final PosPartyReservationDetail? detailResult;
+
+  // TASK 16.20A — lets a test simulate a real backend rejection (e.g.
+  // insufficient stock) surfacing through the "Corregir entrega" dialog.
+  final ApiException? correctSockFailure;
+  final ApiException? correctSnackFailure;
 
   // TASK 16.19 — recorded calls for the new package-form/"Hoy"-filter
   // tests, mirroring this fake's own established `create*Calls`/`*Calls`
@@ -11205,8 +11900,16 @@ class _FakePartiesGateway implements PosPartiesGateway {
   @override
   Future<PosPartyPackage> packageRow(String id) async => _fixturePartyPackage(id: id);
 
+  // TASK 16.20A — mirrors [createPackageCalls]'s own convention, recording
+  // the real `id`/`input`/`version` an edit sends (e.g. to assert the
+  // consumables list a package-edit round-trip actually saved).
+  final List<({String id, PosPartyPackageInput input, int version})> updatePackageCalls = [];
+
   @override
-  Future<PosPartyPackage> updatePackage(String id, PosPartyPackageInput input, {required int version}) async => _fixturePartyPackage(id: id);
+  Future<PosPartyPackage> updatePackage(String id, PosPartyPackageInput input, {required int version}) async {
+    updatePackageCalls.add((id: id, input: input, version: version));
+    return _fixturePartyPackage(id: id);
+  }
 
   @override
   Future<PosPartyQuote> quotePackage(String id, {int children = 0, int adults = 0, int extraHalfHours = 0}) async {
@@ -11347,6 +12050,32 @@ class _FakePartiesGateway implements PosPartiesGateway {
     );
   }
 
+  // TASK 16.20A — call log mirroring this fake's own established
+  // `*Calls` convention.
+  final List<({String reservationId, String snackId, String correctedQuantity})> correctSnackCalls = [];
+
+  @override
+  Future<PosPartySnack> correctSnack(String reservationId, String snackId, {required String correctedQuantity}) async {
+    correctSnackCalls.add((reservationId: reservationId, snackId: snackId, correctedQuantity: correctedQuantity));
+    if (correctSnackFailure != null) throw correctSnackFailure!;
+    return PosPartySnack(
+      id: snackId,
+      reservationId: reservationId,
+      productId: 'product-1',
+      nameSnapshot: 'Snack',
+      unitPriceSnapshot: '0.00',
+      quantity: '1',
+      lineTotal: '0.00',
+      taxTotal: '0.00',
+      productVariantId: 'variant-2',
+      stockDeducted: 'deducted',
+      stockDeductedAt: DateTime.utc(2026, 9, 4),
+      issuedQuantity: correctedQuantity,
+      includedInPackage: false,
+      createdAt: DateTime.utc(2026, 9, 4),
+    );
+  }
+
   @override
   Future<PosPartySock> addSock(String reservationId, PosPartySockInput input) async => PosPartySock(
     id: 'sock-1',
@@ -11379,6 +12108,27 @@ class _FakePartiesGateway implements PosPartiesGateway {
       stockDeducted: 'deducted',
       stockDeductedAt: DateTime.utc(2026, 9, 4),
       issuedQuantity: issuedQuantity ?? 1,
+      includedInPackage: false,
+      createdAt: DateTime.utc(2026, 9, 4),
+    );
+  }
+
+  // TASK 16.20A — call log mirroring [correctSnackCalls] above.
+  final List<({String reservationId, String sockId, int correctedQuantity})> correctSockCalls = [];
+
+  @override
+  Future<PosPartySock> correctSock(String reservationId, String sockId, {required int correctedQuantity}) async {
+    correctSockCalls.add((reservationId: reservationId, sockId: sockId, correctedQuantity: correctedQuantity));
+    if (correctSockFailure != null) throw correctSockFailure!;
+    return PosPartySock(
+      id: sockId,
+      reservationId: reservationId,
+      size: 'CH',
+      quantity: 1,
+      productVariantId: 'variant-1',
+      stockDeducted: 'deducted',
+      stockDeductedAt: DateTime.utc(2026, 9, 4),
+      issuedQuantity: correctedQuantity,
       includedInPackage: false,
       createdAt: DateTime.utc(2026, 9, 4),
     );
@@ -11417,6 +12167,83 @@ class _FakePartiesGateway implements PosPartiesGateway {
   Future<String> generateDocument(String reservationId, String type) async => '<html><body>Documento $type</body></html>';
 }
 
+/// TASK 16.20A — a real, controllable catalog fake for the package
+/// consumables product picker (`_ProductSelectorDialog`). Extends the
+/// production `EmptyPosCatalogAdminGateway` and overrides only
+/// `listProducts`, so it never needs to stub the rest of the (large)
+/// catalog-admin interface.
+class _FakeCatalogAdminGateway extends EmptyPosCatalogAdminGateway {
+  _FakeCatalogAdminGateway({this.products = const [], this.error});
+  final List<PosCatalogProduct> products;
+  final ApiException? error;
+  final List<String?> searchCalls = [];
+
+  @override
+  Future<PosCatalogProductPage> listProducts({String? cursor, int limit = 50, String? search, String? branchId}) async {
+    searchCalls.add(search);
+    if (error != null) throw error!;
+    final query = search?.trim().toLowerCase() ?? '';
+    final matches = query.isEmpty
+        ? products
+        : products.where((p) => p.name.toLowerCase().contains(query) || p.code.toLowerCase().contains(query)).toList(growable: false);
+    return PosCatalogProductPage(items: matches, nextCursor: null);
+  }
+}
+
+/// TASK 16.20A — a real, controllable variants fake for the package
+/// consumables variant picker (`_VariantSelectorDialog`), mirroring
+/// [_FakeCatalogAdminGateway]'s own "extend Empty, override one method"
+/// shape.
+class _FakeProductVariantsGateway extends EmptyPosProductVariantsGateway {
+  _FakeProductVariantsGateway({this.variantsByProduct = const {}});
+  final Map<String, List<PosProductVariant>> variantsByProduct;
+
+  @override
+  Future<PosProductVariantPage> listVariants(String productId, {String? cursor, int limit = 50, String? status}) async =>
+      PosProductVariantPage(items: variantsByProduct[productId] ?? const [], nextCursor: null);
+}
+
+PosCatalogProduct _fixtureCatalogProduct({
+  String id = 'product-1',
+  String code = 'PROD-1',
+  String name = 'Calcetas antiderrapantes',
+  bool tracksInventory = true,
+  String status = 'active',
+  PosCatalogDefaultVariant? defaultVariant,
+}) => PosCatalogProduct(
+  id: id,
+  code: code,
+  name: name,
+  status: status,
+  tracksInventory: tracksInventory,
+  effectivePrice: null,
+  defaultVariant: defaultVariant ?? PosCatalogDefaultVariant(id: '$id-default-variant', sku: '$code-DEFAULT', unitOfMeasureCode: 'unit', quantityScale: 0, version: 1),
+);
+
+PosProductVariant _fixtureProductVariant({
+  required String id,
+  required String productId,
+  String? name,
+  String sku = 'SKU',
+  bool isDefault = false,
+  String status = 'active',
+}) => PosProductVariant(
+  id: id,
+  productId: productId,
+  sku: sku,
+  name: name,
+  unitOfMeasureCode: 'unit',
+  quantityScale: 0,
+  tracksInventory: true,
+  standardCost: null,
+  currencyCode: null,
+  isDefault: isDefault,
+  status: status,
+  version: 1,
+  createdAt: DateTime.utc(2026, 1, 1),
+  updatedAt: DateTime.utc(2026, 1, 1),
+);
+
 PosPartyRoom _fixturePartyRoom({String id = 'room-1', String name = 'Salón Arcoíris'}) => PosPartyRoom(
   id: id,
   branchId: 'branch-id',
@@ -11433,7 +12260,11 @@ PosPartyRoom _fixturePartyRoom({String id = 'room-1', String name = 'Salón Arco
   updatedAt: DateTime.utc(2026, 9, 4),
 );
 
-PosPartyPackage _fixturePartyPackage({String id = 'package-1', String name = 'Paquete Fiesta'}) => PosPartyPackage(
+PosPartyPackage _fixturePartyPackage({
+  String id = 'package-1',
+  String name = 'Paquete Fiesta',
+  List<PosPartyIncludedConsumable> includedConsumables = const [],
+}) => PosPartyPackage(
   id: id,
   branchId: null,
   code: 'PKG-1',
@@ -11452,6 +12283,7 @@ PosPartyPackage _fixturePartyPackage({String id = 'package-1', String name = 'Pa
   taxCode: 'IVA_GENERAL',
   includes: const {'pastel': 'incluido'},
   restrictions: const {'edad_maxima': '12'},
+  includedConsumables: includedConsumables,
   version: 1,
   createdAt: DateTime.utc(2026, 9, 4),
   updatedAt: DateTime.utc(2026, 9, 4),

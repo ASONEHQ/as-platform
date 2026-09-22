@@ -35,6 +35,10 @@ const includedConsumablesSchema = {
       label: { type: 'string', minLength: 1, maxLength: 200 },
       quantity: { type: 'number', exclusiveMinimum: 0 },
       product_id: { type: 'string', format: 'uuid' },
+      // TASK 16.20A (Part 2) — an explicit variant choice; only
+      // meaningful alongside `product_id` (enforced in
+      // `parseIncludedConsumables`, not by the JSON schema alone).
+      product_variant_id: { type: 'string', format: 'uuid' },
       size: { type: 'string', minLength: 1, maxLength: 20 },
     },
   },
@@ -61,10 +65,18 @@ function includedConsumableHttp(entry: PartyPackageIncludedConsumable): Readonly
     label: entry.label,
     quantity: entry.quantity,
     product_id: entry.productId ?? null,
+    product_variant_id: entry.productVariantId ?? null,
     size: entry.size ?? null,
   };
 }
-type IncludedConsumableInput = { kind: 'sock' | 'snack'; label: string; quantity: number; product_id?: string; size?: string };
+type IncludedConsumableInput = {
+  kind: 'sock' | 'snack';
+  label: string;
+  quantity: number;
+  product_id?: string;
+  product_variant_id?: string;
+  size?: string;
+};
 function includedConsumablesFromBody(
   value: readonly IncludedConsumableInput[] | null | undefined,
 ): readonly PartyPackageIncludedConsumable[] | null | undefined {
@@ -74,6 +86,7 @@ function includedConsumablesFromBody(
     label: entry.label,
     quantity: entry.quantity,
     ...(entry.product_id === undefined ? {} : { productId: entry.product_id }),
+    ...(entry.product_variant_id === undefined ? {} : { productVariantId: entry.product_variant_id }),
     ...(entry.size === undefined ? {} : { size: entry.size }),
   }));
 }

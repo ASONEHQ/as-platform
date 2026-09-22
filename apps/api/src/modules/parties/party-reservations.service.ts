@@ -5,8 +5,8 @@ import { ivaBasisPointsForTaxCode, type ProductTaxCode } from '@asone/database';
 
 import type { CashRepository } from '../cash/cash.repository.js';
 import { CashError } from '../cash/cash.types.js';
-import { postPartySnackDeduction } from './party-snack-deduction.js';
-import { postPartySockDeduction } from './party-sock-deduction.js';
+import { postPartySnackCorrection, postPartySnackDeduction } from './party-snack-deduction.js';
+import { postPartySockCorrection, postPartySockDeduction } from './party-sock-deduction.js';
 import {
   assertWithinCapacity,
   computeLineTax,
@@ -40,6 +40,26 @@ function hash(value: object): string {
   return createHash('sha256')
     .update(JSON.stringify(Object.fromEntries(Object.entries(value).sort())))
     .digest('hex');
+}
+
+/** TASK 16.20A — exact BigInt fixed-point QUANTITY arithmetic (scale
+ * 1_000_000n, matching `inventory_balances`/`party_reservation_snacks.
+ * quantity` exactly — see `party-snack-deduction.ts`'s own identical
+ * module-local copy), used only to compute a correction's signed delta
+ * as a decimal string. A module-local copy, matching this codebase's
+ * own established "no cross-module pricing/quantity-math import"
+ * discipline (`parties.pricing.ts`'s own header comment). */
+const QUANTITY_SCALE = 1_000_000n;
+function decimalQuantityUnits(value: string): bigint {
+  const [whole = '', fraction = ''] = value.split('.');
+  const wholeDigits = whole.length === 0 ? '0' : whole;
+  const fractionDigits = fraction.padEnd(6, '0').slice(0, 6);
+  return BigInt(wholeDigits) * QUANTITY_SCALE + BigInt(fractionDigits.length === 0 ? '0' : fractionDigits);
+}
+function formatDecimalQuantity(units: bigint): string {
+  const whole = units / QUANTITY_SCALE;
+  const fraction = (units % QUANTITY_SCALE).toString().padStart(6, '0');
+  return `${whole.toString()}.${fraction}`;
 }
 function reservationNumberFor(id: string): string {
   return `PARTY-${id.replaceAll('-', '').toLowerCase()}`;
@@ -231,10 +251,7 @@ export class PartyReservationsService {
             for (const entry of pkg.includedConsumables) {
               if (entry.quantity <= 0) continue;
               if (entry.kind === 'sock') {
-                const variant =
-                  entry.productId === undefined
-                    ? null
-                    : await this.repository.productVariantForInventory(context.companyId, entry.productId);
+                const variant = await this.resolveConsumableVariant(context.companyId, entry.productId, entry.productVariantId);
                 await this.repository.insertSock(client, {
                   id: randomUUID(),
                   companyId: context.companyId,
@@ -246,7 +263,7 @@ export class PartyReservationsService {
                   timestamp: context.timestamp,
                 });
               } else {
-                const resolved = await this.resolveSnackInventory(context.companyId, entry.productId);
+                const resolved = await this.resolveSnackInventory(context.companyId, entry.productId, entry.productVariantId);
                 await this.repository.insertSnack(client, {
                   id: randomUUID(),
                   companyId: context.companyId,
@@ -295,12 +312,29 @@ export class PartyReservationsService {
   private async resolveSnackInventory(
     companyId: string,
     productId: string | undefined,
+    explicitVariantId?: string,
   ): Promise<{ productVariantId: string | null; stockDeducted: 'pending' | 'not_applicable' }> {
     if (productId === undefined) return { productVariantId: null, stockDeducted: 'not_applicable' };
-    const variant = await this.repository.productVariantForInventory(companyId, productId);
+    const variant = await this.resolveConsumableVariant(companyId, productId, explicitVariantId);
     return variant === null
       ? { productVariantId: null, stockDeducted: 'not_applicable' }
       : { productVariantId: variant.variantId, stockDeducted: 'pending' };
+  }
+
+  /** TASK 16.20A (Part 2) — shared by both sock and snack resolution: an
+   * EXPLICIT `productVariantId` (a package's own configured variant
+   * choice — see `specificVariantForInventory`'s own doc comment for why
+   * this is re-resolved live, never trusted from a stale snapshot) takes
+   * priority; omitted falls back to the product's own default variant,
+   * exactly matching TASK 16.20's original behavior unchanged. */
+  private async resolveConsumableVariant(
+    companyId: string,
+    productId: string | undefined,
+    explicitVariantId: string | undefined,
+  ): Promise<{ variantId: string; tracksInventory: boolean } | null> {
+    if (productId === undefined) return null;
+    if (explicitVariantId !== undefined) return this.repository.specificVariantForInventory(companyId, productId, explicitVariantId);
+    return this.repository.productVariantForInventory(companyId, productId);
   }
 
   /** Race-free ONLY because the caller already holds `lockRoom`'s `FOR
@@ -1024,6 +1058,122 @@ export class PartyReservationsService {
         resourceType: 'party_reservation_snack',
         resourceId: updated.id,
         payload: { reservation_id: reservationRow.id, planned_quantity: snackRow.quantity, issued_quantity: issuedQuantity },
+      });
+      return updated;
+    });
+  }
+
+  /** TASK 16.20A (Parts 7-17) — a real, party-specific, safe correction
+   * workflow for an already-issued sock line, operator-facing (never
+   * requiring the generic inventory-reversal API), reusing the
+   * platform's own real compensating-ledger discipline underneath
+   * (`postPartySockCorrection` — see its own doc comment). The
+   * ORIGINAL `issue` movement is never edited, deleted, or reversed —
+   * only a NEW delta movement is posted, and only `issued_quantity` on
+   * this row is updated to reflect the current truth.
+   *
+   * **Idempotency** (Part 16): the delta is computed from a FRESH,
+   * row-locked read of `issuedQuantity` — never a client-submitted
+   * delta — so an identical retried request (same `correctedQuantity`)
+   * recomputes `delta=0` and is a safe, harmless no-op (no second
+   * movement). **Concurrency** (Part 17): the row lock serializes two
+   * concurrent corrections of the same line — the second one always
+   * computes its delta against the FIRST one's already-committed
+   * result, never a stale value.
+   *
+   * **Financial safety** (Part 13): this method touches ONLY
+   * `issuedQuantity` + inventory — it never touches `quantity`
+   * (the billed/planned amount), `unitPriceSnapshot`, or `lineTotal`.
+   * A physical-quantity correction is never, by itself, a commercial/
+   * billing action. */
+  public async correctSock(
+    context: PartyMutationContext,
+    branchIds: readonly string[],
+    reservationId: string,
+    sockId: string,
+    input: { correctedQuantity: number },
+  ): Promise<PartyReservationSockRow> {
+    const correctedQuantity = nonNegativeInteger(input.correctedQuantity, 'corrected_quantity');
+    if (correctedQuantity <= 0) throw new PartyError('validation_error', 'corrected_quantity must be greater than zero.');
+    return this.repository.transaction(async (client) => {
+      const reservationRow = await this.reservation(context.companyId, branchIds, reservationId);
+      const sockRow = await this.repository.lockSock(client, context.companyId, reservationRow.id, sockId);
+      if (sockRow === null) throw new PartyError('resource_not_found', 'The sock line was not found.');
+      if (sockRow.productVariantId === null)
+        throw new PartyError('validation_error', 'This sock line has no inventory variant to correct.');
+      if (sockRow.stockDeducted !== 'deducted' || sockRow.issuedQuantity === null)
+        throw new PartyError('resource_conflict', 'This sock line has not been delivered yet — nothing to correct.');
+
+      const delta = correctedQuantity - sockRow.issuedQuantity;
+      if (delta === 0) return sockRow; // Naturally idempotent — nothing to correct, no movement posted.
+
+      await postPartySockCorrection(
+        client,
+        { companyId: context.companyId, actorId: context.actorId, correlationId: context.correlationId, timestamp: context.timestamp },
+        { id: reservationRow.id, branchId: reservationRow.branchId, reservationNumber: reservationRow.reservationNumber },
+        { id: sockRow.id, productVariantId: sockRow.productVariantId, size: sockRow.size },
+        delta,
+      );
+      const updated = await this.repository.markSockCorrected(client, context.companyId, sockRow.id, correctedQuantity);
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.sock_corrected',
+        resourceType: 'party_reservation_sock',
+        resourceId: updated.id,
+        payload: {
+          reservation_id: reservationRow.id,
+          previous_issued_quantity: sockRow.issuedQuantity,
+          corrected_quantity: correctedQuantity,
+          delta,
+        },
+      });
+      return updated;
+    });
+  }
+
+  /** TASK 16.20A — the snack mirror of `correctSock`; see that method's
+   * own doc comment for the full idempotency/concurrency/financial-
+   * safety rationale, identical here. */
+  public async correctSnack(
+    context: PartyMutationContext,
+    branchIds: readonly string[],
+    reservationId: string,
+    snackId: string,
+    input: { correctedQuantity: string },
+  ): Promise<PartyReservationSnackRow> {
+    const match = /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.exec(input.correctedQuantity);
+    if (match === null || Number(input.correctedQuantity) <= 0)
+      throw new PartyError('validation_error', 'corrected_quantity must be a positive decimal.');
+    return this.repository.transaction(async (client) => {
+      const reservationRow = await this.reservation(context.companyId, branchIds, reservationId);
+      const snackRow = await this.repository.lockSnack(client, context.companyId, reservationRow.id, snackId);
+      if (snackRow === null) throw new PartyError('resource_not_found', 'The snack line was not found.');
+      if (snackRow.productVariantId === null)
+        throw new PartyError('validation_error', 'This snack line has no inventory variant to correct.');
+      if (snackRow.stockDeducted !== 'deducted' || snackRow.issuedQuantity === null)
+        throw new PartyError('resource_conflict', 'This snack line has not been delivered yet — nothing to correct.');
+
+      const deltaUnits = decimalQuantityUnits(input.correctedQuantity) - decimalQuantityUnits(snackRow.issuedQuantity);
+      if (deltaUnits === 0n) return snackRow; // Naturally idempotent.
+      const deltaText = `${deltaUnits < 0n ? '-' : ''}${formatDecimalQuantity(deltaUnits < 0n ? -deltaUnits : deltaUnits)}`;
+
+      await postPartySnackCorrection(
+        client,
+        { companyId: context.companyId, actorId: context.actorId, correlationId: context.correlationId, timestamp: context.timestamp },
+        { id: reservationRow.id, branchId: reservationRow.branchId, reservationNumber: reservationRow.reservationNumber },
+        { id: snackRow.id, productVariantId: snackRow.productVariantId, nameSnapshot: snackRow.nameSnapshot },
+        deltaText,
+      );
+      const updated = await this.repository.markSnackCorrected(client, context.companyId, snackRow.id, input.correctedQuantity);
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.snack_corrected',
+        resourceType: 'party_reservation_snack',
+        resourceId: updated.id,
+        payload: {
+          reservation_id: reservationRow.id,
+          previous_issued_quantity: snackRow.issuedQuantity,
+          corrected_quantity: input.correctedQuantity,
+          delta: deltaText,
+        },
       });
       return updated;
     });

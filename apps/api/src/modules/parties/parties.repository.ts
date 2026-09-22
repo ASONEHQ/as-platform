@@ -1315,6 +1315,28 @@ export class PartiesRepository {
     return snack(row);
   }
 
+  /** TASK 16.20A — updates ONLY `issued_quantity` to the corrected value;
+   * `stock_deducted`/`stock_deducted_at` are left untouched (they record
+   * the original, first-ever deduction moment — a correction is a
+   * distinct, separately-timestamped event, fully captured by the
+   * compensating `inventory_movements` row `postPartySnackCorrection`
+   * posts, never by mutating this timestamp). */
+  public async markSnackCorrected(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    issuedQuantity: string,
+  ): Promise<PartyReservationSnackRow> {
+    const row = result<SnackDb>(
+      await client.query(
+        `update party_reservation_snacks set issued_quantity=$3 where company_id=$1 and id=$2 returning ${SNACK_COLUMNS}`,
+        [companyId, id, issuedQuantity],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Snack update did not return a row.');
+    return snack(row);
+  }
+
   // --- Socks -------------------------------------------------------------------
 
   public async insertSock(
@@ -1390,6 +1412,19 @@ export class PartiesRepository {
         `update party_reservation_socks set stock_deducted='deducted', stock_deducted_at=$3, issued_quantity=$4
          where company_id=$1 and id=$2 returning ${SOCK_COLUMNS}`,
         [companyId, id, timestamp, issuedQuantity],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Sock update did not return a row.');
+    return sock(row);
+  }
+
+  /** TASK 16.20A — the sock mirror of `markSnackCorrected`; see that
+   * method's own doc comment for why only `issued_quantity` changes. */
+  public async markSockCorrected(client: PartyTransaction, companyId: string, id: string, issuedQuantity: number): Promise<PartyReservationSockRow> {
+    const row = result<SockDb>(
+      await client.query(
+        `update party_reservation_socks set issued_quantity=$3 where company_id=$1 and id=$2 returning ${SOCK_COLUMNS}`,
+        [companyId, id, issuedQuantity],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Sock update did not return a row.');
@@ -1578,6 +1613,20 @@ export class PartiesRepository {
     return { name: row.name, price: row.amount ?? '0.0000', taxCode: row.tax_code };
   }
 
+  /** TASK 16.20A (Part 2) — real, tenant-scoped variant ownership check:
+   * does this variant actually belong to this product, in this company?
+   * Used to validate a package's `included_consumables` at save time —
+   * never trust a client-submitted `productVariantId` blindly. */
+  public async variantBelongsToProduct(companyId: string, productId: string, variantId: string): Promise<boolean> {
+    const row = result<{ id: string }>(
+      await this.database.pool.query(
+        `select id from product_variants where company_id=$1 and id=$2 and product_id=$3 and status<>'retired'`,
+        [companyId, variantId, productId],
+      ),
+    ).rows[0];
+    return row !== undefined;
+  }
+
   /** TASK 16.20 — resolves a snack's real default inventory-tracked variant,
    * the exact same `is_default=true and status<>'retired'` pattern
    * `SalesRepository.resolveProductLines` uses for normal sale lines
@@ -1601,6 +1650,32 @@ export class PartiesRepository {
       ),
     ).rows[0];
     if (row === undefined || row.variant_id === null || !row.tracks_inventory) return null;
+    return { variantId: row.variant_id, tracksInventory: row.tracks_inventory };
+  }
+
+  /** TASK 16.20A (Part 2) — resolves an EXPLICIT variant choice (from a
+   * package's `included_consumables[].productVariantId`) live at
+   * reservation-creation time — never trusts the package's own
+   * snapshot blindly, mirroring `productVariantForInventory`'s own "re-
+   * resolve, don't trust stale data" discipline exactly. Requires the
+   * variant to still belong to the given product, be non-retired, and
+   * the product to still track inventory; any mismatch honestly
+   * resolves to `null` (never a silent fallback to the wrong variant). */
+  public async specificVariantForInventory(
+    companyId: string,
+    productId: string,
+    variantId: string,
+  ): Promise<{ variantId: string; tracksInventory: boolean } | null> {
+    const row = result<{ variant_id: string; tracks_inventory: boolean }>(
+      await this.database.pool.query(
+        `select pv.id as variant_id, p.tracks_inventory
+         from product_variants pv
+         join products p on p.company_id=pv.company_id and p.id=pv.product_id
+         where pv.company_id=$1 and pv.id=$2 and pv.product_id=$3 and pv.status<>'retired'`,
+        [companyId, variantId, productId],
+      ),
+    ).rows[0];
+    if (!row?.tracks_inventory) return null;
     return { variantId: row.variant_id, tracksInventory: row.tracks_inventory };
   }
 

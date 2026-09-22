@@ -33,17 +33,22 @@ function jsonObject(value: unknown, field: string): Readonly<Record<string, unkn
   return value as Readonly<Record<string, unknown>>;
 }
 
-/** TASK 16.20 (Part D4) — validates a package's `included_consumables`
- * plan. This is intentionally a lightweight JSON-shape check, not an FK
- * validation: a bogus/retired `productId` is never rejected here (matches
- * `includes`/`restrictions`' own established freeform-JSON precedent) —
- * it simply resolves to an honest `not_applicable`/no-variant row when a
- * reservation is actually created from this package
- * (`PartyReservationsService.resolveSnackInventory`/
- * `productVariantForInventory`), never a silent fabrication. */
+/** TASK 16.20 (Part D4) / TASK 16.20A (Parts 2-3) — validates a
+ * package's `included_consumables` plan. Shape/type validation happens
+ * here, synchronously; real tenant-catalog FK ownership validation
+ * happens in `validateIncludedConsumablesOwnership` below (async, needs
+ * the repository) — TASK 16.20A escalates this from TASK 16.20's own
+ * original "lightweight, non-FK-checked" design (a bogus `productId` is
+ * now a real, clear, rejected error, never silently accepted). Also
+ * rejects an accidental duplicate row for the exact same
+ * `(kind, productId, productVariantId)` (or `(kind, productId, size)`
+ * for a sock with no explicit variant) — Part 3's own "reject clearly"
+ * option, chosen over silent merging so an operator's mistake is never
+ * hidden. */
 function parseIncludedConsumables(value: unknown, field: string): readonly PartyPackageIncludedConsumable[] | null {
   if (value === undefined || value === null) return null;
   if (!Array.isArray(value)) throw new PartyError('validation_error', `${field} must be a JSON array.`);
+  const seen = new Set<string>();
   return value.map((entry, index) => {
     const label = `${field}[${String(index)}]`;
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
@@ -56,16 +61,60 @@ function parseIncludedConsumables(value: unknown, field: string): readonly Party
       throw new PartyError('validation_error', `${label}.quantity must be a positive number.`);
     if (record.productId !== undefined && typeof record.productId !== 'string')
       throw new PartyError('validation_error', `${label}.productId must be a string.`);
+    if (record.productVariantId !== undefined && typeof record.productVariantId !== 'string')
+      throw new PartyError('validation_error', `${label}.productVariantId must be a string.`);
+    if (record.productVariantId !== undefined && record.productId === undefined)
+      throw new PartyError('validation_error', `${label}.productVariantId requires productId.`);
     if (record.size !== undefined && typeof record.size !== 'string')
       throw new PartyError('validation_error', `${label}.size must be a string.`);
+
+    const dedupeKey = `${record.kind}:${record.productId ?? ''}:${record.productVariantId ?? record.size ?? ''}`;
+    if (record.productId !== undefined) {
+      if (seen.has(dedupeKey))
+        throw new PartyError(
+          'validation_error',
+          `${label} duplicates an earlier entry for the same product${record.productVariantId === undefined ? '' : '/variant'} — combine them into a single row instead.`,
+        );
+      seen.add(dedupeKey);
+    }
+
     return {
       kind: record.kind,
       label: entryLabel,
       quantity: record.quantity,
       ...(typeof record.productId === 'string' ? { productId: record.productId } : {}),
+      ...(typeof record.productVariantId === 'string' ? { productVariantId: record.productVariantId } : {}),
       ...(typeof record.size === 'string' ? { size: record.size } : {}),
     };
   });
+}
+
+/** TASK 16.20A (Part 2) — real, tenant-scoped FK validation for every
+ * `included_consumables` entry that names a `productId`: the product
+ * must actually exist in THIS company, and if `productVariantId` is
+ * also given, it must actually belong to that product. Never a
+ * duplicate "party product" catalog — always the real, shared
+ * `products`/`product_variants` tables. */
+async function validateIncludedConsumablesOwnership(
+  repository: PartiesRepository,
+  companyId: string,
+  consumables: readonly PartyPackageIncludedConsumable[] | null,
+): Promise<void> {
+  if (consumables === null) return;
+  for (const [index, entry] of consumables.entries()) {
+    if (entry.productId === undefined) continue;
+    const product = await repository.productForSnapshot(companyId, entry.productId);
+    if (product === null)
+      throw new PartyError('resource_not_found', `included_consumables[${String(index)}].productId does not exist in this company's catalog.`);
+    if (entry.productVariantId !== undefined) {
+      const owned = await repository.variantBelongsToProduct(companyId, entry.productId, entry.productVariantId);
+      if (!owned)
+        throw new PartyError(
+          'resource_not_found',
+          `included_consumables[${String(index)}].productVariantId does not belong to the given product.`,
+        );
+    }
+  }
 }
 
 function packagePayload(value: PartyPackageRow): Readonly<Record<string, unknown>> {
@@ -126,6 +175,7 @@ export class PartyPackagesService {
     const includes = jsonObject(input.includes, 'includes');
     const restrictions = jsonObject(input.restrictions, 'restrictions');
     const includedConsumables = parseIncludedConsumables(input.includedConsumables, 'included_consumables');
+    await validateIncludedConsumablesOwnership(this.repository, context.companyId, includedConsumables);
     const id = input.id ?? randomUUID();
     const requestHash = hash({
       branchId: input.branchId ?? null,
@@ -220,6 +270,11 @@ export class PartyPackagesService {
       includedConsumables?: unknown;
     },
   ): Promise<PartyPackageRow> {
+    const parsedIncludedConsumables =
+      input.includedConsumables === undefined ? undefined : parseIncludedConsumables(input.includedConsumables, 'included_consumables');
+    if (parsedIncludedConsumables !== undefined) {
+      await validateIncludedConsumablesOwnership(this.repository, context.companyId, parsedIncludedConsumables);
+    }
     return this.repository.transaction(async (client) => {
       const current = await this.repository.packageRow(context.companyId, id);
       if (current === null || (current.branchId !== null && !branchIds.includes(current.branchId)))
@@ -251,9 +306,7 @@ export class PartyPackagesService {
         ...(input.taxCode === undefined ? {} : { taxCode: normalizeTaxCode(input.taxCode) }),
         ...(input.includes === undefined ? {} : { includes: jsonObject(input.includes, 'includes') }),
         ...(input.restrictions === undefined ? {} : { restrictions: jsonObject(input.restrictions, 'restrictions') }),
-        ...(input.includedConsumables === undefined
-          ? {}
-          : { includedConsumables: parseIncludedConsumables(input.includedConsumables, 'included_consumables') }),
+        ...(parsedIncludedConsumables === undefined ? {} : { includedConsumables: parsedIncludedConsumables }),
         updatedBy: context.actorId,
         timestamp: context.timestamp,
       });

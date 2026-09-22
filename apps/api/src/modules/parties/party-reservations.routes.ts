@@ -716,6 +716,72 @@ export function registerPartyReservationRoutes(
       }),
   );
 
+  // TASK 16.20A (Parts 7-17) — a real, party-specific, safe correction
+  // action for an already-issued line. Reuses `party.manage` (the same
+  // permission that already gates every other party mutation, including
+  // the original `deduct` action itself) — a correction is fundamentally
+  // a party-domain action with an inventory side effect, exactly like
+  // `deduct` already is; no new permission was genuinely needed (Part 14).
+  app.post<{ Params: SockParams; Body: { corrected_quantity: number } }>(
+    '/api/v1/party-reservations/:id/socks/:sockId/correct',
+    {
+      schema: {
+        tags: ['parties'],
+        params: { type: 'object', required: ['id', 'sockId'], properties: { id: { type: 'string' }, sockId: { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['corrected_quantity'],
+          properties: { corrected_quantity: { type: 'integer', minimum: 1 } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.manage');
+        const updated = await service.correctSock(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          request.params.sockId,
+          { correctedQuantity: request.body.corrected_quantity },
+        );
+        return reply.send(successResponse(sockHttp(updated), request.requestContext));
+      }),
+  );
+
+  app.post<{ Params: SnackParams; Body: { corrected_quantity: string } }>(
+    '/api/v1/party-reservations/:id/snacks/:snackId/correct',
+    {
+      schema: {
+        tags: ['parties'],
+        params: { type: 'object', required: ['id', 'snackId'], properties: { id: { type: 'string' }, snackId: { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['corrected_quantity'],
+          properties: { corrected_quantity: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,6})?$' } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.manage');
+        const updated = await service.correctSnack(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          request.params.snackId,
+          { correctedQuantity: request.body.corrected_quantity },
+        );
+        return reply.send(successResponse(snackHttp(updated), request.requestContext));
+      }),
+  );
+
   // --- Payments / balance --------------------------------------------------------------
 
   app.post<{ Params: Params; Body: { purpose: PartyReservationPaymentPurpose; amount: string; cash_session_id: string } }>(

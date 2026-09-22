@@ -81,6 +81,16 @@ export interface PartyPackageIncludedConsumable {
   label: string;
   quantity: number;
   productId?: string;
+  // TASK 16.20A (Part 2) — an explicit variant choice for a product that
+  // has more than one real variant (e.g. sock sizes modeled as
+  // `product_variants`, not separate products). Omitted/`undefined`
+  // falls back to the exact same "resolve the product's own default
+  // variant" behavior TASK 16.20 already had — this is purely additive,
+  // never a required field. Validated (at package save time) to
+  // actually belong to `productId`, in this same company — never
+  // trusted blindly (Part 2's own "no raw UUID entry, tenant-scoped"
+  // requirement, enforced server-side, not just by the Flutter picker).
+  productVariantId?: string;
   size?: string;
 }
 

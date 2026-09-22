@@ -3388,6 +3388,8 @@ class _Content extends StatelessWidget {
                     customersGateway: customersGateway,
                     cashGateway: cashGateway,
                     settingsGateway: settingsGateway,
+                    catalogAdminGateway: catalogAdminGateway,
+                    productVariantsGateway: productVariantsGateway,
                   ),
                   // TASK 14.3 Wave 1 Part B.1: the pre-reserved
                   // `PosModule.suspended` slot ("Ventas Suspendidas") —
@@ -24615,6 +24617,8 @@ class _FiestasAdmin extends StatefulWidget {
     required this.customersGateway,
     required this.cashGateway,
     required this.settingsGateway,
+    required this.catalogAdminGateway,
+    required this.productVariantsGateway,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -24622,6 +24626,11 @@ class _FiestasAdmin extends StatefulWidget {
   final PosCustomersGateway customersGateway;
   final PosCashGateway cashGateway;
   final PosSettingsGateway settingsGateway;
+  // TASK 16.20A (Part 2) — the real, tenant-scoped catalog gateways the
+  // package consumables picker reuses (never a duplicate "party
+  // product" catalog).
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosProductVariantsGateway productVariantsGateway;
 
   @override
   State<_FiestasAdmin> createState() => _FiestasAdminState();
@@ -24679,6 +24688,8 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
             context: widget.context,
             partiesGateway: widget.partiesGateway,
             settingsGateway: widget.settingsGateway,
+            catalogAdminGateway: widget.catalogAdminGateway,
+            productVariantsGateway: widget.productVariantsGateway,
           ),
         },
     ],
@@ -25471,10 +25482,18 @@ enum _AjustesTab { salones, paquetes, terminos }
 /// Ajustes — Salones/Paquetes admin CRUD, mirroring `_MembershipsAdmin`'s
 /// exact list+create+edit shape.
 class _FiestasAjustes extends StatefulWidget {
-  const _FiestasAjustes({required this.context, required this.partiesGateway, required this.settingsGateway});
+  const _FiestasAjustes({
+    required this.context,
+    required this.partiesGateway,
+    required this.settingsGateway,
+    required this.catalogAdminGateway,
+    required this.productVariantsGateway,
+  });
   final AuthenticatedContext context;
   final PosPartiesGateway partiesGateway;
   final PosSettingsGateway settingsGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosProductVariantsGateway productVariantsGateway;
 
   @override
   State<_FiestasAjustes> createState() => _FiestasAjustesState();
@@ -25505,7 +25524,12 @@ class _FiestasAjustesState extends State<_FiestasAjustes> {
       ),
       switch (_tab) {
         _AjustesTab.salones => _RoomsAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
-        _AjustesTab.paquetes => _PackagesAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
+        _AjustesTab.paquetes => _PackagesAdmin(
+          context: widget.context,
+          partiesGateway: widget.partiesGateway,
+          catalogAdminGateway: widget.catalogAdminGateway,
+          productVariantsGateway: widget.productVariantsGateway,
+        ),
         _AjustesTab.terminos => _PartyLegalTermsAdmin(context: widget.context, settingsGateway: widget.settingsGateway),
       },
     ],
@@ -26064,9 +26088,16 @@ class _RoomFormDialogState extends State<_RoomFormDialog> {
 }
 
 class _PackagesAdmin extends StatefulWidget {
-  const _PackagesAdmin({required this.context, required this.partiesGateway});
+  const _PackagesAdmin({
+    required this.context,
+    required this.partiesGateway,
+    required this.catalogAdminGateway,
+    required this.productVariantsGateway,
+  });
   final AuthenticatedContext context;
   final PosPartiesGateway partiesGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosProductVariantsGateway productVariantsGateway;
 
   @override
   State<_PackagesAdmin> createState() => _PackagesAdminState();
@@ -26119,6 +26150,8 @@ class _PackagesAdminState extends State<_PackagesAdmin> {
       context: context,
       builder: (dialogContext) => _PackageFormDialog(
         partiesGateway: widget.partiesGateway,
+        catalogAdminGateway: widget.catalogAdminGateway,
+        productVariantsGateway: widget.productVariantsGateway,
         branchId: existing?.branchId ?? widget.context.session.branchId,
         existing: existing,
       ),
@@ -26199,6 +26232,17 @@ class _PackageRow extends StatelessWidget {
                     '${package.childrenIncluded} niños / ${package.adultsIncluded} adultos incluidos',
                     style: TextStyle(color: palette.textSecondary, fontSize: 12),
                   ),
+                  // TASK 16.20A (Part 5) — human-readable consumables
+                  // summary, never serialized JSON.
+                  if (package.includedConsumables.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('Incluye:', style: TextStyle(color: palette.textSecondary, fontSize: 11, fontWeight: FontWeight.w700)),
+                    for (final item in package.includedConsumables)
+                      Text(
+                        '• ${_formatConsumableQuantity(item.quantity)} × ${item.label}',
+                        style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -26217,6 +26261,23 @@ class _PackageRow extends StatelessWidget {
   }
 }
 
+/// TASK 16.20A (Part 5) — a whole quantity (the common case: 25 socks)
+/// shows as `25`, never `25.0`; a genuinely fractional one (rare, but a
+/// snack/drink COULD be a fractional-unit product) keeps its decimals.
+/// Found live during this task's own certification: plain `double.
+/// toString()` switches to scientific notation for a very small
+/// fractional part (e.g. a stray extra digit typed into the correction
+/// dialog produced "2.2000000043931323e-7") — unreadable and never
+/// acceptable in a money/quantity-adjacent UI. `toStringAsFixed(6)`
+/// (matching the backend's own `numeric(19,6)` precision) never uses
+/// scientific notation; trailing zeros are trimmed for the common case.
+String _formatConsumableQuantity(double quantity) {
+  if (quantity == quantity.roundToDouble()) return quantity.toInt().toString();
+  final fixed = quantity.toStringAsFixed(6);
+  final trimmed = fixed.contains('.') ? fixed.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '') : fixed;
+  return trimmed.isEmpty ? '0' : trimmed;
+}
+
 class _JsonTagRow {
   _JsonTagRow({String key = '', String value = ''})
     : keyController = TextEditingController(text: key),
@@ -26229,13 +26290,286 @@ class _JsonTagRow {
   }
 }
 
+/// TASK 16.20A (Part 2) — a real, tenant-scoped, searchable product
+/// picker for the package consumables editor. Mirrors
+/// `_CustomerSelectorDialog`'s own established search/debounce/result-
+/// list shape exactly, reusing the SAME real catalog gateway every
+/// other product picker in this app uses — never a duplicate "party
+/// product" catalog.
+enum _ProductSelectorPhase { idle, loading, ready, empty, failure }
+
+class _ProductSelectorDialog extends StatefulWidget {
+  const _ProductSelectorDialog({required this.catalogAdminGateway});
+  final PosCatalogAdminGateway catalogAdminGateway;
+
+  @override
+  State<_ProductSelectorDialog> createState() => _ProductSelectorDialogState();
+}
+
+class _ProductSelectorDialogState extends State<_ProductSelectorDialog> {
+  final _searchController = TextEditingController();
+  _ProductSelectorPhase _phase = _ProductSelectorPhase.idle;
+  List<PosCatalogProduct> _items = const [];
+  String? _errorMessage;
+  Timer? _debounce;
+  // TASK 16.20A (Part 19) — checked once up front (independent of the
+  // per-query `empty` phase above, which only means "no results for THIS
+  // search") so an operator whose tenant genuinely has no active products
+  // sees honest guidance immediately, before typing anything.
+  bool _catalogEmpty = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_checkCatalogEmpty());
+  }
+
+  Future<void> _checkCatalogEmpty() async {
+    try {
+      final page = await widget.catalogAdminGateway.listProducts(limit: 1);
+      if (!mounted) return;
+      if (page.items.isEmpty && page.nextCursor == null) {
+        setState(() => _catalogEmpty = true);
+      }
+    } on Object {
+      // Non-fatal — falls back to the per-search empty/failure states.
+    }
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _phase = _ProductSelectorPhase.idle;
+        _items = const [];
+      });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 350), () => unawaited(_search(query)));
+  }
+
+  Future<void> _search(String query) async {
+    setState(() {
+      _phase = _ProductSelectorPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.catalogAdminGateway.listProducts(search: query, limit: 25);
+      if (!mounted) return;
+      final active = page.items.where((p) => p.status == 'active').toList(growable: false);
+      setState(() {
+        _items = active;
+        _phase = active.isEmpty ? _ProductSelectorPhase.empty : _ProductSelectorPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ProductSelectorPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ProductSelectorPhase.failure;
+        _errorMessage = 'No fue posible buscar productos.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text('Buscar producto', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+                  IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-fiestas-consumable-product-search'),
+                controller: _searchController,
+                autofocus: true,
+                onChanged: _onQueryChanged,
+                decoration: const InputDecoration(isDense: true, hintText: 'Nombre o código', prefixIcon: Icon(Icons.search)),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: switch (_phase) {
+                  _ProductSelectorPhase.idle => _catalogEmpty
+                      ? Padding(
+                          key: const Key('pos-fiestas-consumable-catalog-empty'),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Text(
+                            'No hay productos disponibles. Crea primero un producto en Catálogo.',
+                            style: TextStyle(color: palette.textSecondary),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                  _ProductSelectorPhase.loading => const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  _ProductSelectorPhase.empty => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Sin resultados para esta búsqueda.', style: TextStyle(color: palette.textSecondary)),
+                  ),
+                  _ProductSelectorPhase.failure => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text(_errorMessage ?? 'No fue posible buscar productos.', style: TextStyle(color: palette.error)),
+                  ),
+                  _ProductSelectorPhase.ready => ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _items.length,
+                    separatorBuilder: (context, index) => Divider(height: 1, color: palette.border),
+                    itemBuilder: (context, index) {
+                      final item = _items[index];
+                      return ListTile(
+                        key: Key('pos-fiestas-consumable-product-result-${item.id}'),
+                        dense: true,
+                        title: Text(item.name),
+                        subtitle: Text(
+                          item.tracksInventory ? '${item.code} · con inventario' : '${item.code} · sin inventario',
+                          style: TextStyle(fontSize: 11, color: palette.textMuted),
+                        ),
+                        onTap: () => Navigator.of(context).pop(item),
+                      );
+                    },
+                  ),
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 16.20A (Part 2) — a real variant picker, shown only when a
+/// product genuinely HAS more than one real variant (e.g. sock sizes
+/// modeled as variants) — omitted from the flow entirely for the common
+/// single-variant/non-tracked case, per the task's own "no forced
+/// variant step" expectation.
+class _VariantSelectorDialog extends StatelessWidget {
+  const _VariantSelectorDialog({required this.variants});
+  final List<PosProductVariant> variants;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380, maxHeight: 480),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text('Elegir variante', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+                  IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: variants.length,
+                  separatorBuilder: (context, index) => Divider(height: 1, color: palette.border),
+                  itemBuilder: (context, index) {
+                    final variant = variants[index];
+                    return ListTile(
+                      key: Key('pos-fiestas-consumable-variant-result-${variant.id}'),
+                      dense: true,
+                      title: Text(variant.name ?? variant.sku),
+                      subtitle: Text(variant.sku, style: TextStyle(fontSize: 11, color: palette.textMuted)),
+                      onTap: () => Navigator.of(context).pop(variant),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 16.20A (Part 3) — one draft row in the package consumables
+/// editor. `productId`/`productVariantId`/`productName`/`variantLabel`
+/// are always populated TOGETHER, from a real picker selection — never
+/// typed by hand (Part 1's own "never JSON, UUIDs, database IDs"
+/// requirement).
+class _ConsumableRow {
+  _ConsumableRow({
+    this.kind = 'sock',
+    String label = '',
+    String quantity = '1',
+    this.productId,
+    this.productVariantId,
+    this.productName,
+    this.variantLabel,
+    String size = '',
+  }) : labelController = TextEditingController(text: label),
+       quantityController = TextEditingController(text: quantity),
+       sizeController = TextEditingController(text: size);
+
+  String kind;
+  final TextEditingController labelController;
+  final TextEditingController quantityController;
+  final TextEditingController sizeController;
+  String? productId;
+  String? productVariantId;
+  String? productName;
+  String? variantLabel;
+
+  void dispose() {
+    labelController.dispose();
+    quantityController.dispose();
+    sizeController.dispose();
+  }
+}
+
 /// `POST/PATCH /party-packages` — General (name/code/price/duration/
 /// capacity), plus [_includeRows]/[_restrictionRows]: a simple key/value
 /// tag editor over the real `includes`/`restrictions` JSON (recovery doc
 /// Capability 5), never a raw-JSON textarea.
 class _PackageFormDialog extends StatefulWidget {
-  const _PackageFormDialog({required this.partiesGateway, required this.branchId, this.existing});
+  const _PackageFormDialog({
+    required this.partiesGateway,
+    required this.catalogAdminGateway,
+    required this.productVariantsGateway,
+    required this.branchId,
+    this.existing,
+  });
   final PosPartiesGateway partiesGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosProductVariantsGateway productVariantsGateway;
   final String? branchId;
   final PosPartyPackage? existing;
 
@@ -26268,6 +26602,19 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
   // itself treats an absent/empty list as).
   late Set<String> _eligibleRoomIds = {...?widget.existing?.eligibleRoomIds};
   List<PosPartyRoom> _availableRooms = const [];
+  // TASK 16.20A (Parts 1-5) — the real, catalog-backed consumables plan.
+  late final List<_ConsumableRow> _consumableRows = [
+    for (final item in widget.existing?.includedConsumables ?? const <PosPartyIncludedConsumable>[])
+      _ConsumableRow(
+        kind: item.kind,
+        label: item.label,
+        quantity: _formatConsumableQuantity(item.quantity),
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        productName: item.label,
+        size: item.size ?? '',
+      ),
+  ];
   bool _busy = false;
   String? _error;
 
@@ -26322,6 +26669,7 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
     _extraHalfHourController.dispose();
     for (final row in _includeRows) row.dispose();
     for (final row in _restrictionRows) row.dispose();
+    for (final row in _consumableRows) row.dispose();
     super.dispose();
   }
 
@@ -26346,6 +26694,105 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
     final base = _mapFrom(_restrictionRows) ?? <String, Object?>{};
     if (_eligibleRoomIds.isNotEmpty) base['eligibleRoomIds'] = _eligibleRoomIds.toList(growable: false);
     return base.isEmpty ? null : base;
+  }
+
+  /// TASK 16.20A (Part 2) — opens the real product picker, then (only
+  /// when the chosen product genuinely has more than one real variant) a
+  /// variant picker. Never asks for a raw UUID; the operator only ever
+  /// sees real names.
+  Future<void> _addConsumable(String kind) async {
+    final product = await showDialog<PosCatalogProduct>(
+      context: context,
+      builder: (dialogContext) => _ProductSelectorDialog(catalogAdminGateway: widget.catalogAdminGateway),
+    );
+    if (product == null || !mounted) return;
+
+    String? variantId = product.defaultVariant?.id;
+    String? variantLabel;
+    if (product.tracksInventory) {
+      try {
+        final variantPage = await widget.productVariantsGateway.listVariants(product.id, limit: 50);
+        final activeVariants = variantPage.items.where((v) => v.status == 'active').toList(growable: false);
+        if (activeVariants.length > 1) {
+          if (!mounted) return;
+          final chosen = await showDialog<PosProductVariant>(
+            context: context,
+            builder: (dialogContext) => _VariantSelectorDialog(variants: activeVariants),
+          );
+          if (chosen == null || !mounted) return; // operator cancelled the variant step — abandon the whole add.
+          variantId = chosen.id;
+          variantLabel = chosen.name ?? chosen.sku;
+        } else if (activeVariants.length == 1) {
+          variantId = activeVariants.single.id;
+          variantLabel = activeVariants.single.name ?? activeVariants.single.sku;
+        }
+      } on Object {
+        // Non-fatal — falls back to the product's own default variant
+        // (already assigned above), matching `_loadRooms`'s own
+        // established "a picker failure never blocks the rest of the
+        // form" convention.
+      }
+    }
+
+    // TASK 16.20A (Part 3) — reject an accidental duplicate row (same
+    // product + same resolved variant) rather than silently adding or
+    // merging a second line for it. A row with NO stored variant id
+    // (e.g. one set via the legacy JSON-body API before this UI
+    // existed, confirmed live against real "Freshness QA Retail" data
+    // during this task's own certification) is treated as occupying
+    // that product's one slot regardless of which real variant a new
+    // pick resolves to — only two rows that both carry genuinely
+    // DIFFERENT non-null variant ids for the same product (e.g. two
+    // distinct sock sizes modeled as variants) are allowed to coexist.
+    final alreadyPresent = _consumableRows.any(
+      (row) =>
+          row.productId == product.id &&
+          (row.productVariantId == null || variantId == null || row.productVariantId == variantId),
+    );
+    if (alreadyPresent) {
+      if (!mounted) return;
+      _showNotice(context, 'Este producto ya está en la lista de consumibles incluidos.');
+      return;
+    }
+
+    setState(() {
+      _consumableRows.add(
+        _ConsumableRow(
+          kind: kind,
+          label: product.name,
+          productId: product.id,
+          productVariantId: variantId,
+          productName: product.name,
+          variantLabel: variantLabel,
+          size: kind == 'sock' ? product.name : '',
+        ),
+      );
+    });
+  }
+
+  /// TASK 16.20A (Part 3) — builds the real `included_consumables`
+  /// payload from the current rows; a row missing its required fields
+  /// (should be impossible via the picker flow, but defensive) is
+  /// skipped rather than sent malformed.
+  List<PosPartyIncludedConsumable>? _consumablesPayload() {
+    final result = <PosPartyIncludedConsumable>[];
+    for (final row in _consumableRows) {
+      final quantity = double.tryParse(row.quantityController.text.trim());
+      if (quantity == null || quantity <= 0) continue;
+      final label = row.labelController.text.trim().isEmpty ? (row.productName ?? '') : row.labelController.text.trim();
+      if (label.isEmpty || row.productId == null) continue;
+      result.add(
+        PosPartyIncludedConsumable(
+          kind: row.kind,
+          label: label,
+          quantity: quantity,
+          productId: row.productId,
+          productVariantId: row.productVariantId,
+          size: row.kind == 'sock' ? (row.sizeController.text.trim().isEmpty ? label : row.sizeController.text.trim()) : null,
+        ),
+      );
+    }
+    return result;
   }
 
   Future<void> _submit() async {
@@ -26394,6 +26841,7 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
             taxCode: _taxCode,
             includes: _mapFrom(_includeRows),
             restrictions: _restrictionsPayload(),
+            includedConsumables: _consumablesPayload(),
           ),
           version: widget.existing!.version,
         );
@@ -26415,6 +26863,7 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
             taxCode: _taxCode,
             includes: _mapFrom(_includeRows),
             restrictions: _restrictionsPayload(),
+            includedConsumables: _consumablesPayload(),
           ),
         );
       }
@@ -26467,6 +26916,106 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
           icon: const Icon(Icons.add, size: 16),
           label: const Text('Agregar campo'),
         ),
+      ],
+    );
+  }
+
+  /// TASK 16.20A (Parts 1, 3, 5) — the real "CONSUMIBLES INCLUIDOS" editor.
+  /// Every row here always came from a real catalog selection via
+  /// [_addConsumable] (product name + optional variant label); the
+  /// operator only ever edits a quantity or removes a row — never types a
+  /// product id, a variant id, or JSON. Split into two labeled groups
+  /// (calcetas / snacks) purely for readability — both write into the same
+  /// [_consumableRows] list and the same `included_consumables` payload.
+  Widget _consumablesEditor() {
+    final palette = PosPalette.of(context);
+
+    Widget row(int index) {
+      final item = _consumableRows[index];
+      final subtitleParts = <String>[
+        if (item.variantLabel != null && item.variantLabel!.isNotEmpty) item.variantLabel!,
+        if (item.kind == 'sock' && item.sizeController.text.trim().isNotEmpty) 'Talla: ${item.sizeController.text.trim()}',
+      ];
+      return Padding(
+        key: ValueKey('pos-fiestas-consumable-row-$index-${item.productId}-${item.productVariantId ?? 'default'}'),
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.productName ?? item.labelController.text,
+                    style: TextStyle(color: palette.text, fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  if (subtitleParts.isNotEmpty)
+                    Text(subtitleParts.join(' · '), style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 64,
+              child: TextField(
+                key: Key('pos-fiestas-consumable-quantity-$index'),
+                controller: item.quantityController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                textAlign: TextAlign.center,
+                decoration: const InputDecoration(isDense: true, hintText: 'Cant.'),
+              ),
+            ),
+            IconButton(
+              key: Key('pos-fiestas-consumable-remove-$index'),
+              tooltip: 'Quitar',
+              onPressed: () => setState(() {
+                item.dispose();
+                _consumableRows.removeAt(index);
+              }),
+              icon: const Icon(Icons.remove_circle_outline, size: 18),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget group(String title, String kind, String addLabel, Key addKey) {
+      final indexes = [for (var i = 0; i < _consumableRows.length; i++) if (_consumableRows[i].kind == kind) i];
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: TextStyle(color: palette.textMuted, fontWeight: FontWeight.w700, fontSize: 11)),
+          const SizedBox(height: 4),
+          if (indexes.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text('Sin consumibles de este tipo.', style: TextStyle(color: palette.textMuted, fontSize: 11)),
+            ),
+          for (final index in indexes) row(index),
+          TextButton.icon(
+            key: addKey,
+            onPressed: _busy ? null : () => unawaited(_addConsumable(kind)),
+            icon: const Icon(Icons.add, size: 16),
+            label: Text(addLabel),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('CONSUMIBLES INCLUIDOS', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 2),
+        Text(
+          'Productos del catálogo que este paquete entrega automáticamente en cada reservación.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11),
+        ),
+        const SizedBox(height: 8),
+        group('Calcetas', 'sock', '+ Agregar consumible (calceta)', const Key('pos-fiestas-package-add-sock')),
+        const SizedBox(height: 10),
+        group('Snacks y bebidas', 'snack', '+ Agregar consumible (snack)', const Key('pos-fiestas-package-add-snack')),
       ],
     );
   }
@@ -26659,6 +27208,8 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
                         ),
                     ],
                   ),
+                const SizedBox(height: 16),
+                _consumablesEditor(),
                 const SizedBox(height: 16),
                 _tagEditor('Incluye', _includeRows, const Key('pos-fiestas-package-includes-add')),
                 const SizedBox(height: 16),
@@ -27401,6 +27952,116 @@ Future<String?> _confirmIssueQuantity(
   );
 }
 
+/// TASK 16.20A (Parts 7-13) — the real "Corregir entrega" dialog: shows
+/// the currently-registered quantity, an editable "Cantidad correcta"
+/// field, and a live preview of the resulting inventory movement, before
+/// the operator explicitly confirms. This is the ONLY UI path to the
+/// backend's compensating-ledger `correctSock`/`correctSnack` — it never
+/// implies the ORIGINAL issue movement is being edited: a downward
+/// correction posts a NEW `return` movement (stock comes back), an
+/// upward correction posts ANOTHER `issue` movement (more stock goes
+/// out), both traceable to the same reservation line (Part 12). This
+/// dialog only ever touches the physical quantity/inventory — never
+/// event pricing (Part 13).
+Future<String?> _confirmCorrectQuantity(
+  BuildContext context, {
+  required String title,
+  required String productLabel,
+  required String registeredQuantity,
+  required bool allowDecimal,
+}) {
+  return showDialog<String>(
+    context: context,
+    builder: (dialogContext) => _ConsumableCorrectionDialog(
+      title: title,
+      productLabel: productLabel,
+      registeredQuantity: registeredQuantity,
+      allowDecimal: allowDecimal,
+    ),
+  );
+}
+
+class _ConsumableCorrectionDialog extends StatefulWidget {
+  const _ConsumableCorrectionDialog({
+    required this.title,
+    required this.productLabel,
+    required this.registeredQuantity,
+    required this.allowDecimal,
+  });
+  final String title;
+  final String productLabel;
+  final String registeredQuantity;
+  final bool allowDecimal;
+
+  @override
+  State<_ConsumableCorrectionDialog> createState() => _ConsumableCorrectionDialogState();
+}
+
+class _ConsumableCorrectionDialogState extends State<_ConsumableCorrectionDialog> {
+  late final _controller = TextEditingController(text: widget.registeredQuantity);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  /// `null` while the field can't be parsed yet (e.g. empty mid-edit).
+  String? _consequence() {
+    final registered = double.tryParse(widget.registeredQuantity);
+    final corrected = double.tryParse(_controller.text.trim());
+    if (registered == null || corrected == null) return null;
+    final delta = corrected - registered;
+    if (delta == 0) return 'Sin cambios: no se registrará ningún movimiento de inventario.';
+    if (delta < 0) {
+      return 'Se regresarán ${_formatConsumableQuantity(-delta)} unidades al inventario (entrada de inventario).';
+    }
+    return 'Se descontarán ${_formatConsumableQuantity(delta)} unidades adicionales del inventario (salida de inventario).';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final consequence = _consequence();
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Producto: ${widget.productLabel}', style: TextStyle(color: palette.text, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text('Cantidad registrada: ${widget.registeredQuantity}', style: TextStyle(color: palette.textSecondary, fontSize: 13)),
+            const SizedBox(height: 10),
+            TextField(
+              key: const Key('pos-fiestas-correction-quantity-field'),
+              controller: _controller,
+              autofocus: true,
+              keyboardType: TextInputType.numberWithOptions(decimal: widget.allowDecimal),
+              decoration: const InputDecoration(labelText: 'Cantidad correcta', isDense: true),
+              onChanged: (_) => setState(() {}),
+            ),
+            if (consequence != null) ...[
+              const SizedBox(height: 10),
+              Text(consequence, key: const Key('pos-fiestas-correction-consequence'), style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancelar')),
+        FilledButton(
+          key: const Key('pos-fiestas-correction-confirm'),
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Corregir entrega'),
+        ),
+      ],
+    );
+  }
+}
+
 class _SnacksSection extends StatefulWidget {
   const _SnacksSection({
     required this.reservationId,
@@ -27429,6 +28090,7 @@ class _SnacksSectionState extends State<_SnacksSection> {
   bool _busy = false;
   String? _error;
   String? _deductingId;
+  String? _correctingId;
 
   @override
   void dispose() {
@@ -27501,6 +28163,41 @@ class _SnacksSectionState extends State<_SnacksSection> {
     }
   }
 
+  /// TASK 16.20A (Part 7-8) — the party-specific correction workflow for
+  /// an already-delivered snack line, through the compensating-ledger
+  /// `correctSnack` gateway method (never the generic inventory API).
+  Future<void> _correct(PosPartySnack snack) async {
+    final registered = snack.issuedQuantity ?? snack.quantity;
+    final corrected = await _confirmCorrectQuantity(
+      context,
+      title: 'Corregir entrega: ${snack.nameSnapshot}',
+      productLabel: snack.nameSnapshot,
+      registeredQuantity: registered,
+      allowDecimal: true,
+    );
+    if (corrected == null || corrected.isEmpty || !mounted) return;
+    final correctedValue = double.tryParse(corrected);
+    if (correctedValue == null || correctedValue < 0) {
+      _showNotice(context, 'La cantidad correcta debe ser un número mayor o igual a cero.');
+      return;
+    }
+    setState(() => _correctingId = snack.id);
+    try {
+      await widget.partiesGateway.correctSnack(widget.reservationId, snack.id, correctedQuantity: corrected);
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      _showNotice(context, posPartyErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      _showNotice(context, 'No fue posible corregir la entrega.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -27536,6 +28233,19 @@ class _SnacksSectionState extends State<_SnacksSection> {
                       child: _deductingId == snack.id
                           ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Text('Entregar'),
+                    ),
+                  ],
+                  // TASK 16.20A (Part 7) — offered ONLY once a line is
+                  // already delivered (mirrors `canDeduct`'s own
+                  // "pending only" gating, for the opposite state).
+                  if (widget.canManage && snack.isDeducted) ...[
+                    const SizedBox(width: 8),
+                    TextButton(
+                      key: Key('pos-fiestas-snack-correct-${snack.id}'),
+                      onPressed: _correctingId == snack.id ? null : () => unawaited(_correct(snack)),
+                      child: _correctingId == snack.id
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Corregir entrega'),
                     ),
                   ],
                 ],
@@ -27630,6 +28340,7 @@ class _SocksSectionState extends State<_SocksSection> {
   bool _busy = false;
   String? _error;
   String? _deductingId;
+  String? _correctingId;
 
   @override
   void dispose() {
@@ -27707,6 +28418,41 @@ class _SocksSectionState extends State<_SocksSection> {
     }
   }
 
+  /// TASK 16.20A (Part 7-8) — the party-specific correction workflow for
+  /// an already-delivered sock line, through the compensating-ledger
+  /// `correctSock` gateway method (never the generic inventory API).
+  Future<void> _correct(PosPartySock sock) async {
+    final registered = sock.issuedQuantity ?? sock.quantity;
+    final correctedText = await _confirmCorrectQuantity(
+      context,
+      title: 'Corregir entrega: calcetas talla ${sock.size}',
+      productLabel: 'Calcetas talla ${sock.size}',
+      registeredQuantity: registered.toString(),
+      allowDecimal: false,
+    );
+    if (correctedText == null || correctedText.isEmpty || !mounted) return;
+    final corrected = int.tryParse(correctedText);
+    if (corrected == null || corrected <= 0) {
+      _showNotice(context, 'La cantidad correcta debe ser un número entero mayor que cero.');
+      return;
+    }
+    setState(() => _correctingId = sock.id);
+    try {
+      await widget.partiesGateway.correctSock(widget.reservationId, sock.id, correctedQuantity: corrected);
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      _showNotice(context, posPartyErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      setState(() => _correctingId = null);
+      _showNotice(context, 'No fue posible corregir la entrega.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -27740,6 +28486,19 @@ class _SocksSectionState extends State<_SocksSection> {
                       child: _deductingId == sock.id
                           ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Text('Entregar'),
+                    ),
+                  ],
+                  // TASK 16.20A (Part 7) — offered ONLY once a line is
+                  // already delivered (mirrors `canDeduct`'s own
+                  // "pending only" gating, for the opposite state).
+                  if (widget.canManage && sock.isDeducted) ...[
+                    const SizedBox(width: 8),
+                    TextButton(
+                      key: Key('pos-fiestas-sock-correct-${sock.id}'),
+                      onPressed: _correctingId == sock.id ? null : () => unawaited(_correct(sock)),
+                      child: _correctingId == sock.id
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Corregir entrega'),
                     ),
                   ],
                 ],

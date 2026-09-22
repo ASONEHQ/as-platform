@@ -131,6 +131,49 @@ class PosPartyRoomInput {
   };
 }
 
+/// TASK 16.20A (Part 2) — one planned consumable entry inside a
+/// package's `included_consumables` (`includedConsumableHttp` in
+/// `party-packages.routes.ts`). `productId`/`productVariantId` are real
+/// catalog references, server-validated at save time (never a raw
+/// UUID an admin types by hand — the Flutter form always resolves these
+/// from a real product/variant picker).
+class PosPartyIncludedConsumable {
+  const PosPartyIncludedConsumable({
+    required this.kind,
+    required this.label,
+    required this.quantity,
+    this.productId,
+    this.productVariantId,
+    this.size,
+  });
+
+  factory PosPartyIncludedConsumable.fromJson(Map<String, Object?> json) => PosPartyIncludedConsumable(
+    kind: json['kind']! as String,
+    label: json['label']! as String,
+    quantity: (json['quantity']! as num).toDouble(),
+    productId: json['product_id'] as String?,
+    productVariantId: json['product_variant_id'] as String?,
+    size: json['size'] as String?,
+  );
+
+  /// `sock` | `snack`.
+  final String kind;
+  final String label;
+  final double quantity;
+  final String? productId;
+  final String? productVariantId;
+  final String? size;
+
+  Map<String, Object?> toJson() => {
+    'kind': kind,
+    'label': label,
+    'quantity': quantity,
+    if (productId != null) 'product_id': productId,
+    if (productVariantId != null) 'product_variant_id': productVariantId,
+    if (size != null) 'size': size,
+  };
+}
+
 /// A `party_packages` row (`packageHttp` in `party-packages.routes.ts`).
 /// [includes]/[restrictions] are the legacy's rich, admin-defined JSON
 /// structure (recovery doc Capability 5) — rendered as a simple key/value
@@ -155,6 +198,7 @@ class PosPartyPackage {
     required this.taxCode,
     required this.includes,
     required this.restrictions,
+    required this.includedConsumables,
     required this.version,
     required this.createdAt,
     required this.updatedAt,
@@ -179,6 +223,12 @@ class PosPartyPackage {
     taxCode: json['tax_code'] as String? ?? 'IVA_GENERAL',
     includes: json['includes'] is Map<String, Object?> ? json['includes']! as Map<String, Object?> : null,
     restrictions: json['restrictions'] is Map<String, Object?> ? json['restrictions']! as Map<String, Object?> : null,
+    includedConsumables: json['included_consumables'] is List<Object?>
+        ? (json['included_consumables']! as List<Object?>)
+              .whereType<Map<String, Object?>>()
+              .map(PosPartyIncludedConsumable.fromJson)
+              .toList(growable: false)
+        : const [],
     version: json['version']! as int,
     createdAt: DateTime.parse(json['created_at']! as String),
     updatedAt: DateTime.parse(json['updated_at']! as String),
@@ -207,6 +257,11 @@ class PosPartyPackage {
   final String taxCode;
   final Map<String, Object?>? includes;
   final Map<String, Object?>? restrictions;
+
+  /// TASK 16.20A — the real, catalog-backed planned socks/snacks this
+  /// package auto-plans at booking time. Always a list, never null
+  /// (empty = no consumables configured).
+  final List<PosPartyIncludedConsumable> includedConsumables;
   final int version;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -248,6 +303,7 @@ class PosPartyPackageInput {
     this.taxCode,
     this.includes,
     this.restrictions,
+    this.includedConsumables,
   });
 
   final String? branchId;
@@ -268,6 +324,11 @@ class PosPartyPackageInput {
   final Map<String, Object?>? includes;
   final Map<String, Object?>? restrictions;
 
+  /// TASK 16.20A — `null` means "don't change this field" (matches every
+  /// other optional field's own PATCH semantics); an empty list is a
+  /// real, explicit "no consumables" — never conflated with "unset".
+  final List<PosPartyIncludedConsumable>? includedConsumables;
+
   Map<String, Object?> toJson() => {
     if (branchId != null) 'branch_id': branchId,
     if (code != null) 'code': code,
@@ -286,6 +347,7 @@ class PosPartyPackageInput {
     if (taxCode != null) 'tax_code': taxCode,
     if (includes != null) 'includes': includes,
     if (restrictions != null) 'restrictions': restrictions,
+    if (includedConsumables != null) 'included_consumables': includedConsumables!.map((e) => e.toJson()).toList(growable: false),
   };
 }
 

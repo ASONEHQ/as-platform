@@ -1097,6 +1097,383 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     });
   });
 
+  // TASK 16.20A (Parts 7-17) — the party-specific correction workflow: a
+  // real, delta-only compensating movement for an already-issued
+  // consumable, reusing TASK 16.20's own certified inventory-posting
+  // architecture (never the generic full-movement reversal endpoint,
+  // never editing/deleting the original movement).
+  // TASK 16.20A (Parts 1-5, 18, 21) — real, tenant-scoped FK validation
+  // for a package's `included_consumables`, and the mandatory proof that
+  // editing a package's consumables never retroactively mutates an
+  // already-created reservation's own planned quantities.
+  describe('TASK 16.20A — package consumables: validation and historical snapshot safety', () => {
+    let adminProductId: string;
+    let adminVariantId: string;
+    let otherProductVariantId: string;
+
+    beforeAll(async () => {
+      adminProductId = randomUUID();
+      const otherProductId = randomUUID();
+      await database.pool.query(
+        `insert into products (id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+         values($1,$2,'ADMIN-SOCK','admin-sock','Admin Test Sock','simple',true,'IVA_EXEMPT','active',$3,$3),
+               ($4,$2,'ADMIN-OTHER','admin-other','Admin Other Product','simple',true,'IVA_EXEMPT','active',$3,$3)`,
+        [adminProductId, companyId, userId, otherProductId],
+      );
+      adminVariantId = randomUUID();
+      otherProductVariantId = randomUUID();
+      await database.pool.query(
+        `insert into product_variants
+         (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+         values($1,$2,$3,'ADMIN-SOCK-DEFAULT','admin-sock-default','Admin Sock','unit',0,true,5,'MXN',true,$4,'active',$5,$5),
+               ($6,$2,$7,'ADMIN-OTHER-DEFAULT','admin-other-default','Admin Other','unit',0,true,5,'MXN',true,$8,'active',$5,$5)`,
+        [adminVariantId, companyId, adminProductId, '1'.repeat(64), userId, otherProductVariantId, otherProductId, '2'.repeat(64)],
+      );
+    });
+
+    it('rejects a JSON entry naming a productId that does not exist in this company\'s catalog', async () => {
+      await expect(
+        packages.createPackage(context(companyId, userId), branchIds, `pkg-badproduct-${randomUUID()}`, {
+          branchId,
+          code: `BADPROD-${randomUUID().slice(0, 8)}`,
+          name: 'Bad Product Package',
+          price: '500.0000',
+          durationMinutes: 60,
+          includedConsumables: [{ kind: 'sock', label: 'Ghost Sock', quantity: 5, productId: randomUUID() }],
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+
+    it('rejects a productVariantId that does not belong to the given productId', async () => {
+      await expect(
+        packages.createPackage(context(companyId, userId), branchIds, `pkg-badvariant-${randomUUID()}`, {
+          branchId,
+          code: `BADVAR-${randomUUID().slice(0, 8)}`,
+          name: 'Bad Variant Package',
+          price: '500.0000',
+          durationMinutes: 60,
+          includedConsumables: [
+            { kind: 'sock', label: 'Mismatched Sock', quantity: 5, productId: adminProductId, productVariantId: otherProductVariantId },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+
+    it('rejects a duplicate entry for the same product/variant — never silently merged', async () => {
+      await expect(
+        packages.createPackage(context(companyId, userId), branchIds, `pkg-dup-${randomUUID()}`, {
+          branchId,
+          code: `DUP-${randomUUID().slice(0, 8)}`,
+          name: 'Duplicate Package',
+          price: '500.0000',
+          durationMinutes: 60,
+          includedConsumables: [
+            { kind: 'sock', label: 'Sock A', quantity: 5, productId: adminProductId, productVariantId: adminVariantId },
+            { kind: 'sock', label: 'Sock A again', quantity: 3, productId: adminProductId, productVariantId: adminVariantId },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+
+    it('rejects a non-positive quantity', async () => {
+      await expect(
+        packages.createPackage(context(companyId, userId), branchIds, `pkg-zeroqty-${randomUUID()}`, {
+          branchId,
+          code: `ZEROQTY-${randomUUID().slice(0, 8)}`,
+          name: 'Zero Quantity Package',
+          price: '500.0000',
+          durationMinutes: 60,
+          includedConsumables: [{ kind: 'sock', label: 'Zero Sock', quantity: 0, productId: adminProductId }],
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+
+    it('persists a valid, tenant-scoped included_consumables array with an explicit variant, returned unchanged on read', async () => {
+      const created = await packages.createPackage(context(companyId, userId), branchIds, `pkg-valid-${randomUUID()}`, {
+        branchId,
+        code: `VALID-${randomUUID().slice(0, 8)}`,
+        name: 'Valid Consumables Package',
+        price: '500.0000',
+        durationMinutes: 60,
+        includedConsumables: [{ kind: 'sock', label: 'Real Sock', quantity: 5, productId: adminProductId, productVariantId: adminVariantId }],
+      });
+      expect(created.value.includedConsumables).toEqual([
+        { kind: 'sock', label: 'Real Sock', quantity: 5, productId: adminProductId, productVariantId: adminVariantId },
+      ]);
+      const reread = await packages.packageRow(companyId, branchIds, created.value.id);
+      expect(reread.includedConsumables).toEqual(created.value.includedConsumables);
+    });
+
+    // Part 18 — the mandatory proof: editing a package's consumables
+    // must NEVER retroactively rewrite an already-created reservation's
+    // own planned quantities; only a NEW reservation picks up the edit.
+    it('editing a package after a reservation exists leaves that reservation\'s planned quantities untouched; a later reservation uses the edited values', async () => {
+      const pkg = await packages.createPackage(context(companyId, userId), branchIds, `pkg-snapshot-${randomUUID()}`, {
+        branchId,
+        code: `SNAP-${randomUUID().slice(0, 8)}`,
+        name: 'Snapshot Safety Package',
+        price: '800.0000',
+        durationMinutes: 60,
+        includedConsumables: [{ kind: 'sock', label: 'Snapshot Sock', quantity: 25, productId: adminProductId, productVariantId: adminVariantId }],
+      });
+
+      const reservationA = await reservations.createReservation(context(companyId, userId), branchIds, `res-snap-a-${randomUUID()}`, {
+        branchId,
+        roomId: roomB,
+        packageId: pkg.value.id,
+        eventDate: '2027-04-01',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const detailA = await reservations.reservationDetail(companyId, branchIds, reservationA.value.id);
+      expect(detailA.socks[0]?.quantity).toBe(25);
+
+      // Edit the package's own consumables plan AFTER reservation A exists.
+      await packages.updatePackage(context(companyId, userId), branchIds, pkg.value.id, pkg.value.version, {
+        includedConsumables: [{ kind: 'sock', label: 'Snapshot Sock', quantity: 30, productId: adminProductId, productVariantId: adminVariantId }],
+      });
+
+      // Reservation A's own already-created plan is untouched.
+      const detailAAfterEdit = await reservations.reservationDetail(companyId, branchIds, reservationA.value.id);
+      expect(detailAAfterEdit.socks[0]?.quantity).toBe(25);
+      expect(detailAAfterEdit.socks[0]?.id).toBe(detailA.socks[0]?.id); // the SAME row, never replaced.
+
+      // A NEW reservation created after the edit uses the updated plan.
+      const reservationB = await reservations.createReservation(context(companyId, userId), branchIds, `res-snap-b-${randomUUID()}`, {
+        branchId,
+        roomId: roomB,
+        packageId: pkg.value.id,
+        eventDate: '2027-04-02',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const detailB = await reservations.reservationDetail(companyId, branchIds, reservationB.value.id);
+      expect(detailB.socks[0]?.quantity).toBe(30);
+    });
+  });
+
+  describe('TASK 16.20A — consumable correction workflow', () => {
+    let sockVariantId: string;
+    let drinkVariantId: string;
+    let correctionLocationId: string;
+    let correctionPackageId: string;
+
+    async function balanceOf(variantId: string): Promise<string> {
+      const row = await database.pool.query<{ quantity_on_hand: string }>(
+        `select quantity_on_hand::text from inventory_balances where company_id=$1 and branch_id=$2 and product_variant_id=$3`,
+        [companyId, branchId, variantId],
+      );
+      return row.rows[0]?.quantity_on_hand ?? 'MISSING';
+    }
+    async function movementsFor(referenceType: string, referenceId: string): Promise<readonly { movement_type: string; quantity: string }[]> {
+      const rows = await database.pool.query<{ movement_type: string; quantity: string }>(
+        `select m.movement_type, l.quantity::text
+         from inventory_movements m
+         join inventory_movement_lines l on l.inventory_movement_id=m.id
+         where m.company_id=$1 and m.reference_type=$2 and m.reference_id=$3
+         order by m.created_at asc`,
+        [companyId, referenceType, referenceId],
+      );
+      return rows.rows;
+    }
+
+    beforeAll(async () => {
+      correctionLocationId = randomUUID();
+      await database.pool.query(
+        `insert into inventory_locations (id,company_id,branch_id,code,normalized_code,name,location_type,status,allows_receiving,allows_issuing,is_default,created_by,updated_by)
+         values($1,$2,$3,'CORRECTLOC','correctloc','Correction Test Location','event_storage','active',true,true,false,$4,$4)`,
+        [correctionLocationId, companyId, branchId, userId],
+      );
+      await database.pool.query(`update inventory_locations set is_default=false where id=$1`, [inventoryLocationId]);
+      await database.pool.query(`update inventory_locations set is_default=true where id=$1`, [correctionLocationId]);
+
+      const sockProductId = randomUUID();
+      const drinkProductId = randomUUID();
+      await database.pool.query(
+        `insert into products (id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+         values($1,$2,'CORR-SOCK','corr-sock','Correction Sock','simple',true,'IVA_EXEMPT','active',$3,$3),
+               ($4,$2,'CORR-DRINK','corr-drink','Correction Drink','simple',true,'IVA_GENERAL','active',$3,$3)`,
+        [sockProductId, companyId, userId, drinkProductId],
+      );
+      sockVariantId = randomUUID();
+      drinkVariantId = randomUUID();
+      await database.pool.query(
+        `insert into product_variants
+         (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+         values($1,$2,$3,'CORR-SOCK-DEFAULT','corr-sock-default','Correction Sock','unit',0,true,5,'MXN',true,$4,'active',$5,$5),
+               ($6,$2,$7,'CORR-DRINK-DEFAULT','corr-drink-default','Correction Drink','unit',6,true,3,'MXN',true,$8,'active',$5,$5)`,
+        [sockVariantId, companyId, sockProductId, '8'.repeat(64), userId, drinkVariantId, drinkProductId, '9'.repeat(64)],
+      );
+      // A large starting stock (not 100) — this describe block runs
+      // MANY sequential tests against the SAME shared variant/balance
+      // (fresh reservations, but cumulative stock), so every test below
+      // asserts RELATIVE deltas around its own `before` snapshot, never
+      // a hardcoded absolute total — this starting size just needs to be
+      // comfortably larger than the sum of everything this block ever
+      // issues, so no test's own insufficient-stock assertion is ever
+      // accidentally triggered by a PRIOR test's cumulative consumption.
+      await database.pool.query(
+        `insert into inventory_balances (id,company_id,branch_id,inventory_location_id,product_variant_id,quantity_on_hand,quantity_reserved,quantity_in_transit,average_unit_cost,version)
+         values($1,$2,$3,$4,$5,'100000',0,0,0,1),($6,$2,$3,$4,$7,'100000.000000',0,0,0,1)`,
+        [randomUUID(), companyId, branchId, correctionLocationId, sockVariantId, randomUUID(), drinkVariantId],
+      );
+      const pkgResult = await packages.createPackage(context(companyId, userId), branchIds, `pkg-corr-${randomUUID()}`, {
+        branchId,
+        code: 'CORR-PKG',
+        name: 'Correction Package',
+        price: '1000.0000',
+        durationMinutes: 60,
+        includedConsumables: [
+          { kind: 'sock', label: 'Correction Sock', quantity: 25, productId: sockProductId, size: 'Unica' },
+          { kind: 'snack', label: 'Correction Drink', quantity: 25, productId: drinkProductId },
+        ],
+      });
+      correctionPackageId = pkgResult.value.id;
+    });
+
+    afterAll(async () => {
+      await database.pool.query(`update inventory_locations set is_default=false where id=$1`, [correctionLocationId]);
+      await database.pool.query(`update inventory_locations set is_default=true where id=$1`, [inventoryLocationId]);
+    });
+
+    async function freshReservation(eventDate: string): Promise<{ id: string; sockLineId: string; snackLineId: string }> {
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-corr-${randomUUID()}`, {
+        branchId,
+        roomId: roomB,
+        packageId: correctionPackageId,
+        eventDate,
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      const detail = await reservations.reservationDetail(companyId, branchIds, created.value.id);
+      return { id: created.value.id, sockLineId: detail.socks[0]?.id ?? '', snackLineId: detail.snacks[0]?.id ?? '' };
+    }
+
+    it('downward correction: issue 25, correct to 23 — net -23, a +2 compensating return, original movement untouched', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-01');
+      const before = Number(await balanceOf(sockVariantId));
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId);
+      expect(before - Number(await balanceOf(sockVariantId))).toBe(25);
+
+      const corrected = await reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 23 });
+      expect(corrected.issuedQuantity).toBe(23);
+      expect(before - Number(await balanceOf(sockVariantId))).toBe(23); // net consumption is now exactly 23, not 25.
+
+      const movements = await movementsFor('party_reservation_sock', sockLineId);
+      expect(movements).toEqual([
+        { movement_type: 'issue', quantity: '25.000000' },
+        { movement_type: 'return', quantity: '2.000000' },
+      ]);
+    });
+
+    it('retrying the identical correction is idempotent — no duplicate movement posted', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-02');
+      const before = Number(await balanceOf(sockVariantId));
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId);
+      await reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 23 });
+      const afterFirstCorrection = Number(await balanceOf(sockVariantId));
+      await reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 23 });
+      await reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 23 });
+
+      const movements = await movementsFor('party_reservation_sock', sockLineId);
+      expect(movements).toHaveLength(2); // original issue + exactly ONE correction, never three.
+      expect(before - afterFirstCorrection).toBe(23);
+      expect(Number(await balanceOf(sockVariantId))).toBe(afterFirstCorrection); // the two retries changed nothing further.
+    });
+
+    it('upward correction: 23 corrected up to 25 — an additional -2 issue movement, net consumption -25', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-03');
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId, { issuedQuantity: 23 });
+      const stockAfterIssue = await balanceOf(sockVariantId);
+
+      const corrected = await reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 25 });
+      expect(corrected.issuedQuantity).toBe(25);
+      expect(Number(stockAfterIssue) - Number(await balanceOf(sockVariantId))).toBe(2);
+
+      const movements = await movementsFor('party_reservation_sock', sockLineId);
+      expect(movements).toEqual([
+        { movement_type: 'issue', quantity: '23.000000' },
+        { movement_type: 'issue', quantity: '2.000000' },
+      ]);
+    });
+
+    it('an upward correction beyond available stock is honestly rejected, never a fabricated success', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-04');
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId, { issuedQuantity: 1 });
+      const stockBefore = await balanceOf(sockVariantId);
+      await expect(
+        reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 999_999 }),
+      ).rejects.toMatchObject({ code: 'insufficient_inventory' });
+      expect(await balanceOf(sockVariantId)).toBe(stockBefore);
+    });
+
+    it('rejects correcting a line that was never delivered', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-05');
+      await expect(
+        reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 10 }),
+      ).rejects.toMatchObject({ code: 'resource_conflict' });
+    });
+
+    it('correcting the snack line works identically (decimal quantity) and stays independent of socks', async () => {
+      const { id, snackLineId } = await freshReservation('2027-03-06');
+      const before = Number(await balanceOf(drinkVariantId));
+      await reservations.deductSnack(context(companyId, userId), branchIds, id, snackLineId, { issuedQuantity: '25' });
+      expect(before - Number(await balanceOf(drinkVariantId))).toBe(25);
+
+      const corrected = await reservations.correctSnack(context(companyId, userId), branchIds, id, snackLineId, { correctedQuantity: '20' });
+      expect(corrected.issuedQuantity).toBe('20.000000');
+      expect(before - Number(await balanceOf(drinkVariantId))).toBe(20);
+
+      const movements = await movementsFor('party_reservation_snack', snackLineId);
+      expect(movements).toEqual([
+        { movement_type: 'issue', quantity: '25.000000' },
+        { movement_type: 'return', quantity: '5.000000' },
+      ]);
+    });
+
+    it('rejects a cross-tenant correction attempt with a clean not-found, never leaking or mutating another company\'s stock', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-07');
+      const before = Number(await balanceOf(sockVariantId));
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId);
+      await expect(
+        reservations.correctSock(context(otherCompanyId, otherCompanyUserId), [otherCompanyBranchId], id, sockLineId, { correctedQuantity: 1 }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+      // The rejected cross-tenant attempt changed nothing — stock
+      // reflects only this company's own real issue (25), never a
+      // leaked/foreign mutation.
+      expect(before - Number(await balanceOf(sockVariantId))).toBe(25);
+    });
+
+    it('concurrent corrections of the same line serialize safely — no lost update, no corrupted stock', async () => {
+      const { id, sockLineId } = await freshReservation('2027-03-08');
+      const before = Number(await balanceOf(sockVariantId));
+      await reservations.deductSock(context(companyId, userId), branchIds, id, sockLineId); // issued 25, stock -25
+      expect(before - Number(await balanceOf(sockVariantId))).toBe(25);
+
+      const [a, b] = await Promise.allSettled([
+        reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 20 }),
+        reservations.correctSock(context(companyId, userId), branchIds, id, sockLineId, { correctedQuantity: 18 }),
+      ]);
+      expect(a.status).toBe('fulfilled');
+      expect(b.status).toBe('fulfilled');
+
+      const finalRow = await database.pool.query<{ issued_quantity: number }>(
+        `select issued_quantity from party_reservation_socks where company_id=$1 and id=$2`,
+        [companyId, sockLineId],
+      );
+      const finalIssued = finalRow.rows[0]?.issued_quantity;
+      expect([18, 20]).toContain(finalIssued); // whichever correction committed last legitimately wins — never a third, corrupted value.
+      // Net consumption exactly matches the final issued quantity — no drift.
+      expect(before - Number(await balanceOf(sockVariantId))).toBe(finalIssued);
+      // Exactly 3 movements total: the original issue + one real
+      // correction per concurrent call (never fewer — both calls did
+      // real, distinct work relative to what they each observed after
+      // acquiring the row lock; never more — no phantom duplicates).
+      const movements = await movementsFor('party_reservation_sock', sockLineId);
+      expect(movements).toHaveLength(3);
+    });
+  });
+
   describe('status transitions (5-state machine)', () => {
     it('walks held -> pending_deposit -> confirmed -> completed, and rejects an invalid direct jump', async () => {
       const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-status-${randomUUID()}`, {
