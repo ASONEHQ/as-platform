@@ -54,14 +54,11 @@ enum _BranchListPhase { loading, empty, failure, ready }
 /// never has to guess/type a raw zone string by hand (the production
 /// incident this task fixes: a branch was saved with `"Mexico_City"`,
 /// which looks plausible but is not a real IANA identifier — the real one
-/// is `"America/Mexico_City"`). This is a UX convenience list, never the
-/// validation mechanism itself — every value below is independently real
-/// and already accepted by the backend's own runtime-native
-/// `Intl.DateTimeFormat`-based check (`isValidIanaTimezone` in
-/// `pricing.service.ts`), which remains authoritative and still accepts
-/// any other real IANA zone typed directly into the same field (this is a
-/// commercial multi-tenant platform, not limited to Mexico — see this
-/// list's own non-Mexico entries).
+/// is `"America/Mexico_City"`). TASK 16.17: the field is now a strict
+/// picker — free text can no longer be submitted; only a value chosen from
+/// this list (or, when editing, the branch's own already-saved zone) is
+/// accepted, so a non-IANA string can never reach the backend from this
+/// form. The backend's `isValidIanaTimezone` check remains authoritative.
 class _TimezoneOption {
   const _TimezoneOption(this.value, this.label);
 
@@ -73,6 +70,7 @@ class _TimezoneOption {
 }
 
 const _timezoneOptions = <_TimezoneOption>[
+  // México.
   _TimezoneOption('America/Mexico_City', 'Ciudad de México, Querétaro, Guadalajara (Zona Centro)'),
   _TimezoneOption('America/Cancun', 'Cancún, Quintana Roo (Zona Sureste)'),
   _TimezoneOption('America/Merida', 'Mérida, Yucatán'),
@@ -84,15 +82,77 @@ const _timezoneOptions = <_TimezoneOption>[
   _TimezoneOption('America/Tijuana', 'Tijuana, Baja California (Zona Noroeste)'),
   _TimezoneOption('America/Matamoros', 'Matamoros, Tamaulipas'),
   _TimezoneOption('UTC', 'UTC (horario universal coordinado)'),
-  _TimezoneOption('America/Bogota', 'Bogotá, Colombia'),
-  _TimezoneOption('America/Lima', 'Lima, Perú'),
+  // Resto de América (orden alfabético por identificador).
   _TimezoneOption('America/Argentina/Buenos_Aires', 'Buenos Aires, Argentina'),
-  _TimezoneOption('America/Santiago', 'Santiago, Chile'),
-  _TimezoneOption('America/Sao_Paulo', 'São Paulo, Brasil'),
-  _TimezoneOption('America/New_York', 'Nueva York, EE. UU. (hora del este)'),
+  _TimezoneOption('America/Asuncion', 'Asunción, Paraguay'),
+  _TimezoneOption('America/Bogota', 'Bogotá, Colombia'),
+  _TimezoneOption('America/Caracas', 'Caracas, Venezuela'),
   _TimezoneOption('America/Chicago', 'Chicago, EE. UU. (hora central)'),
+  _TimezoneOption('America/Costa_Rica', 'San José, Costa Rica'),
+  _TimezoneOption('America/Denver', 'Denver, EE. UU. (hora de las montañas)'),
+  _TimezoneOption('America/El_Salvador', 'San Salvador, El Salvador'),
+  _TimezoneOption('America/Guatemala', 'Ciudad de Guatemala, Guatemala'),
+  _TimezoneOption('America/Guayaquil', 'Guayaquil, Ecuador'),
+  _TimezoneOption('America/Halifax', 'Halifax, Canadá (hora del Atlántico)'),
+  _TimezoneOption('America/Havana', 'La Habana, Cuba'),
+  _TimezoneOption('America/Jamaica', 'Kingston, Jamaica'),
+  _TimezoneOption('America/La_Paz', 'La Paz, Bolivia'),
+  _TimezoneOption('America/Lima', 'Lima, Perú'),
   _TimezoneOption('America/Los_Angeles', 'Los Ángeles, EE. UU. (hora del Pacífico)'),
+  _TimezoneOption('America/Managua', 'Managua, Nicaragua'),
+  _TimezoneOption('America/Montevideo', 'Montevideo, Uruguay'),
+  _TimezoneOption('America/New_York', 'Nueva York, EE. UU. (hora del este)'),
+  _TimezoneOption('America/Panama', 'Ciudad de Panamá, Panamá'),
+  _TimezoneOption('America/Phoenix', 'Phoenix, EE. UU. (Arizona, sin horario de verano)'),
+  _TimezoneOption('America/Puerto_Rico', 'San Juan, Puerto Rico'),
+  _TimezoneOption('America/Santiago', 'Santiago, Chile'),
+  _TimezoneOption('America/Santo_Domingo', 'Santo Domingo, República Dominicana'),
+  _TimezoneOption('America/Sao_Paulo', 'São Paulo, Brasil'),
+  _TimezoneOption('America/Tegucigalpa', 'Tegucigalpa, Honduras'),
+  _TimezoneOption('America/Toronto', 'Toronto, Canadá'),
+  _TimezoneOption('America/Vancouver', 'Vancouver, Canadá'),
+  // Europa.
+  _TimezoneOption('Europe/Amsterdam', 'Ámsterdam, Países Bajos'),
+  _TimezoneOption('Europe/Athens', 'Atenas, Grecia'),
+  _TimezoneOption('Europe/Berlin', 'Berlín, Alemania'),
+  _TimezoneOption('Europe/Brussels', 'Bruselas, Bélgica'),
+  _TimezoneOption('Europe/Dublin', 'Dublín, Irlanda'),
+  _TimezoneOption('Europe/Helsinki', 'Helsinki, Finlandia'),
+  _TimezoneOption('Europe/Istanbul', 'Estambul, Turquía'),
+  _TimezoneOption('Europe/Lisbon', 'Lisboa, Portugal'),
+  _TimezoneOption('Europe/London', 'Londres, Reino Unido'),
   _TimezoneOption('Europe/Madrid', 'Madrid, España'),
+  _TimezoneOption('Europe/Moscow', 'Moscú, Rusia'),
+  _TimezoneOption('Europe/Paris', 'París, Francia'),
+  _TimezoneOption('Europe/Prague', 'Praga, República Checa'),
+  _TimezoneOption('Europe/Rome', 'Roma, Italia'),
+  _TimezoneOption('Europe/Stockholm', 'Estocolmo, Suecia'),
+  _TimezoneOption('Europe/Vienna', 'Viena, Austria'),
+  _TimezoneOption('Europe/Warsaw', 'Varsovia, Polonia'),
+  _TimezoneOption('Europe/Zurich', 'Zúrich, Suiza'),
+  // Asia.
+  _TimezoneOption('Asia/Bangkok', 'Bangkok, Tailandia'),
+  _TimezoneOption('Asia/Dubai', 'Dubái, Emiratos Árabes Unidos'),
+  _TimezoneOption('Asia/Hong_Kong', 'Hong Kong'),
+  _TimezoneOption('Asia/Jakarta', 'Yakarta, Indonesia'),
+  _TimezoneOption('Asia/Jerusalem', 'Jerusalén, Israel'),
+  _TimezoneOption('Asia/Kolkata', 'Calcuta / Nueva Delhi, India'),
+  _TimezoneOption('Asia/Manila', 'Manila, Filipinas'),
+  _TimezoneOption('Asia/Seoul', 'Seúl, Corea del Sur'),
+  _TimezoneOption('Asia/Shanghai', 'Shanghái / Pekín, China'),
+  _TimezoneOption('Asia/Singapore', 'Singapur'),
+  _TimezoneOption('Asia/Tokyo', 'Tokio, Japón'),
+  // África.
+  _TimezoneOption('Africa/Cairo', 'El Cairo, Egipto'),
+  _TimezoneOption('Africa/Johannesburg', 'Johannesburgo, Sudáfrica'),
+  _TimezoneOption('Africa/Lagos', 'Lagos, Nigeria'),
+  _TimezoneOption('Africa/Nairobi', 'Nairobi, Kenia'),
+  // Oceanía.
+  _TimezoneOption('Australia/Melbourne', 'Melbourne, Australia'),
+  _TimezoneOption('Australia/Perth', 'Perth, Australia'),
+  _TimezoneOption('Australia/Sydney', 'Sídney, Australia'),
+  _TimezoneOption('Pacific/Auckland', 'Auckland, Nueva Zelanda'),
+  _TimezoneOption('Pacific/Honolulu', 'Honolulu, Hawái'),
 ];
 
 /// The public "Sucursales" module screen. Constructed with the real
@@ -343,6 +403,7 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
   late String _status = widget.existing?.status ?? 'active';
   bool _busy = false;
   String? _error;
+  String? _timezoneError;
 
   bool get _isEdit => widget.existing != null;
 
@@ -363,9 +424,23 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
       setState(() => _error = 'Código, nombre y zona horaria son obligatorios.');
       return;
     }
+    // TASK 16.17 — only a value picked from the list (or, when editing, the
+    // branch's own already-saved zone) may be submitted: free text such as
+    // "Mexico_City" is blocked here, before any gateway call.
+    final timezoneAllowed =
+        _timezoneOptions.any((option) => option.value == timezone) ||
+        (_isEdit && timezone == widget.existing!.timezone);
+    if (!timezoneAllowed) {
+      setState(() {
+        _error = null;
+        _timezoneError = 'Elige una zona horaria de la lista.';
+      });
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
+      _timezoneError = null;
     });
     final input = PosBranchInput(
       code: code,
@@ -445,6 +520,9 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
                   textEditingController: _timezoneController,
                   focusNode: _timezoneFocusNode,
                   displayStringForOption: (option) => option.value,
+                  onSelected: (_) {
+                    if (_timezoneError != null) setState(() => _timezoneError = null);
+                  },
                   optionsBuilder: (textEditingValue) {
                     final query = textEditingValue.text.trim().toLowerCase();
                     if (query.isEmpty) return _timezoneOptions;
@@ -486,6 +564,9 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
                     key: const Key('pos-branch-admin-form-timezone'),
                     controller: controller,
                     focusNode: focusNode,
+                    onChanged: (_) {
+                      if (_timezoneError != null) setState(() => _timezoneError = null);
+                    },
                     decoration: const InputDecoration(
                       isDense: true,
                       labelText: 'Zona horaria',
@@ -493,6 +574,14 @@ class _BranchFormDialogState extends State<_BranchFormDialog> {
                     ),
                   ),
                 ),
+                if (_timezoneError != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    _timezoneError!,
+                    key: const Key('pos-branch-admin-form-timezone-error'),
+                    style: TextStyle(color: palette.error, fontSize: 12),
+                  ),
+                ],
                 if (_isEdit) ...[
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(

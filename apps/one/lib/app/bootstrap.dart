@@ -34,6 +34,7 @@ import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchase_orders_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
+import '../features/pos/pos_readiness_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
@@ -110,6 +111,7 @@ void bootstrap() {
       posBranchAdminGateway: ApiPosBranchAdminGateway(api),
       posBranchConsolidationGateway: ApiPosBranchConsolidationGateway(api),
       posOperationalAreasGateway: ApiPosOperationalAreasGateway(api),
+      posReadinessGateway: ApiPosReadinessGateway(api),
     ),
   );
   authController.bootstrapSession();

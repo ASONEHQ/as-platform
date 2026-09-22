@@ -466,7 +466,11 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
     if (branchId == null || !_canManage) return;
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _EmployeeFormDialog(gateway: widget.gateway, branchId: branchId),
+      builder: (dialogContext) => _EmployeeFormDialog(
+        gateway: widget.gateway,
+        branchId: branchId,
+        defaultCurrencyCode: widget.context.companyCurrencyCode,
+      ),
     );
     if (saved == true) unawaited(_load());
   }
@@ -474,7 +478,12 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
   Future<void> _openDetail(PosEmployee employee) async {
     final changed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _EmployeeDetailDialog(employee: employee, gateway: widget.gateway, canManage: _canManage),
+      builder: (dialogContext) => _EmployeeDetailDialog(
+        employee: employee,
+        gateway: widget.gateway,
+        canManage: _canManage,
+        defaultCurrencyCode: widget.context.companyCurrencyCode,
+      ),
     );
     if (changed == true) unawaited(_load());
   }
@@ -620,9 +629,18 @@ class _EmployeeRow extends StatelessWidget {
 /// edit`, both disabled+`Tooltip`-explained otherwise), so this dialog
 /// itself carries no separate internal permission gate.
 class _EmployeeFormDialog extends StatefulWidget {
-  const _EmployeeFormDialog({required this.gateway, required this.branchId, this.existing});
+  const _EmployeeFormDialog({
+    required this.gateway,
+    required this.branchId,
+    required this.defaultCurrencyCode,
+    this.existing,
+  });
   final PosEmployeesGateway gateway;
   final String branchId;
+
+  /// The tenant's own currency — the salary currency a new employee starts
+  /// with (`AuthenticatedContext.companyCurrencyCode`).
+  final String defaultCurrencyCode;
   final PosEmployee? existing;
 
   @override
@@ -637,7 +655,7 @@ class _EmployeeFormDialogState extends State<_EmployeeFormDialog> {
   late final _jobTitleController = TextEditingController(text: widget.existing?.jobTitle ?? '');
   late final _hireDateController = TextEditingController(text: widget.existing?.hireDate ?? '');
   late final _weeklySalaryController = TextEditingController(text: widget.existing?.weeklySalary ?? '');
-  late final _currencyController = TextEditingController(text: widget.existing?.currencyCode ?? 'MXN');
+  late final _currencyController = TextEditingController(text: widget.existing?.currencyCode ?? widget.defaultCurrencyCode);
   late final _userIdController = TextEditingController(text: widget.existing?.userId ?? '');
   late final _notesController = TextEditingController(text: widget.existing?.notes ?? '');
   bool _busy = false;
@@ -678,7 +696,7 @@ class _EmployeeFormDialogState extends State<_EmployeeFormDialog> {
       return;
     }
     if (currency.length != 3) {
-      setState(() => _error = 'La moneda debe tener 3 letras (ej. MXN).');
+      setState(() => _error = 'La moneda debe tener 3 letras (ej. ${widget.defaultCurrencyCode}).');
       return;
     }
     setState(() {
@@ -862,10 +880,16 @@ class _EmployeeFormDialogState extends State<_EmployeeFormDialog> {
 /// every mutating action inside (Editar/Desactivar/Reactivar) stays its own
 /// individually `employee.manage`-gated, disabled+`Tooltip`'d button.
 class _EmployeeDetailDialog extends StatefulWidget {
-  const _EmployeeDetailDialog({required this.employee, required this.gateway, required this.canManage});
+  const _EmployeeDetailDialog({
+    required this.employee,
+    required this.gateway,
+    required this.canManage,
+    required this.defaultCurrencyCode,
+  });
   final PosEmployee employee;
   final PosEmployeesGateway gateway;
   final bool canManage;
+  final String defaultCurrencyCode;
 
   @override
   State<_EmployeeDetailDialog> createState() => _EmployeeDetailDialogState();
@@ -882,7 +906,12 @@ class _EmployeeDetailDialogState extends State<_EmployeeDetailDialog> {
   Future<void> _edit() async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _EmployeeFormDialog(gateway: widget.gateway, branchId: _employee.branchId, existing: _employee),
+      builder: (dialogContext) => _EmployeeFormDialog(
+        gateway: widget.gateway,
+        branchId: _employee.branchId,
+        defaultCurrencyCode: widget.defaultCurrencyCode,
+        existing: _employee,
+      ),
     );
     if (saved != true) return;
     _changed = true;

@@ -314,6 +314,35 @@ export class ProductCatalogService {
     private readonly imageStorage?: ProductImageStorage,
   ) {}
 
+  /**
+   * TASK 16.17 — a tenant has exactly one currency (`companies.
+   * currency_code`), and every sale/cash session is denominated in the
+   * currency of the prices it sells. A price in any OTHER currency would
+   * let a sale settle in a currency the register's cash session, its
+   * denomination count and its receipt were never opened for — so it is
+   * refused here, at the one place a price can be written, instead of
+   * being discovered at close time.
+   */
+  private async assertCompanyCurrency(
+    client: Parameters<ProductCatalogRepository['companyCurrency']>[0],
+    companyId: string,
+    currencyCode: string,
+  ): Promise<void> {
+    const companyCurrency = await this.repository.companyCurrency(client, companyId);
+    if (currencyCode !== companyCurrency)
+      throw new ProductCatalogError(
+        'validation_error',
+        `Prices must use this company's currency (${companyCurrency}); "${currencyCode}" is not allowed.`,
+      );
+  }
+
+  /** TASK 16.17 — the tenant's own currency, used by the HTTP layer as the
+   * default wherever a client omits `currency_code` (never a blind
+   * "MXN"). */
+  public async companyCurrency(companyId: string): Promise<string> {
+    return this.repository.transaction((client) => this.repository.companyCurrency(client, companyId));
+  }
+
   public listProducts(companyId: string, input: ProductFilters): Promise<ProductPage> {
     return this.repository.listProducts(companyId, {
       ...input,
@@ -994,6 +1023,7 @@ export class ProductCatalogService {
           const product = await this.repository.lockProduct(client, context.companyId, productId);
           if (product === null)
             throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+          await this.assertCompanyCurrency(client, context.companyId, normalized.currencyCode);
           if (normalized.branchId !== null)
             await this.repository.validateBranch(client, context.companyId, normalized.branchId);
           const created = await this.repository.insertProductPrice(client, {
@@ -1097,6 +1127,7 @@ export class ProductCatalogService {
           const product = await this.repository.lockProduct(client, context.companyId, productId);
           if (product === null)
             throw new ProductCatalogError('resource_not_found', 'The product was not found.');
+          await this.assertCompanyCurrency(client, context.companyId, normalized.currencyCode);
           if (normalized.branchId !== null)
             await this.repository.validateBranch(client, context.companyId, normalized.branchId);
           const active = await this.repository.lockActivePriceForScope(

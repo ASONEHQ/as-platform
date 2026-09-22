@@ -56,6 +56,8 @@ import 'pos_promotions_gateway.dart';
 import 'pos_purchase_orders_gateway.dart';
 import 'pos_purchasing_gateway.dart';
 import 'pos_read_controller.dart';
+import 'pos_readiness_gateway.dart';
+import 'pos_readiness_screen.dart';
 import 'pos_receipt.dart';
 import 'pos_printer_settings_screen.dart';
 import 'pos_receipt_branding_screen.dart';
@@ -129,6 +131,8 @@ class PosShell extends StatefulWidget {
     // UI — see `PosShell`'s own field doc comment below.
     this.branchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
     this.operationalAreasGateway = const EmptyPosOperationalAreasGateway(),
+    // TASK 16.17: tenant readiness / go-live checklist ("Configuración").
+    this.readinessGateway = const EmptyPosReadinessGateway(),
     // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
     this.pickProductImage,
     // TASK 14.5 (Wave 3, Phase 4b/7 Item 8): real quick-switch PIN/QR
@@ -229,6 +233,7 @@ class PosShell extends StatefulWidget {
   // `pos_operational_areas_gateway.dart` and
   // `pos_operational_areas_screen.dart`.
   final PosOperationalAreasGateway operationalAreasGateway;
+  final PosReadinessGateway readinessGateway;
   // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
   final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
@@ -271,7 +276,7 @@ class _PosShellState extends State<PosShell> {
   // also survives navigating away from the POS module and back, since it
   // is no longer torn down whenever `_Content`'s `switch(module)` stops
   // building `_PosSale`.
-  final saleSession = SaleSession();
+  late final saleSession = SaleSession(currencyCode: widget.context.companyCurrencyCode);
   bool clienteMode = false;
 
   @override
@@ -566,6 +571,7 @@ class _PosShellState extends State<PosShell> {
                             branchAdminGateway: widget.branchAdminGateway,
                             branchConsolidationGateway: widget.branchConsolidationGateway,
                             operationalAreasGateway: widget.operationalAreasGateway,
+                            readinessGateway: widget.readinessGateway,
                             pickProductImage: widget.pickProductImage,
                             authGateway: widget.authGateway,
                             onQuickSwitchByPin: widget.onQuickSwitchByPin,
@@ -1623,6 +1629,7 @@ Future<void> _submitSaleForPayment(
       saleId: sale.id,
       amount: sale.total,
       terminalId: terminal.id,
+      currencyCode: sale.currencyCode ?? saleSession.currencyCode,
     );
     if (!context.mounted) return;
     var latestAttempt = created.latestAttempt;
@@ -1689,7 +1696,7 @@ Future<void> _submitSaleForPayment(
             context,
             PosPostSaleFeedbackData(
               saleNumber: sale.saleNumber,
-              amount: Money.parse(sale.total, 'MXN'),
+              amount: Money.parse(sale.total, sale.currencyCode ?? saleSession.currencyCode),
               paymentMethodLabel: 'Tarjeta',
               customerDisplayName: saleSession.customerDisplayName,
             ),
@@ -1787,12 +1794,13 @@ Future<void> _submitCashSaleForPayment(
   }
   if (!context.mounted) return;
 
+  final saleCurrency = sale.currencyCode ?? saleSession.currencyCode;
   final Money totalDue;
   try {
     // The sale's own currency is always what its backend response
-    // reports — every fixture/branch in this app is MXN today (see
-    // `createCardTerminalPayment`'s identical hardcoded `'MXN'`).
-    totalDue = Money.parse(sale.total, 'MXN');
+    // reports (falling back to the ticket's own currency, itself seeded
+    // from the tenant's currency).
+    totalDue = Money.parse(sale.total, saleCurrency);
   } on MoneyFormatException {
     if (!context.mounted) return;
     _showNotice(context, 'No fue posible calcular el total de la venta.');
@@ -1821,8 +1829,8 @@ Future<void> _submitCashSaleForPayment(
   // ADR-0009), and the ticket is left completely untouched.
   if (result == null) return;
   if (!context.mounted) return;
-  final change = Money.parse(result.changeAmount, 'MXN');
-  final total = Money.parse(sale.total, 'MXN');
+  final change = Money.parse(result.changeAmount, saleCurrency);
+  final total = Money.parse(sale.total, saleCurrency);
   // TASK 12.5B: the ticket resets the moment success is confirmed —
   // exactly TASK 12.5A's existing behavior — but the completed-sale
   // success/receipt experience stays on screen afterward, sourced from
@@ -1972,7 +1980,7 @@ Future<void> _submitZeroTotalSale(
 
   final Money total;
   try {
-    total = Money.parse(completed.total, 'MXN');
+    total = Money.parse(completed.total, completed.currencyCode ?? saleSession.currencyCode);
   } on MoneyFormatException {
     if (!context.mounted) return;
     _showNotice(context, 'No fue posible calcular el total de la venta.');
@@ -2023,7 +2031,7 @@ Future<void> _submitZeroTotalSale(
       saleId: completed.id,
       saleNumber: completed.saleNumber,
       total: total,
-      change: Money.zero('MXN'),
+      change: Money.zero(completed.currencyCode ?? saleSession.currencyCode),
       salesGateway: salesGateway,
       settingsGateway: settingsGateway,
       companyId: companyId,
@@ -3065,6 +3073,7 @@ class _Content extends StatelessWidget {
     required this.branchAdminGateway,
     required this.branchConsolidationGateway,
     required this.operationalAreasGateway,
+    required this.readinessGateway,
     this.pickProductImage,
     required this.authGateway,
     this.onQuickSwitchByPin,
@@ -3137,6 +3146,7 @@ class _Content extends StatelessWidget {
   // TASK 16.15: see `PosShell`'s own field doc comment.
   final PosBranchConsolidationGateway branchConsolidationGateway;
   final PosOperationalAreasGateway operationalAreasGateway;
+  final PosReadinessGateway readinessGateway;
   // TASK 16.6 — see `ProductImagePicker`'s own doc comment.
   final ProductImagePicker? pickProductImage;
   final PosAuthGateway authGateway;
@@ -3455,6 +3465,14 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     gateway: operationalAreasGateway,
                     cashGateway: cashGateway,
+                  ),
+                  // TASK 16.17: Configuración — tenant readiness / go-live
+                  // checklist; every fix-it button reuses the shell's own
+                  // module switch (`select`, incl. its data load).
+                  PosModule.settings => PosReadinessScreen(
+                    context: this.context,
+                    gateway: readinessGateway,
+                    onNavigate: onNavigateToModule,
                   ),
                   _ => _ComingSoon(module: module),
                 },
@@ -8783,7 +8801,7 @@ class _ManualDiscountDialogState extends State<_ManualDiscountDialog> {
       );
     }
     try {
-      final amount = Money.parse(rawValue, widget.saleSession.quote?.currencyCode ?? 'MXN');
+      final amount = Money.parse(rawValue, widget.saleSession.quote?.currencyCode ?? widget.saleSession.currencyCode);
       if (!amount.isPositive) return null;
       return PosManualDiscountRequest(
         scope: 'ticket',
@@ -10746,14 +10764,11 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       _priceSuccessMessage = null;
     });
     try {
-      // TASK 16.6B — this same platform already establishes 'MXN' as the
-      // no-explicit-currency-selector default elsewhere (e.g. `Money.parse
-      // (raw, 'MXN')` in `_DirectPurchaseForm`); a real currency selector
-      // already exists on the pre-existing branch-price-override screen
-      // (`pos_catalog_admin_screen.dart`) for anyone who genuinely needs a
-      // non-default currency — this editor deliberately doesn't duplicate
-      // that selector, matching this task's own "reuse, don't duplicate"
-      // instruction.
+      // TASK 16.6B/16.17 — this editor sends NO currency: the backend
+      // defaults an omitted currency to the tenant's own (and rejects a
+      // price in any other), so the client never invents one. A real
+      // currency field already exists on the branch-price-override screen
+      // (`pos_catalog_admin_screen.dart`).
       //
       // TASK 16.6C — `changeProductPrice` (never `createProductPrice`,
       // whose own 409-on-existing-price is correct, unchanged behavior
@@ -10767,7 +10782,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       // can never accidentally create one).
       final changed = await widget.gateway.changeProductPrice(
         widget.product.id,
-        PosProductPriceInput(amount: raw, currencyCode: 'MXN'),
+        PosProductPriceInput(amount: raw),
       );
       if (!mounted) return;
       setState(() {
@@ -10825,7 +10840,9 @@ class _EditProductDialogState extends State<_EditProductDialog> {
         variant.version,
         PosProductVariantInput(
           standardCost: rawCost.isEmpty ? null : rawCost,
-          currencyCode: rawCost.isEmpty ? null : (variant.currencyCode ?? 'MXN'),
+          // The variant's own currency, else omitted (the backend defaults
+          // it to the tenant's) — never an invented 'MXN'.
+          currencyCode: rawCost.isEmpty ? null : variant.currencyCode,
           minStock: rawMinStock.isEmpty ? null : rawMinStock,
           clearMinStock: rawMinStock.isEmpty,
         ),
@@ -12336,7 +12353,7 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
     final raw = _unitCostController.text.trim();
     if (raw.isEmpty) return null;
     try {
-      return Money.parse(raw, 'MXN');
+      return Money.parse(raw, widget.context.companyCurrencyCode);
     } on MoneyFormatException {
       return null;
     }
@@ -12408,7 +12425,7 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
         productVariantId: variantId,
         quantity: quantity,
         unitCost: unitCost.toApiString(),
-        currencyCode: 'MXN',
+        currencyCode: widget.context.companyCurrencyCode,
         purchaseDate: _isoDate(_purchaseDate),
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
       );
@@ -12501,7 +12518,7 @@ class _DirectPurchaseFormState extends State<_DirectPurchaseForm> {
                   key: const Key('pos-direct-purchase-unit-cost'),
                   controller: _unitCostController,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Costo unitario (MXN)'),
+                  decoration: InputDecoration(labelText: 'Costo unitario (${widget.context.companyCurrencyCode})'),
                   onChanged: (_) => setState(() {}),
                 ),
               ),
@@ -13244,11 +13261,13 @@ class _PurchaseOrderStatusChip extends StatelessWidget {
 /// [TextEditingController]s and must be [dispose]d when removed or when
 /// the form itself closes.
 class _PoLineDraft {
-  _PoLineDraft()
+  _PoLineDraft(this.currencyCode)
     : quantityController = TextEditingController(),
       unitCostController = TextEditingController(),
       notesController = TextEditingController();
 
+  /// The tenant's currency (`AuthenticatedContext.companyCurrencyCode`).
+  final String currencyCode;
   PosProduct? product;
   final TextEditingController quantityController;
   final TextEditingController unitCostController;
@@ -13268,7 +13287,7 @@ class _PoLineDraft {
     final quantity = quantityController.text.trim();
     if (rawUnitCost.isEmpty || quantity.isEmpty) return null;
     try {
-      final unitCost = Money.parse(rawUnitCost, 'MXN');
+      final unitCost = Money.parse(rawUnitCost, currencyCode);
       return unitCost.multiplyByDecimalQuantity(quantity);
     } on MoneyFormatException {
       return null;
@@ -13281,7 +13300,7 @@ class _PoLineDraft {
 /// itself reads `widget.context.session.branchId`), supplier (the SAME
 /// registered-supplier autocomplete + free-text-fallback pattern
 /// `_DirectPurchaseForm` uses, mirrored here with `pos-po-supplier-*`
-/// keys), order date, expected date (optional), currency (hardcoded MXN —
+/// keys), order date, expected date (optional), currency (the tenant's own —
 /// same as Compra Directa), notes, and a repeatable line-item editor (see
 /// [_PurchaseOrderLineEditor]) with a live-computed running total via the
 /// same real `Money` fixed-point utility. At least one valid line is
@@ -13309,7 +13328,7 @@ class _PurchaseOrderFormDialogState extends State<_PurchaseOrderFormDialog> {
   DateTime? _expectedDate;
   PosSupplier? _selectedSupplier;
   List<PosSupplier> _supplierOptions = const [];
-  final List<_PoLineDraft> _lines = [_PoLineDraft()];
+  late final List<_PoLineDraft> _lines = [_PoLineDraft(widget.context.companyCurrencyCode)];
   bool _submitting = false;
   String? _error;
 
@@ -13363,7 +13382,7 @@ class _PurchaseOrderFormDialogState extends State<_PurchaseOrderFormDialog> {
     if (picked != null) setState(() => _expectedDate = picked);
   }
 
-  void _addLine() => setState(() => _lines.add(_PoLineDraft()));
+  void _addLine() => setState(() => _lines.add(_PoLineDraft(widget.context.companyCurrencyCode)));
 
   void _removeLine(_PoLineDraft line) {
     if (_lines.length <= 1) return;
@@ -13400,7 +13419,7 @@ class _PurchaseOrderFormDialogState extends State<_PurchaseOrderFormDialog> {
       final rawUnitCost = line.unitCostController.text.trim();
       final Money unitCost;
       try {
-        unitCost = Money.parse(rawUnitCost, 'MXN');
+        unitCost = Money.parse(rawUnitCost, widget.context.companyCurrencyCode);
       } on MoneyFormatException {
         continue;
       }
@@ -13430,7 +13449,7 @@ class _PurchaseOrderFormDialogState extends State<_PurchaseOrderFormDialog> {
         supplierId: _selectedSupplier?.id,
         orderDate: _isoDate(_orderDate),
         expectedDate: _expectedDate == null ? null : _isoDate(_expectedDate!),
-        currencyCode: 'MXN',
+        currencyCode: widget.context.companyCurrencyCode,
         notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
         lines: lineInputs,
       );
@@ -13721,7 +13740,7 @@ class _PurchaseOrderLineEditor extends StatelessWidget {
                     key: Key('pos-po-line-unit-cost-$index'),
                     controller: line.unitCostController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(isDense: true, labelText: 'Costo unitario (MXN)'),
+                    decoration: InputDecoration(isDense: true, labelText: 'Costo unitario (${line.currencyCode})'),
                     onChanged: (_) => onChanged(),
                   ),
                 ),
@@ -16758,7 +16777,11 @@ class _PromotionsAdminState extends State<_PromotionsAdmin> {
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) =>
-          _PromotionFormDialog(promotionsGateway: widget.promotionsGateway, existing: existing),
+          _PromotionFormDialog(
+            promotionsGateway: widget.promotionsGateway,
+            currencyCode: widget.context.companyCurrencyCode,
+            existing: existing,
+          ),
     );
     if (saved == true) unawaited(_loadPromotions());
   }
@@ -16766,7 +16789,11 @@ class _PromotionsAdminState extends State<_PromotionsAdmin> {
   Future<void> _openCouponForm({PosCoupon? existing}) async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _CouponFormDialog(promotionsGateway: widget.promotionsGateway, existing: existing),
+      builder: (dialogContext) => _CouponFormDialog(
+        promotionsGateway: widget.promotionsGateway,
+        currencyCode: widget.context.companyCurrencyCode,
+        existing: existing,
+      ),
     );
     if (saved == true) unawaited(_loadCoupons());
   }
@@ -17046,8 +17073,11 @@ class _CouponRow extends StatelessWidget {
 /// validity dates) — never anything beyond ADR-0016 Part U's "minimum
 /// operational management" scope.
 class _PromotionFormDialog extends StatefulWidget {
-  const _PromotionFormDialog({required this.promotionsGateway, this.existing});
+  const _PromotionFormDialog({required this.promotionsGateway, required this.currencyCode, this.existing});
   final PosPromotionsGateway promotionsGateway;
+
+  /// The tenant's currency, used to parse a fixed-amount benefit.
+  final String currencyCode;
   final PosPromotion? existing;
 
   @override
@@ -17125,7 +17155,7 @@ class _PromotionFormDialogState extends State<_PromotionFormDialog> {
       basisPoints = (percent * 100).round();
     } else if (_benefitType == 'fixed_amount' || _benefitType == 'fixed_price') {
       try {
-        final amount = Money.parse(_fixedAmountController.text.trim(), 'MXN');
+        final amount = Money.parse(_fixedAmountController.text.trim(), widget.currencyCode);
         if (!amount.isPositive) return null;
         fixedAmount = amount.toApiString();
       } on MoneyFormatException {
@@ -17342,8 +17372,11 @@ class _PromotionFormDialogState extends State<_PromotionFormDialog> {
 /// accepts them, see `promotions.routes.ts`) — shown read-only while
 /// editing rather than silently ignored.
 class _CouponFormDialog extends StatefulWidget {
-  const _CouponFormDialog({required this.promotionsGateway, this.existing});
+  const _CouponFormDialog({required this.promotionsGateway, required this.currencyCode, this.existing});
   final PosPromotionsGateway promotionsGateway;
+
+  /// The tenant's currency, used to parse a fixed-amount benefit.
+  final String currencyCode;
   final PosCoupon? existing;
 
   @override
@@ -17455,7 +17488,7 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
       basisPoints = (percent * 100).round();
     } else {
       try {
-        final amount = Money.parse(_fixedAmountController.text.trim(), 'MXN');
+        final amount = Money.parse(_fixedAmountController.text.trim(), widget.currencyCode);
         if (!amount.isPositive) {
           setState(() {
             _busy = false;
@@ -18015,12 +18048,12 @@ class _OperationalSummarySection extends StatelessWidget {
             ),
           )
         else ...[
-          heading('VENTAS / TAQUILLA'),
+          heading('VENTAS GENERALES'),
           _CajaInfoRow(label: 'Ventas netas', value: _formatMoney(value.pos.netSales, currencyCode)),
           _CajaInfoRow(label: 'Tickets', value: value.pos.ticketCount.toString()),
           if (_isMoneyPositive(value.pos.refundsTotal))
             _CajaInfoRow(label: 'Devoluciones', value: '-${_formatMoney(value.pos.refundsTotal, currencyCode)}'),
-          heading('CAFETERÍA / SNACKS (parte de Taquilla)'),
+          heading('CAFETERÍA (incluida en ventas generales)'),
           if (!value.cafeteria.available)
             Text(
               'No configurado — ninguna categoría está marcada como Cafetería.',

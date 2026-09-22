@@ -115,6 +115,7 @@ abstract interface class PosPaymentsGateway {
     required String saleId,
     required String amount,
     required String terminalId,
+    String? currencyCode,
   });
 
   /// `GET /api/v1/payments/{id}` — the one call the bounded poll loop in
@@ -160,6 +161,7 @@ class ApiPosPaymentsGateway implements PosPaymentsGateway {
     required String saleId,
     required String amount,
     required String terminalId,
+    String? currencyCode,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/sales/$saleId/payments',
@@ -167,7 +169,9 @@ class ApiPosPaymentsGateway implements PosPaymentsGateway {
       body: {
         'payment_method': 'card_terminal',
         'amount': amount,
-        'currency_code': 'MXN',
+        // The sale's own currency (never assumed) — omitted only when the
+        // caller does not know it.
+        'currency_code': ?currencyCode,
         'terminal_id': terminalId,
       },
     );
@@ -217,6 +221,7 @@ class EmptyPosPaymentsGateway implements PosPaymentsGateway {
     required String saleId,
     required String amount,
     required String terminalId,
+    String? currencyCode,
   }) => Future.error(StateError('No payments gateway is configured.'));
 
   @override

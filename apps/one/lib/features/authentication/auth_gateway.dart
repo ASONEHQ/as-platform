@@ -205,6 +205,7 @@ class ApiAuthGateway implements AuthGateway {
             name: _string(value, 'display_name'),
             current: _boolean(value, 'current'),
             switchPermitted: _boolean(value, 'switch_permitted'),
+            currencyCode: value['currency_code'] is String ? value['currency_code'] as String : null,
           ),
         )
         .toList(growable: false);

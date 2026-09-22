@@ -29,6 +29,7 @@ import '../features/pos/pos_promotions_gateway.dart';
 import '../features/pos/pos_purchase_orders_gateway.dart';
 import '../features/pos/pos_purchasing_gateway.dart';
 import '../features/pos/pos_read_gateway.dart';
+import '../features/pos/pos_readiness_gateway.dart';
 import '../features/pos/pos_refunds_gateway.dart';
 import '../features/pos/pos_reports_gateway.dart';
 import '../features/pos/pos_rewards_gateway.dart';
@@ -79,6 +80,8 @@ class AsOneApp extends StatefulWidget {
     // UI — see `PosShell`'s own field doc comment.
     this.posBranchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
     this.posOperationalAreasGateway = const EmptyPosOperationalAreasGateway(),
+    // TASK 16.17: tenant readiness / go-live checklist ("Configuración").
+    this.posReadinessGateway = const EmptyPosReadinessGateway(),
     super.key,
   });
 
@@ -159,6 +162,7 @@ class AsOneApp extends StatefulWidget {
   // TASK 16.15: see `PosShell`'s own field doc comment.
   final PosBranchConsolidationGateway posBranchConsolidationGateway;
   final PosOperationalAreasGateway posOperationalAreasGateway;
+  final PosReadinessGateway posReadinessGateway;
 
   @override
   State<AsOneApp> createState() => _AsOneAppState();
@@ -212,6 +216,7 @@ class _AsOneAppState extends State<AsOneApp> {
       posBranchAdminGateway: widget.posBranchAdminGateway,
       posBranchConsolidationGateway: widget.posBranchConsolidationGateway,
       posOperationalAreasGateway: widget.posOperationalAreasGateway,
+      posReadinessGateway: widget.posReadinessGateway,
       environment: widget.config.environment,
       child: AuthScope(
         controller: widget.authController,
@@ -258,6 +263,8 @@ class PlatformScope extends InheritedWidget {
     // TASK 16.15: see `AsOneApp`'s own field doc comment.
     this.posBranchConsolidationGateway = const EmptyPosBranchConsolidationGateway(),
     this.posOperationalAreasGateway = const EmptyPosOperationalAreasGateway(),
+    // TASK 16.17: tenant readiness / go-live checklist ("Configuración").
+    this.posReadinessGateway = const EmptyPosReadinessGateway(),
     this.environment = AsEnvironment.production,
     required super.child,
     super.key,
@@ -366,6 +373,7 @@ class PlatformScope extends InheritedWidget {
   // TASK 16.15: see `AsOneApp`'s own field doc comment.
   final PosBranchConsolidationGateway posBranchConsolidationGateway;
   final PosOperationalAreasGateway posOperationalAreasGateway;
+  final PosReadinessGateway posReadinessGateway;
 
   /// Threaded through so pre-authenticated screens (e.g. the login
   /// screen's TASK 12.2F first-run-wizard preview link) can gate
@@ -414,6 +422,7 @@ class PlatformScope extends InheritedWidget {
       posBranchAdminGateway != oldWidget.posBranchAdminGateway ||
       posBranchConsolidationGateway != oldWidget.posBranchConsolidationGateway ||
       posOperationalAreasGateway != oldWidget.posOperationalAreasGateway ||
+      posReadinessGateway != oldWidget.posReadinessGateway ||
       environment != oldWidget.environment;
 }
 

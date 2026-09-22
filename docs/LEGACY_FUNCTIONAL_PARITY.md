@@ -4701,6 +4701,526 @@ silently degrade to the honest fallback copy until a developer updates
 plainly. Physical 80mm printer certification remains outstanding,
 unchanged from every prior task.
 
+## TASK 16.17 — Commercial Tenant Setup + Go-Live Readiness: ACCESS GO Customer #2 Certification (2026-09-21)
+
+**§1 Scope and proof obligation.** This task had one job: prove ACCESS GO
+can onboard a genuinely new, generic customer — zero to a completed cash
+sale — using nothing but the real product (CLI provisioning + the
+authenticated Flutter app), with no source-code hardcoding of any
+tenant's own name, currency or timezone. It is deliberately certified
+against a SECOND real tenant ("ACCESS GO QA Customer", USD,
+America/New_York), never against INFLAPARK, and INFLAPARK's own data is
+proven byte-for-byte unchanged afterward (§19).
+
+**§2 Dependency graph (forensic finding).** Reading `production-owner.
+service.ts`, `AdministrationService`, `CashService`, `ProductCatalogService`,
+`InventoryLocationService`, `PurchasingService` and `sale-consumption.ts`
+together, the real dependency chain a tenant must climb is:
+```
+company (currency + timezone)
+  -> owner (Owner role = 100% of technicalPermissionCodes)
+    -> branch (its own timezone)
+      -> [operational areas]        (OPTIONAL, never required)
+      -> register(s)                (REQUIRED for any sale)
+      -> user(s) + role + branch/register access
+        -> product (active)
+          -> active price in the company's OWN currency
+            -> [inventory location + real stock]   (REQUIRED only
+                                                      when the product
+                                                      tracks inventory)
+              -> cash session open (register + authorized user)
+                -> CASH sale
+```
+No step earlier in this chain can be skipped by a later one — this is
+exactly what `packages/readiness/readiness.evaluator.ts`'s stage
+dependencies (§4) encode, and what the E2E certification in §16 climbed
+in that literal order, live, once via the CLI and once entirely through
+the authenticated Flutter app.
+
+**§3 Legacy comparison.** `AS POS V1.html`'s own "onboarding" was
+`mostrarAsistenteInicial()`/`finalizarAsistente()` — a single wizard that
+wrote directly into `localStorage`, required a distributor-issued (or
+hardcoded factory-master) "clave de activación", and could not express
+any of the above dependency chain (no registers, no per-branch price
+scoping, no inventory-location prerequisite — legacy DB.negocio.productos
+carried a flat, ungated `existencia` field). ACCESS GO has no equivalent
+"activation key" concept anywhere (confirmed by TASK 12.2F's own
+forensic finding, re-confirmed here — `apps/one/lib/features/
+authentication/first_run_wizard_screen.dart` remains a disconnected,
+non-production preview), and deliberately does not build one: legitimate
+first-owner provisioning is the ops-invoked `production-owner.cli.ts`
+(D1–D6 in its own doc comment — refuses on an existing slug, one
+transaction, the actor's own real password hashed once, a real audit
+row, complete current permission grant) — never a shared password, never
+a reversible key.
+
+**§4 Readiness architecture chosen.** A single new backend module,
+`apps/api/src/modules/readiness/` (`readiness.types.ts`/
+`readiness.evaluator.ts`/`readiness.repository.ts`/`readiness.service.ts`/
+`readiness.routes.ts`), exposing one read-only endpoint,
+`GET /api/v1/readiness[?branch_id=]`, gated by `branch.read` (the same
+right every branch administrator already holds — no new permission
+code). `readiness.evaluator.ts` is a **pure function** of already-read
+facts (`evaluateReadiness(facts, now)`) — no I/O, no clock, no tenant
+name — so every rule is unit-testable in isolation (21 tests,
+`readiness.evaluator.test.ts`) without a database. It is the single
+authoritative rulebook; nothing duplicates its logic anywhere else
+(Flutter only renders what it returns — see §14). Every REQUIRED check
+is derived from something a REAL write/sale path already rejects today,
+never invented:
+- `company_currency_supported` -> `canonicalCashDenominationsForCurrency`
+  throws at register close for any unsupported currency.
+- `company_timezone_valid`/`branch_timezone_valid` -> `SalesService.
+  createSale` refuses a non-IANA branch timezone
+  (`branch_timezone_invalid`) — the exact "Mexico_City" incident class.
+- `register_exists`/`operator_authorized`/`operator_register_access` ->
+  `POST /cash-sessions` needs a register the actor may use; the sale/
+  payment routes need their own permissions.
+- `product_prices` -> `SalesService.createSale` rejects a product with
+  no active price (`price_not_found`).
+- `inventory_location` -> `postSaleConsumption` throws
+  `inventory_location_not_found` (rolling back the WHOLE payment) when a
+  tracked product is sold with no active default location in the branch.
+- `inventory_stock` -> the same posting refuses to take stock below
+  zero.
+Optional configuration (operational areas, an open session, stray stock
+gaps) is reported but can never block a stage — §7 proves this with a
+dedicated test.
+
+**§5 Readiness stages.** Five stages, each `ready: true | false | null`
+(`null` = "does not apply right now", e.g. `inventory` for a branch with
+nothing tracked): `administration` (company-level only), `pos_entry`
+(a register exists + at least one user can reach the POS), `register_
+open` (a register exists + an authorized user can actually open one),
+`sale` (everything above plus a sellable product), `inventory` (a
+default location exists, only evaluated when something is tracked).
+`blocked_by` on each stage names the exact REQUIRED check codes
+currently blocking it — never a vague "not ready".
+
+**§6 Required vs optional (forensic classification).** REQUIRED:
+`company_active`, `company_currency_supported`, `company_timezone_valid`,
+`branch_exists`, `branch_timezone_valid`, `register_exists`, `operator_
+authorized`, `operator_register_access` (only once both a register and
+an authorized user exist), `catalog_products`, `product_prices`,
+`inventory_location` (only once something tracks inventory). OPTIONAL,
+by explicit task instruction and by this task's own forensic read of
+what nothing else actually requires: `operational_areas` (TASK 16.15 —
+a branch that never organizes by area keeps selling normally),
+`register_area_consistent` (a warning, not a blocker — a stale register-
+area pointer never stops a sale), `price_currency` (a warning — a
+foreign-currency price is simply excluded from "sellable", never
+blocks the rest of the catalogue), `cash_session_open` (informational —
+opening one is a normal operational action, not a setup gate),
+`inventory_stock` (a warning once a location exists — the readiness
+surface names the exact products with zero stock, but selling
+untracked products is never blocked by it).
+
+**§7 Company/owner provisioning.** `ProductionOwnerProvisioner` (TASK
+14.1, unchanged mechanism) re-verified with a real second tenant end to
+end: refuses a non-IANA company/branch timezone (the exact "Mexico_City"
+regression class — §8), now ALSO refuses a syntactically valid but
+unsupported currency (new — see §8), refuses a second run against an
+existing slug, grants the Owner role the platform's complete current
+permission catalogue (proven identical count for BOTH tenants against
+the live `permissions` table, never a hardcoded number), and creates
+exactly one membership per company — no legacy shared "factory master"
+account, no activation key, no plaintext-password persistence anywhere
+(confirmed: the CLI's own password prompt is masked, and the hash is
+computed once — D4 in the file's own doc comment, unchanged).
+`syncSystemRolePermissions()` was re-proven (this task's own new
+`customer-onboarding.integration.test.ts` case) to reach BOTH tenants'
+Owner roles for a newly-added permission while never touching a custom
+role — the exact same non-widening guarantee TASK 16.16 established,
+now proven across two independently-provisioned companies, not one.
+
+**§8 Timezone/currency safety hardening (this task's own fix).** Three
+genuine gaps found and closed, all in the ops-invoked/tenant-facing
+write paths that persist a timezone or currency, none in the
+already-covered `AdministrationService` branch-create/update path (TASK
+16.8B, unchanged):
+1. `apps/api/src/business-config/launch-config.validate.ts` (the
+   `business-config` CLI's own bulk-provisioning tool) previously only
+   regex-checked `company.currency_code`/branch `timezone` shape — it
+   could still persist "Mexico_City" or an unsupported currency directly
+   via `insert into branches`, bypassing `AdministrationService`
+   entirely. Now calls the SAME `isValidIanaTimezone` (`pricing.
+   service.ts`) and a new single source of truth for supported
+   currencies (next point) for both the company and every branch in the
+   config.
+2. New `apps/api/src/modules/cash/supported-currencies.ts` —
+   `supportedCompanyCurrencyCodes = ['MXN', 'USD']`, the ONE list a
+   currency is checked against everywhere a tenant's own currency is
+   accepted (provisioning, `launch-config.validate.ts`, the `business.
+   currency` settings catalog, which previously duplicated the same two
+   literals independently). A test (`readiness.evaluator.test.ts`)
+   asserts this list can never drift from `canonicalCashDenominationsForCurrency`'s own real denomination sets — the two
+   were two independent, previously-unconnected two-item lists before
+   this task.
+3. `CashService.openSession` previously accepted ANY explicit
+   `currencyCode` override with no relationship to the tenant's own
+   configured currency — a caller could open (and mis-tag) a EUR session
+   for a USD company. Now an explicit override is only accepted when it
+   restates the tenant's own currency; anything else is a plain
+   `validation_error`, never a silent mis-tag (new tests in `cash.
+   integration.test.ts`'s own USD-tenant and EUR-tenant describe blocks).
+`ProductCatalogService.createProductPrice`/`changeProductPrice` also
+gained the analogous guard (§9) — a price is refused outright if its
+currency does not match the company's own, closing the exact "priced in
+the wrong currency, discovered only at the register" class this task's
+own brief named.
+
+**§9 Branch setup.** `AdministrationService.createBranch`/`updateBranch`
+were already timezone-validated (TASK 16.8B); unchanged. The Flutter
+branch-admin timezone field (`pos_branch_admin_screen.dart`) was
+previously a free-text `Autocomplete` — a real business could still type
+and submit "Mexico_City" by hand even with the suggestion list present.
+Now strict: `_timezoneOptions` grew from 20 to 76 real, verified IANA
+identifiers with Spanish city/country labels spanning the Americas,
+Europe, Asia, Africa and Oceania (never assuming a Mexico-only market —
+this task's own explicit instruction), and submit is refused with an
+inline error ("Elige una zona horaria de la lista.") unless the typed
+text exactly matches an option's real IANA value, or — when editing —
+the branch's own already-saved value (so a pre-existing branch outside
+the shortlist never becomes unsavable). Live-verified (§16): typing
+"Mexico_City" is rejected client-side with no network call at all;
+selecting "America/New_York" from the list saves correctly.
+
+**§10 Operational areas.** Reused verbatim from TASK 16.15/16.16 —
+genuinely optional, never seeded, never named by this task in any shared
+code path. The customer #2 certification (§16) explicitly created its
+first register with NO area, confirmed the readiness surface reports
+`operational_areas: optional_missing` without blocking any stage, then
+separately proved (integration test, §17) that a register can never be
+assigned an area belonging to a different branch OR a different tenant
+— both attempts return `validation_error`, both pre-existing
+`CashService` guards, re-verified rather than assumed.
+
+**§11 Register setup.** `CashService.createRegister` — unchanged,
+re-verified. The Flutter register-create dialog (`Corte de Caja` ->
+"Nueva caja") uses plain código/nombre fields, no UUIDs ever surfaced
+(live-verified, §16).
+
+**§12 Inventory-location prerequisite (this task's own forensic
+finding, made discoverable — never invented stock).** Re-confirmed the
+exact production gap this task's brief named: a tracked product cannot
+be sold in a branch with no active default `inventory_location`
+(`postSaleConsumption`'s own `inventory_location_not_found`, rolling
+back the ENTIRE payment). Nothing was changed in that enforcement — it
+is exactly correct and deliberately strict. What changed is
+discoverability: the readiness surface's `inventory_location` check is
+REQUIRED (not optional) the instant any active product tracks
+inventory, names the surface ("Ir a Admin. Inventario") and, live in
+this task's own certification (§16), was hit for REAL: a brand-new
+product defaulted to `tracks_inventory: true` (the catalog form's own
+default when a product type is `simple` and no explicit override is
+given), readiness immediately flagged `inventory_location: missing`
+(REQUIRED), creating the default location cleared it, and readiness
+then correctly flagged `inventory_stock: warning` (OPTIONAL) naming the
+exact product BY NAME — never inventing a quantity. Only a real
+`Compra Directa` (direct purchase, posting a genuine `receipt`
+inventory movement) cleared that warning.
+
+**§13 User/role/access setup.** Reused verbatim from TASK 16.16 — the
+commercial role-template picker (`Personalizado / en blanco`,
+`Administrador`, `Gerente`, `Cajero`), branch access grants and
+register/area access grants. The readiness surface's `operator_
+authorized`/`operator_register_access` checks were proven, by a new
+dedicated regression (§17), to correctly DROP a user from the count the
+moment their branch role is revoked — even though their register-access
+grant row still physically exists — closing the exact "stale grant still
+counts as access" class TASK 16.15/16.16 already guarded at the
+authorization layer; this task additionally proves the READINESS
+surface reflects that same guarantee, never overstating who can
+actually act.
+
+**§14 Catalog/price/readiness UI.** New `apps/one/lib/features/pos/
+pos_readiness_presentation.dart` (commercial Spanish copy + routing,
+authored directly, presentation-only — mirrors TASK 16.16A's own
+established pattern) and `pos_readiness_gateway.dart`/`pos_readiness_
+screen.dart`, wired as `PosModule.settings` ("Configuración", previously
+a `_ComingSoon` placeholder gated by `company_settings.read`; now gated
+by `branch.read`, matching the endpoint's own guard). The screen shows,
+live, per-branch stage chips, a Requerido/Opcional split with every
+required item free of an "optional" badge and vice versa, the exact
+product names a check is blocking on, and a fix-it CTA that reuses the
+shell's own existing module-switch — never a duplicated admin surface.
+Live-verified end to end (§16): every stage transition (missing branch
+-> missing register -> missing price -> missing inventory location ->
+sellable -> fully ready) rendered correctly against the real backend,
+for BOTH a brand-new tenant and — separately — the pre-existing,
+already-fully-configured, multi-branch INFLAPARK tenant (whose own
+Configuración page showed "Tu sucursal está lista para vender." with a
+working multi-branch picker, §19).
+
+**§15 Company currency reaches the client (removes a real "always MXN"
+assumption).** `GET /api/v1/context/companies` now additionally returns
+each company's own `currency_code`; `CompanySummary`/`AuthenticatedContext.
+companyCurrencyCode` carry it through (falling back to `'MXN'` ONLY when
+an older backend response omits the field — an explicit, tested,
+disclosed legacy fallback, never a silent default for a real USD/other
+tenant). Every Flutter form that previously hardcoded `'MXN'` with no
+sale/tenant object in scope (direct-purchase unit cost, kit/misc price
+entry, promotions/coupon amounts, the price editor, the employee pay-
+rate field) now uses the tenant's own currency; every form that DOES
+have a sale in scope (checkout, receipts, the card-terminal payment
+body) uses THAT sale's own `currency_code`, never a blind default. A
+short, disclosed list of pure parse-only/example-text `'MXN'` literals
+with no sale or currency object in scope was deliberately left alone
+(receipt zero-check, a documented denomination fallback that already
+switches on the session's own currency, "ej. MXN" hint text) — see the
+commit's own file-level comments for the exact list.
+
+**§16 Live browser certification (local stack, both tenants, 2026-09-21).**
+Customer #2 ("ACCESS GO QA Customer", USD, America/New_York), provisioned
+via the real `provision:production-owner:dev` CLI, climbed the ENTIRE
+chain in §2 through the authenticated Flutter app, live, with screenshots
+at every step: (1) login shows ACCESS GO branding, no INFLAPARK/Mexico
+assumption anywhere; (2) Configuración starts red ("Aún faltan pasos"),
+company checks all green (USD/America/New_York), `branch_exists:
+missing`; (3) creating a branch rejects "Mexico_City" inline, accepts
+"America/New_York"; (4) readiness immediately reflects the new branch,
+`pos_entry`/`register_open`/`sale` all correctly pending; (5) a register
+created with no operational area — confirmed optional, never blocking;
+(6) a first product created (defaulted to inventory-tracked — a genuine,
+not staged, live finding), price added in USD (the price form's own
+"Moneda" field pre-filled from the tenant's currency, confirmed);
+(7) readiness correctly flags the resulting REQUIRED inventory-location
+gap and names the exact product; (8) creating the default location
+clears it, replaced by an honest `inventory_stock: warning` naming the
+same product — no quantity invented; (9) a real `Compra Directa` (10
+units @ $10.00 USD) clears the stock warning, confirmed via "Existencia
+actual: 10.000000"; (10) readiness reports fully ready at every stage;
+(11) the register opened with a $100.00 float; (12) a real cash sale —
+1x product @ $25.00 + 16% IVA = $29.00 — completed via the actual POS
+UI, tendered $30.00, change $1.00, confirmed on the real success dialog
+AND independently on the printed-receipt preview ("ACCESS GO QA
+Customer · QA Branch" as the merchant identity — never "ACCESS GO",
+never "INFLAPARK"); (13) the open cash session immediately showed
+"Ventas en efectivo $29.00 (1)" and "Efectivo esperado $129.00"; (14)
+inventory dropped from 10 to 9 (exactly once); (15) Configuración then
+showed "Tu sucursal está lista para vender." with every stage green.
+Logging out and back in as `ceo@inflapark.local` (the real, pre-existing
+INFLAPARK tenant, MXN, 6 branches) confirmed its own Dashboard totals
+UNCHANGED to the exact peso and transaction count from before this
+task's work began, and its own Configuración page rendered correctly
+too — "Tu sucursal está lista para vender.", a working multi-branch
+picker (Campeche selected by default), every stage green — proving the
+new surface is not a special case for a fresh tenant.
+
+**§17 A genuine client-side bug found and root-caused, not
+work-arounded, during live certification.** Immediately after adding
+the first product's price, the POS sale screen's own product tile
+showed "Sin precio" (no price) in red — even though `GET /api/v1/
+products` (confirmed by inspecting the actual network response the
+client received) already carried the correct `effective_price: {amount:
+"25.0000", currency_code: "USD", ...}`. Root cause, confirmed by reading
+`pos_read_controller.dart`: `PosReadController.loadProducts` is a
+deliberate load-ONCE-per-session cache (`if (!refresh && products.phase
+!= PosReadPhase.idle) return;`), shared by every screen that reads the
+product catalogue (the POS sale grid, Cafetería, etc.) — it does not
+automatically refetch when a DIFFERENT screen (here, the price editor)
+changes a product's price moments later in the same session. This is
+pre-existing behavior, not something TASK 16.17 introduced, and it is
+recoverable: any screen that calls `loadProducts(refresh: true)` (the
+"Actualizar" button on the Productos admin list is one such trigger)
+refreshes the SAME shared state every other screen reads — confirmed
+live: clicking "Actualizar" on Productos, then returning to Punto de
+Venta, immediately showed "$25.00" and the sale proceeded correctly.
+Disclosed here as a genuine UX gap (a cashier's already-open POS screen
+will not auto-see a price change an admin makes moments later without
+some other screen's refresh happening first) — not fixed by this task,
+which is scoped to onboarding/readiness, not to the pre-existing
+product-catalogue caching strategy; flagged for a follow-up task rather
+than silently worked around or omitted from this report.
+
+**§18 Tenant isolation and direct-ID tampering.** New `customer-onboarding.integration.test.ts`
+proves, with two independently-provisioned real tenants (never INFLAPARK
+— always two generic, disposable QA companies), that: tenant B cannot
+read, discover or act on tenant A's branches, sales, cash sessions,
+products, registers or inventory locations (`resource_not_found` or a
+403, never data, and never a 500 that might leak existence); a direct-
+ID-tampering attempt — B's own authorized branch/session paired with A's
+product/branch/register id smuggled into the request body — is rejected
+at the same real service layer every other cross-tenant guard already
+uses (`companyId`-scoped queries throughout `SalesRepository`/
+`CashRepository`/`ProductCatalogRepository`/`InventoryLocationRepository`,
+unchanged); the readiness endpoint itself was proven to ignore a foreign
+branch id smuggled into its own scope list, returning zero branches for
+it and always the CALLER's own company, never the one implied by a
+spoofed id. Proven the other direction too (A cannot see B's data).
+Live direct-API-ID-tampering via browser devtools remains outside this
+tool's reach (the same disclosed limitation as TASK 16.16) — covered
+instead by the same dedicated backend integration test that exercises
+the real enforcement functions directly, not the UI's own client-side
+hiding.
+
+**§19 Existing-tenant safety.** Byte-for-byte row-count snapshots of
+every INFLAPARK-scoped table (companies, branches, products, product_
+prices, cash_registers, operational_areas, inventory_locations,
+inventory_balances, roles, role_permissions, user_roles, memberships,
+sales, payments, cash_sessions, cash_movements) plus the sum of every
+sale total and every on-hand quantity, taken immediately before this
+task's live work began and again after it fully completed, are
+IDENTICAL — confirmed by a literal `diff` with zero output. No
+operational area, register, inventory location, product, price or user
+was auto-created for INFLAPARK by any part of this task; every new
+readiness/currency/timezone code path this task added is either
+strictly observational (`ReadinessRepository` never writes) or requires
+an explicit admin action to fire (a real branch/product/price/register/
+purchase create) — never triggered automatically for an existing
+tenant. A dedicated integration test (`customer-onboarding.integration.
+test.ts`) additionally proves evaluating readiness twice in a row for a
+real tenant never changes a single row.
+
+**§20 Commercial setup order (documentation deliverable).** The
+recommended order, derived from the dependency graph in §2 (not assumed
+from any prior document's own ordering):
+1. Provision the company + Owner (`pnpm --filter @asone/api provision:
+   production-owner:dev` / `:production`) — a real IANA timezone, a
+   supported currency, a strong password entered once and never logged.
+2. Log in as Owner; open Configuración to see the live go-live checklist
+   from the very first login — never a separate onboarding surface to
+   maintain.
+3. Create the first branch (Sucursales) with its own real timezone from
+   the strict picker.
+4. (Optional) Create operational areas (Áreas Operativas) only if the
+   business genuinely groups its registers that way — skip entirely
+   otherwise.
+5. Create at least one register (Corte de Caja -> Nueva caja),
+   optionally assigning it to an area.
+6. Create users, assign a commercial role preset (or a fully custom
+   role), grant branch access and, if narrowing is wanted, register/area
+   access — Configuración's own `operator_authorized`/`operator_
+   register_access` checks confirm at least one real cashier can act
+   before anyone tries to sell.
+7. Build the catalogue (Productos) — decide `tracks_inventory` per
+   product deliberately, since it changes what Configuración will
+   require next.
+8. Set each active product's price IN THE TENANT'S OWN CURRENCY
+   (omitting the currency field lets the backend default it correctly).
+9. For any tracked product, create a default inventory location
+   (Admin. Inventario -> Ubicaciones) BEFORE trying to sell it — never
+   discovered only at the register.
+10. Receive real opening stock via a real Compra Directa or purchase
+    order — never a fabricated adjustment.
+11. Open the register with a real counted float.
+12. Make a real certification sale — Configuración should now read
+    "Tu sucursal está lista para vender." at every stage.
+13. Ready for ongoing operations; Configuración remains available
+    afterward as a live diagnostic, not a one-time wizard.
+
+**§21 Tests.** Backend: `readiness.evaluator.test.ts` (21 pure-function
+cases — every stage/check combination in §4/§6, including the exact
+non-blocking-optional proofs and the "never invents stock" proof),
+`readiness.routes.test.ts` (5 HTTP-layer cases — `branch.read` gating,
+wire-shape/snake_case mapping, in-scope vs out-of-scope `branch_id`,
+malformed-query rejection), `launch-config.validate.test.ts` (4 cases —
+the non-IANA company/branch timezone rejection, the unsupported-
+currency rejection, a real non-Mexican tenant accepted cleanly), new
+cases inside `cash.integration.test.ts`'s own USD-tenant and EUR-tenant
+describe blocks (the currency-override restriction, real US-denomination
+acceptance/rejection), and the centerpiece `customer-onboarding.
+integration.test.ts` (real PostgreSQL, real services, never a mock; 21
+cases covering §7 through §19 above end to end, including the stale-
+register-grant regression, cross-tenant isolation both directions, and
+`syncSystemRolePermissions()` reaching two independently-provisioned
+Owners without ever widening a custom role). The full backend unit
+suite (587 tests) and the full backend integration suite (819 tests
+across 62 files, including every pre-existing cash/sales/catalog/
+inventory/provisioning suite) were re-run clean after this task's
+changes — the only failures found were this task's own three
+currency-override tests, which asserted the PRE-task permissive
+behavior and were rewritten (never weakened, never deleted) to assert
+the new, correct, tenant-currency-only rule instead.
+
+Flutter: new `pos_readiness_gateway_test.dart` (8 cases — response
+parsing including null-vs-false `ready`, empty `items`, an unrecognized
+status degrading honestly to `notApplicable`; the real HTTP call shape
+with and without `branch_id`), `pos_readiness_screen_test.dart` (19
+cases — every stage/status combination, the Requerido/Opcional split
+with no misplaced badge, a CTA firing the right module, the multi-
+branch picker, a zero-branch tenant, permission-denied never calling
+the gateway, a failure-and-retry state, a non-MXN USD fixture and a
+fully generic-named fixture rendering identically), `pos_readiness_
+shell_test.dart` (3 cases — sidebar visibility gated by `branch.read`
+not the old `company_settings.read`, opening it end to end through the
+real shell, a CTA switching the real module), `pos_no_hardcoded_tenant_
+test.dart` (a repository-wide, comment-stripped scan of every `lib/`
+Dart file for "inflapark"/"puerta la victoria"/"taquilla" — zero
+matches), `pos_company_currency_test.dart` (9 cases — `companyCurrencyCode`
+resolution/fallback, `PosProductPriceInput`'s currency omission, sale-
+currency parsing and propagation into the card-terminal payment body),
+plus 5 cases added to `pos_branch_admin_test.dart` for the strict
+timezone picker (typing a non-IANA value is rejected client-side with
+no gateway call; selecting a real option succeeds; a pre-existing
+branch's already-saved out-of-shortlist zone still saves). `flutter
+analyze`: 0 errors, 167 issues — the established baseline, unchanged.
+`flutter test` (targeted, `--concurrency=1`, this Windows machine's own
+established mitigation for a real, disclosed Dart-VM JIT instability
+under heavy parallel load — TASK 16.16A §11): every new file plus every
+file this task's diff touches — 90+ cases across `pos_branch_admin_
+test.dart`/`pos_catalog_admin_test.dart`/`pos_category_admin_test.dart`/
+`pos_product_catalog_parity_test.dart`/`cash_cut_html_test.dart`/
+`pos_shell_wave2_recovery_cash_test.dart` plus the 39 new-file cases
+above — all passing; `pos_shell_test.dart` (231 cases, the single
+largest file, touched by this task in exactly one line — the ACCESS GO
+top-bar fallback already fixed in TASK 16.16A) re-run clean.
+`flutter build web --release`: succeeds; the resulting bundle is the
+exact one used for §16's live certification against BOTH tenants.
+
+**§22 Files changed.** Backend: `apps/api/src/modules/cash/supported-
+currencies.ts` (new), `apps/api/src/modules/readiness/*` (new, 6
+files), `apps/api/src/modules/catalog/product-catalog.{repository,
+service,routes}.ts`, `apps/api/src/modules/cash/cash.service.ts`,
+`apps/api/src/provisioning/production-owner.service.ts`,
+`apps/api/src/business-config/launch-config.validate.ts`,
+`apps/api/src/modules/admin/{shared/admin.service.ts,context/context.
+routes.ts,settings/settings.catalog.ts}`, `apps/api/src/bootstrap/
+register-plugins.ts`. Flutter: `apps/one/lib/features/pos/pos_
+readiness_{presentation,gateway,screen}.dart` (new), plus the currency/
+timezone/wiring changes listed in full in the commit itself across 17
+existing files. Tests: 9 new backend test files/blocks, 5 new Flutter
+test files plus 6 existing Flutter test files updated for legitimate
+fallout (a nullable `currency_code` in fixtures, a stricter timezone
+picker, a relabeled cash-cut heading — see §23).
+
+**§23 A second, smaller customer-visible copy fix (forensic, found
+during §16).** The printed cash-cut/close-out heading "Ventas /
+Taquilla" (and its Cafetería sub-line) hardcoded the word "Taquilla" —
+INFLAPARK's own operational-area name — into shared, cross-tenant
+printed output (`cash_cut_html.dart`, `pos_shell.dart`'s own on-screen
+mirror of the same section). Relabeled to tenant-neutral wording
+("Ventas generales" / "Cafetería (incluida en ventas generales)"), with
+the underlying financial semantics (Cafetería is still explicitly a
+SUBSET of the general total, never double-counted) completely
+unchanged — only the label. The category-admin "General / Taquilla"
+dropdown option (unclassified products) was relabeled "General (sin
+clasificar)" for the same reason. Every test asserting the old label
+text was updated to assert the new one; no test was weakened.
+
+**§24 Genuine, honest remaining limitations.** The client-side product-
+catalogue staleness in §17 is real and disclosed, not fixed — a future
+task should make `PosReadController` (or its POS-screen consumer
+specifically) refresh on a shorter, more predictable trigger than "some
+other screen happened to call refresh". Live direct-API-ID-tampering
+could not be mechanically demonstrated in this browser-automation
+environment (§18) — covered by dedicated backend integration tests
+instead. The Flutter text-input automation used for this task's own
+live certification occasionally duplicated typed text on the FIRST
+render of a screenshot after a fast type action (a tooling/timing
+artifact of the browser-automation harness itself, confirmed by
+re-screenshotting after a follow-up interaction, which always showed
+the correct, non-duplicated value) — never a product defect, and never
+left uncorrected in any field that was actually submitted. The two
+"Actualizar" cleanup QA users/roles from TASK 16.16's own certification
+remain disabled/retired exactly as that task left them; this task's own
+QA tenant ("ACCESS GO QA Customer") and its one real certification sale
+were deliberately left in place on the local dev database, following
+this project's own established convention (never retroactively alter or
+delete a real posted financial transaction), for inspection. Physical
+80mm printer certification remains outstanding, unchanged from every
+prior task.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

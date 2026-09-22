@@ -173,6 +173,9 @@ enum PosModule {
     // TASK 16.15: real, backend-wired — see each screen's own file.
     PosModule.branchConsolidation,
     PosModule.operationalAreas,
+    // TASK 16.17: Configuración — the tenant readiness / go-live checklist
+    // (`GET /api/v1/readiness`) — see `pos_readiness_screen.dart`.
+    PosModule.settings,
   }.contains(this);
 }
 
@@ -232,7 +235,8 @@ const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
   PosModule.documents: ['company_settings.read'],
   PosModule.sync: ['sync.execute'],
   PosModule.notifications: ['company_settings.read'],
-  PosModule.settings: ['company_settings.read'],
+  // TASK 16.17: gated by the readiness endpoint's own guard.
+  PosModule.settings: ['branch.read'],
   PosModule.receiptBranding: ['company_settings.read'],
   PosModule.printerSettings: ['company_settings.read'],
   // `PosModule.assistant` intentionally absent — always visible, matching

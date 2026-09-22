@@ -276,6 +276,7 @@ class _PricesTabState extends State<_PricesTab> {
         product: product,
         branches: widget.context.branches,
         initialBranchId: _branchId,
+        defaultCurrencyCode: widget.context.companyCurrencyCode,
       ),
     );
     if (saved == true) unawaited(_load());
@@ -418,11 +419,16 @@ class _PriceFormDialog extends StatefulWidget {
     required this.product,
     required this.branches,
     required this.initialBranchId,
+    required this.defaultCurrencyCode,
   });
   final PosCatalogAdminGateway gateway;
   final PosCatalogProduct product;
   final List<BranchSummary> branches;
   final String? initialBranchId;
+
+  /// The tenant's own currency (`AuthenticatedContext.companyCurrencyCode`)
+  /// — what the field starts with when the product has no price yet.
+  final String defaultCurrencyCode;
 
   @override
   State<_PriceFormDialog> createState() => _PriceFormDialogState();
@@ -431,7 +437,7 @@ class _PriceFormDialog extends StatefulWidget {
 class _PriceFormDialogState extends State<_PriceFormDialog> {
   late final _amountController = TextEditingController(text: widget.product.effectivePrice?.amount ?? '');
   late final _currencyController = TextEditingController(
-    text: widget.product.effectivePrice?.currencyCode ?? 'MXN',
+    text: widget.product.effectivePrice?.currencyCode ?? widget.defaultCurrencyCode,
   );
   late String? _branchId = widget.initialBranchId;
   DateTime? _validUntil;
@@ -464,7 +470,7 @@ class _PriceFormDialogState extends State<_PriceFormDialog> {
     }
     final currency = _currencyController.text.trim();
     if (currency.isEmpty || !_currencyPattern.hasMatch(currency)) {
-      setState(() => _error = 'La moneda debe tener 3 letras (ej. MXN).');
+      setState(() => _error = 'La moneda debe tener 3 letras (ej. ${widget.defaultCurrencyCode}).');
       return;
     }
     setState(() {
@@ -539,7 +545,7 @@ class _PriceFormDialogState extends State<_PriceFormDialog> {
                 TextField(
                   key: const Key('pos-catalog-admin-price-form-currency'),
                   controller: _currencyController,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Moneda (ej. MXN)'),
+                  decoration: InputDecoration(isDense: true, labelText: 'Moneda (ej. ${widget.defaultCurrencyCode})'),
                 ),
                 const SizedBox(height: 10),
                 Row(

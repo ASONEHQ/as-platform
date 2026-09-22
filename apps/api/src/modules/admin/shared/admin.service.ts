@@ -55,7 +55,7 @@ export class AdministrationService {
 
   public contextCompanies(actor: AdminActor): Promise<readonly Record<string, unknown>[]> {
     return this.repository.query<Record<string, unknown>>(
-      `select c.id company_id,c.display_name,(c.id=$2) current,true switch_permitted
+      `select c.id company_id,c.display_name,c.currency_code,(c.id=$2) current,true switch_permitted
        from company_memberships m
        join companies c on c.id=m.company_id
        where m.user_id=$1 and m.status='active' and c.status='active'

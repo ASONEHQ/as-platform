@@ -199,11 +199,11 @@ void main() {
       );
 
       expect(html, contains('RESUMEN OPERATIVO'));
-      expect(html, contains('Ventas / Taquilla'));
+      expect(html, contains('Ventas generales'));
       expect(html, contains(r'$450.00')); // pos net sales
       // Cafetería is explicitly labeled a SUBSET of Taquilla — never two
       // independent totals a reader could add together.
-      expect(html, contains('Cafetería / Snacks (parte de Taquilla)'));
+      expect(html, contains('Cafetería (incluida en ventas generales)'));
       expect(html, contains(r'$150.00')); // cafeteria net sales
       expect(html, contains('Eventos / Fiestas'));
       expect(html, contains(r'$500.00')); // deposits/collected

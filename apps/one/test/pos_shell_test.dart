@@ -9408,6 +9408,7 @@ class _FakePaymentsGateway implements PosPaymentsGateway {
     required String saleId,
     required String amount,
     required String terminalId,
+    String? currencyCode,
   }) async =>
       createResult ??
       const PosPaymentStatus(

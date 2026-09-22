@@ -1,4 +1,6 @@
+import { isSupportedCompanyCurrency, supportedCompanyCurrencyCodes } from '../modules/cash/supported-currencies.js';
 import { productStatuses, productTaxCodes, productTypes } from '../modules/catalog/product-catalog.types.js';
+import { isValidIanaTimezone } from '../modules/promotions/pricing.service.js';
 import {
   ALL_PERMISSIONS_IN_CATALOGUE,
   BusinessConfigInputError,
@@ -96,6 +98,18 @@ export function validateLaunchConfig(raw: unknown): LaunchConfig {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(company.slug))
     fail('company.slug', 'must be lowercase kebab-case.');
   if (!/^[A-Z]{3}$/u.test(company.currency_code)) fail('company.currency_code', 'must be a 3-letter ISO code.');
+  if (!isSupportedCompanyCurrency(company.currency_code))
+    fail(
+      'company.currency_code',
+      `must be a supported currency (${supportedCompanyCurrencyCodes.join(', ')}); "${company.currency_code}" has no approved cash-denomination set.`,
+    );
+  // TASK 16.17 — the same real-IANA check every other write path already
+  // enforces (`AdministrationService`, `ProductionOwnerProvisioner`); this
+  // tool inserts branches directly, so without it a launch config could
+  // still persist the exact non-IANA value ("Mexico_City") that once broke
+  // `POST /api/v1/sales` in production.
+  if (!isValidIanaTimezone(company.timezone))
+    fail('company.timezone', `"${company.timezone}" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").`);
 
   const branches = requireArray(raw.branches, 'branches').map((entry, index) => {
     const path = at('branches', index);
@@ -105,6 +119,13 @@ export function validateLaunchConfig(raw: unknown): LaunchConfig {
       code: requireString(entry.code, `${path}.code`),
       timezone: requireString(entry.timezone, `${path}.timezone`),
     };
+  });
+  branches.forEach((branch, index) => {
+    if (!isValidIanaTimezone(branch.timezone))
+      fail(
+        `${at('branches', index)}.timezone`,
+        `"${branch.timezone}" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").`,
+      );
   });
   const branchCodes = new Set(branches.map((branch) => branch.code));
   if (branchCodes.size !== branches.length) fail('branches', 'contains duplicate branch codes.');

@@ -142,6 +142,9 @@ async function fixture(
     patchVariant: vi.fn(() => Promise.resolve({ ...variant, version: 2n })),
     exportCsv,
     changeProductPrice,
+    // TASK 16.17 — the default for an omitted `currency_code` is now the
+    // tenant's own currency (never a blind 'MXN').
+    companyCurrency: vi.fn(() => Promise.resolve('MXN')),
   } as unknown as ProductCatalogService;
   registerProductCatalogRoutes(app, authentication, service);
   await app.ready();

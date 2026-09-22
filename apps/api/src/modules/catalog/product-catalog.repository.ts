@@ -648,6 +648,17 @@ export class ProductCatalogRepository {
     return product(row);
   }
 
+  /** TASK 16.17 — the tenant's own configured currency, the only currency
+   * a price may be denominated in (see `ProductCatalogService`'s price
+   * methods). Read inside the caller's own transaction. */
+  public async companyCurrency(client: ProductCatalogTransaction, companyId: string): Promise<string> {
+    const row = result<{ currency_code: string }>(
+      await client.query(`select currency_code from companies where id=$1`, [companyId]),
+    ).rows[0];
+    if (row === undefined) throw new ProductCatalogError('validation_error', 'The company was not found.');
+    return row.currency_code;
+  }
+
   public async validateBranch(
     client: ProductCatalogTransaction,
     companyId: string,

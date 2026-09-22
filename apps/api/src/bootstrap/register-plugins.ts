@@ -18,6 +18,9 @@ import { registerOperationalAreaRoutes } from '../modules/operational-areas/oper
 import { OperationalAreasService } from '../modules/operational-areas/operational-areas.service.js';
 import { BranchConsolidationService } from '../modules/branch-consolidation/branch-consolidation.service.js';
 import { registerBranchConsolidationRoutes } from '../modules/branch-consolidation/branch-consolidation.routes.js';
+import { ReadinessRepository } from '../modules/readiness/readiness.repository.js';
+import { registerReadinessRoutes } from '../modules/readiness/readiness.routes.js';
+import { ReadinessService } from '../modules/readiness/readiness.service.js';
 import { CatalogRepository } from '../modules/catalog/catalog.repository.js';
 import { registerCatalogRoutes } from '../modules/catalog/catalog.routes.js';
 import { CatalogService } from '../modules/catalog/catalog.service.js';
@@ -410,6 +413,7 @@ export async function registerPlugins(
       registerCashRoutes(app, authentication, cashService);
       registerOperationalAreaRoutes(app, authentication, operationalAreasService);
       registerBranchConsolidationRoutes(app, authentication, branchConsolidationService);
+      registerReadinessRoutes(app, authentication, new ReadinessService(new ReadinessRepository(options.infrastructure.database)));
       // TASK 14.3 (Wave 1, Part B.1) — constructed after `salesRepository`
       // (already built above): `linkSale`'s optional existence check
       // reads through it directly, never a second/duplicate sales

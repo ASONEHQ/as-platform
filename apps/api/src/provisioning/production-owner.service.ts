@@ -16,6 +16,7 @@ import {
 } from '@asone/database';
 
 import { hashPassword, validatePasswordStrength } from '../modules/auth/auth.passwords.js';
+import { isSupportedCompanyCurrency, supportedCompanyCurrencyCodes } from '../modules/cash/supported-currencies.js';
 import { isValidIanaTimezone } from '../modules/promotions/pricing.service.js';
 import { ProvisioningInputError, type ProvisionOwnerInput, type ProvisionOwnerSummary } from './production-owner.types.js';
 
@@ -114,6 +115,14 @@ export class ProductionOwnerProvisioner {
     const currencyCode = (input.companyCurrencyCode ?? 'MXN').trim().toUpperCase();
     if (!/^[A-Z]{3}$/u.test(currencyCode))
       throw new ProvisioningInputError('The company currency code must be a 3-letter ISO code (e.g. "MXN").');
+    // TASK 16.17 — a syntactically valid but unsupported currency (e.g.
+    // "EUR") used to provision fine and only fail at the first register
+    // close, when no cash-denomination set exists for it. Refused here,
+    // where the operator can still fix it.
+    if (!isSupportedCompanyCurrency(currencyCode))
+      throw new ProvisioningInputError(
+        `"${currencyCode}" is not a currency ACCESS GO supports yet (supported: ${supportedCompanyCurrencyCodes.join(', ')}).`,
+      );
     const locale = nonBlank(input.companyLocale ?? 'es-MX', 'company locale');
 
     const ownerDisplayName = nonBlank(input.ownerDisplayName, 'owner display name');

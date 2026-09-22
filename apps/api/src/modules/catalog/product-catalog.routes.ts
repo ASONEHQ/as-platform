@@ -121,7 +121,8 @@ interface ProductPriceBody {
   id?: string;
   branch_id?: string;
   amount: string;
-  currency_code: string;
+  /** Optional (TASK 16.17): omitted means "the tenant's own currency". */
+  currency_code?: string;
   valid_from?: string;
   valid_until?: string;
 }
@@ -256,7 +257,7 @@ const productPatchSchema = {
 const productPriceBodySchema = {
   type: 'object',
   additionalProperties: rejectUnknown,
-  required: ['amount', 'currency_code'],
+  required: ['amount'],
   properties: {
     id: uuid,
     branch_id: uuid,
@@ -624,7 +625,7 @@ export function registerProductCatalogRoutes(
                 unitOfMeasureCode: body.default_variant.unit_of_measure_code,
                 quantityScale: body.default_variant.quantity_scale ?? 0,
                 standardCost: body.default_variant.standard_cost ?? '0.0000',
-                currencyCode: body.default_variant.currency_code ?? 'MXN',
+                currencyCode: body.default_variant.currency_code ?? (await service.companyCurrency(context.companyId)),
                 ...(body.default_variant.name === undefined
                   ? {}
                   : { name: body.default_variant.name }),
@@ -937,7 +938,7 @@ export function registerProductCatalogRoutes(
           unitOfMeasureCode: body.unit_of_measure_code,
           quantityScale: body.quantity_scale ?? 0,
           standardCost: body.standard_cost ?? '0.0000',
-          currencyCode: body.currency_code ?? 'MXN',
+          currencyCode: body.currency_code ?? (await service.companyCurrency(context.companyId)),
           isDefault: body.is_default ?? false,
           status: body.status ?? 'active',
           optionValueIds: body.option_value_ids ?? [],
@@ -1000,7 +1001,7 @@ export function registerProductCatalogRoutes(
           requireBranchAccess(authentication, context, body.branch_id);
         const input: CreateProductPriceInput = {
           amount: body.amount,
-          currencyCode: body.currency_code,
+          currencyCode: body.currency_code ?? (await service.companyCurrency(context.companyId)),
           ...(body.id === undefined ? {} : { id: body.id }),
           ...(body.branch_id === undefined ? {} : { branchId: body.branch_id }),
           ...(body.valid_from === undefined ? {} : { validFrom: new Date(body.valid_from) }),
@@ -1051,7 +1052,7 @@ export function registerProductCatalogRoutes(
           requireBranchAccess(authentication, context, body.branch_id);
         const input: CreateProductPriceInput = {
           amount: body.amount,
-          currencyCode: body.currency_code,
+          currencyCode: body.currency_code ?? (await service.companyCurrency(context.companyId)),
           ...(body.branch_id === undefined ? {} : { branchId: body.branch_id }),
         };
         const changed = await service.changeProductPrice(

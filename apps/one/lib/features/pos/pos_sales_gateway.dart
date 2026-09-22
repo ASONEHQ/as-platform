@@ -21,6 +21,7 @@ class PosSaleCreated {
     required this.total,
     this.discountTotal = '0.0000',
     this.note,
+    this.currencyCode,
   });
 
   factory PosSaleCreated.fromJson(Map<String, Object?> json) => PosSaleCreated(
@@ -33,6 +34,7 @@ class PosSaleCreated {
     // `sales.routes.ts`'s own `saleHttp` now returns (`POST /sales`'s
     // response uses it) — `null` for every sale created without one.
     note: json['note'] as String?,
+    currencyCode: json['currency_code'] as String?,
   );
 
   final String id;
@@ -41,6 +43,10 @@ class PosSaleCreated {
   final String total;
   final String discountTotal;
   final String? note;
+
+  /// The sale's own currency (`saleHttp`'s `currency_code`); `null` only
+  /// for a response/fixture that did not carry it.
+  final String? currencyCode;
 }
 
 /// One line of the ticket as the backend needs it — `productId` and a raw

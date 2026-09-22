@@ -514,14 +514,19 @@ class PosProductPrice {
 class PosProductPriceInput {
   const PosProductPriceInput({
     required this.amount,
-    required this.currencyCode,
+    this.currencyCode,
     this.branchId,
     this.validFrom,
     this.validUntil,
   });
 
   final String amount;
-  final String currencyCode;
+
+  /// Optional: the backend defaults an omitted currency to the tenant's own
+  /// and rejects a price in any other currency, so a caller that does not
+  /// deliberately mean a currency simply leaves this `null` (omitted from
+  /// the request body).
+  final String? currencyCode;
 
   /// `null` = a company-wide default price override; a real branch id
   /// narrows it to that one branch (ADR-0006: only ever an authorized
@@ -532,7 +537,7 @@ class PosProductPriceInput {
 
   Map<String, Object?> toJson() => {
     'amount': amount,
-    'currency_code': currencyCode,
+    'currency_code': ?currencyCode,
     if (branchId != null) 'branch_id': branchId,
     if (validFrom != null) 'valid_from': validFrom!.toUtc().toIso8601String(),
     if (validUntil != null) 'valid_until': validUntil!.toUtc().toIso8601String(),

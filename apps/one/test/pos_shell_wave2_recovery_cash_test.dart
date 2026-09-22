@@ -304,9 +304,9 @@ void main() {
         // (labeled as part of Taquilla, never an additional total), and
         // Eventos/Fiestas — all real backend figures.
         expect(find.text('RESUMEN OPERATIVO'), findsOneWidget);
-        expect(find.text('VENTAS / TAQUILLA'), findsOneWidget);
+        expect(find.text('VENTAS GENERALES'), findsOneWidget);
         expect(find.text('\$450.00'), findsWidgets); // pos.netSales
-        expect(find.text('CAFETERÍA / SNACKS (parte de Taquilla)'), findsOneWidget);
+        expect(find.text('CAFETERÍA (incluida en ventas generales)'), findsOneWidget);
         expect(find.text('\$150.00'), findsWidgets); // cafeteria.netSales
         expect(find.text('EVENTOS / FIESTAS'), findsOneWidget);
         expect(find.text('\$1500.00'), findsWidgets); // outstanding for new reservations

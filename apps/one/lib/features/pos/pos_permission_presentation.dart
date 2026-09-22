@@ -177,7 +177,7 @@ const Map<String, PermissionPresentation> _permissionPresentations = {
   // -- Áreas operativas / Consolidado de sucursal ------------------------
   'operational_area.read': PermissionPresentation(
     label: 'Consultar áreas operativas',
-    description: 'Permite ver las áreas operativas configuradas en una sucursal (por ejemplo, taquilla o alimentos).',
+    description: 'Permite ver las áreas operativas configuradas en una sucursal.',
   ),
   'operational_area.manage': PermissionPresentation(
     label: 'Administrar áreas operativas',

@@ -588,7 +588,7 @@ class _CategoryFormDialogState extends State<_CategoryFormDialog> {
                   isExpanded: true,
                   decoration: const InputDecoration(isDense: true, labelText: 'Uso operativo'),
                   items: const [
-                    DropdownMenuItem(value: null, child: Text('General / Taquilla')),
+                    DropdownMenuItem(value: null, child: Text('General (sin clasificar)')),
                     DropdownMenuItem(value: 'cafeteria', child: Text('Cafetería / Snacks')),
                   ],
                   onChanged: (value) => setState(() => _operationalGroup = value),

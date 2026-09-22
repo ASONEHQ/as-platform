@@ -177,7 +177,7 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-category-admin-form-operational-group')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('General / Taquilla').last);
+        await tester.tap(find.text('General (sin clasificar)').last);
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-category-admin-form-save')));
         await tester.pumpAndSettle();

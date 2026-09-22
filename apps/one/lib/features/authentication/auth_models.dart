@@ -48,11 +48,16 @@ class CompanySummary {
     required this.name,
     this.current = false,
     this.switchPermitted = true,
+    this.currencyCode,
   });
   final String id;
   final String name;
   final bool current;
   final bool switchPermitted;
+
+  /// The tenant's own ISO-4217 currency (`GET /context/companies`
+  /// `currency_code`); `null` when the backend did not send it.
+  final String? currencyCode;
 }
 
 class BranchSummary {
@@ -103,6 +108,10 @@ class AuthenticatedContext {
       companies.where((value) => value.current).firstOrNull;
   BranchSummary? get currentBranch =>
       branches.where((value) => value.current).firstOrNull;
+
+  /// The tenant's currency. 'MXN' is only the legacy fallback for a backend
+  /// that did not send `currency_code`.
+  String get companyCurrencyCode => currentCompany?.currencyCode ?? 'MXN';
 }
 
 sealed class LoginOutcome {

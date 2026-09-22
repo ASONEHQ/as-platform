@@ -113,8 +113,8 @@ void main() {
       );
     });
 
-    testWidgets('a real IANA value not in the curated shortlist can still be typed directly — the '
-        'picker is a convenience, never a lock-out (the backend remains authoritative)', (tester) async {
+    testWidgets('a value typed EXACTLY as one of the list identifiers is accepted (TASK 16.17: the '
+        'list is broad enough to cover other regions, e.g. Asia)', (tester) async {
       final gateway = _RecordingBranchAdminGateway(seed: const []);
       await _pump(tester, gateway: gateway, permissions: _readWrite);
 
@@ -153,7 +153,10 @@ void main() {
 
       await tester.enterText(find.byKey(const Key('pos-branch-admin-form-code')), 'SUR');
       await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Sur');
-      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Mexico_City');
+      // TASK 16.17: free text like "Mexico_City" is now blocked client-side
+      // (see the strict-picker group below), so this defense-in-depth case
+      // submits a list value and lets the (simulated) server reject it.
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'America/Mexico_City');
       await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
@@ -163,6 +166,113 @@ void main() {
         find.text('"Mexico_City" is not a valid IANA timezone identifier (e.g. "America/Mexico_City").'),
         findsOneWidget,
       );
+      expect(gateway.createCalls, hasLength(1));
+    });
+  });
+
+  group('TASK 16.17 — strict timezone picker', () {
+    Future<void> openNewForm(WidgetTester tester, _RecordingBranchAdminGateway gateway) async {
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-branch-admin-new')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-code')), 'SUR');
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Sur');
+    }
+
+    testWidgets('typing a non-IANA value such as Mexico_City is rejected without calling the gateway', (
+      tester,
+    ) async {
+      final gateway = _RecordingBranchAdminGateway(seed: const []);
+      await openNewForm(tester, gateway);
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Mexico_City');
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsOneWidget);
+      expect(find.text('Elige una zona horaria de la lista.'), findsOneWidget);
+      expect(gateway.createCalls, isEmpty);
+    });
+
+    testWidgets('selecting America/Mexico_City from the list succeeds', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(seed: const []);
+      await openNewForm(tester, gateway);
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'ciudad de méxico');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-timezone-option-America/Mexico_City')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls, hasLength(1));
+      expect(gateway.createCalls.single.input.timezone, 'America/Mexico_City');
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsNothing);
+    });
+
+    testWidgets('the error clears once the operator edits the field again', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(seed: const []);
+      await openNewForm(tester, gateway);
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Mexico_City');
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Europe/Madrid');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsNothing);
+    });
+
+    testWidgets('editing a branch whose saved zone is valid but outside the list still saves', (tester) async {
+      final legacy = PosBranch(
+        id: 'b-9',
+        companyId: 'company-id',
+        code: 'LEG',
+        name: 'Sucursal Legada',
+        status: 'active',
+        timezone: 'America/Argentina/Ushuaia',
+        createdAt: DateTime.utc(2026, 8, 1),
+        updatedAt: DateTime.utc(2026, 8, 1),
+      );
+      final gateway = _RecordingBranchAdminGateway(seed: [legacy]);
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-row-b-9')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-detail-edit')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-name')), 'Sucursal Legada 2');
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.updateCalls, hasLength(1));
+      expect(gateway.updateCalls.single.input.timezone, 'America/Argentina/Ushuaia');
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsNothing);
+    });
+
+    testWidgets('editing a branch to a different out-of-list value is rejected', (tester) async {
+      final gateway = _RecordingBranchAdminGateway(
+        seed: [_fixtureBranch(id: 'b-1', code: 'CENTRO', name: 'Sucursal Centro')],
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+
+      await tester.tap(find.byKey(const Key('pos-branch-admin-row-b-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-detail-edit')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-branch-admin-form-timezone')), 'Mexico_City');
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-name')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-branch-admin-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-branch-admin-form-timezone-error')), findsOneWidget);
+      expect(gateway.updateCalls, isEmpty);
     });
   });
 

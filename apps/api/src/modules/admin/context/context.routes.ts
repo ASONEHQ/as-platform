@@ -34,6 +34,9 @@ const contextCompaniesSchema = {
                 properties: {
                   company_id: { type: 'string', format: 'uuid' },
                   display_name: { type: 'string' },
+                  // TASK 16.17 — the tenant's own currency, so no client has to
+                  // hardcode one (optional in the schema: older clients ignore it).
+                  currency_code: { type: 'string', pattern: '^[A-Z]{3}$' },
                   current: { type: 'boolean' },
                   switch_permitted: { type: 'boolean' },
                 },

@@ -515,10 +515,19 @@ export class CashService {
           // explicit override remains for the rare caller that already
           // knows the exact currency it wants (e.g. this module's own
           // test fixtures) — real Flutter callers never send one.
+          const companyCurrencyCode = await this.repository.companyCurrencyCode(client, context.companyId);
           const currencyCode =
-            input.currencyCode === undefined
-              ? await this.repository.companyCurrencyCode(client, context.companyId)
-              : normalizeCurrencyCode(input.currencyCode);
+            input.currencyCode === undefined ? companyCurrencyCode : normalizeCurrencyCode(input.currencyCode);
+          // TASK 16.17 — a tenant has ONE currency. The override above used
+          // to accept any ISO code, so a request could open (and mis-tag)
+          // an "EUR" session for a USD company: its opening float, every
+          // cash movement and its denomination count would then be
+          // denominated in a currency the tenant never configured.
+          if (currencyCode !== companyCurrencyCode)
+            throw new CashError(
+              'validation_error',
+              `A cash session must use this company's currency (${companyCurrencyCode}); "${currencyCode}" is not allowed.`,
+            );
           const id = input.id ?? randomUUID();
           const created = await this.repository.insertSession(client, {
             ...context,

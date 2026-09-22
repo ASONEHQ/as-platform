@@ -1,3 +1,4 @@
+import { supportedCompanyCurrencyCodes } from '../../cash/supported-currencies.js';
 import {
   allowedString,
   booleanValue,
@@ -95,10 +96,10 @@ export const settingsCatalog = [
       'business.currency',
       (company) => company.currencyCode,
       'MXN',
-      allowedString(['MXN', 'USD'], (input) => input.trim().toUpperCase()),
+      allowedString([...supportedCompanyCurrencyCodes], (input) => input.trim().toUpperCase()),
     ),
     normalize: (value: unknown) =>
-      allowedString(['MXN', 'USD'], (input) => input.trim().toUpperCase())(
+      allowedString([...supportedCompanyCurrencyCodes], (input) => input.trim().toUpperCase())(
         'business.currency',
         value,
       ),

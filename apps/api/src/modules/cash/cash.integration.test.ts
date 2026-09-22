@@ -401,22 +401,86 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       ).rejects.toMatchObject({ code: 'validation_error' });
     });
 
-    // TASK 16.11 — `business.currency` already allows a tenant to be
-    // configured `'MXN' | 'USD'` (settings.catalog.ts); a USD session
-    // must validate its own real US bill/coin set, never the MXN one.
-    it('accepts a real USD denomination breakdown for a USD-currency session — never rejected against the MXN set', async () => {
-      const register = await cash.createRegister(context, branchIds, 'reg-denom-usd-1', {
+    // TASK 16.11/16.17 — a session's denomination set follows the
+    // tenant's own currency; the USD-tenant cases live in their own
+    // describe below (a USD session can only exist for a USD company now).
+    it('rejects a real US-only denomination (a quarter) against an MXN session', async () => {
+      const mxnRegister = await cash.createRegister(context, branchIds, 'reg-denom-mxn-3', {
         branchId,
+        code: 'REG-DENOM-MXN-3',
+        name: 'Caja Denom MXN 3',
+      });
+      const mxnSession = await cash.openSession(context, branchIds, 'session-denom-mxn-3', {
+        cashRegisterId: mxnRegister.value.id,
+        openingAmount: '0',
+      });
+      await expect(
+        cash.closeSession(context, branchIds, 'session-denom-mxn-close-3', mxnSession.value.id, {
+          declaredClosingAmount: '0.2500',
+          denominationCounts: [{ value: '0.25', quantity: 1 }], // a real US quarter, not a real MXN coin.
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
+    });
+  });
+
+  // TASK 16.17 — a USD tenant (the platform's second supported currency):
+  // its sessions are tagged USD from the tenant's own configuration and
+  // validate the real US bill/coin set, never the MXN one.
+  describe('USD tenant sessions (TASK 16.11/16.17)', () => {
+    const usdCompanyId = randomUUID();
+    const usdBranchId = randomUUID();
+    const usdUserId = randomUUID();
+    const usdContext = {
+      companyId: usdCompanyId,
+      actorId: usdUserId,
+      requestId: 'cash-usd-request',
+      correlationId: 'cash-usd-correlation',
+      timestamp: new Date('2026-09-20T09:00:00.000Z'),
+    };
+    const usdBranchIds = [usdBranchId];
+
+    beforeAll(async () => {
+      await database.pool.query(
+        `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
+         values($1,'Cash USD Co','Cash USD Co',$2,'active','America/New_York','USD','en-US')`,
+        [usdCompanyId, `cash-usd-${usdCompanyId}`],
+      );
+      await database.pool.query(
+        `insert into branches(id,company_id,name,code,status,timezone)
+         values($1,$2,'Cash USD Main','CUSDMAIN','active','America/New_York')`,
+        [usdBranchId, usdCompanyId],
+      );
+      await database.pool.query(
+        `insert into users(id,email,normalized_email,display_name,status)
+         values($1,$2,$2,'Cash USD Cashier','active')`,
+        [usdUserId, `cash-usd-${usdUserId}@example.test`],
+      );
+      await database.pool.query(
+        `insert into company_memberships(id,company_id,user_id,status) values($1,$2,$3,'active')`,
+        [randomUUID(), usdCompanyId, usdUserId],
+      );
+    });
+
+    afterAll(async () => {
+      for (const table of ['cash_movements', 'cash_sessions', 'cash_registers', 'idempotency_keys', 'outbox_events', 'audit_log', 'company_memberships', 'branches'])
+        await database.pool.query(`delete from ${table} where company_id=$1`, [usdCompanyId]);
+      await database.pool.query('delete from companies where id=$1', [usdCompanyId]);
+      await database.pool.query('delete from users where id=$1', [usdUserId]);
+    });
+
+    it('accepts a real USD denomination breakdown for a USD-currency session — never rejected against the MXN set', async () => {
+      const register = await cash.createRegister(usdContext, usdBranchIds, 'reg-denom-usd-1', {
+        branchId: usdBranchId,
         code: 'REG-DENOM-USD',
         name: 'Caja Denom USD',
       });
-      const opened = await cash.openSession(context, branchIds, 'session-denom-usd-1', {
+      const opened = await cash.openSession(usdContext, usdBranchIds, 'session-denom-usd-1', {
         cashRegisterId: register.value.id,
         openingAmount: '0',
-        currencyCode: 'USD',
       });
-      // 1×$20 + 1×$5 + 3×$0.25 + 2×$0.10 = 25.95.
-      const closed = await cash.closeSession(context, branchIds, 'session-denom-usd-close-1', opened.value.id, {
+      expect(opened.value.currencyCode).toBe('USD');
+      // 1x$20 + 1x$5 + 3x$0.25 + 2x$0.10 = 25.95.
+      const closed = await cash.closeSession(usdContext, usdBranchIds, 'session-denom-usd-close-1', opened.value.id, {
         declaredClosingAmount: '25.9500',
         denominationCounts: [
           { value: '20', quantity: 1 },
@@ -433,39 +497,43 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       ]);
     });
 
-    it('rejects a real MXN-only denomination (e.g. $1000) against a USD session, and a USD-only denomination (e.g. a quarter) against an MXN session', async () => {
-      const usdRegister = await cash.createRegister(context, branchIds, 'reg-denom-usd-2', {
-        branchId,
+    it('rejects a real MXN-only denomination (e.g. $1000) against a USD session', async () => {
+      const usdRegister = await cash.createRegister(usdContext, usdBranchIds, 'reg-denom-usd-2', {
+        branchId: usdBranchId,
         code: 'REG-DENOM-USD-2',
         name: 'Caja Denom USD 2',
       });
-      const usdSession = await cash.openSession(context, branchIds, 'session-denom-usd-2', {
+      const usdSession = await cash.openSession(usdContext, usdBranchIds, 'session-denom-usd-2', {
         cashRegisterId: usdRegister.value.id,
         openingAmount: '0',
-        currencyCode: 'USD',
       });
       await expect(
-        cash.closeSession(context, branchIds, 'session-denom-usd-close-2', usdSession.value.id, {
+        cash.closeSession(usdContext, usdBranchIds, 'session-denom-usd-close-2', usdSession.value.id, {
           declaredClosingAmount: '1000.0000',
           denominationCounts: [{ value: '1000', quantity: 1 }], // a real MXN bill, not a real US one.
         }),
       ).rejects.toMatchObject({ code: 'validation_error' });
+    });
 
-      const mxnRegister = await cash.createRegister(context, branchIds, 'reg-denom-mxn-3', {
-        branchId,
-        code: 'REG-DENOM-MXN-3',
-        name: 'Caja Denom MXN 3',
-      });
-      const mxnSession = await cash.openSession(context, branchIds, 'session-denom-mxn-3', {
-        cashRegisterId: mxnRegister.value.id,
-        openingAmount: '0',
+    it('a session currency that differs from the tenant currency is refused; restating the tenant currency is fine', async () => {
+      const register = await cash.createRegister(usdContext, usdBranchIds, 'reg-usd-override', {
+        branchId: usdBranchId,
+        code: 'REG-USD-OVR',
+        name: 'Caja USD Override',
       });
       await expect(
-        cash.closeSession(context, branchIds, 'session-denom-mxn-close-3', mxnSession.value.id, {
-          declaredClosingAmount: '0.2500',
-          denominationCounts: [{ value: '0.25', quantity: 1 }], // a real US quarter, not a real MXN coin.
+        cash.openSession(usdContext, usdBranchIds, 'session-usd-override-bad', {
+          cashRegisterId: register.value.id,
+          openingAmount: '0',
+          currencyCode: 'MXN',
         }),
       ).rejects.toMatchObject({ code: 'validation_error' });
+      const ok = await cash.openSession(usdContext, usdBranchIds, 'session-usd-override-ok', {
+        cashRegisterId: register.value.id,
+        openingAmount: '0',
+        currencyCode: 'USD',
+      });
+      expect(ok.value.currencyCode).toBe('USD');
     });
   });
 
@@ -589,19 +657,25 @@ integration('PostgreSQL cash register operations (TASK 12.7)', { concurrent: fal
       expect(reread.status).toBe('open');
     });
 
-    it('an explicit currencyCode override still works for a caller that already knows the exact currency it wants', async () => {
+    it('an explicit currencyCode is only accepted when it restates the tenant\'s own currency (TASK 16.17)', async () => {
       const register = await cash.createRegister(eurContext, eurBranchIds, 'reg-eur-4', {
         branchId: eurBranchId,
         code: 'REG-EUR-4',
         name: 'Caja EUR 4',
       });
+      await expect(
+        cash.openSession(eurContext, eurBranchIds, 'session-eur-open-4-bad', {
+          cashRegisterId: register.value.id,
+          openingAmount: '0',
+          currencyCode: 'USD',
+        }),
+      ).rejects.toMatchObject({ code: 'validation_error' });
       const opened = await cash.openSession(eurContext, eurBranchIds, 'session-eur-open-4', {
         cashRegisterId: register.value.id,
         openingAmount: '0',
-        currencyCode: 'USD',
+        currencyCode: 'EUR',
       });
-      // The EUR company's own default is overridden, exactly as asked.
-      expect(opened.value.currencyCode).toBe('USD');
+      expect(opened.value.currencyCode).toBe('EUR');
     });
   });
 

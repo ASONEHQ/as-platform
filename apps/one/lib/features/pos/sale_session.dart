@@ -155,6 +155,11 @@ String _formatWeightMicros(BigInt micros) {
 /// this engine's subtotal/IVA/total are a real, live *display* of what the
 /// backend already priced, not an authoritative checkout calculation.
 class SaleSession extends ChangeNotifier {
+  /// [currencyCode] is the tenant's own currency (`AuthenticatedContext.
+  /// companyCurrencyCode`), used to report zero totals for an empty ticket;
+  /// 'MXN' is only the legacy default for callers that do not know it.
+  SaleSession({String? currencyCode}) : _currencyCode = currencyCode ?? 'MXN';
+
   final List<SaleLine> _lines = [];
 
   // TASK 12.9: coupon codes the cashier has successfully applied (i.e.
@@ -310,7 +315,10 @@ class SaleSession extends ChangeNotifier {
   /// line exists. Every line must share one currency (mixed-currency
   /// tickets are not a real scenario for one company/branch catalog); a
   /// currency mismatch is a defensive `StateError`, not silently ignored.
-  String _currencyCode = 'MXN';
+  String _currencyCode;
+
+  /// The ticket's currency (see [_currencyCode]).
+  String get currencyCode => _currencyCode;
 
   /// Read-only snapshot — mutate only through the methods below so every
   /// change goes through `notifyListeners()`.
