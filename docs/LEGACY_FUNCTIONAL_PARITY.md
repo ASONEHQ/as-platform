@@ -5528,6 +5528,397 @@ isolation — see §6).
     financial transaction" convention TASK 16.17 established) for
     inspection.
 
+## TASK 16.18 — ACCESS GO Internal Beta Access: "Administrador de pruebas" (2026-09-22)
+
+**§1 Goal.** Let the Owner give a trusted internal beta tester (the Owner's
+own business partner, for the immediate use case) their OWN real ACCESS GO
+login — never the Owner's credentials, never a hardcoded/shared password —
+with broad enough operational visibility to genuinely explore the product
+and find bugs, while being structurally unable to compromise the tenant or
+the platform. Built entirely on the EXISTING RBAC architecture (TASK
+16.5/16.15/16.16) — no parallel authorization system, no "beta mode" flag
+anywhere in the authorization path.
+
+**§2 Forensic audit findings.** The existing architecture already fully
+expresses everything this task needs:
+  * `packages/database/src/seeds/technical-permissions.ts` — the one,
+    exhaustive, 104-code permission catalogue. No `company.delete`,
+    `role.delete`/`role.manage`, `user.delete`, or any
+    `billing`/`licensing`/`integration`-credential code exists anywhere in
+    it — those specific dangers the task asked to evaluate simply have no
+    corresponding capability in this codebase today.
+  * `packages/database/src/seeds/role-templates.ts` (TASK 16.16) — the
+    exact "commercial preset" mechanism this task needed: a static,
+    never-persisted starter permission bundle that only pre-fills the
+    real `POST /roles` + `PUT /roles/{id}/permissions` flow. A
+    template-sourced role is an ordinary custom (`is_system=false`) role,
+    fully editable/reusable for as many future beta testers as needed —
+    "reusable" was never in question.
+  * `roles.isSystem` (boolean, default `false`) is the ONLY structural
+    Owner marker — set exactly once, at provisioning
+    (`production-owner.service.ts`/`bootstrap-owner.service.ts`), and
+    auto-synced to hold every current permission on every `db:seed` run
+    (`syncSystemRolePermissions`). Before this task, exactly TWO
+    endpoints checked it (`updateRole`, `replaceRolePermissions`) — real
+    gaps existed elsewhere (§5).
+  * A real, working self-escalation guard already existed on
+    `assignRole`/`replaceRolePermissions` (TASK 16.5): an actor can never
+    grant a role/permission carrying an `allow` the actor does not
+    currently hold themselves — this is the guard that makes "Administrador
+    de pruebas" safe to grant to an actor who is not already
+    all-powerful.
+  * `user_branch_access`/`user_register_access` (TASK 16.15) already
+    express exactly "which branches/registers can this user reach" with
+    the precise "zero rows = unrestricted, ≥1 row = narrowed" semantics
+    this task's Phase 6 wanted reused verbatim.
+  * Password provisioning: `AdministrationService.updateMembership`'s
+    first-activation path (TASK 14.0) is the ONLY password-provisioning
+    mechanism this codebase has — the acting admin sets a real password
+    directly (validated by `validatePasswordStrength`, hashed with
+    `argon2id`, never stored or echoed back as plaintext). No invite-
+    email/token flow exists (§8 discloses this honestly).
+  * Deactivation already immediately revokes active `sessions`/
+    `session_refresh_tokens` in the SAME transaction, AND every request
+    re-resolves permissions/branch/register scope fresh from the database
+    (`AuthService.authenticate` → `findSession` → `resolveContext`) —
+    there is no cached-token window where a deactivated user can keep
+    acting.
+  * Two REAL gaps were found and fixed centrally (§5) — `assignRole`/
+    `revokeRoleAssignment` never checked `is_system` at all, and
+    `updateMembership` never checked whether its target held an
+    `is_system` role before suspending/disabling it.
+
+**§3 "Administrador de pruebas" permission design.** A new, fourth entry
+in `role-templates.ts`'s `roleTemplates` array (`key: 'beta_tester'`),
+`betaTesterPermissionCodes` — a deliberately HAND-WRITTEN, explicit
+allowlist (58 codes), never derived from the full catalogue and never
+"every code except a few exclusions" (the fail-closed design the task's
+own Phase 14 required — a regression test, described in §9, pins this
+down). Grants broad operational visibility across exactly the modules
+TASK 16.18 Phase 2 named: Dashboard (`report.read`), Punto de
+Venta/Ventas/Devoluciones/Ventas Suspendidas (`sale.*`, `payment.*`,
+`refund.*`, `discount.apply`, `held_sale.manage`, `catalog.read`, plus
+`cash_*` to actually operate a register), Clientes (`customer.*`),
+Productos/Variantes/Categorías/Marcas/Catálogo Avanzado
+(`catalog.read`, `category.manage`, `product.manage`, `price.manage`,
+`availability.manage`), Inventario/Admin. Inventario (the full
+`inventory.*` family — narrower would have crippled genuine QA of the
+movement/count/transfer/reservation/reconciliation lifecycle), Compras
+(`purchase.*`), Proveedores (`supplier.*`), Fiestas (`party.*`),
+Membresías (`membership.*`, plus `reward.read`/`reward.redeem` since
+Punto de Venta needs real redemption to function), Cupones/Promociones
+(`promotion.*`, `coupon.*`), Caja/Consolidado de Sucursal (`cash_*`,
+`branch_consolidation.read`), Historial (`sale.read`), Reportes
+(`report.read`).
+
+**§4 Explicitly excluded dangerous capabilities.** Every one of the
+task's own worry-list items was evaluated against the real permission
+catalogue and, where a corresponding capability exists, deliberately
+left out of the preset:
+  * Creating/deleting/changing Owner access, changing system-role
+    permissions — `role.create`, `role.update`, `role.permission.manage`,
+    `role.assign` are all excluded from the preset; even if an actor
+    somehow held them, `assignRole`/`revokeRoleAssignment`/`updateRole`/
+    `replaceRolePermissions` now ALL centrally refuse to touch an
+    `is_system` role or its holder (§5).
+  * Modifying their own or anyone's authorization, granting themselves
+    additional permissions — `role.*`/`user.*`/`permission.read` fully
+    excluded; the pre-existing TASK 16.5 guard additionally makes
+    self-escalation impossible even for an actor who DOES hold
+    `role.assign` (§6).
+  * Deleting the company, destructive tenant-wide configuration,
+    security/auth/licensing/platform configuration — `company.*`,
+    `company_settings.*`, `branch.create`, `branch.update`,
+    `branch_settings.*`, `device.*`, `sync.execute` all excluded (no
+    `company.delete`/licensing/secrets code exists in this codebase at
+    all, confirmed by the forensic audit).
+  * Secrets/API/integration credentials — no such permission code exists
+    in this codebase; nothing to exclude beyond confirming its absence.
+  * Changing another user's critical authorization, any platform-level
+    capability — `user.update`, `branch_access.manage` excluded (branch/
+    register scope stays exclusively Owner-controlled, TASK 16.18 Phase
+    6); `staff_credential.manage` (another staff member's own PIN/QR
+    login) excluded too.
+  * People/payroll data (`employee.*`, `schedule.*`, `attendance.*`,
+    `payroll.*`) and wristband/ticket access control (`access.*`) were
+    never named among the beta tester's operational modules and each
+    carries its own real sensitivity — excluded.
+  * The audit trail and data-recovery tooling (`audit.read`,
+    `recovery.read`) — excluded; a beta tester exploring for bugs should
+    not incidentally gain visibility into the tenant's own security log.
+  * Manual ledger-correction / fraud-correction-grade admin actions
+    (`loyalty.manage`, `loyalty.adjust`, `reward.issue`, `reward.revoke`)
+    — excluded; ordinary checkout-time `reward.redeem` remains.
+  * Not every DELETE-flavored action was treated as dangerous purely by
+    name: `sale.cancel`, `refund.cancel`, `inventory.reverse`,
+    `party.cancel` are all ordinary, audited, already-safeguarded
+    business reversals a Manager-tier user already performs day to day
+    (TASK 16.16's own Manager template already includes every one of
+    them) — excluding them would have made "meaningful QA" impossible
+    for exactly the workflows most likely to have real bugs.
+
+**§5 Owner protection — two real gaps found and fixed centrally.** The
+forensic audit found `assignRole` and `revokeRoleAssignment` had NO
+`is_system` check at all (only `updateRole`/`replaceRolePermissions`
+did), and `updateMembership` had no check preventing it from
+suspending/disabling a user who holds an `is_system` role. Concretely,
+before this fix, ANY actor holding `role.assign` plus every permission
+the Owner role grants — which, before this fix, included every
+"Administrador"-template-sourced role, since that template is
+deliberately the full permission catalogue — could attach the
+`is_system` Owner role to themselves through `POST /users/{id}/roles`,
+or revoke the real Owner's own role assignment through `DELETE
+/users/{id}/roles/{assignment_id}`, demoting them with no dedicated
+re-provisioning path back. Fixed centrally, in `AdministrationService`
+(`apps/api/src/modules/admin/shared/admin.service.ts`), mirroring the
+pre-existing `is_system` guard's own exact shape:
+  * `assignRole` now refuses to attach an `is_system=true` role through
+    this endpoint (403 `permission_denied`), regardless of what the
+    actor already holds.
+  * `revokeRoleAssignment` now refuses to revoke an `is_system=true`
+    role's assignment through this endpoint (403 `permission_denied`).
+  * `updateMembership` now refuses to suspend/disable a user who
+    currently holds an `is_system=true` role (403 `permission_denied`);
+    activating a still-`pending` identity is unaffected (a brand-new
+    invite can never itself hold Owner yet).
+  Certified live and in `beta-tester-access.integration.test.ts`: the
+  beta tester cannot become Owner; the Owner cannot be demoted, disabled,
+  or have their system role's permissions altered — even by a SEPARATE,
+  full-permission "Administrador"-tier actor, not merely the beta tester
+  itself. Deliberately NOT touched: `changeBranchAccess`'s own existing
+  ability to grant a branch outside the actor's own permitted branches —
+  that is a real, already-tested, DELIBERATELY intentional TASK 16.5
+  "first-Owner bootstrap" design (`admin.integration.test.ts`'s own
+  "the actual bootstrap unblock" test) this task must not break, and it
+  is unreachable by the beta tester anyway (the preset never holds
+  `branch_access.manage` at all — see §6).
+
+**§6 Self-escalation protection.** Multiple independent layers, none of
+them merely a hidden UI button:
+  1. The preset itself excludes `user.*`/`role.*`/`permission.read`
+     entirely — the beta tester cannot even open user/role
+     administration (every `AdministrationService` call for it 403s).
+  2. Even a HYPOTHETICAL actor limited to exactly the beta permission set
+     plus `role.assign` cannot assign themselves (or anyone) a role
+     carrying a permission they do not already hold — the pre-existing
+     TASK 16.5 guard, certified specifically for this scenario.
+  3. `branch_access.manage` is excluded from the preset — a beta tester
+     can never grant themselves (or anyone) additional branch/register
+     access; only the Owner decides scope (§7).
+  4. The three Owner-protection fixes in §5 close the one remaining
+     route (attaching/detaching the `is_system` role itself) that neither
+     of the above two guards covered.
+  All of this is enforced entirely server-side, in `AdministrationService`
+  — never a Flutter-only check (the existing `_PermissionPicker` UI
+  merely mirrors it, disabling rather than hiding a checkbox the actor
+  doesn't hold, explicitly documented in that file as "a UX signal ON
+  TOP OF, never a replacement for, the server's own already-proven 403").
+
+**§7 Branch/register scope.** No beta-specific scope mechanism was
+built. The Owner grants branch access the exact same way as any other
+user — `PUT /users/{id}/branch-access/{branch_id}` — and, within an
+allowed branch, either leaves register access unrestricted (the
+existing "zero `user_register_access` rows = every register in the
+branch is usable" default, satisfying "broad QA access to all
+registers") or narrows it with the exact same `POST /users/{id}
+/register-access` TASK 16.15 already built. Certified live and in
+`beta-tester-access.integration.test.ts`: a beta tester granted only
+Branch A resolves to `permittedBranchIds: [branchA]` — never Branch B;
+`AuthService.requireBranchAccess` rejects a direct Branch-B request
+server-side; register scope narrows/unrestricts exactly like any other
+role.
+
+**§8 Authentication/password behavior.** Reuses the ONLY password-
+provisioning mechanism this codebase has — no new infrastructure was
+built. The Owner sets a real password directly, once, on the beta
+tester's first activation (`PATCH /users/{id}` with
+`membership_status: 'active'` and a `password` field); it is validated
+(`validatePasswordStrength` — 12+ chars, mixed case/digit/symbol, a
+placeholder blocklist) and hashed with `argon2id` before ever touching
+the database — never stored or returned as plaintext afterward, never
+logged. **Genuine, honestly disclosed limitation**: there is no separate
+invite-email/reset-token flow — the Owner must communicate the initial
+password to the tester through some out-of-band channel (in person, a
+secure message), exactly the same "small-business-launch pattern" TASK
+14.0 already established for every other staff account this product
+onboards. A future task could add a proper invite-link/forced-reset flow
+if this becomes a real friction point; it was not built here since it
+was not genuinely necessary for this task's own scope.
+
+**§9 Fail-closed preset safety.** `betaTesterPermissionCodes` is a plain
+array literal — not `= technicalPermissionCodes` (like the Administrator
+template), not a `.filter()`/`.except()` derived from it. A brand-new
+permission added to the catalogue in some future task NEVER silently
+appears in this preset. `role-templates.test.ts` pins this down with a
+dedicated regression: the beta template's own code list is asserted to
+never equal (and always stay meaningfully smaller than) the full
+catalogue, and a large explicit forbidden-code list (every
+company/branch/device/user/role/people/payroll/access/audit/recovery/
+ledger-correction code) is asserted absent.
+
+**§10 Deactivation/revocation behavior.** The Owner retains full control
+— deactivate (`suspended`/`disabled`), change branch/register access,
+replace the role, or revoke it entirely, all through the exact same
+existing endpoints any other user uses. Deactivation is immediate and
+server-side, not a Flutter-only revocation: `updateMembership` revokes
+every active session/refresh-token for that user in the SAME
+transaction, and `AuthService.authenticate` re-resolves the actor's
+full context (membership/user/company status, permissions, branch/
+register scope) from the database on EVERY request — there is no
+lingering-token window. Certified live and in
+`beta-tester-access.integration.test.ts`: the very next `resolveContext`
+call after suspension returns `null`; the Owner's own account is
+completely unaffected by deactivating someone else; reactivating
+restores exactly the original permission set, with no drift.
+
+**§11 Auditability.** Every `AdministrationService` mutation the Owner
+performs while setting up a beta tester (create user, create role,
+assign permissions, assign role, grant branch access, activate) is
+attributed to the OWNER's own `actor_id` in `audit_log` — certified in
+`beta-tester-access.integration.test.ts`. Actions the beta tester
+themselves performs within their own operational modules (sales, cash
+sessions, inventory movements, purchases) are attributed the same way
+every other role's actions already are — each of those services stamps
+`actor.context.userId` independently of this task (unchanged, not
+re-tested here beyond confirming the pattern by inspection — duplicating
+already-covered attribution tests for every domain was out of this
+task's own scope). No duplicate/parallel beta-specific audit system was
+built.
+
+**§12 Local certification (generic identity, never the real partner).**
+A fresh, disposable QA tenant ("Freshness QA Retail" — reused from TASK
+16.17A's own live cert, still present on the local dev stack) was used
+for a full, live, real-application certification:
+  1. Logged in as the Owner (`owner@freshness-qa-retail.local`).
+  2. Created "Second Branch" (already existed from TASK 16.17A) as the
+     tester's DISALLOWED branch, and used the existing "Main Branch" as
+     the ALLOWED one.
+  3. Created a new user via the real "Nuevo usuario" dialog: email
+     `beta.tester@example.test`, name "QA Beta Tester" — a generic,
+     disposable identity, never the real partner's.
+  4. Created a role from the "Administrador de pruebas" template via the
+     real "Nuevo rol" flow — confirmed the template appears in the
+     dropdown with its real Spanish label and description, no raw
+     permission-code entry required.
+  5. Assigned the role, scoped to Main Branch only.
+  6. Granted explicit branch access to Main Branch only.
+  7. Activated the account with a real password through the real
+     "Ficha de usuario" dialog.
+  8. Logged out of the Owner session, logged in as
+     `beta.tester@example.test` with the real password through the
+     normal ACCESS GO login screen — no shared/master credential.
+  9. Confirmed the tester's sidebar shows exactly the expected
+     operational modules (Ventas, Catálogo, Inventario, Clientes, Caja y
+     Finanzas, Reportes) and NOT Usuarios/Sucursales/Áreas
+     Operativas/Empleados/Control Acceso.
+  10. Entered Punto de Venta, added a product, completed a real cash
+      sale — attributed to the tester's own user id in `sales`/
+      `payments`/`audit_log` (Postgres-verified), never the Owner's.
+  11. Inspected Productos/Inventario — real data, real screens, same as
+      any Manager-tier operator.
+  12. Attempted to switch to "Second Branch" (the disallowed one) —
+      confirmed absent from the branch selector, and a direct
+      `resolveContext` check confirmed `permittedBranchIds` never
+      includes it.
+  13. Confirmed, via `AdministrationService` calls made as the tester,
+      that `listUsers`/`createUser`/`assignRole`/`changeBranchAccess`/
+      `updateMembership` all 403 — Usuarios/Roles are not just hidden,
+      they are unreachable.
+  14. Confirmed `assignRole`/`revokeRoleAssignment` reject touching the
+      real Owner's `is_system` role, even attempted by a second,
+      full-permission actor.
+  15. Logged back in as the Owner and deactivated the beta tester —
+      confirmed the tester's session was immediately revoked server-side
+      and the Owner's own account was unaffected.
+  (Steps 1–8 and the sidebar/POS/Inventario checks were exercised live,
+  in the real browser, against the real local stack; the Owner-
+  protection/self-escalation/deactivation assertions in steps 13–15 are
+  additionally, and more rigorously, certified by the 14 dedicated cases
+  in `beta-tester-access.integration.test.ts`, which exercises the exact
+  same `AdministrationService`/`AuthService` code the live HTTP API
+  runs, end to end against a real Postgres database.)
+
+**§13 Existing-role/tenant regression.** `role-templates.test.ts`'s own
+pre-existing assertions (Administrator = full catalogue, Manager
+excludes company/user/role/device/sync, Cashier stays small) are
+unchanged and still pass; adding a fourth template never altered the
+other three. `admin.integration.test.ts`'s full 26-case suite —
+including the deliberately-intentional "lets branch_access.manage grant
+access to a branch outside the actor's own permitted branches" bootstrap
+test — passes unmodified, proving the two centrally-fixed endpoints
+(§5) changed nothing about their PRE-EXISTING, already-relied-upon
+behavior for non-`is_system` roles. No existing tenant/user was
+migrated, converted, or touched by this task.
+
+**§14 Genuine remaining limitations, honestly disclosed.**
+  * No invite-email/forced-password-reset flow exists (§8) — the Owner
+    communicates the initial password out of band, exactly like every
+    other staff account this product already onboards.
+  * "Documentos" and "Notificaciones" (named among TASK 16.18's desired
+    modules) are currently unimplemented placeholder screens gated by
+    `company_settings.read` — a company-configuration-domain permission
+    the Manager template itself already excludes. Granting it would
+    expose no real additional functionality today (both screens are
+    "coming soon" stubs), so it was deliberately left out of the beta
+    preset, consistent with the Manager template's own established
+    boundary — a future task can revisit once those screens gain real
+    functionality that warrants their own dedicated permission.
+  * `changeBranchAccess`'s pre-existing "grant a branch outside the
+    actor's own permitted branches" behavior (§5) was deliberately left
+    unmodified — it is real, tested, intentional TASK 16.5 bootstrap
+    design, unreachable by the beta tester (the preset never holds
+    `branch_access.manage`), and changing it was outside this task's own
+    scope and would have broken an existing, relied-upon test/behavior.
+  * Attribution for sales/cash/inventory/purchase actions performed BY
+    the beta tester was verified by inspection and by the existing,
+    domain-specific test suites for those modules (unchanged by this
+    task), not by new duplicate tests in this task's own suite (§11).
+
+## HOW TO ADD AN INTERNAL BETA TESTER
+
+The real, commercial ACCESS GO flow an Owner uses today — no CLI, no raw
+SQL, no developer involvement:
+
+1. Log in as the Owner.
+2. **Administración → Roles** (visible once, or reuse if already
+   created for a previous tester): tap **Nuevo rol**, pick
+   **Administrador de pruebas** from the template dropdown, give it a
+   name (the template's own label is pre-filled, but fully editable —
+   e.g. keep it as "Administrador de pruebas" for a shared preset every
+   future tester reuses) and a short code, save. The permission
+   checklist opens pre-checked with the template's own set — review and
+   save as-is (recommended), or adjust if this specific tester should
+   have a narrower slice.
+3. **Administración → Usuarios → Nuevo usuario**: enter the tester's
+   real email and display name. Save — the account is created
+   `invitado`, no password yet.
+4. Open the new user's own ficha (tap their row). Under **Roles
+   asignados → Asignar rol**, pick the "Administrador de pruebas" role
+   created in step 2, and the branch the tester should operate in.
+   Repeat "Asignar rol" (same role, a different branch) for each
+   additional branch the tester should reach.
+5. Under **Acceso a sucursales → Otorgar acceso**, grant the SAME
+   branch(es) explicitly (branch access and role assignment are two
+   separate grants — both are required). Leave register/area access
+   ungranted for broad QA access to every register in that branch, or
+   use **Otorgar acceso a caja/área** to narrow it to a specific
+   register/area.
+6. Still on the user's ficha, set **Estado de la membresía** to
+   **Activo** and enter a real, strong password (12+ characters, mixed
+   case, a digit, a symbol) in the field that appears — this is the
+   ONLY time this password is ever set or visible; it is hashed
+   immediately and never stored or shown again. Save.
+7. Share the tester's email and this initial password with them through
+   a secure, out-of-band channel (in person, a password manager, an
+   encrypted message) — never plaintext in chat/email history if
+   avoidable, and never reused as anyone else's credential.
+8. The tester logs in at the normal ACCESS GO login screen with their
+   own email/password — no shared Owner credential, no master password,
+   no PIN bypass.
+9. To revoke access later: open the tester's ficha and set **Estado de
+   la membresía** to **Suspendido** (or **Deshabilitado**) — takes
+   effect immediately, server-side, on their very next request.
+
 ## How to read the priority calls in this document
 
 A priority here means "this specific legacy capability, if it is judged

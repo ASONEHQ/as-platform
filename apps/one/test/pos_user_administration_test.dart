@@ -311,6 +311,64 @@ void main() {
         expect(gateway.replaceRolePermissionsCalls, isEmpty);
       },
     );
+
+    // TASK 16.18 — "Administrador de pruebas" (internal beta tester): this
+    // template is purely data-driven, exactly like Administrador/Gerente/
+    // Cajero above — the real backend's `GET /api/v1/role-templates` now
+    // additionally returns it (once the Owner's own backend/DB carries the
+    // new `beta_tester` entry from `role-templates.ts`), and this SAME
+    // picker widget renders it with zero Flutter code changes. This test
+    // proves that data-driven behavior with a LOCAL fixture template,
+    // mirroring the real one's label/description — it does not re-prove
+    // the permission-filtering mechanics the "Gerente" test above already
+    // covers generically for any template.
+    testWidgets(
+      '"Administrador de pruebas" appears as a normal, human-readable commercial role option — the Owner never '
+      'hand-picks permission codes to use it',
+      (tester) async {
+        const betaLabel = 'Administrador de pruebas';
+        const betaDescription =
+            'Acceso operativo amplio para un probador interno de confianza: ventas, caja, inventario, catálogo, '
+            'compras, proveedores, clientes, fiestas, membresías, cupones/promociones y reportes. Sin acceso a '
+            'configuración de la empresa, administración de usuarios/roles, sucursales, dispositivos, personal/'
+            'nómina ni auditoría. El Owner sigue decidiendo a qué sucursales y cajas tiene acceso.';
+        final gateway = _RecordingIdentityAdminGateway(
+          roles: const [],
+          permissions: [roleReadPermission, roleCreatePermission, saleReadPermission],
+          roleTemplates: [
+            ...templates(),
+            const PosRoleTemplate(
+              key: 'beta_tester',
+              label: betaLabel,
+              description: betaDescription,
+              permissionCodes: ['sale.read'],
+            ),
+          ],
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+
+        await tester.tap(find.byKey(const Key('pos-roles-new')));
+        await tester.pumpAndSettle();
+
+        // Selectable from the SAME dropdown as every other template — no
+        // separate "beta mode" UI, no raw permission-code checklist to
+        // fill in before it can even be picked.
+        await tester.tap(find.byKey(const Key('pos-role-form-template')));
+        await tester.pumpAndSettle();
+        expect(find.text(betaLabel), findsWidgets);
+        await tester.tap(find.byKey(const Key('pos-role-form-template-beta_tester')));
+        await tester.pumpAndSettle();
+
+        // A real, human-readable Spanish description is shown — never a
+        // bare list of permission codes.
+        expect(find.text(betaDescription), findsOneWidget);
+        expect(find.textContaining('sale.read'), findsNothing);
+
+        // The name field is pre-filled with the template's own label,
+        // exactly like every other template — still fully editable.
+        expect(find.widgetWithText(TextField, betaLabel), findsOneWidget);
+      },
+    );
   });
 
   group('Roles — asignación de permisos y el guardia contra auto-escalación', () {

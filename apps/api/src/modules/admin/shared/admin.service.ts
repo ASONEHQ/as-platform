@@ -413,6 +413,29 @@ export class AdministrationService {
       entityId: userId,
       eventType: 'membership.updated',
       mutation: async (client) => {
+        // TASK 16.18 — Owner protection: never let this endpoint suspend
+        // or disable a user who currently holds an `is_system=true` role
+        // (today, exactly the Owner role — see `roles.isSystem`'s own
+        // schema doc comment). Activating a still-`pending` identity is
+        // exempt (a brand-new invite can never itself hold Owner yet).
+        // Checked before the membership row itself is touched, mirroring
+        // `updateRole`/`replaceRolePermissions`/`assignRole`/
+        // `revokeRoleAssignment`'s own established `is_system` guard shape.
+        if (status !== 'active') {
+          const systemRole = (await client.query(
+            `select 1 from user_roles ur
+             join roles r on r.id=ur.role_id and r.company_id=ur.company_id
+             join company_memberships m on m.id=ur.membership_id and m.company_id=ur.company_id
+             where ur.company_id=$1 and m.user_id=$2 and ur.status='active' and r.is_system=true limit 1`,
+            [actor.context.companyId, userId],
+          )) as { rowCount?: number };
+          if ((systemRole.rowCount ?? 0) > 0)
+            throw new AppError({
+              code: 'permission_denied',
+              message: 'A user holding a system role cannot be suspended or disabled through this endpoint.',
+              statusCode: 403,
+            });
+        }
         const result = (await client.query(
           `update company_memberships set status=$3,updated_at=now() where company_id=$1 and user_id=$2`,
           [actor.context.companyId, userId, status],
@@ -659,11 +682,34 @@ export class AdministrationService {
       entityId: assignmentId,
       eventType: 'role_assignment.revoked',
       mutation: async (client) => {
-        const result = (await client.query(
-          `update user_roles ur set status='revoked',revoked_at=now() from company_memberships m where ur.id=$1 and ur.company_id=$2 and ur.membership_id=m.id and m.user_id=$3 and ur.status='active'`,
+        // TASK 16.18 — Owner/system-role protection: revoking a user's own
+        // assignment of an `is_system=true` role (today, exactly the one
+        // "Owner" role a company's provisioning flow creates — see
+        // `roles.isSystem`'s own schema doc comment) would demote the
+        // Owner with no dedicated re-provisioning path back. This endpoint
+        // is the generic, day-to-day role-unassignment primitive — never
+        // the intended mechanism for that. Checked with a row lock before
+        // the update, mirroring `updateRole`/`replaceRolePermissions`'s
+        // own established `is_system` guard shape exactly.
+        const target = (await client.query(
+          `select ur.id, r.is_system from user_roles ur
+           join roles r on r.id=ur.role_id and r.company_id=ur.company_id
+           join company_memberships m on m.id=ur.membership_id and m.company_id=ur.company_id
+           where ur.id=$1 and ur.company_id=$2 and m.user_id=$3 and ur.status='active' for update`,
           [assignmentId, actor.context.companyId, userId],
-        )) as { rowCount?: number };
-        if (result.rowCount !== 1) throw missing();
+        )) as { rows?: readonly { id: string; is_system: boolean }[] };
+        const row = target.rows?.[0];
+        if (row === undefined) throw missing();
+        if (row.is_system)
+          throw new AppError({
+            code: 'permission_denied',
+            message: 'A system role assignment cannot be revoked through this endpoint.',
+            statusCode: 403,
+          });
+        await client.query(
+          `update user_roles set status='revoked',revoked_at=now() where id=$1 and company_id=$2`,
+          [assignmentId, actor.context.companyId],
+        );
       },
     });
   }
@@ -740,10 +786,28 @@ export class AdministrationService {
             statusCode: 403,
           });
         const role = (await client.query(
-          `select id from roles where id=$1 and company_id=$2 and status='active' for update`,
+          `select id,is_system from roles where id=$1 and company_id=$2 and status='active' for update`,
           [values.roleId, actor.context.companyId],
-        )) as { rows?: readonly { id: string }[] };
+        )) as { rows?: readonly { id: string; is_system: boolean }[] };
         if (role.rows?.[0] === undefined) throw missing();
+        // TASK 16.18 — Owner/system-role protection: this is the generic,
+        // day-to-day role-assignment endpoint — never the intended way to
+        // grant the `is_system=true` Owner role (today, the ONLY role that
+        // flag ever marks — see `roles.isSystem`'s own schema doc
+        // comment). Without this, ANY actor who already holds `role.assign`
+        // plus every permission the Owner role grants (which, before this
+        // fix, included every "Administrador" template-sourced role, since
+        // that template is deliberately the full permission catalogue —
+        // see `role-templates.ts`) could attach the Owner role to
+        // themselves or anyone else through this route, bypassing Owner
+        // provisioning entirely. Mirrors `updateRole`/
+        // `replaceRolePermissions`'s own established `is_system` guard.
+        if (role.rows[0].is_system)
+          throw new AppError({
+            code: 'permission_denied',
+            message: 'A system role cannot be assigned through this endpoint.',
+            statusCode: 403,
+          });
         if (values.branchId !== undefined) {
           const branch = (await client.query(
             `select id from branches where id=$1 and company_id=$2 and status='active'`,

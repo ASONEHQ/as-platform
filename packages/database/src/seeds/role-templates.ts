@@ -180,6 +180,113 @@ const cashierPermissionCodes: readonly string[] = [
   'discount.apply',
 ];
 
+/** TASK 16.18 — "Administrador de pruebas" (internal beta tester). Broad
+ * OPERATIONAL visibility — deliberately close to the Manager template's own
+ * "full day-to-day commerce" scope, so a trusted internal tester can
+ * genuinely explore every commercial module and find real bugs — but with
+ * every tenant/platform-compromising capability removed:
+ *
+ *  - NO `branch_access.manage` — TASK 16.18 Phase 6 requires the OWNER to
+ *    decide which branches a tester can reach (`user_branch_access`/
+ *    `user_register_access`, granted the same way as any other user); a
+ *    beta tester must never be able to grant branch/register access to
+ *    themselves or anyone else.
+ *  - NO `company.*`/`company_settings.*`/`branch.create`/`branch.update`/
+ *    `branch_settings.*`/`device.*`/`sync.execute` — tenant-wide
+ *    configuration, topology, and platform/device administration stay
+ *    Owner/Administrador-tier, unchanged from the Manager template's own
+ *    already-established boundary (see `managerPermissionCodes`'s own doc
+ *    comment and its dedicated regression test).
+ *  - NO `user.*`/`role.*`/`permission.read` — a beta tester must never see
+ *    or touch user/role administration at all (not even `user.read`/
+ *    `role.read`) — self-escalation is additionally blocked centrally in
+ *    `AdministrationService` (`assignRole`/`replaceRolePermissions` refuse
+ *    to grant a permission/role the actor does not already hold, and
+ *    `assignRole`/`revokeRoleAssignment`/`updateMembership` now refuse to
+ *    touch an `is_system` role or its holder at all — TASK 16.18), but
+ *    omitting the permission entirely is the first, simplest line of
+ *    defense.
+ *  - NO `employee.*`/`schedule.*`/`attendance.*`/`payroll.*`/
+ *    `staff_credential.manage`/`access.*`/`operational_area.*`/
+ *    `audit.read`/`recovery.read` — People/payroll data, staff PIN/QR
+ *    credentials, wristband/ticket access control, operational-area
+ *    topology, the audit trail, and data-recovery tooling were never named
+ *    among the operational modules a beta tester needs (TASK 16.18 Phase 2)
+ *    and each carries its own real sensitivity (HR/payroll data, another
+ *    staff member's login credential, the tenant's own security log) —
+ *    left Owner/Administrador/Gerente-tier.
+ *  - NO `loyalty.manage`/`loyalty.adjust`/`reward.issue`/`reward.revoke` —
+ *    manual ledger corrections and fraud/correction-grade admin actions;
+ *    `reward.read`/`reward.redeem` (ordinary checkout redemption) remain,
+ *    since Punto de Venta needs them to genuinely function.
+ *
+ * This is a deliberate, HAND-WRITTEN explicit allowlist — never derived
+ * from `technicalPermissionCodes` (unlike the Administrator template) and
+ * never "every code except these" — so a future permission added to the
+ * catalogue NEVER silently appears here; see `role-templates.test.ts`'s own
+ * dedicated regression test for this exact property. */
+const betaTesterPermissionCodes: readonly string[] = [
+  'catalog.read',
+  'category.manage',
+  'product.manage',
+  'price.manage',
+  'availability.manage',
+  'inventory.read',
+  'inventory.cost.read',
+  'inventory_location.manage',
+  'inventory.adjust',
+  'inventory.approve',
+  'inventory.count',
+  'inventory.reverse',
+  'inventory.reservation.manage',
+  'inventory.reconcile',
+  'inventory.transfer',
+  'inventory.receive',
+  'sale.read',
+  'sale.create',
+  'sale.complete',
+  'sale.cancel',
+  'payment.read',
+  'payment.create',
+  'payment.reverse',
+  'refund.read',
+  'refund.create',
+  'refund.approve',
+  'refund.complete',
+  'refund.cancel',
+  'promotion.read',
+  'promotion.manage',
+  'coupon.read',
+  'coupon.manage',
+  'discount.apply',
+  'customer.read',
+  'customer.create',
+  'customer.update',
+  'membership.read',
+  'membership.manage',
+  'membership.issue',
+  'reward.read',
+  'reward.redeem',
+  'party.read',
+  'party.manage',
+  'party.cancel',
+  'party.payment.record',
+  'held_sale.manage',
+  'purchase.read',
+  'purchase.create',
+  'purchase.receive',
+  'supplier.read',
+  'supplier.manage',
+  'report.read',
+  'cash_register.read',
+  'cash_register.manage',
+  'cash_session.read',
+  'cash_session.open',
+  'cash_movement.create',
+  'cash_session.close',
+  'branch_consolidation.read',
+];
+
 export const roleTemplates: readonly RoleTemplate[] = [
   {
     key: 'administrator',
@@ -201,5 +308,21 @@ export const roleTemplates: readonly RoleTemplate[] = [
     description:
       'Solo lo necesario para operar una caja: abrir/cerrar turno, vender, cobrar, devolver, y atender clientes en el mostrador.',
     permissionCodes: cashierPermissionCodes,
+  },
+  // TASK 16.18 — internal beta-tester access. NOT an Owner and NOT the
+  // Administrador template (which is deliberately the full permission
+  // catalogue): broad day-to-day operational visibility across ventas,
+  // caja, inventario, catálogo, compras, proveedores, clientes, fiestas,
+  // membresías, cupones/promociones y reportes, explicitly excluding
+  // company/branch/device configuration, user/role administration,
+  // people/payroll, staff credentials, access control, and audit/recovery
+  // — see `betaTesterPermissionCodes`'s own doc comment for the full,
+  // permission-by-permission rationale.
+  {
+    key: 'beta_tester',
+    label: 'Administrador de pruebas',
+    description:
+      'Acceso operativo amplio para un probador interno de confianza: ventas, caja, inventario, catálogo, compras, proveedores, clientes, fiestas, membresías, cupones/promociones y reportes. Sin acceso a configuración de la empresa, administración de usuarios/roles, sucursales, dispositivos, personal/nómina ni auditoría. El Owner sigue decidiendo a qué sucursales y cajas tiene acceso.',
+    permissionCodes: betaTesterPermissionCodes,
   },
 ];
