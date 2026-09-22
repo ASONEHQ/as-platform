@@ -9,6 +9,7 @@ import {
   type LoyaltyProgramRow,
   type LoyaltySummary,
   type SaleEarnContext,
+  type SaleRefundReversalContext,
 } from './loyalty.types.js';
 
 function hash(value: unknown): string {
@@ -360,6 +361,75 @@ export class LoyaltyService {
           eventType: 'loyalty.earned',
           version: 1n,
           payload: { customer_id: context.customerId, source_sale_id: context.saleId, quantity: entry.quantity, unit_type: entry.unitType },
+        },
+      );
+    }
+  }
+
+  // --- Refund reversal hook (Phase 37, TASK 16.21) -------------------------
+
+  /** Called from `RefundsService.completeRefund`, inside the SAME
+   * transaction, and ONLY for a FULL refund of the originating sale
+   * (Phase 37: "define visit-reversal semantics... a partial return
+   * requires intentional per-line semantics this V1 does not attempt" —
+   * a partial refund leaves loyalty earning untouched, mirroring how a
+   * partial refund already leaves the original payment `captured` rather
+   * than reversed). For every program that sale actually earned for,
+   * inserts a NEW, negative-quantity `entry_type='earn'` row (never
+   * mutates or deletes the original) — `source_type='refund'`,
+   * `source_id=<refund id>`, a DIFFERENT tuple from the original sale's
+   * own `(program, 'sale', saleId)` entry, so this can never collide
+   * with it and is itself idempotent: a retried/replayed refund
+   * completion inserts nothing new (Phase 37's "retry-safe" requirement,
+   * same `on conflict ... do nothing` mechanism `earnFromSale` already
+   * relies on). Reusing `entry_type='earn'` (rather than a new type)
+   * keeps `cumulativeEarnedUnits`'s plain `SUM(quantity) where entry_type
+   * ='earn'` correct automatically — a refunded sale's contribution
+   * simply nets to zero, with no special-casing needed anywhere that
+   * already reads that sum (in particular `RewardsService.
+   * reverseIssuanceForRefund`, which runs immediately after this in the
+   * same transaction and depends on seeing the POST-reversal total). */
+  public async reverseEarnForRefund(client: LoyaltyTransaction, context: SaleRefundReversalContext): Promise<void> {
+    const originals = await this.repository.earnEntriesForSale(client, context.companyId, context.saleId);
+    for (const original of originals) {
+      const entry = await this.repository.insertLedgerEntry(client, {
+        id: randomUUID(),
+        companyId: context.companyId,
+        loyaltyAccountId: original.loyaltyAccountId,
+        loyaltyProgramId: original.loyaltyProgramId,
+        branchId: context.branchId,
+        entryType: 'earn',
+        quantity: -original.quantity,
+        unitType: original.unitType,
+        sourceType: 'refund',
+        sourceId: context.refundId,
+        reason: 'Reversal: the originating sale was refunded.',
+        actorId: null,
+        timestamp: context.timestamp,
+      });
+      if (entry === null) continue; // already reversed for this refund/program — idempotent no-op.
+      await this.repository.auditAndPublish(
+        client,
+        {
+          companyId: context.companyId,
+          actorId: context.actorId,
+          actorPermissions: [],
+          requestId: randomUUID(),
+          correlationId: context.correlationId,
+          timestamp: context.timestamp,
+        },
+        {
+          action: 'loyalty_ledger.earn_reversed',
+          resourceType: 'loyalty_ledger_entry',
+          resourceId: entry.id,
+          eventType: 'loyalty.earn_reversed',
+          version: 1n,
+          payload: {
+            source_sale_id: context.saleId,
+            refund_id: context.refundId,
+            quantity: entry.quantity,
+            unit_type: entry.unitType,
+          },
         },
       );
     }

@@ -6514,6 +6514,89 @@ void main() {
       },
     );
 
+    // TASK 16.21 (ADR-0020) — the structured benefit fields the pricing
+    // engine actually enforces at checkout, distinct from the pre-
+    // existing free-text `benefitDescription` field the test above
+    // already covers.
+    testWidgets(
+      'creating a plan with a percentage benefit sends the structured '
+      'fields, with an empty scope by default (ADR-0020)',
+      (tester) async {
+        final membershipsGateway = _FakeMembershipsGateway(
+          plansResult: const [],
+          createPlanResult: _fixturePlan(id: 'plan-new', name: 'Plan VIP'),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          membershipsGateway: membershipsGateway,
+        );
+        await navigateToMembershipsAdmin(tester);
+        await tester.tap(find.byKey(const Key('pos-membership-plan-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-membership-plan-name')), 'Plan VIP');
+
+        // No benefit fields until a type is chosen.
+        expect(find.byKey(const Key('pos-membership-plan-benefit-percent')), findsNothing);
+
+        await tester.tap(find.byKey(const Key('pos-membership-plan-benefit-type')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Descuento porcentual').last);
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-membership-plan-benefit-percent')), findsOneWidget);
+        await tester.enterText(find.byKey(const Key('pos-membership-plan-benefit-percent')), '15');
+
+        // The benefit-scope sections push "Guardar" below the fold of the
+        // dialog's own scroll view once a benefit type is selected.
+        await tester.ensureVisible(find.byKey(const Key('pos-membership-plan-save')));
+        await tester.tap(find.byKey(const Key('pos-membership-plan-save')));
+        await tester.pumpAndSettle();
+
+        expect(membershipsGateway.createPlanInputs, hasLength(1));
+        final input = membershipsGateway.createPlanInputs.single;
+        expect(input.benefitType, 'percentage_discount');
+        expect(input.benefitPercentageBasisPoints, 1500);
+        expect(input.benefitFixedAmount, isNull);
+        // Empty is itself a meaningful, valid value once a benefit type is
+        // configured — "applies to every eligible product" (ADR-0020),
+        // sent explicitly, never omitted.
+        expect(input.benefitProductIds, isEmpty);
+        expect(input.benefitCategoryIds, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'a fixed_amount_discount benefit rejects an invalid amount before ever calling the backend',
+      (tester) async {
+        final membershipsGateway = _FakeMembershipsGateway(plansResult: const []);
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCustomerPermissions,
+          membershipsGateway: membershipsGateway,
+        );
+        await navigateToMembershipsAdmin(tester);
+        await tester.tap(find.byKey(const Key('pos-membership-plan-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-membership-plan-name')), 'Plan Malo');
+
+        await tester.tap(find.byKey(const Key('pos-membership-plan-benefit-type')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Descuento de monto fijo').last);
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-membership-plan-benefit-amount')), 'not-a-number');
+        await tester.ensureVisible(find.byKey(const Key('pos-membership-plan-save')));
+        await tester.tap(find.byKey(const Key('pos-membership-plan-save')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-membership-plan-form-error')), findsOneWidget);
+        expect(membershipsGateway.createPlanInputs, isEmpty);
+      },
+    );
+
     // TASK 16.16 (Phase 5) — see the equivalent Promotions test's own doc
     // comment above for the full rationale: `membership.read` now gates
     // "Membresías" in the sidebar itself. `_contextWithCustomerReadOnly`
@@ -6716,6 +6799,64 @@ void main() {
 
         expect(find.byKey(const Key('pos-ticket-customer-select')), findsOneWidget);
         expect(find.byKey(const Key('pos-ticket-customer-attached')), findsNothing);
+      },
+    );
+
+    // TASK 16.21 (Phase 43 "remove/change customer re-evaluates
+    // benefits, no stale discount") — a real gap this task's own audit
+    // found and fixed: the cart's own re-quote signature previously
+    // never included the attached customer at all, so removing a
+    // customer while the cart's lines/coupons/reward stayed byte-
+    // identical (the common case: a membership benefit with no reward
+    // attached) silently skipped the re-quote entirely, leaving a stale
+    // discounted total on screen.
+    testWidgets(
+      'attaching, then removing, a customer sends customer_id on the quote and re-quotes with none once removed',
+      (tester) async {
+        final customersGateway = _FakeCustomersGateway(
+          listResult: PosCustomerPage(
+            items: [
+              PosCustomerSummary(
+                id: 'customer-1',
+                displayName: 'Ana Pérez',
+                status: 'active',
+                version: 1,
+                createdAt: DateTime.utc(2026, 9, 1),
+              ),
+            ],
+            nextCursor: null,
+          ),
+        );
+        final promotionsGateway = _FakePromotionsGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          customersGateway: customersGateway,
+          promotionsGateway: promotionsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-select')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-customer-selector-search')), 'Ana');
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-customer-selector-result-customer-1')));
+        await tester.pumpAndSettle();
+        // The ticket's own debounced re-quote.
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.quoteCalls, isNotEmpty);
+        expect(promotionsGateway.quoteCalls.last.customerId, 'customer-1');
+
+        await tester.tap(find.byKey(const Key('pos-ticket-customer-remove')));
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+
+        expect(promotionsGateway.quoteCalls.last.customerId, isNull);
       },
     );
 
@@ -11714,6 +11855,10 @@ class _FakeMembershipsGateway implements PosMembershipsGateway {
   final ApiException? plansFailure;
   final PosMembershipPlan? createPlanResult;
   final List<String> createPlanCalls = [];
+  // TASK 16.21 — the full input, so a test can assert on the structured
+  // benefit fields (`createPlanCalls` above only ever recorded `.name`,
+  // predating this task).
+  final List<PosMembershipPlanInput> createPlanInputs = [];
   final PosMembershipPlan? updatePlanResult;
   final List<String> updatePlanCalls = [];
 
@@ -11735,6 +11880,7 @@ class _FakeMembershipsGateway implements PosMembershipsGateway {
   @override
   Future<PosMembershipPlan> createPlan(PosMembershipPlanInput input) async {
     createPlanCalls.add(input.name ?? '');
+    createPlanInputs.add(input);
     return createPlanResult ?? _fixturePlan(id: 'plan-new', name: input.name ?? 'Plan');
   }
 
@@ -11795,6 +11941,14 @@ PosMembershipPlan _fixturePlan({required String id, required String name}) => Po
   productId: null,
   durationDays: 30,
   benefitDescription: null,
+  // TASK 16.21 — no structured benefit configured, matching every
+  // pre-existing test that uses this fixture (none exercise the benefit
+  // UI's own initial-state population).
+  benefitType: null,
+  benefitPercentageBasisPoints: null,
+  benefitFixedAmount: null,
+  benefitProductIds: const [],
+  benefitCategoryIds: const [],
   branchIds: const [],
   version: 1,
   createdAt: DateTime.utc(2026, 9, 4),

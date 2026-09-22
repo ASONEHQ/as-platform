@@ -381,6 +381,33 @@ export class RewardsRepository {
     return rows.map(entitlement);
   }
 
+  /** TASK 16.21 (Phase 37) — every AUTOMATIC (`source_type=
+   * 'loyalty_threshold'`) entitlement for this (account, program) whose
+   * `cycle_number` is no longer actually reached once a refund has
+   * lowered the account's cumulative earned units, and that is still
+   * `'available'` — i.e. genuinely revocable (Part O: "a redeemed reward
+   * cannot be revoked"; an already-redeemed reward is a fact about the
+   * past that a later refund does not rewrite, see `RewardsService.
+   * reverseIssuanceForRefund`'s own doc comment). */
+  public async availableEntitlementsAboveCycle(
+    client: RewardTransaction,
+    companyId: string,
+    loyaltyAccountId: string,
+    loyaltyProgramId: string,
+    maxCycle: number,
+  ): Promise<RewardEntitlementRow[]> {
+    const rows = result<EntitlementDb>(
+      await client.query(
+        `select ${ENTITLEMENT_COLUMNS} from reward_entitlements
+         where company_id=$1 and loyalty_account_id=$2 and loyalty_program_id=$3
+           and source_type='loyalty_threshold' and cycle_number>$4 and status='available'
+         order by cycle_number asc`,
+        [companyId, loyaltyAccountId, loyaltyProgramId, maxCycle],
+      ),
+    ).rows;
+    return rows.map(entitlement);
+  }
+
   public async markRedeemed(
     client: RewardTransaction,
     companyId: string,

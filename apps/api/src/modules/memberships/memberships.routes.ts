@@ -56,6 +56,14 @@ function planHttp(value: MembershipPlanRow): Readonly<Record<string, unknown>> {
     product_id: value.productId,
     duration_days: value.durationDays,
     benefit_description: value.benefitDescription,
+    // TASK 16.21 (ADR-0020) — the structured, pricing-engine-enforced
+    // benefit; see `membership_plans`' own schema doc comment for why
+    // this is independent of `benefit_description` above.
+    benefit_type: value.benefitType,
+    benefit_percentage_basis_points: value.benefitPercentageBasisPoints,
+    benefit_fixed_amount: value.benefitFixedAmount,
+    benefit_product_ids: value.benefitProductIds,
+    benefit_category_ids: value.benefitCategoryIds,
     branch_ids: value.branchIds,
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
@@ -91,6 +99,15 @@ const planSchema = {
     product_id: { type: 'string', format: 'uuid' },
     duration_days: { type: 'integer', minimum: 1 },
     benefit_description: { type: 'string', maxLength: 1000 },
+    // TASK 16.21 (ADR-0020) — mirrors `promotions.routes.ts`'s own
+    // `benefit_type`/`benefit_percentage_basis_points`/
+    // `benefit_fixed_amount` schema shape exactly (never
+    // `free_eligible_item`, see `MembershipBenefitType`'s own doc).
+    benefit_type: { type: 'string', enum: ['percentage_discount', 'fixed_amount_discount', 'fixed_price'] },
+    benefit_percentage_basis_points: { type: 'integer', minimum: 1, maximum: 10_000 },
+    benefit_fixed_amount: { type: 'string', pattern: '^\\d+(\\.\\d{1,4})?$' },
+    benefit_product_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
+    benefit_category_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
     branch_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
   },
 } as const;
@@ -111,6 +128,11 @@ export function registerMembershipRoutes(app: FastifyInstance, authentication: A
           product_id?: string;
           duration_days?: number;
           benefit_description?: string;
+          benefit_type?: 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price';
+          benefit_percentage_basis_points?: number;
+          benefit_fixed_amount?: string;
+          benefit_product_ids?: string[];
+          benefit_category_ids?: string[];
           branch_ids?: string[];
         };
         const created = await service.createPlan(
@@ -124,6 +146,13 @@ export function registerMembershipRoutes(app: FastifyInstance, authentication: A
             ...(body.product_id === undefined ? {} : { productId: body.product_id }),
             ...(body.duration_days === undefined ? {} : { durationDays: body.duration_days }),
             ...(body.benefit_description === undefined ? {} : { benefitDescription: body.benefit_description }),
+            ...(body.benefit_type === undefined ? {} : { benefitType: body.benefit_type }),
+            ...(body.benefit_percentage_basis_points === undefined
+              ? {}
+              : { benefitPercentageBasisPoints: body.benefit_percentage_basis_points }),
+            ...(body.benefit_fixed_amount === undefined ? {} : { benefitFixedAmount: body.benefit_fixed_amount }),
+            ...(body.benefit_product_ids === undefined ? {} : { benefitProductIds: body.benefit_product_ids }),
+            ...(body.benefit_category_ids === undefined ? {} : { benefitCategoryIds: body.benefit_category_ids }),
             ...(body.branch_ids === undefined ? {} : { branchIds: body.branch_ids }),
           },
         );
@@ -190,6 +219,11 @@ export function registerMembershipRoutes(app: FastifyInstance, authentication: A
           product_id: string;
           duration_days: number;
           benefit_description: string;
+          benefit_type: 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price';
+          benefit_percentage_basis_points: number;
+          benefit_fixed_amount: string;
+          benefit_product_ids: string[];
+          benefit_category_ids: string[];
           branch_ids: string[];
         }>;
         const updated = await service.updatePlan(
@@ -203,6 +237,13 @@ export function registerMembershipRoutes(app: FastifyInstance, authentication: A
             ...(body.product_id === undefined ? {} : { productId: body.product_id }),
             ...(body.duration_days === undefined ? {} : { durationDays: body.duration_days }),
             ...(body.benefit_description === undefined ? {} : { benefitDescription: body.benefit_description }),
+            ...(body.benefit_type === undefined ? {} : { benefitType: body.benefit_type }),
+            ...(body.benefit_percentage_basis_points === undefined
+              ? {}
+              : { benefitPercentageBasisPoints: body.benefit_percentage_basis_points }),
+            ...(body.benefit_fixed_amount === undefined ? {} : { benefitFixedAmount: body.benefit_fixed_amount }),
+            ...(body.benefit_product_ids === undefined ? {} : { benefitProductIds: body.benefit_product_ids }),
+            ...(body.benefit_category_ids === undefined ? {} : { benefitCategoryIds: body.benefit_category_ids }),
             ...(body.branch_ids === undefined ? {} : { branchIds: body.branch_ids }),
           },
         );

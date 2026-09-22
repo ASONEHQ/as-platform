@@ -26,6 +26,14 @@ function planValue(overrides?: Readonly<Record<string, unknown>>): Readonly<Reco
     productId: null,
     durationDays: 30,
     benefitDescription: null,
+    // TASK 16.21 — the structured benefit fields `planHttp()` now
+    // serializes; defaulted to "no benefit configured" here so every
+    // pre-existing test in this file keeps passing unchanged.
+    benefitType: null,
+    benefitPercentageBasisPoints: null,
+    benefitFixedAmount: null,
+    benefitProductIds: [],
+    benefitCategoryIds: [],
     branchIds: [],
     createdBy: userId,
     updatedBy: userId,
@@ -142,6 +150,60 @@ describe('memberships HTTP routes (TASK 13.0)', () => {
         payload: { name: 'Mensual' },
       });
       expect(rejected.statusCode).toBe(403);
+    });
+  });
+
+  describe('POST /api/v1/membership-plans — benefit fields (TASK 16.21)', () => {
+    it('passes structured benefit fields through to the service and echoes them back in the response', async () => {
+      const productId = '00000000-0000-4000-8000-000000000010';
+      const { app, service } = await fixture(['membership.manage']);
+      service.createPlan = vi.fn(() =>
+        Promise.resolve({
+          value: planValue({
+            benefitType: 'percentage_discount',
+            benefitPercentageBasisPoints: 1500,
+            benefitProductIds: [productId],
+          }),
+          replayed: false,
+        }),
+      );
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/membership-plans',
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'plan-benefit-1' },
+        payload: {
+          name: 'VIP',
+          benefit_type: 'percentage_discount',
+          benefit_percentage_basis_points: 1500,
+          benefit_product_ids: [productId],
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(service.createPlan).toHaveBeenCalledWith(
+        expect.anything(),
+        'plan-benefit-1',
+        expect.objectContaining({
+          benefitType: 'percentage_discount',
+          benefitPercentageBasisPoints: 1500,
+          benefitProductIds: [productId],
+        }),
+      );
+      const body = response.json<{ data: { benefit_type: string; benefit_percentage_basis_points: number; benefit_product_ids: string[] } }>();
+      expect(body.data.benefit_type).toBe('percentage_discount');
+      expect(body.data.benefit_percentage_basis_points).toBe(1500);
+      expect(body.data.benefit_product_ids).toEqual([productId]);
+    });
+
+    it('rejects an out-of-range benefit_percentage_basis_points at the schema boundary, never reaching the service', async () => {
+      const { app, service } = await fixture(['membership.manage']);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/membership-plans',
+        headers: { authorization: 'Bearer token', 'idempotency-key': 'plan-benefit-bad-1' },
+        payload: { name: 'Bad', benefit_type: 'percentage_discount', benefit_percentage_basis_points: 20_000 },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(service.createPlan).not.toHaveBeenCalled();
     });
   });
 

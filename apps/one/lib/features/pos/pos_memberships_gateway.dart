@@ -7,6 +7,15 @@ import '../../core/networking/api_client.dart';
 /// one model here either. Styled after `pos_promotions_gateway.dart`
 /// (TASK 12.9).
 
+/// The three structured membership-benefit shapes TASK 16.21's pricing
+/// engine understands (`membership_plans.benefit_type`) — deliberately
+/// matches the backend's own `MembershipBenefitType` exactly, no 4th
+/// `free_eligible_item` value (that stays a one-shot loyalty-reward-only
+/// concept — see the backend schema's own doc comment). A `null` plan
+/// benefit means "this plan carries no automatic discount at all," a
+/// perfectly valid configuration (e.g. an access-only membership).
+const List<String> kPosMembershipBenefitTypes = ['percentage_discount', 'fixed_amount_discount', 'fixed_price'];
+
 /// A `membership_plans` row (`MembershipPlanRow`/`planHttp`).
 class PosMembershipPlan {
   const PosMembershipPlan({
@@ -17,6 +26,11 @@ class PosMembershipPlan {
     required this.productId,
     required this.durationDays,
     required this.benefitDescription,
+    required this.benefitType,
+    required this.benefitPercentageBasisPoints,
+    required this.benefitFixedAmount,
+    required this.benefitProductIds,
+    required this.benefitCategoryIds,
     required this.branchIds,
     required this.version,
     required this.createdAt,
@@ -31,6 +45,13 @@ class PosMembershipPlan {
     productId: json['product_id'] as String?,
     durationDays: json['duration_days'] as int?,
     benefitDescription: json['benefit_description'] as String?,
+    benefitType: json['benefit_type'] as String?,
+    benefitPercentageBasisPoints: json['benefit_percentage_basis_points'] as int?,
+    benefitFixedAmount: json['benefit_fixed_amount'] as String?,
+    benefitProductIds:
+        (json['benefit_product_ids'] as List<Object?>?)?.whereType<String>().toList(growable: false) ?? const [],
+    benefitCategoryIds:
+        (json['benefit_category_ids'] as List<Object?>?)?.whereType<String>().toList(growable: false) ?? const [],
     branchIds: (json['branch_ids'] as List<Object?>?)?.whereType<String>().toList(growable: false) ?? const [],
     version: json['version']! as int,
     createdAt: DateTime.parse(json['created_at']! as String),
@@ -47,10 +68,40 @@ class PosMembershipPlan {
   final String? productId;
   final int? durationDays;
   final String? benefitDescription;
+
+  /// TASK 16.21 — the STRUCTURED benefit the pricing engine actually
+  /// enforces at checkout (never confused with [benefitDescription], the
+  /// free-text summary shown to admins/customers). `null` when this plan
+  /// carries no automatic discount. One of [kPosMembershipBenefitTypes].
+  final String? benefitType;
+
+  /// Only set (and only meaningful) when [benefitType] is
+  /// `percentage_discount` — e.g. `1000` = 10.00%.
+  final int? benefitPercentageBasisPoints;
+
+  /// Only set (and only meaningful) when [benefitType] is
+  /// `fixed_amount_discount` or `fixed_price` — a decimal string, e.g.
+  /// `"25.0000"`.
+  final String? benefitFixedAmount;
+
+  /// The benefit's own product/category scope — BOTH empty means "applies
+  /// to every eligible product" (the deliberate INVERSE of a loyalty
+  /// reward's own scope convention, since a membership discount is a
+  /// standing discount, not a one-shot redemption — see backend
+  /// ADR-0020). Never confused with [branchIds] (which branches; this is
+  /// which products).
+  final List<String> benefitProductIds;
+  final List<String> benefitCategoryIds;
+
   final List<String> branchIds;
   final int version;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  /// True when this plan has a real, structured benefit the pricing
+  /// engine will actually apply — as opposed to a plan that is access-only
+  /// or only carries a free-text [benefitDescription] for humans to read.
+  bool get hasStructuredBenefit => benefitType != null;
 }
 
 class PosMembershipPlanInput {
@@ -61,6 +112,11 @@ class PosMembershipPlanInput {
     this.productId,
     this.durationDays,
     this.benefitDescription,
+    this.benefitType,
+    this.benefitPercentageBasisPoints,
+    this.benefitFixedAmount,
+    this.benefitProductIds,
+    this.benefitCategoryIds,
     this.branchIds,
   });
 
@@ -70,6 +126,11 @@ class PosMembershipPlanInput {
   final String? productId;
   final int? durationDays;
   final String? benefitDescription;
+  final String? benefitType;
+  final int? benefitPercentageBasisPoints;
+  final String? benefitFixedAmount;
+  final List<String>? benefitProductIds;
+  final List<String>? benefitCategoryIds;
   final List<String>? branchIds;
 
   Map<String, Object?> toJson() => {
@@ -79,6 +140,11 @@ class PosMembershipPlanInput {
     if (productId != null) 'product_id': productId,
     if (durationDays != null) 'duration_days': durationDays,
     if (benefitDescription != null) 'benefit_description': benefitDescription,
+    if (benefitType != null) 'benefit_type': benefitType,
+    if (benefitPercentageBasisPoints != null) 'benefit_percentage_basis_points': benefitPercentageBasisPoints,
+    if (benefitFixedAmount != null) 'benefit_fixed_amount': benefitFixedAmount,
+    if (benefitProductIds != null) 'benefit_product_ids': benefitProductIds,
+    if (benefitCategoryIds != null) 'benefit_category_ids': benefitCategoryIds,
     if (branchIds != null) 'branch_ids': branchIds,
   };
 }

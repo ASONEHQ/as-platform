@@ -4,9 +4,16 @@ import { createHash } from 'node:crypto';
 import { ivaBasisPointsForTaxCode, normalizeCurrencyCode } from '@asone/database';
 
 import type { CustomersRepository } from '../customers/customers.repository.js';
+import type { MembershipsService } from '../memberships/memberships.service.js';
 import { evaluatePricing, isValidIanaTimezone } from '../promotions/pricing.service.js';
 import type { PromotionsRepository } from '../promotions/promotions.repository.js';
-import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from '../promotions/promotions.types.js';
+import type {
+  CouponRow,
+  MembershipBenefitCandidate,
+  PricingResolvedLine,
+  PromotionRow,
+  RewardBenefitCandidate,
+} from '../promotions/promotions.types.js';
 import type { RewardsService } from '../rewards/rewards.service.js';
 import type { SalesRepository } from './sales.repository.js';
 import {
@@ -113,6 +120,13 @@ export class SalesService {
     // TASK 13.2 — optional, backward-compatible: only needed when
     // `CreateSaleInput.rewardEntitlementId` is actually supplied.
     private readonly rewardsService?: RewardsService,
+    // TASK 16.21 — optional, backward-compatible (same reasoning as
+    // `rewardsService` above): only exercised when `normalized.
+    // customerId` is non-null. Unlike `rewardsService`, never gated on a
+    // client-supplied id — a membership benefit is resolved
+    // automatically whenever a customer is attached (see
+    // `MembershipsService.resolveCheckoutBenefit`'s own doc comment).
+    private readonly membershipsService?: MembershipsService,
   ) {}
 
   /**
@@ -290,6 +304,28 @@ export class SalesService {
             rewardCandidate = resolved.candidate;
           }
 
+          // TASK 16.21 (ADR-0020 "Membership pricing placement") —
+          // resolved fresh here, NEVER trusted from a client-submitted
+          // quote (same "Sale creation always re-derives" reasoning as
+          // every other pricing input above). Unlike the reward
+          // candidate above, this is never gated behind an explicit
+          // client-supplied id — a membership benefit applies
+          // automatically whenever the attached customer genuinely has
+          // one (see `MembershipsService.resolveCheckoutBenefit`'s own
+          // doc comment). A deployment with no `membershipsService`
+          // configured simply never resolves a candidate — same
+          // backward-compatible shape as `promotionsRepository`/
+          // `rewardsService` above, never a hard failure.
+          const membershipCandidate: MembershipBenefitCandidate | null =
+            customerId === null || this.membershipsService === undefined
+              ? null
+              : await this.membershipsService.resolveCheckoutBenefit(
+                  { companyId: context.companyId },
+                  customerId,
+                  normalized.branchId,
+                  context.timestamp,
+                );
+
           // TASK 12.9 — the exact same `evaluatePricing` engine the
           // standalone quote endpoint uses (ADR-0016): promotions/
           // coupons/manual discount are ALWAYS independently
@@ -377,6 +413,7 @@ export class SalesService {
             })),
             couponLookup: (normalizedCode) => couponLookups.get(normalizedCode) ?? null,
             requestedCouponCodes: input.couponCodes ?? [],
+            membershipCandidate,
             rewardCandidate,
             ...(input.manualDiscount === undefined ? {} : { manualDiscount: input.manualDiscount }),
             actorPermissions: context.actorPermissions ?? [],

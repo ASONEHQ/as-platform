@@ -191,7 +191,24 @@ export const customerQrTokens = pgTable(
  * `product_id` (a real product, `product_type='service'` in every seed
  * used by this task — no second payment system, no fabricated SKU). Branch
  * eligibility is an optional join table, `membership_plan_branches`, empty
- * meaning "all branches" — the exact `promotion_branches` convention. */
+ * meaning "all branches" — the exact `promotion_branches` convention.
+ *
+ * TASK 16.21 — `benefit_description` (above) was, until this task, the
+ * ONLY membership "benefit" a plan could carry: free text, never read by
+ * the pricing engine (confirmed by forensic audit before writing this —
+ * `evaluatePricing`/`SalesService.createSale` never referenced a
+ * membership at all). `benefit_type`/`benefit_percentage_basis_points`/
+ * `benefit_fixed_amount` below are the STRUCTURED, enforceable benefit —
+ * mirroring `loyalty_programs`' own `reward_benefit_*` triad exactly
+ * (same 3 shared benefit shapes; `free_eligible_item` is deliberately
+ * NOT included here — that is a one-shot reward-redemption concept,
+ * never a standing recurring membership discount, see ADR-0020 "Why
+ * membership benefit omits free_eligible_item"). `benefit_description`
+ * remains the free-text label shown to staff/customers; the structured
+ * fields are what the pricing engine actually enforces — the two are
+ * independent (a plan may carry either, both, or neither). */
+export const membershipBenefitTypes = ['percentage_discount', 'fixed_amount_discount', 'fixed_price'] as const;
+
 export const membershipPlans = pgTable(
   'membership_plans',
   {
@@ -203,6 +220,11 @@ export const membershipPlans = pgTable(
     productId: uuid('product_id'),
     durationDays: integer('duration_days'),
     benefitDescription: text('benefit_description'),
+    // TASK 16.21 (ADR-0020 "Membership checkout benefit") — see this
+    // table's own doc comment above.
+    benefitType: text('benefit_type'),
+    benefitPercentageBasisPoints: integer('benefit_percentage_basis_points'),
+    benefitFixedAmount: numeric('benefit_fixed_amount', { precision: 19, scale: 4 }),
     createdBy: uuid('created_by').notNull(),
     updatedBy: uuid('updated_by').notNull(),
     version: bigint('version', { mode: 'bigint' }).notNull().default(sql`1`),
@@ -235,6 +257,28 @@ export const membershipPlans = pgTable(
       'membership_plans_duration_days_ck',
       sql`${table.durationDays} is null or ${table.durationDays} > 0`,
     ),
+    // TASK 16.21 — mirrors `loyalty_programs_reward_benefit_type_ck` /
+    // `_value_ck` / `_basis_points_ck` / `_fixed_amount_ck` exactly: each
+    // benefit type carries exactly the ONE value field it needs, never
+    // both, never neither when a type is set.
+    check(
+      'membership_plans_benefit_type_ck',
+      sql`${table.benefitType} is null or ${table.benefitType} in ('percentage_discount','fixed_amount_discount','fixed_price')`,
+    ),
+    check(
+      'membership_plans_benefit_value_ck',
+      sql`(${table.benefitType} is null and ${table.benefitPercentageBasisPoints} is null and ${table.benefitFixedAmount} is null)
+        or (${table.benefitType} = 'percentage_discount' and ${table.benefitPercentageBasisPoints} is not null and ${table.benefitFixedAmount} is null)
+        or (${table.benefitType} in ('fixed_amount_discount','fixed_price') and ${table.benefitFixedAmount} is not null and ${table.benefitPercentageBasisPoints} is null)`,
+    ),
+    check(
+      'membership_plans_benefit_basis_points_ck',
+      sql`${table.benefitPercentageBasisPoints} is null or (${table.benefitPercentageBasisPoints} > 0 and ${table.benefitPercentageBasisPoints} <= 10000)`,
+    ),
+    check(
+      'membership_plans_benefit_fixed_amount_ck',
+      sql`${table.benefitFixedAmount} is null or ${table.benefitFixedAmount} >= 0`,
+    ),
     check('membership_plans_version_ck', sql`${table.version} >= 1`),
   ],
 );
@@ -265,6 +309,79 @@ export const membershipPlanBranches = pgTable(
       name: 'membership_plan_branches_branch_scope_fk',
     }).onDelete('restrict'),
     index('membership_plan_branches_plan_idx').on(table.companyId, table.membershipPlanId),
+  ],
+);
+
+/** TASK 16.21 — product scope for `membership_plans.benefit_*`, mirroring
+ * `promotion_products` exactly, INCLUDING its "empty means unrestricted"
+ * convention (deliberately the opposite of `loyalty_program_reward_
+ * products`' "empty means nothing" — a membership benefit is a standing,
+ * broad discount much closer in nature to a promotion than to a one-shot
+ * reward redemption, and Phase 5's own first listed option is "all
+ * eligible products", i.e. empty-by-default must be a valid, useful
+ * configuration, not a dead one). Both this table and
+ * [membershipPlanBenefitCategories] empty ⇒ every product is eligible. */
+export const membershipPlanBenefitProducts = pgTable(
+  'membership_plan_benefit_products',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    membershipPlanId: uuid('membership_plan_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    unique('membership_plan_benefit_products_company_plan_product_uq').on(
+      table.companyId,
+      table.membershipPlanId,
+      table.productId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.membershipPlanId],
+      foreignColumns: [membershipPlans.companyId, membershipPlans.id],
+      name: 'membership_plan_benefit_products_plan_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.productId],
+      foreignColumns: [products.companyId, products.id],
+      name: 'membership_plan_benefit_products_product_scope_fk',
+    }).onDelete('restrict'),
+    index('membership_plan_benefit_products_plan_idx').on(table.companyId, table.membershipPlanId),
+    index('membership_plan_benefit_products_product_idx').on(table.companyId, table.productId),
+  ],
+);
+
+/** Category scope — a product is eligible for this plan's benefit if it
+ * is listed in [membershipPlanBenefitProducts] OR its own `category_id`
+ * is listed here; both empty means every product is eligible (mirrors
+ * `promotion_categories` exactly). */
+export const membershipPlanBenefitCategories = pgTable(
+  'membership_plan_benefit_categories',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    membershipPlanId: uuid('membership_plan_id').notNull(),
+    categoryId: uuid('category_id').notNull(),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    unique('membership_plan_benefit_categories_company_plan_category_uq').on(
+      table.companyId,
+      table.membershipPlanId,
+      table.categoryId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.membershipPlanId],
+      foreignColumns: [membershipPlans.companyId, membershipPlans.id],
+      name: 'membership_plan_benefit_categories_plan_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.categoryId],
+      foreignColumns: [productCategories.companyId, productCategories.id],
+      name: 'membership_plan_benefit_categories_category_scope_fk',
+    }).onDelete('restrict'),
+    index('membership_plan_benefit_categories_plan_idx').on(table.companyId, table.membershipPlanId),
+    index('membership_plan_benefit_categories_category_idx').on(table.companyId, table.categoryId),
   ],
 );
 
@@ -661,9 +778,19 @@ export const loyaltyLedger = pgTable(
     ),
     check('loyalty_ledger_quantity_ck', sql`${table.quantity} <> 0`),
     check('loyalty_ledger_unit_type_ck', sql`${table.unitType} in ('stamp', 'point')`),
+    // TASK 16.21 (Phase 37 "Returns/refunds effect") — 'refund' added:
+    // a full refund of the originating sale reverses that sale's own
+    // 'earn' entries via a NEW, negative-quantity 'earn' entry
+    // (`source_type='refund'`, `source_id=<refund id>`) — never a
+    // mutation of the original row (append-only ledger discipline, same
+    // as every other entry type here). Deliberately reuses `entry_type
+    // ='earn'` rather than inventing a new type: a reversal IS a
+    // (negative) earn event for `cumulativeEarnedUnits`' own SUM to stay
+    // correct with no special-casing — see `LoyaltyService.
+    // reverseEarnForRefund`'s own doc comment.
     check(
       'loyalty_ledger_source_type_ck',
-      sql`${table.sourceType} in ('sale', 'manual', 'expiration_job')`,
+      sql`${table.sourceType} in ('sale', 'manual', 'expiration_job', 'refund')`,
     ),
     // A manual entry always carries a reason and the admin who made it; an
     // automatic entry never fabricates either.

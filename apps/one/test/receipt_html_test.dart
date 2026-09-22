@@ -242,6 +242,98 @@ void main() {
     });
   });
 
+  group('TASK 16.21 — membership benefit line (Phase 20 "show membership benefit clearly")', () {
+    PosReceipt withDiscounts(List<PosReceiptDiscount> discounts) => PosReceipt(
+      sale: PosReceiptSale(
+        id: 'sale-1',
+        saleNumber: 'SALE-membership',
+        status: 'completed',
+        currencyCode: 'MXN',
+        branchId: 'branch-1',
+        occurredAt: DateTime.utc(2026, 9, 4),
+        completedAt: DateTime.utc(2026, 9, 4, 0, 1),
+        subtotal: '200.0000',
+        discountTotal: '10.0000',
+        taxTotal: '0.0000',
+        total: '190.0000',
+      ),
+      business: const PosReceiptBusiness(companyName: 'AS ONE Demo Co.', branchName: 'Sucursal Centro', branchAddress: null),
+      cashier: const PosReceiptCashier(id: 'user-1', displayName: 'Ana Cajera'),
+      items: const [
+        PosReceiptItem(
+          lineNumber: 1,
+          nameSnapshot: 'Producto A',
+          skuSnapshot: 'SKU-A',
+          quantity: '1.000000',
+          unitPrice: '100.0000',
+          discountTotal: '10.0000',
+          taxTotal: '0.0000',
+          lineTotal: '90.0000',
+        ),
+        PosReceiptItem(
+          lineNumber: 2,
+          nameSnapshot: 'Producto B',
+          skuSnapshot: 'SKU-B',
+          quantity: '1.000000',
+          unitPrice: '100.0000',
+          discountTotal: '0.0000',
+          taxTotal: '0.0000',
+          lineTotal: '100.0000',
+        ),
+      ],
+      payments: const [
+        PosReceiptPayment(
+          id: 'payment-1',
+          paymentMethod: 'cash',
+          status: 'captured',
+          amount: '190.0000',
+          currencyCode: 'MXN',
+          capturedAt: null,
+          tenderedAmount: '200.0000',
+          changeAmount: '10.0000',
+          provider: null,
+          terminalId: null,
+          providerReference: null,
+        ),
+      ],
+      discounts: discounts,
+    );
+
+    test('a membership-sourced discount renders its own labeled line, using the backend\'s own snapshotted label', () {
+      final html = buildReceiptHtml(
+        receipt: withDiscounts(const [
+          PosReceiptDiscount(saleItemId: 'item-1', sourceType: 'membership', label: 'Membresía', amount: '10.0000'),
+        ]),
+      );
+      expect(html, contains('Membresía'));
+      expect(html, contains(r'-$10.00'));
+    });
+
+    test('sums membership discount amounts across every eligible line into one displayed total', () {
+      final html = buildReceiptHtml(
+        receipt: withDiscounts(const [
+          PosReceiptDiscount(saleItemId: 'item-1', sourceType: 'membership', label: 'Membresía', amount: '6.0000'),
+          PosReceiptDiscount(saleItemId: 'item-2', sourceType: 'membership', label: 'Membresía', amount: '4.0000'),
+        ]),
+      );
+      expect(html, contains(r'-$10.00'));
+    });
+
+    test('never shows a membership line for a non-membership discount (promotion/coupon)', () {
+      final html = buildReceiptHtml(
+        receipt: withDiscounts(const [
+          PosReceiptDiscount(saleItemId: 'item-1', sourceType: 'promotion', label: 'Promoción', amount: '10.0000'),
+        ]),
+      );
+      expect(html, isNot(contains('Membresía')));
+    });
+
+    test('no discounts at all renders no membership line, byte-identical to before this task', () {
+      final html = buildReceiptHtml(receipt: withDiscounts(const []));
+      expect(html, isNot(contains('Membresía')));
+    });
+  });
+
   group('TASK 12.5B.1 — folio and 80mm polish', () {
     PosReceipt realQaReceipt() => PosReceipt(
       sale: PosReceiptSale(

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import { ivaBasisPointsForTaxCode, type ProductTaxCode } from '@asone/database';
 
+import type { MembershipsService } from '../memberships/memberships.service.js';
 import type { RewardsService } from '../rewards/rewards.service.js';
 import { applyBasisPoints, evaluatePricing, formatMoney, parseQuantityUnits } from './pricing.service.js';
 import type { CreatePromotionInput, PromotionsRepository } from './promotions.repository.js';
@@ -156,6 +157,9 @@ export class PromotionsService {
   public constructor(
     private readonly repository: PromotionsRepository,
     private readonly rewardsService?: RewardsService,
+    // TASK 16.21 — same optional/backward-compatible reasoning as
+    // `rewardsService` above.
+    private readonly membershipsService?: MembershipsService,
   ) {}
 
   // --- Admin: promotions -----------------------------------------------
@@ -518,6 +522,16 @@ export class PromotionsService {
       rewardCandidate = resolved.candidate;
     }
 
+    // TASK 16.21 (ADR-0020) — read-only, exactly like the reward
+    // resolution above. Unlike the reward, never gated behind a
+    // client-supplied id — a membership benefit previews automatically
+    // whenever a customer is attached (see `MembershipsService.
+    // resolveCheckoutBenefit`'s own doc comment).
+    const membershipCandidate =
+      input.customerId === undefined || this.membershipsService === undefined
+        ? null
+        : await this.membershipsService.resolveCheckoutBenefit(context, input.customerId, input.branchId, context.timestamp);
+
     return evaluatePricing({
       branchId: input.branchId,
       branchTimezone: timezone,
@@ -526,6 +540,7 @@ export class PromotionsService {
       promotionCandidates,
       couponLookup: (normalizedCode) => couponCache.get(normalizedCode) ?? null,
       requestedCouponCodes: input.couponCodes ?? [],
+      membershipCandidate,
       rewardCandidate,
       ...(input.manualDiscount === undefined ? {} : { manualDiscount: input.manualDiscount }),
       actorPermissions: context.actorPermissions,

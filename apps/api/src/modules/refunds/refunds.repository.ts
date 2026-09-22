@@ -367,6 +367,19 @@ export class RefundsRepository {
     };
   }
 
+  /** TASK 16.21 (Phase 37) — the one extra fact `completeRefund` needs
+   * that neither `RefundRow` nor `RefundableSaleRow` carries: whether the
+   * originating sale had a customer attached at all, and if so which
+   * one, to know whether a loyalty/reward reversal hook is even
+   * applicable (same raw cross-module read discipline as `lockSaleForRefund`
+   * above — no `customers`/`sales` type import). */
+  public async customerIdForSale(client: RefundTransaction, companyId: string, saleId: string): Promise<string | null> {
+    const row = result<{ customer_id: string | null }>(
+      await client.query('select customer_id from sales where company_id=$1 and id=$2', [companyId, saleId]),
+    ).rows[0];
+    return row?.customer_id ?? null;
+  }
+
   /** The unlocked counterpart to `refundedQuantitiesForSaleItems` — same
    * query, reads straight from the pool (no transaction client) for
    * E081's own preview. */

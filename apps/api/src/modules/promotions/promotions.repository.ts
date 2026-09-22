@@ -6,6 +6,7 @@ import {
   PromotionError,
   type CouponBenefitType,
   type CouponRow,
+  type DiscountSourceType,
   type PromotionBenefitType,
   type PromotionMutationContext,
   type PromotionRow,
@@ -830,7 +831,7 @@ export class PromotionsRepository {
       branchId: string;
       saleId: string;
       saleItemId: string | null;
-      sourceType: 'promotion' | 'coupon' | 'manual' | 'reward';
+      sourceType: DiscountSourceType;
       sourceId: string | null;
       labelSnapshot: string;
       reasonCode: string | null;
@@ -872,7 +873,7 @@ export class PromotionsRepository {
     {
       id: string;
       saleItemId: string | null;
-      sourceType: 'promotion' | 'coupon' | 'manual' | 'reward';
+      sourceType: DiscountSourceType;
       sourceId: string | null;
       labelSnapshot: string;
       reasonCode: string | null;

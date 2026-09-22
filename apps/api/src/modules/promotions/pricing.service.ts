@@ -1,5 +1,6 @@
 import type {
   CouponRow,
+  MembershipBenefitCandidate,
   PricingAppliedDiscount,
   PricingManualDiscountInput,
   PricingResolvedLine,
@@ -37,11 +38,27 @@ import { PromotionError } from './promotions.types.js';
  *      `selectPromotions`) reduce each eligible line
  *   3. a valid COUPON reduces the cart's remaining (post-promotion)
  *      amount, allocated pro-rata across lines
- *   4. an authorized MANUAL discount reduces what's left (again
+ *   4. TASK 16.21 (ADR-0020) — the customer's single best-eligible
+ *      active MEMBERSHIP benefit reduces what's left, across every
+ *      eligible line (never just one, unlike the reward step below)
+ *   5. TASK 13.2 (ADR-0019) — at most one redeemed REWARD entitlement's
+ *      benefit reduces what's left, on exactly one eligible line
+ *   6. an authorized MANUAL discount reduces what's left (again
  *      pro-rata if ticket-scoped; directly if line-scoped)
- *   5. tax is computed on each line's own POST-DISCOUNT taxable base
- *   6. `total = subtotal − discount_total + tax_total` (exactly
+ *   7. tax is computed on each line's own POST-DISCOUNT taxable base
+ *   8. `total = subtotal − discount_total + tax_total` (exactly
  *      `sales`'s own existing, DB-enforced `sales_arithmetic_ck`)
+ *
+ * Stacking policy (Phase 15): a promotion's own existing
+ * `combinable_with_coupons = false` flag blocks BOTH coupons and the
+ * membership benefit from applying on top of it (never just coupons) —
+ * the simplest coherent rule available from what already existed,
+ * rather than a new tenant-configurable stacking-policy schema. The
+ * reward step is never blocked by it (ADR-0019's own prior decision,
+ * unchanged) since a reward is an explicit, one-shot customer
+ * redemption, not a standing recurring discount that could silently
+ * compound with a promotion the same way a percentage-off coupon or
+ * membership could.
  */
 
 const MONEY_SCALE = 10_000n; // numeric(19,4)
@@ -470,6 +487,74 @@ function couponDiscountUnits(coupon: CouponRow, remainingUnits: bigint): bigint 
   return requested > remainingUnits ? remainingUnits : requested;
 }
 
+// --- Membership benefit (TASK 16.21, ADR-0020 "Membership pricing placement") --
+
+function isLineEligibleForMembership(line: PricingResolvedLine, scope: MembershipBenefitCandidate['scope']): boolean {
+  if (scope.productIds.length === 0 && scope.categoryIds.length === 0) return true;
+  if (scope.productIds.includes(line.productId)) return true;
+  return line.categoryId !== null && scope.categoryIds.includes(line.categoryId);
+}
+
+/** A membership's benefit reduces EVERY eligible line's own remaining
+ * amount — unlike a reward (Part J "one entitlement, one line"), a
+ * membership discount is a standing, recurring benefit much closer in
+ * nature to a promotion (Phase 4's own worked example: "Eligible
+ * products $400, Ineligible products $100" ⇒ the discount is computed
+ * against the whole eligible $400, never just one item of it).
+ * Deliberately mirrors `computePromotionDiscount`'s three non-nxm
+ * benefit-type branches exactly, just without the promotion-selection
+ * machinery — the caller already resolved the ONE best-eligible
+ * membership before this is ever called (Part 34 "at most one
+ * membership benefit per sale"). */
+function computeMembershipBenefit(
+  membership: MembershipBenefitCandidate,
+  lines: readonly PricingResolvedLine[],
+  remainingUnits: readonly bigint[],
+): { lineIndex: number; amountUnits: bigint }[] {
+  const eligible = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => isLineEligibleForMembership(line, membership.scope));
+  if (eligible.length === 0) return [];
+
+  const results: { lineIndex: number; amountUnits: bigint }[] = [];
+  if (membership.benefitType === 'percentage_discount') {
+    const basisPoints = membership.benefitPercentageBasisPoints ?? 0;
+    for (const { line, index } of eligible) {
+      const remaining = remainingUnits[index] ?? 0n;
+      if (remaining <= 0n) continue;
+      const discount = applyBasisPoints(remaining, basisPoints);
+      if (discount > 0n) results.push({ lineIndex: line.lineIndex, amountUnits: discount });
+    }
+  } else if (membership.benefitType === 'fixed_price') {
+    // A per-unit promotional price on each eligible line — the discount
+    // is however much the line's own REMAINING amount exceeds
+    // `benefitFixedAmount × quantity`, never negative (mirrors the
+    // promotion 'fixed_price' benefit exactly, just against what's
+    // already been discounted rather than the raw gross).
+    const priceUnits = moneyUnits(membership.benefitFixedAmount ?? '0');
+    for (const { line, index } of eligible) {
+      const remaining = remainingUnits[index] ?? 0n;
+      const promoLineTotal = multiplyMoneyByQuantity(priceUnits, line.quantityUnits);
+      const discount = remaining > promoLineTotal ? remaining - promoLineTotal : 0n;
+      if (discount > 0n) results.push({ lineIndex: line.lineIndex, amountUnits: discount });
+    }
+  } else {
+    // 'fixed_amount_discount' — a flat amount off the eligible lines'
+    // combined REMAINING subtotal, allocated pro-rata, never exceeding
+    // it (mirrors the promotion 'fixed_amount' benefit exactly).
+    const eligibleRemainingUnits = eligible.map(({ index }) => remainingUnits[index] ?? 0n);
+    const eligibleRemainingTotal = eligibleRemainingUnits.reduce((sum, value) => sum + value, 0n);
+    const requestedUnits = moneyUnits(membership.benefitFixedAmount ?? '0');
+    const cappedUnits = requestedUnits > eligibleRemainingTotal ? eligibleRemainingTotal : requestedUnits;
+    const shares = allocateProportionally(cappedUnits, eligibleRemainingUnits);
+    eligible.forEach(({ line }, shareIndex) => {
+      const share = shares[shareIndex] ?? 0n;
+      if (share > 0n) results.push({ lineIndex: line.lineIndex, amountUnits: share });
+    });
+  }
+  return results;
+}
+
 // --- Reward benefit (TASK 13.2, ADR-0019 "Pricing pipeline placement") ----
 
 /** Part B — deliberately the INVERSE of `isLineEligibleForPromotion`'s
@@ -565,6 +650,12 @@ export interface EvaluatePricingInput {
    * (Part D "quote/sale creation re-validate, this engine never looks
    * anything up itself"). `null`/`undefined` are both "no reward
    * attached". */
+  /** TASK 16.21 — at most one, already resolved by
+   * `MembershipsService.resolveCheckoutBenefit` (identical contract to
+   * `rewardCandidate` below: the engine never looks anything up itself).
+   * Evaluated BEFORE `rewardCandidate` — see `evaluatePricing`'s own
+   * step-2.5 comment for the ordering rationale. */
+  membershipCandidate?: MembershipBenefitCandidate | null;
   rewardCandidate?: RewardBenefitCandidate | null;
   manualDiscount?: PricingManualDiscountInput;
   actorPermissions: readonly string[];
@@ -635,6 +726,16 @@ export function evaluatePricing(input: EvaluatePricingInput): PricingResult {
   // more than one, would apply against what the first left behind —
   // today's routes only ever accept one code, see ADR-0016, but the
   // engine itself does not hardcode that limit).
+  // TASK 16.21 (Phase 15 "prevent unintended stacking") — extracted
+  // ABOVE the coupon loop (it never depends on which code is currently
+  // being evaluated) so the membership-benefit step below can reuse the
+  // exact same gate: a promotion explicitly marked "do not combine"
+  // blocks every customer-initiated benefit that would otherwise stack
+  // on top of it — never just coupons specifically. The simplest
+  // coherent rule available from what already exists, rather than a new
+  // tenant-configurable stacking-policy schema.
+  const combinabilityBlockedForCart = selected.some((promo) => !promo.promotion.combinableWithCoupons);
+
   const rejectedCoupons: { code: string; reason: string }[] = [];
   let cartRemainingAfterCouponsUnits = cartRemainingAfterPromotionUnits;
   const remainingAfterCouponsUnits = [...remainingAfterPromotionUnits];
@@ -645,10 +746,7 @@ export function evaluatePricing(input: EvaluatePricingInput): PricingResult {
       rejectedCoupons.push({ code: rawCode, reason: 'not_found' });
       continue;
     }
-    const combinabilityBlocked = selected.some(
-      (promo) => !promo.promotion.combinableWithCoupons,
-    );
-    if (combinabilityBlocked) {
+    if (combinabilityBlockedForCart) {
       rejectedCoupons.push({ code: rawCode, reason: 'cart_not_eligible' });
       continue;
     }
@@ -686,19 +784,60 @@ export function evaluatePricing(input: EvaluatePricingInput): PricingResult {
     cartRemainingAfterCouponsUnits -= discountUnits;
   }
 
-  // 2.5. Reward benefit (TASK 13.2, ADR-0019 "Pricing pipeline
-  // placement") — after promotions and coupons, before the manual
-  // discount. Computed against what promotions/coupons already left
-  // (so it naturally "stacks" with both, reducing whatever remains,
-  // never negative — the identical cascading-and-capping mechanism
-  // this engine already uses for coupons, not a new stacking-policy
-  // schema; ADR-0019 documents why no explicit combinability flags were
-  // added). Always applied BEFORE the manual discount so a cashier's
-  // own override authority still operates on top of it if genuinely
-  // needed, and so the reward's own benefit is never itself reduced to
-  // nothing by an already-applied manual discount consuming the
-  // remaining amount first.
-  const remainingAfterRewardUnits = [...remainingAfterCouponsUnits];
+  // 2.5. Membership benefit (TASK 16.21, ADR-0020 "Membership pricing
+  // placement") — after coupons, before the reward benefit. A standing
+  // customer benefit (much closer in nature to a promotion than to a
+  // one-shot reward redemption), computed against what promotions+
+  // coupons already left, and blocked by the exact same
+  // `combinabilityBlockedForCart` gate coupons themselves respect (Phase
+  // 15). Applied BEFORE the reward benefit so a customer's own explicit,
+  // intentional reward redemption always gets first claim on whatever
+  // the membership's standing discount left behind — mirroring the
+  // existing reward-before-manual ordering's own "the more intentional
+  // the action, the later/closer-to-final it applies" logic.
+  const remainingAfterMembershipUnits = [...remainingAfterCouponsUnits];
+  if (
+    input.membershipCandidate !== undefined &&
+    input.membershipCandidate !== null &&
+    !combinabilityBlockedForCart
+  ) {
+    const membershipResults = computeMembershipBenefit(
+      input.membershipCandidate,
+      input.lines,
+      remainingAfterMembershipUnits,
+    );
+    for (const result of membershipResults) {
+      const arrayIndex = input.lines.findIndex((line) => line.lineIndex === result.lineIndex);
+      if (arrayIndex === -1) continue;
+      remainingAfterMembershipUnits[arrayIndex] = (remainingAfterMembershipUnits[arrayIndex] ?? 0n) - result.amountUnits;
+      appliedDiscounts.push({
+        sourceType: 'membership',
+        sourceId: input.membershipCandidate.customerMembershipId,
+        label: 'Membresía',
+        reasonCode: null,
+        basisPoints:
+          input.membershipCandidate.benefitType === 'percentage_discount'
+            ? input.membershipCandidate.benefitPercentageBasisPoints
+            : null,
+        amountUnits: result.amountUnits,
+        lineIndex: result.lineIndex,
+      });
+    }
+  }
+
+  // 2.6. Reward benefit (TASK 13.2, ADR-0019 "Pricing pipeline
+  // placement") — after promotions, coupons and the membership benefit,
+  // before the manual discount. Computed against what's left so far (so
+  // it naturally "stacks" with all three, reducing whatever remains,
+  // never negative — the identical cascading-and-capping mechanism this
+  // engine already uses throughout, not a new stacking-policy schema;
+  // ADR-0019 documents why no explicit combinability flags were added
+  // for the reward step specifically). Always applied BEFORE the manual
+  // discount so a cashier's own override authority still operates on
+  // top of it if genuinely needed, and so the reward's own benefit is
+  // never itself reduced to nothing by an already-applied manual
+  // discount consuming the remaining amount first.
+  const remainingAfterRewardUnits = [...remainingAfterMembershipUnits];
   if (input.rewardCandidate !== undefined && input.rewardCandidate !== null) {
     const reward = computeRewardBenefit(input.rewardCandidate, input.lines, remainingAfterRewardUnits);
     if (reward !== null) {

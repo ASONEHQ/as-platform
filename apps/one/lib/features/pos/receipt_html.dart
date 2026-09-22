@@ -257,6 +257,27 @@ String buildReceiptHtml({
             })
             .join('<hr class="divider">');
 
+  // TASK 16.21 (Phase 20) — summed across every line the membership
+  // benefit discounted (never just the first one), using the backend's
+  // own label — falls back to the plain "Membresía" the backend always
+  // sends anyway, never a fabricated one, and is simply absent from the
+  // receipt entirely when the sale had no membership benefit.
+  final membershipDiscounts = receipt.membershipDiscounts;
+  String membershipDiscountRowHtml = '';
+  if (membershipDiscounts.isNotEmpty) {
+    var sum = Money.zero(currency);
+    for (final entry in membershipDiscounts) {
+      try {
+        sum = sum + Money.parse(entry.amount, currency);
+      } on MoneyFormatException {
+        // A malformed single entry never blocks the rest of the receipt.
+      }
+    }
+    final label = membershipDiscounts.first.label;
+    membershipDiscountRowHtml =
+        '<tr><td>${_escape(label)}</td><td class="amount">-\$${sum.toDisplayString()}</td></tr>';
+  }
+
   return '<!DOCTYPE html><html><head><meta charset="UTF-8">'
       '<title>Ticket ${_escape(sale.saleNumber)}</title>'
       '<style>'
@@ -368,6 +389,14 @@ String buildReceiptHtml({
       // legacy sale (`discount_total = '0.0000'`, ADR-0016 D14) renders
       // this exact table unchanged from before this task.
       '${_isNonZeroAmount(sale.discountTotal) ? '<tr><td>Descuentos</td><td class="amount">-${_money(sale.discountTotal, currency)}</td></tr>' : ''}'
+      // TASK 16.21 (Phase 20 "Receipt") — a membership benefit shown
+      // CLEARLY, as its own sub-line under the generic "Descuentos"
+      // aggregate above, never merged into it invisibly and never an
+      // internal id — just the backend's own snapshotted label/amount,
+      // summed across however many lines it discounted (Phase 4's own
+      // worked example: a plan can discount more than one eligible
+      // line). Absent entirely for a sale with no membership benefit.
+      '$membershipDiscountRowHtml'
       '<tr><td>IVA</td><td class="amount">${_money(sale.taxTotal, currency)}</td></tr>'
       '<tr class="total-row"><td>TOTAL</td><td class="amount">${_money(sale.total, currency)}</td></tr>'
       '</table>'

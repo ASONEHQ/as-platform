@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CouponRow, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from './promotions.types.js';
+import type { CouponRow, MembershipBenefitCandidate, PricingResolvedLine, PromotionRow, RewardBenefitCandidate } from './promotions.types.js';
 import type { EvaluatePricingInput } from './pricing.service.js';
 import { evaluatePricing, formatMoney, isValidIanaTimezone, localDateString, zonedDayBounds } from './pricing.service.js';
 
@@ -941,6 +941,193 @@ describe('pricing engine (TASK 12.9)', () => {
     it('no rewardCandidate present is a plain no-op, identical to the pre-TASK-13.2 pipeline', () => {
       const result = evaluatePricing(baseInput({ rewardCandidate: null }));
       expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward')).toHaveLength(0);
+      expect(formatMoney(result.discountTotalUnits)).toBe('0.0000');
+    });
+  });
+
+  describe('membership benefit (TASK 16.21, ADR-0020)', () => {
+    function membership(overrides: Partial<MembershipBenefitCandidate> = {}): MembershipBenefitCandidate {
+      return {
+        customerMembershipId: overrides.customerMembershipId ?? '00000000-0000-9000-8000-000000000040',
+        membershipPlanId: overrides.membershipPlanId ?? '00000000-0000-9000-8000-000000000041',
+        benefitType: overrides.benefitType ?? 'percentage_discount',
+        benefitPercentageBasisPoints: overrides.benefitPercentageBasisPoints ?? 1000,
+        benefitFixedAmount: overrides.benefitFixedAmount ?? null,
+        scope: overrides.scope ?? { productIds: [], categoryIds: [] },
+      };
+    }
+
+    it('percentage_discount takes basis points of what coupons already left', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, unitPriceUnits: 1_000_000n })], // $100
+          membershipCandidate: membership({ benefitType: 'percentage_discount', benefitPercentageBasisPoints: 1000 }), // 10%
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(membershipEntries).toHaveLength(1);
+      expect(membershipEntries[0]?.sourceId).toBe('00000000-0000-9000-8000-000000000040');
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('10.0000');
+      expect(membershipEntries[0]?.basisPoints).toBe(1000);
+    });
+
+    it('fixed_price grants the gap between what remains and the promotional price, floored at zero', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, unitPriceUnits: 1_000_000n })], // $100
+          membershipCandidate: membership({ benefitType: 'fixed_price', benefitFixedAmount: '80.0000' }),
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('20.0000');
+    });
+
+    it('fixed_amount_discount is capped at what remains, never granting more than the line is worth', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, unitPriceUnits: 150_000n })], // $15
+          membershipCandidate: membership({ benefitType: 'fixed_amount_discount', benefitFixedAmount: '50.0000' }),
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('15.0000');
+    });
+
+    it('a both-empty scope matches EVERYTHING — the deliberate inverse of reward scope (ADR-0020 vs Part B)', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'anything-at-all', unitPriceUnits: 1_000_000n })],
+          membershipCandidate: membership({ scope: { productIds: [], categoryIds: [] } }),
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(membershipEntries).toHaveLength(1);
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('10.0000');
+    });
+
+    it('a product-scoped membership excludes an out-of-scope line', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'sock-1', unitPriceUnits: 1_000_000n })],
+          membershipCandidate: membership({ scope: { productIds: ['product-0'], categoryIds: [] } }),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership')).toHaveLength(0);
+    });
+
+    it('a category-scoped membership matches a line by category even when productIds is empty', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'unrelated-product', categoryId: 'admissions', unitPriceUnits: 900_000n })],
+          membershipCandidate: membership({ scope: { productIds: [], categoryIds: ['admissions'] } }),
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(membershipEntries).toHaveLength(1);
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('9.0000'); // 10% of $90
+    });
+
+    it('Phase 4 worked example — a scoped membership benefits EVERY eligible line, not just one (unlike reward)', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [
+            line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n }), // $100, in scope
+            line({ lineIndex: 1, productId: 'product-1', unitPriceUnits: 1_000_000n }), // $100, in scope
+            line({ lineIndex: 2, productId: 'other-product', unitPriceUnits: 1_000_000n }), // $100, out of scope
+          ],
+          membershipCandidate: membership({
+            benefitType: 'percentage_discount',
+            benefitPercentageBasisPoints: 1000, // 10%
+            scope: { productIds: ['product-0', 'product-1'], categoryIds: [] },
+          }),
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(membershipEntries).toHaveLength(2);
+      expect(membershipEntries.map((entry) => entry.lineIndex).sort()).toEqual([0, 1]);
+      expect(formatMoney(result.discountTotalUnits)).toBe('20.0000'); // $10 off each eligible line
+    });
+
+    it('stacks after coupons — computed against what they already left, not the original gross', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          requestedCouponCodes: ['SAVE10'],
+          couponLookup: () => ({
+            coupon: coupon({ benefitPercentageBasisPoints: 1000 }), // -10% of $100 = $10 → $90 left
+            branchEligible: true,
+            redeemedCount: 0,
+          }),
+          membershipCandidate: membership({ benefitType: 'percentage_discount', benefitPercentageBasisPoints: 1000 }), // -10% of $90 = $9
+        }),
+      );
+      const couponEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'coupon');
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      expect(formatMoney(couponEntries[0]?.amountUnits ?? 0n)).toBe('10.0000');
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('9.0000');
+      expect(formatMoney(result.discountTotalUnits)).toBe('19.0000');
+    });
+
+    it('applies BEFORE the reward benefit — a reward is computed against what membership already left', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          membershipCandidate: membership({ benefitType: 'fixed_amount_discount', benefitFixedAmount: '20.0000' }), // → $80 left
+          rewardCandidate: {
+            rewardEntitlementId: '00000000-0000-9000-8000-000000000030',
+            loyaltyProgramId: '00000000-0000-9000-8000-000000000031',
+            rewardType: 'vip_pass',
+            benefitType: 'free_eligible_item',
+            benefitPercentageBasisPoints: null,
+            benefitFixedAmount: null,
+            scope: { productIds: ['product-0'], categoryIds: [] },
+          },
+        }),
+      );
+      const membershipEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership');
+      const rewardEntries = result.appliedDiscounts.filter((entry) => entry.sourceType === 'reward');
+      expect(formatMoney(membershipEntries[0]?.amountUnits ?? 0n)).toBe('20.0000');
+      // free_eligible_item waives whatever membership already left, not the original gross.
+      expect(formatMoney(rewardEntries[0]?.amountUnits ?? 0n)).toBe('80.0000');
+      expect(formatMoney(result.subtotalUnits - result.discountTotalUnits)).toBe('0.0000');
+    });
+
+    it('is blocked by a non-combinable promotion, the same stacking gate coupons already honor', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 1_000_000n })], // $100
+          promotionCandidates: [
+            {
+              promotion: promotion({ benefitPercentageBasisPoints: 1000, combinableWithCoupons: false }), // -10% of $100 = $10 → $90 left
+              scope: { branchIds: [], productIds: [], categoryIds: [] },
+            },
+          ],
+          membershipCandidate: membership({ benefitType: 'percentage_discount', benefitPercentageBasisPoints: 1000 }),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership')).toHaveLength(0);
+      expect(formatMoney(result.discountTotalUnits)).toBe('10.0000'); // promotion only
+    });
+
+    it('a line already reduced to zero by coupons is not eligible for a further membership benefit', () => {
+      const result = evaluatePricing(
+        baseInput({
+          lines: [line({ lineIndex: 0, productId: 'product-0', unitPriceUnits: 500_000n })], // $50
+          requestedCouponCodes: ['FREE'],
+          couponLookup: () => ({
+            coupon: coupon({ benefitPercentageBasisPoints: 10_000 }), // 100% off → $0 left
+            branchEligible: true,
+            redeemedCount: 0,
+          }),
+          membershipCandidate: membership(),
+        }),
+      );
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership')).toHaveLength(0);
+    });
+
+    it('no membershipCandidate present is a plain no-op', () => {
+      const result = evaluatePricing(baseInput({ membershipCandidate: null }));
+      expect(result.appliedDiscounts.filter((entry) => entry.sourceType === 'membership')).toHaveLength(0);
       expect(formatMoney(result.discountTotalUnits)).toBe('0.0000');
     });
   });

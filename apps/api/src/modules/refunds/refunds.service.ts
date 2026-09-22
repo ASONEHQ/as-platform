@@ -4,10 +4,12 @@ import { createHash } from 'node:crypto';
 import type { CashRepository, CashTransaction } from '../cash/cash.repository.js';
 import { CashError, type CashMutationContext, type CashSessionRow } from '../cash/cash.types.js';
 import { postSaleReturn } from '../inventory/sale-return.js';
+import type { LoyaltyService } from '../loyalty/loyalty.service.js';
 import type { PaymentRepository } from '../payments/payments.repository.js';
 import type { PaymentMutationContext } from '../payments/payments.types.js';
 import type { PaymentProvider } from '../payments/providers/payment-provider.js';
 import { PaymentProviderError } from '../payments/providers/payment-provider.js';
+import type { RewardsService } from '../rewards/rewards.service.js';
 import type { RefundsRepository, RefundableSaleItemRow } from './refunds.repository.js';
 import {
   RefundError,
@@ -154,6 +156,15 @@ export class RefundsService {
     private readonly paymentRepository: PaymentRepository,
     private readonly cashRepository: CashRepository,
     private readonly mercadoPagoProvider: PaymentProvider,
+    // TASK 16.21 (Phase 37) — optional, backward-compatible (same
+    // reasoning as every other cross-module hook dependency in this
+    // codebase, e.g. `SalesService`'s own `rewardsService`/
+    // `membershipsService`): only exercised for a FULL refund of a sale
+    // that actually had a customer attached. A deployment with neither
+    // configured simply never reverses loyalty/reward state — never a
+    // hard failure.
+    private readonly loyaltyService?: LoyaltyService,
+    private readonly rewardsService?: RewardsService,
   ) {}
 
   // --- E081: refundable balance -------------------------------------------
@@ -504,6 +515,31 @@ export class RefundsService {
               timestamp: paymentContext.timestamp,
               reversedAt: paymentContext.timestamp,
             });
+
+            // TASK 16.21 (Phase 37 "Returns/refunds effect") — ONLY for a
+            // genuine full refund (never partial — see `LoyaltyService.
+            // reverseEarnForRefund`'s own doc comment), and only when
+            // this deployment is configured with both hooks. Sequential,
+            // never `Promise.all`: `reverseIssuanceForRefund` reads
+            // `cumulativeEarnedUnits` and depends on seeing the earn
+            // reversal `reverseEarnForRefund` just inserted, in the SAME
+            // transaction.
+            if (this.loyaltyService !== undefined && this.rewardsService !== undefined) {
+              const customerId = await this.repository.customerIdForSale(client, context.companyId, current.saleId);
+              if (customerId !== null) {
+                const reversalContext = {
+                  companyId: context.companyId,
+                  branchId: current.branchId,
+                  saleId: current.saleId,
+                  refundId: current.id,
+                  actorId: context.actorId,
+                  correlationId: context.correlationId,
+                  timestamp: context.timestamp,
+                };
+                await this.loyaltyService.reverseEarnForRefund(client, reversalContext);
+                await this.rewardsService.reverseIssuanceForRefund(client, { ...reversalContext, customerId });
+              }
+            }
           }
 
           const [refundItems, saleItems] = await Promise.all([

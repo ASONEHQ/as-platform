@@ -309,6 +309,20 @@
       "when": 1790088511708,
       "tag": "0043_shallow_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790101658347,
+      "tag": "0044_keen_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790103080447,
+      "tag": "0045_mixed_infant_terrible",
+      "breakpoints": true
     }
   ]
 }

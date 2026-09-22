@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import type { MembershipBenefitCandidate } from '../promotions/promotions.types.js';
 import type { MembershipsRepository, MembershipTransaction } from './memberships.repository.js';
 import {
   MembershipError,
@@ -27,6 +28,37 @@ function addDays(start: Date, days: number): Date {
   const result = new Date(start.getTime());
   result.setUTCDate(result.getUTCDate() + days);
   return result;
+}
+/** TASK 16.21 — a clean `validation_error` for a caller that half-sets
+ * the benefit (mirrors `LoyaltyService.createProgram`'s own identical
+ * pre-check), rather than letting the mismatch fall through to the DB's
+ * own `membership_plans_benefit_value_ck` as an opaque constraint
+ * violation. Deliberately does NOT require a non-empty product/category
+ * scope when a benefit is configured — unlike a loyalty reward, an
+ * EMPTY membership benefit scope is a valid, meaningful "applies to
+ * every eligible product" configuration (see `membership_plans`' own
+ * schema doc comment for why the convention is deliberately inverted). */
+function validateBenefitFields(input: {
+  benefitType?: 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | undefined;
+  benefitPercentageBasisPoints?: number | undefined;
+  benefitFixedAmount?: string | undefined;
+}): void {
+  if (input.benefitType === undefined) {
+    if (input.benefitPercentageBasisPoints !== undefined || input.benefitFixedAmount !== undefined)
+      throw new MembershipError('validation_error', 'benefit_type is required when a benefit value is set.');
+    return;
+  }
+  if (input.benefitType === 'percentage_discount') {
+    if (input.benefitPercentageBasisPoints === undefined)
+      throw new MembershipError('validation_error', 'benefit_percentage_basis_points is required for a percentage_discount benefit.');
+    if (input.benefitFixedAmount !== undefined)
+      throw new MembershipError('validation_error', 'benefit_fixed_amount must not be set for a percentage_discount benefit.');
+  } else {
+    if (input.benefitFixedAmount === undefined)
+      throw new MembershipError('validation_error', `benefit_fixed_amount is required for a ${input.benefitType} benefit.`);
+    if (input.benefitPercentageBasisPoints !== undefined)
+      throw new MembershipError('validation_error', `benefit_percentage_basis_points must not be set for a ${input.benefitType} benefit.`);
+  }
 }
 
 // TASK 13.1A — real idempotent-replay decoders, replacing the bare
@@ -91,6 +123,7 @@ export class MembershipsService {
     input: CreateMembershipPlanInput,
   ): Promise<{ value: MembershipPlanRow; replayed: boolean }> {
     requirePermission(context, 'membership.manage');
+    validateBenefitFields(input);
     const id = input.id ?? randomUUID();
     // Stable across a genuine retry: `input` already carries the CALLER's
     // own optional `id` — hashing the server-RESOLVED `id` instead would
@@ -119,6 +152,11 @@ export class MembershipsService {
               input.benefitDescription?.trim() === undefined || input.benefitDescription.trim().length === 0
                 ? null
                 : input.benefitDescription.trim(),
+            benefitType: input.benefitType ?? null,
+            benefitPercentageBasisPoints: input.benefitPercentageBasisPoints ?? null,
+            benefitFixedAmount: input.benefitFixedAmount ?? null,
+            benefitProductIds: input.benefitProductIds ?? [],
+            benefitCategoryIds: input.benefitCategoryIds ?? [],
             branchIds: input.branchIds ?? [],
             createdBy: context.actorId,
             timestamp: context.timestamp,
@@ -144,6 +182,25 @@ export class MembershipsService {
     input: Partial<CreateMembershipPlanInput>,
   ): Promise<MembershipPlanRow> {
     requirePermission(context, 'membership.manage');
+    // TASK 16.21 — validated against the FINAL, post-merge benefit shape
+    // (the existing plan's own current values filled in for whichever
+    // field this partial update omits), never just the partial `input`
+    // in isolation — an update that only touches `benefitFixedAmount`
+    // on an already-`fixed_price` plan must not be rejected as "missing
+    // benefit_type".
+    if (
+      input.benefitType !== undefined ||
+      input.benefitPercentageBasisPoints !== undefined ||
+      input.benefitFixedAmount !== undefined
+    ) {
+      const current = await this.repository.plan(null, context.companyId, id);
+      if (current === null) throw new MembershipError('resource_not_found', 'The membership plan was not found.');
+      validateBenefitFields({
+        benefitType: input.benefitType ?? current.benefitType ?? undefined,
+        benefitPercentageBasisPoints: input.benefitPercentageBasisPoints ?? current.benefitPercentageBasisPoints ?? undefined,
+        benefitFixedAmount: input.benefitFixedAmount ?? current.benefitFixedAmount ?? undefined,
+      });
+    }
     return this.repository.transaction(async (client) => {
       const updated = await this.repository.updatePlan(client, context.companyId, id, expectedVersion, {
         ...(input.name === undefined ? {} : { name: nonBlank(input.name, 'name') }),
@@ -156,6 +213,13 @@ export class MembershipsService {
         ...(input.benefitDescription === undefined
           ? {}
           : { benefitDescription: input.benefitDescription.trim().length === 0 ? null : input.benefitDescription.trim() }),
+        ...(input.benefitType === undefined ? {} : { benefitType: input.benefitType }),
+        ...(input.benefitPercentageBasisPoints === undefined
+          ? {}
+          : { benefitPercentageBasisPoints: input.benefitPercentageBasisPoints }),
+        ...(input.benefitFixedAmount === undefined ? {} : { benefitFixedAmount: input.benefitFixedAmount }),
+        ...(input.benefitProductIds === undefined ? {} : { benefitProductIds: input.benefitProductIds }),
+        ...(input.benefitCategoryIds === undefined ? {} : { benefitCategoryIds: input.benefitCategoryIds }),
         ...(input.branchIds === undefined ? {} : { branchIds: input.branchIds }),
         updatedBy: context.actorId,
         timestamp: context.timestamp,
@@ -356,6 +420,34 @@ export class MembershipsService {
     );
   }
 
+  /** Shared by `validate()` and `resolveCheckoutBenefit()` — the ONE
+   * place "which membership, if any, is usable right now for this
+   * customer at this branch" is decided (Part N: "Flutter never decides
+   * membership validity itself"), so the membership a cashier SEES as
+   * active is always the exact same one the pricing engine evaluates a
+   * benefit from — never two independently-computed answers. Returns
+   * the first membership (in `membershipsForCustomer`'s own most-
+   * recent-issued-first order) that is `'active'`, already started, not
+   * yet expired, and eligible for `branchId`. */
+  private async activeEligibleMembership(
+    companyId: string,
+    customerId: string,
+    branchId: string,
+    now: Date,
+  ): Promise<{ membership: CustomerMembershipRow; plan: MembershipPlanRow | null } | null> {
+    const memberships = await this.repository.membershipsForCustomer(companyId, customerId);
+    for (const membership of memberships) {
+      if (membership.status !== 'active') continue;
+      if (membership.startsAt.getTime() > now.getTime()) continue;
+      if (membership.expiresAt !== null && membership.expiresAt.getTime() <= now.getTime()) continue;
+      const plan = await this.repository.plan(null, companyId, membership.membershipPlanId);
+      const eligibleBranch = plan === null || plan.branchIds.length === 0 || plan.branchIds.includes(branchId);
+      if (!eligibleBranch) continue;
+      return { membership, plan };
+    }
+    return null;
+  }
+
   /** Part N — server-authoritative validation. Flutter NEVER decides
    * membership validity itself; this is the one place that decision is
    * made. */
@@ -366,17 +458,44 @@ export class MembershipsService {
     now: Date,
   ): Promise<MembershipValidationResult> {
     requirePermission(context as MembershipMutationContext, 'membership.read');
-    const memberships = await this.repository.membershipsForCustomer(context.companyId, customerId);
-    for (const membership of memberships) {
-      if (membership.status !== 'active') continue;
-      if (membership.startsAt.getTime() > now.getTime()) continue;
-      if (membership.expiresAt !== null && membership.expiresAt.getTime() <= now.getTime()) continue;
-      const plan = await this.repository.plan(null, context.companyId, membership.membershipPlanId);
-      const eligibleBranch = plan === null || plan.branchIds.length === 0 || plan.branchIds.includes(branchId);
-      if (!eligibleBranch) continue;
-      return { valid: true, reason: null, membership, eligibleBranch: true };
-    }
-    return { valid: false, reason: 'no_active_membership', membership: null, eligibleBranch: false };
+    const found = await this.activeEligibleMembership(context.companyId, customerId, branchId, now);
+    if (found === null) return { valid: false, reason: 'no_active_membership', membership: null, eligibleBranch: false };
+    return { valid: true, reason: null, membership: found.membership, eligibleBranch: true };
+  }
+
+  /** TASK 16.21 (ADR-0020 "Membership pricing placement") — resolves the
+   * attached customer's own single best-eligible active membership into
+   * a checkout-ready benefit candidate, mirroring `RewardsService.
+   * resolveCheckoutBenefit`'s own "at most one, already resolved by the
+   * caller" contract with the pricing engine exactly. Unlike a reward
+   * (an explicit, permissioned customer selection — Part O), a
+   * membership benefit is never something the client "selects": it is
+   * evaluated automatically, the moment a customer is attached, for any
+   * actor who can already create the sale (no `membership.read` gate
+   * here — this is not a membership-management read, it's an
+   * automatic pricing input, the same way promotion/coupon eligibility
+   * needs no special permission either). Returns `null` (never an
+   * error) whenever there is nothing to apply: no customer attached, no
+   * active/eligible membership, or a plan with no benefit configured —
+   * a customer genuinely having a membership with no checkout benefit
+   * is not a failure, it simply contributes nothing to pricing. */
+  public async resolveCheckoutBenefit(
+    context: { companyId: string },
+    customerId: string | null,
+    branchId: string,
+    now: Date,
+  ): Promise<MembershipBenefitCandidate | null> {
+    if (customerId === null) return null;
+    const found = await this.activeEligibleMembership(context.companyId, customerId, branchId, now);
+    if (found === null || found.plan === null || found.plan.benefitType === null) return null;
+    return {
+      customerMembershipId: found.membership.id,
+      membershipPlanId: found.plan.id,
+      benefitType: found.plan.benefitType,
+      benefitPercentageBasisPoints: found.plan.benefitPercentageBasisPoints,
+      benefitFixedAmount: found.plan.benefitFixedAmount,
+      scope: { productIds: found.plan.benefitProductIds, categoryIds: found.plan.benefitCategoryIds },
+    };
   }
 
   // --- Sale settlement hook (Part L) --------------------------------------

@@ -1,0 +1,2 @@
+ALTER TABLE "loyalty_ledger" DROP CONSTRAINT "loyalty_ledger_source_type_ck";--> statement-breakpoint
+ALTER TABLE "loyalty_ledger" ADD CONSTRAINT "loyalty_ledger_source_type_ck" CHECK ("loyalty_ledger"."source_type" in ('sale', 'manual', 'expiration_job', 'refund'));

@@ -10,7 +10,7 @@
 
 export type LoyaltyUnitType = 'stamp' | 'point';
 export type LoyaltyEntryType = 'earn' | 'redeem' | 'adjustment' | 'expiration';
-export type LoyaltyEntrySourceType = 'sale' | 'manual' | 'expiration_job';
+export type LoyaltyEntrySourceType = 'sale' | 'manual' | 'expiration_job' | 'refund';
 export type LoyaltyRewardType = 'vip_pass';
 // TASK 13.2 (ADR-0019) — the smallest typed set of ways an issued
 // entitlement can reduce a Sale's price at checkout.
@@ -149,6 +149,21 @@ export interface SaleEarnContext {
   saleId: string;
   customerId: string | null;
   saleTotal: string;
+  actorId: string;
+  correlationId: string;
+  timestamp: Date;
+}
+
+/** TASK 16.21 (Phase 37) — hook context from `RefundsService`, at the
+ * exact instant a FULL refund of the originating sale completes (never
+ * for a partial refund — see `LoyaltyService.reverseEarnForRefund`'s own
+ * doc comment for why). Mirrors `SaleEarnContext` exactly, plus the
+ * refund's own id (the reversal entry's `source_id`). */
+export interface SaleRefundReversalContext {
+  companyId: string;
+  branchId: string;
+  saleId: string;
+  refundId: string;
   actorId: string;
   correlationId: string;
   timestamp: Date;

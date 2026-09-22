@@ -277,6 +277,21 @@ function receiptPaymentHttp(
   };
 }
 
+// TASK 16.21 — a receipt-safe discount-breakdown line: `source_type`/
+// `label` (the backend's own `label_snapshot`, e.g. "Membresía") plus the
+// amount, deliberately excluding `source_id` (an internal customer-
+// membership/coupon/promotion id — a receipt shows a customer what
+// happened, never an internal identifier, mirroring `receiptItemHttp`'s
+// own "curated subset" discipline just above).
+function receiptDiscountHttp(value: { saleItemId: string | null; sourceType: string; labelSnapshot: string; amount: string }): Readonly<Record<string, unknown>> {
+  return {
+    sale_item_id: value.saleItemId,
+    source_type: value.sourceType,
+    label: value.labelSnapshot,
+    amount: value.amount,
+  };
+}
+
 function receiptHttp(input: {
   sale: SaleRow;
   items: readonly SaleItemRow[];
@@ -288,8 +303,9 @@ function receiptHttp(input: {
     cashierName: string;
   } | null;
   payments: readonly Readonly<Record<string, unknown>>[];
+  discounts: readonly { saleItemId: string | null; sourceType: string; labelSnapshot: string; amount: string }[];
 }): Readonly<Record<string, unknown>> {
-  const { sale, items, organization, payments } = input;
+  const { sale, items, organization, payments, discounts } = input;
   return {
     sale: {
       id: sale.id,
@@ -318,6 +334,14 @@ function receiptHttp(input: {
         : { id: organization.cashierId, display_name: organization.cashierName },
     items: items.map(receiptItemHttp),
     payments,
+    // TASK 16.21 — the itemized discount breakdown (Part V, TASK 12.9's
+    // own `saleDiscounts`/`GET /sales/{id}/discounts`, never a second,
+    // separately-computed one), so a receipt can show e.g. "Membresía:
+    // -$10.00" instead of only the aggregate `discount_total` above —
+    // "Receipt (show membership benefit clearly, never internal IDs)".
+    // Empty for a legacy/undiscounted sale or a deployment with no
+    // `promotionsRepository` configured, same as `saleDiscounts` itself.
+    discounts: discounts.map(receiptDiscountHttp),
   };
 }
 
@@ -590,6 +614,7 @@ export function registerSaleRoutes(
         requirePermission(authentication, auth, 'sale.read');
         const { sale, items } = await service.sale(auth.companyId, auth.permittedBranchIds, request.params.id);
         const organization = await service.receiptOrganization(auth.companyId, sale.id);
+        const discounts = await service.saleDiscounts(auth.companyId, auth.permittedBranchIds, sale.id);
         const { items: paymentRows } = await paymentService.listPayments(auth.companyId, auth.permittedBranchIds, {
           saleId: sale.id,
           limit: 50,
@@ -611,7 +636,7 @@ export function registerSaleRoutes(
           .header('etag', `"${sale.version.toString()}"`)
           .send(
             successResponse(
-              receiptHttp({ sale, items, organization, payments }),
+              receiptHttp({ sale, items, organization, payments, discounts }),
               request.requestContext,
             ),
           );

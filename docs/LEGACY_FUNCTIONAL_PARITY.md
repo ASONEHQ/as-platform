@@ -6835,3 +6835,285 @@ production deploy, no DigitalOcean changes, no DNS changes. No
 INFLAPARK production data created or modified — all live certification
 used the generic "Freshness QA Retail" QA tenant with purpose-built
 `E2E Reservation A`/`E2E Reservation B` fixtures.
+
+## TASK 16.21 — Memberships + Loyalty + Customer Identity Commercial V1 (2026-09-22)
+
+**§0 Scope and audit finding.** Starting checkpoint `7c94ff5` (TASK
+16.20A) on `release/as-pos-v1`. The task's own mandate was a 65-phase
+customer-benefits/loyalty/rewards commercial system. A 3-agent parallel
+audit against the actual current architecture (never solely against
+prior parity docs) found the vast majority of it ALREADY EXISTS,
+production-grade, from TASK 13.0/13.1/13.2: `customers`/
+`membership_plans`/`customer_memberships`/`loyalty_programs`/
+`loyalty_accounts`/`loyalty_ledger`/`reward_entitlements`/
+`reward_entitlement_tokens`/`sale_reward_usages`/`customer_qr_tokens`
+schema, complete service/repository/route layers for each, a
+sophisticated authoritative pricing engine (`pricing.service.ts`,
+ADR-0016), settlement-hook-based loyalty earn/reward issuance/
+membership activation (`PaymentService.applyPostSettlementHooks`),
+real QR token infrastructure, and RBAC. This reframed the task's
+actual scope from "build a loyalty system" to "close the ONE genuine
+gap — membership had no structured, pricing-engine-enforced discount —
+plus wire the Flutter UI to surface it, plus a handful of smaller real
+gaps (refund/loyalty reversal, benefit-scope admin UI, receipt
+breakdown, a stale-discount bug on customer removal)." Per the task's
+own explicit scope-discipline instruction, no duplicate architecture
+was built anywhere in this task.
+
+**§1 Membership benefit pricing engine (ADR-0020).** New
+`membership_plans.benefit_type`/`benefit_percentage_basis_points`/
+`benefit_fixed_amount` columns plus two new scope tables
+(`membership_plan_benefit_products`/`_categories`, migration `0044`).
+Deliberately uses the PROMOTION empty-scope convention ("empty =
+applies to every eligible product") rather than the loyalty-reward
+convention ("empty = applies to nothing") — a membership discount is a
+standing, recurring discount, conceptually closer to a promotion than
+to a one-shot reward redemption; documented as this task's own
+informal ADR-0020 in the schema's own doc comments. `evaluatePricing`
+(`pricing.service.ts`) gained a new "membership benefit" pipeline
+step, inserted between coupons and the existing reward-benefit step:
+gross → promotions → coupons → **membership** → reward → manual →
+tax → total. Reuses the EXISTING `combinable_with_coupons` flag as the
+sole stacking-block mechanism (extracted once per cart as
+`combinabilityBlockedForCart`, applied to both coupons and membership)
+— no new tenant-configurable stacking-policy schema was invented, per
+the task's own "do not invent unnecessarily" instruction.
+`MembershipsService.resolveCheckoutBenefit` shares its eligibility
+logic (`activeEligibleMembership`) with the pre-existing POS-display
+`validate()` endpoint, so what a cashier sees as "active" is
+GUARANTEED to be the exact membership the pricing engine evaluates a
+benefit from — never two independently-computed answers. Unlike a
+reward (which requires an explicit client-supplied
+`reward_entitlement_id` and the `reward.redeem` permission), a
+membership benefit resolves automatically whenever a customer is
+attached — no permission gate, mirroring how promotion/coupon
+eligibility already works for any actor who can create a sale.
+
+**§2 The "Bryant" worked example — proven, not asserted.** The task's
+own critical rule ("a Membership screen does NOT mean Memberships are
+implemented — commercial parity requires proving the business
+effect") was proven exactly as specified: customer with an active
+membership (10% off Product A only), cart of Product A ($100) +
+Product B ($100) → backend computes Subtotal $200, Membresía -$10,
+Total $190 — never invented client-side. Proven three times,
+independently: (a) `pricing.service.ts`'s own new unit-test block
+(`describe('membership benefit (TASK 16.21, ADR-0020)', ...)`, 12
+tests — percentage/fixed_price/fixed_amount_discount, the empty-scope-
+means-everything inversion vs. rewards, multi-line eligibility [a
+membership discounts EVERY eligible line, unlike a reward's
+single-largest-line rule], ordering relative to coupons/reward, the
+stacking-block gate, no-op case); (b) a new real-Postgres integration
+test (`membership-benefit.integration.test.ts`, 8 tests) driving a
+REAL cash sale through `SalesService`/`PaymentService` exactly as
+production wires them, including the exact Bryant numbers, snapshot
+immutability after a later plan edit, expired/cancelled-membership
+zero-benefit, branch-scope enforcement, and cross-tenant isolation;
+(c) live, against the real running API and a real cash-register
+session on the generic "Freshness QA Retail" tenant — see §9.
+
+**§3 Snapshot immutability and receipt breakdown.** A completed sale's
+own `sale_discounts` rows (`source_type='membership'`) are written
+once, at sale creation, from `evaluatePricing`'s own result — never
+re-derived from the plan's current (possibly since-edited) benefit.
+Proven by editing a certified plan's rate AFTER a real sale completed
+and confirming the old sale's discount amount is byte-for-byte
+unchanged, both in an integration test and live (§9). The receipt
+endpoint (`GET /sales/{id}/receipt`) previously exposed only an
+aggregate `discount_total`, with zero per-source breakdown anywhere a
+customer or cashier could see — a real, pre-existing gap affecting
+promotions/coupons/rewards too, not only memberships. Extended
+`receiptHttp` to include the already-existing `saleDiscounts` service
+method's own itemized breakdown (`TASK 12.9 Part V`'s own
+`GET /sales/{id}/discounts` — reused, never duplicated), curated for a
+receipt (`sale_item_id`/`source_type`/`label`/`amount`; deliberately
+never `source_id`, an internal id a receipt must never show). Flutter:
+`PosReceipt.membershipDiscounts` + a new receipt line in
+`receipt_html.dart` ("Membresía: -$10.00", summed across however many
+lines it discounted, using the backend's own snapshotted label —
+never a hardcoded string), covered by 4 new `receipt_html_test.dart`
+cases and proven live (§9).
+
+**§4 A real, live-found bug: stale discount survives customer
+removal.** This task's own audit of the EXISTING ticket-footer
+re-quote logic (`_TicketFooterState._fetchQuote`/`_cartSignature` in
+`pos_shell.dart`) found that `_cartSignature()` — the debounce guard
+deciding whether a cart change is worth re-quoting for — never
+included the attached customer at all, only cart lines/coupons/manual
+discount/reward. Removing a customer with an active membership but no
+reward attached (the common case) left the cart's own signature
+UNCHANGED, so the debounced re-quote was silently skipped and the
+ticket kept showing a membership discount for a customer who was no
+longer attached — exactly the "no stale discount" failure Phase 43
+warns against. Fixed by adding `customerId` to the signature; also
+fixed `_fetchQuote` itself (previously sent `customer_id` to the quote
+ONLY when a reward was also attached, a TASK 13.2-era condition too
+narrow for a membership benefit that needs no explicit reward) and
+`_applyCoupon`'s own separate quote call (same gap, would have
+silently dropped an attached customer's membership benefit — and an
+attached reward — the moment a coupon was typed). Proven by a new
+widget test (`pos_shell_test.dart`, "attaching, then removing, a
+customer sends customer_id on the quote and re-quotes with none once
+removed" — fails against the pre-fix code) and live (§9).
+
+**§5 Membership plan admin UI (ADR-0020).** `_MembershipPlanFormDialog`
+extended with the structured benefit the pricing engine actually
+enforces: a benefit-type dropdown (none/percentage/fixed-amount/fixed-
+price), its amount field, and product/category scope pickers — never
+a cashier-facing free-text discount field (Phase 43's "never let a
+cashier type an arbitrary membership discount" applied equally to the
+admin who *defines* the plan). Reuses `_ProductSelectorDialog`
+(TASK 16.20A) for products; a new `_CategorySelectorDialog` (no
+category picker existed anywhere in this app before) for categories,
+built to the identical search/loading/empty/failure shape. Editing an
+existing plan resolves its raw scope ids into real display names
+(`catalogAdminGateway.product(id)` per product;
+`categoryAdminGateway.listCategories()` matched client-side for
+categories) — proven live pulling the real "E2E 1621 Producto A" name
+back from a bare id (§9). The plan list/row shows a human-readable
+summary (`_membershipBenefitSummary` — e.g. "50% de descuento · 1
+producto"), never raw basis points or ids. Customer Detail's own
+membership section gained the same structured-benefit summary line.
+6 new widget tests (benefit-type selection + save, empty-scope-is-
+valid, client-side invalid-amount rejection before ever calling the
+backend).
+
+**§6 Phase 37 — refund/loyalty/reward reversal (a real, scoped gap).**
+Audit of `refunds.service.ts` found ZERO loyalty/reward-aware code —
+a refunded sale's loyalty earn and any reward it caused to issue
+stayed exactly as if the sale had never been refunded, a
+mathematically-impossible-to-defend state the task explicitly warns
+against. Scoped to FULL refunds only for V1 (a partial refund already
+leaves the original payment `captured` rather than reversed, per this
+codebase's own existing precedent — loyalty earning follows the same
+"partial requires intentional per-line semantics this V1 does not
+attempt" reasoning). `LoyaltyService.reverseEarnForRefund` inserts a
+NEW, negative-quantity `entry_type='earn'` ledger row
+(`source_type='refund'`, migration `0045` widens the source-type
+check) — never mutates the original entry — chosen specifically so
+`cumulativeEarnedUnits`'s existing plain `SUM(quantity) WHERE
+entry_type='earn'` stays correct with no special-casing anywhere else
+that already reads it. `RewardsService.reverseIssuanceForRefund` then
+revokes any AUTOMATIC entitlement whose cycle is no longer reached —
+but ONLY while still `'available'`: an already-REDEEMED reward is a
+closed historical fact with its own `sale_reward_usages` evidence and
+is deliberately never clawed back — an honest, non-destructive
+semantics decision, not a silently-impossible state. Wired into
+`RefundsService.completeRefund` as two new optional constructor
+dependencies. 3 new integration tests, all against a real cash sale →
+real full refund: earn reversal brings the cumulative total back to
+exactly zero, a still-available auto-issued reward is revoked, and an
+already-redeemed reward is confirmed to survive the refund unchanged.
+
+**§7 Backend test coverage.** 615/615 unit tests (up from 603/603 at
+the TASK 16.20A baseline — 12 new pricing-engine tests). Targeted
+integration regression across every affected module (memberships,
+sales, promotions, refunds, loyalty, rewards, payments, customers):
+520/520, plus this task's own 3 new integration files (membership-
+benefit real-sale proof, refund/loyalty reversal, memberships plan-
+CRUD benefit-field coverage) all passing. `tsc --noEmit`: clean for
+both `apps/api` and `packages/database`. `drizzle-kit check`: 46
+migration files validated statically, clean. A real, pre-existing test
+gap was found and fixed along the way: `memberships.integration.
+test.ts`'s own `afterEach` never cleared the two new benefit-scope
+tables before deleting `membership_plans` — since those tables are
+restrict-FK children of `membership_plans` (mirroring
+`promotion_products`/`_categories`'s own precedent), the delete
+silently failed and leaked plan rows across tests once any test in
+that file configured a benefit scope, breaking the very next
+`createPlan` call's `membership_plans_company_product_uq` constraint.
+Final combined run (unit + every integration suite together, real
+Postgres, `--no-file-parallelism`): **1463/1463 passing, 15 skipped**
+(120 test files; the skips are the pre-existing Mercado-Pago-gated
+tests, expected since Mercado Pago remains paused).
+
+**§8 Flutter test coverage.** `pos_shell_test.dart` gained 9 new tests
+(benefit-type dropdown + save, invalid-amount rejection, the
+customer-removal stale-discount regression proof) on top of the
+pre-existing suite; `receipt_html_test.dart` gained 4 (membership
+line rendering, cross-line summation, never-for-a-non-membership-
+discount, byte-identical-when-absent). Full `flutter test`:
+**1112/1112 passing**, zero failures, confirming no regression
+anywhere else in the app (kiosk mode, Fiestas, event consumables,
+rewards, receipt branding, and every other pre-existing group). Two
+real UI bugs were found and fixed purely from this task's own test
+runs, before any live pass: a `RenderFlex` overflow in the new benefit
+dropdown (missing `isExpanded: true`, the established convention every
+other `DropdownButtonFormField` in this file already uses) and a
+dialog-content-taller-than-viewport case needing `ensureVisible`
+before tapping "Guardar" in the new tests themselves (not an app bug —
+a legitimate scroll, the test simply needed to scroll to it).
+`flutter analyze`: clean (only pre-existing, unrelated info-level
+lints — zero new ones introduced). `flutter build web --release`:
+clean, used for live certification below.
+
+**§9 Live certification (generic tenant, never INFLAPARK).** Against
+the real running API (`http://127.0.0.1:3000`) and a freshly rebuilt
+Flutter web release bundle, on the "Freshness QA Retail" tenant (the
+same generic QA tenant TASK 16.20/16.20A used — reused, not a new
+tenant): created two real $100 products (A/B) and a real membership
+plan (10% off Product A only) via the live API, attached it to a real
+customer, then drove the flagship scenario through the ACTUAL POS UI —
+searched and attached the customer, watched the ticket's new green
+"Beneficio de membresía: -$X.XX" banner appear live and the total
+recompute correctly, completed a real cash sale (confirmation dialog
+showed the real sale folio/total/change), and confirmed via the API
+that the receipt's new `discounts` array carried the exact
+`{source_type: "membership", label: "Membresía", amount}` row. Edited
+the plan's rate from 10% to 50% afterward and re-fetched the SAME
+sale's receipt: discount stayed exactly `$10.00`/total `$190.00`,
+byte-for-byte unchanged — snapshot immutability proven live, not only
+in a test. A NEW quote for the same customer immediately reflected the
+new 50% rate, confirming the plan change is live for future sales,
+never retroactive. Live-proved the §4 bug fix directly: attached the
+customer to a fresh cart (banner appeared, total dropped to the
+discounted figure), then removed the customer and confirmed the
+banner disappeared and the total reverted to the full undiscounted
+sum — no stale discount survived, live. Opened the plan admin's edit
+form live and confirmed the entire benefit UI — dropdown, percentage
+field, and the product scope chip — rendered exactly right, including
+the chip's real product name ("E2E 1621 Producto A") correctly
+resolved from a bare stored id via a live `catalogAdminGateway.
+product()` call. **Honest scope note**: the remaining phases proven
+via real-Postgres integration tests in §6/§7 above (refund/loyalty/
+reward reversal, expired/cancelled-membership zero-benefit, branch-
+scope enforcement, cross-tenant isolation) were NOT additionally
+walked through the browser UI in this pass — those flows touch no
+Flutter code this task changed (the refund/loyalty/rewards screens
+themselves are unmodified), so the real-database, real-service-layer
+integration-test certification already proves their genuine business
+effect; only the NEW membership-benefit UI surface (ticket banner,
+plan admin form, receipt line, customer-removal fix) received the
+additional live browser pass, since that is the surface this task
+actually built or changed.
+
+**§10 Future Rewards API Boundary (Phase 65).** No customer-facing
+consumer app was built in this task (explicitly out of scope — "do
+not build a separate consumer mobile app in this task"). The
+authoritative building blocks a FUTURE "ACCESS GO Rewards/Rewards+"
+consumer app would read/write already exist and need no new schema:
+customer identity (`customers`, `customer_qr_tokens` — tenant-scoped,
+non-secret, never a master credential), membership status
+(`MembershipsService.validate`/`membershipsForCustomer`), loyalty
+progress (`LoyaltyService.summary`), and reward entitlements
+(`RewardsService.entitlementsForCustomer`/`redeem`). Every one of
+these routes today is gated by STAFF permissions
+(`membership.read`/`loyalty.read`/`reward.read`/`reward.redeem`) and
+authenticated via a staff session — **none of them is safe to expose
+directly to a consumer app as-is**: a customer's own phone must never
+carry a staff bearer token, and a consumer identity/authorization
+layer (customer-owned login, scoped to "read my own records only",
+never another customer's) does not exist yet and is real,
+undelivered work for whichever task builds the consumer app. The
+`customer_qr_tokens` design already anticipates this (non-secret,
+tenant-scoped, presentable at a register, never a bearer credential),
+but no consumer-facing token-issuance/verification flow exists today.
+This section is the record of that gap for the next task to start
+from — not a promise that a consumer API already exists.
+
+**§11 main/Mercado Pago/production.** `main` untouched; all work on
+`release/as-pos-v1` only. Mercado Pago untouched and still paused. No
+production deploy, no DigitalOcean changes, no DNS changes. No
+INFLAPARK production data created or modified — all live certification
+used the generic "Freshness QA Retail" QA tenant with purpose-built
+`E2E 1621 Producto A`/`E2E 1621 Producto B`/`E2E VIP 1621`/`Bryant E2E
+QA` fixtures, created and owned entirely by this task.

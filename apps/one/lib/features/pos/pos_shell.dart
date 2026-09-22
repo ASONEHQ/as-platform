@@ -3375,6 +3375,12 @@ class _Content extends StatelessWidget {
                   PosModule.memberships => _MembershipsAdmin(
                     context: this.context,
                     membershipsGateway: membershipsGateway,
+                    // TASK 16.21 — threaded down to `_MembershipPlanFormDialog`'s
+                    // own benefit product/category scope pickers; reuses
+                    // the SAME gateways `_FiestasAdmin` above already
+                    // receives, never a second/duplicate instance.
+                    catalogAdminGateway: catalogAdminGateway,
+                    categoryAdminGateway: categoryAdminGateway,
                   ),
                   // TASK 14.3 Wave 1 Part A: the pre-reserved
                   // `PosModule.events` slot ("Fiestas") — real
@@ -8114,7 +8120,16 @@ class _TicketFooterState extends State<_TicketFooter> {
     // invalidate the previous quote and trigger a fresh one exactly like
     // those do.
     final reward = saleSession.rewardEntitlementId ?? '';
-    return '$lines|$coupons|$manual|$reward|${widget.branchId}';
+    // TASK 16.21 (Phase 43 "remove/change customer re-evaluates
+    // benefits, no stale discount") — attaching/removing a customer can
+    // change the membership benefit alone, with the cart lines/coupons/
+    // manual discount/reward all staying byte-identical (e.g. a customer
+    // with an active membership but no reward attached, simply removed).
+    // Without this, `_fetchQuote` below short-circuits on an unchanged
+    // signature and the ticket keeps showing a membership discount for a
+    // customer who is no longer attached.
+    final customer = saleSession.customerId ?? '';
+    return '$lines|$coupons|$manual|$reward|$customer|${widget.branchId}';
   }
 
   void _onSaleSessionChanged() {
@@ -8255,10 +8270,14 @@ class _TicketFooterState extends State<_TicketFooter> {
         ],
         couponCodes: saleSession.couponCodes,
         manualDiscount: saleSession.manualDiscount,
-        // TASK 13.2: only ever sent together — `customerId` is omitted
-        // here whenever no reward is attached, reproducing the exact
-        // pre-TASK-13.2 request shape for the common "no reward" case.
-        customerId: saleSession.rewardEntitlementId == null ? null : saleSession.customerId,
+        // TASK 16.21: sent WHENEVER a customer is attached, never only
+        // when a reward is also attached (that was TASK 13.2's original,
+        // now-too-narrow condition) — a membership benefit is resolved
+        // automatically server-side the moment a customer is attached,
+        // with no explicit id the way `rewardEntitlementId` needs (ADR-
+        // 0020). Omitting `customerId` here for an attached customer
+        // would silently hide their membership discount from the ticket.
+        customerId: saleSession.customerId,
         rewardEntitlementId: saleSession.rewardEntitlementId,
       );
       if (!mounted) return;
@@ -8302,6 +8321,12 @@ class _TicketFooterState extends State<_TicketFooter> {
         ],
         couponCodes: candidateCodes,
         manualDiscount: saleSession.manualDiscount,
+        // TASK 16.21 — same reasoning as `_fetchQuote` above: omitting
+        // these here would silently drop an already-attached customer's
+        // membership benefit (and any attached reward) from the very
+        // quote this method immediately applies via `setQuote` below.
+        customerId: saleSession.customerId,
+        rewardEntitlementId: saleSession.rewardEntitlementId,
       );
       if (!mounted) return;
       final rejection = quote.rejectionFor(code);
@@ -8462,6 +8487,16 @@ class _TicketFooterState extends State<_TicketFooter> {
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: _PromotionBanner(labels: quote.appliedPromotions.map((entry) => entry.label).toSet().toList()),
+            ),
+          // TASK 16.21: the attached customer's own active membership
+          // benefit, if the backend actually resolved one (ADR-0020) —
+          // never removable on its own (unlike a coupon/reward): it
+          // disappears the moment the customer is removed, since removing
+          // the customer re-quotes with no `customerId` at all.
+          if (quote != null && quote.appliedMemberships.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _MembershipBanner(appliedDiscounts: quote.appliedMemberships, currencyCode: quote.currencyCode),
             ),
           if (saleSession.couponCodes.isNotEmpty)
             Padding(
@@ -8700,6 +8735,51 @@ class _PromotionBanner extends StatelessWidget {
             child: Text(
               'Promoción aplicada: ${labels.join(', ')}',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.action),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 16.21 (ADR-0020): "Beneficio de membresía: -$X" — mirrors
+/// [_PromotionBanner]'s own shape (a non-removable banner, since a
+/// membership benefit is a standing consequence of the attached customer,
+/// not something the cashier separately opts into), with
+/// [_RewardAppliedChip]'s own amount-summing display logic (the backend's
+/// own applied amount, never recomputed client-side).
+class _MembershipBanner extends StatelessWidget {
+  const _MembershipBanner({required this.appliedDiscounts, required this.currencyCode});
+  final List<PosAppliedDiscount> appliedDiscounts;
+  final String currencyCode;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    var sum = Money.zero(currencyCode);
+    for (final entry in appliedDiscounts) {
+      try {
+        sum = sum + Money.parse(entry.amount, currencyCode);
+      } on MoneyFormatException {
+        // A malformed single entry never blocks the whole banner.
+      }
+    }
+    return Container(
+      key: const Key('pos-ticket-membership-banner'),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.success.withValues(alpha: .1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.card_membership_outlined, size: 14, color: palette.success),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Beneficio de membresía: -${_money(sum)}',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.success),
             ),
           ),
         ],
@@ -22837,33 +22917,50 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
         if (_memberships.isEmpty)
           Text('Sin membresías registradas.', style: TextStyle(color: palette.textMuted, fontSize: 12)),
         for (final membership in _memberships)
-          Padding(
-            key: Key('pos-customer-membership-${membership.id}'),
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _plansById[membership.membershipPlanId]?.name ?? membership.membershipNumber,
-                        style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
-                      ),
-                      Text(
-                        membership.expiresAt == null
-                            ? 'Desde ${_formatShortDate(membership.startsAt)}'
-                            : 'Vence ${_formatShortDate(membership.expiresAt!)}',
-                        style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                      ),
-                    ],
+          () {
+            final plan = _plansById[membership.membershipPlanId];
+            final benefitSummary = plan == null ? null : _membershipBenefitSummary(plan);
+            return Padding(
+              key: Key('pos-customer-membership-${membership.id}'),
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          plan?.name ?? membership.membershipNumber,
+                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                        ),
+                        Text(
+                          membership.expiresAt == null
+                              ? 'Desde ${_formatShortDate(membership.startsAt)}'
+                              : 'Vence ${_formatShortDate(membership.expiresAt!)}',
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                        // TASK 16.21 — the plan's own STRUCTURED benefit,
+                        // human-readable (never raw basis points/ids), so
+                        // the cashier/admin can see exactly what this
+                        // membership actually does at checkout, not only
+                        // its free-text description.
+                        if (benefitSummary != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              benefitSummary,
+                              style: TextStyle(color: palette.action, fontSize: 11, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
-                _StatusChip(label: membership.status),
-              ],
-            ),
-          ),
+                  _StatusChip(label: membership.status),
+                ],
+              ),
+            );
+          }(),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -24128,9 +24225,18 @@ class _LoyaltyAdjustDialogState extends State<_LoyaltyAdjustDialog> {
 /// (list/create/edit); a customer's own issued memberships live in
 /// Customer Detail instead of a second, duplicate list here.
 class _MembershipsAdmin extends StatefulWidget {
-  const _MembershipsAdmin({required this.context, required this.membershipsGateway});
+  const _MembershipsAdmin({
+    required this.context,
+    required this.membershipsGateway,
+    required this.catalogAdminGateway,
+    required this.categoryAdminGateway,
+  });
   final AuthenticatedContext context;
   final PosMembershipsGateway membershipsGateway;
+  // TASK 16.21 — for `_MembershipPlanFormDialog`'s own benefit product/
+  // category scope pickers.
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosCategoryAdminGateway categoryAdminGateway;
 
   @override
   State<_MembershipsAdmin> createState() => _MembershipsAdminState();
@@ -24181,7 +24287,12 @@ class _MembershipsAdminState extends State<_MembershipsAdmin> {
   Future<void> _openForm({PosMembershipPlan? existing}) async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _MembershipPlanFormDialog(membershipsGateway: widget.membershipsGateway, existing: existing),
+      builder: (dialogContext) => _MembershipPlanFormDialog(
+        membershipsGateway: widget.membershipsGateway,
+        catalogAdminGateway: widget.catalogAdminGateway,
+        categoryAdminGateway: widget.categoryAdminGateway,
+        existing: existing,
+      ),
     );
     if (saved == true) unawaited(_load());
   }
@@ -24234,6 +24345,30 @@ class _MembershipsAdminState extends State<_MembershipsAdmin> {
   }
 }
 
+/// TASK 16.21 — a human-readable one-line summary of the plan's own
+/// STRUCTURED benefit (never internal ids, never raw basis points) —
+/// `null` for a plan with no automatic benefit configured at all.
+String? _membershipBenefitSummary(PosMembershipPlan plan) {
+  final type = plan.benefitType;
+  if (type == null) return null;
+  final scope = switch ((plan.benefitProductIds.length, plan.benefitCategoryIds.length)) {
+    (0, 0) => 'todos los productos elegibles',
+    (final products, 0) => '$products producto${products == 1 ? '' : 's'}',
+    (0, final categories) => '$categories categoría${categories == 1 ? '' : 's'}',
+    (final products, final categories) => '$products producto${products == 1 ? '' : 's'} y $categories categoría${categories == 1 ? '' : 's'}',
+  };
+  final amount = switch (type) {
+    'percentage_discount' => plan.benefitPercentageBasisPoints == null
+        ? null
+        : '${_bpsToPercentText(plan.benefitPercentageBasisPoints!)}% de descuento',
+    'fixed_amount_discount' => plan.benefitFixedAmount == null ? null : 'Descuento de \$${plan.benefitFixedAmount}',
+    'fixed_price' => plan.benefitFixedAmount == null ? null : 'Precio fijo \$${plan.benefitFixedAmount}',
+    _ => null,
+  };
+  if (amount == null) return null;
+  return '$amount · $scope';
+}
+
 class _MembershipPlanRow extends StatelessWidget {
   const _MembershipPlanRow({required this.plan, required this.canManage, required this.onEdit});
   final PosMembershipPlan plan;
@@ -24243,8 +24378,10 @@ class _MembershipPlanRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final benefitSummary = _membershipBenefitSummary(plan);
     final details = [
       if (plan.durationDays != null) '${plan.durationDays} días',
+      if (benefitSummary != null) benefitSummary,
       if (plan.benefitDescription != null && plan.benefitDescription!.isNotEmpty) plan.benefitDescription!,
     ].join(' · ');
     return _PosCard(
@@ -24280,14 +24417,47 @@ class _MembershipPlanRow extends StatelessWidget {
   }
 }
 
-/// `POST/PUT /membership-plans` — the minimal admin form (name, optional
-/// description/duration/benefit description, active toggle). Product
-/// linkage/branch eligibility stay backend-configured defaults here — no
-/// product picker exists elsewhere in this app to safely reuse, and Part U
+/// `1550` basis points -> `"15.5"` (never `"15.5000000001"` or a trailing
+/// `".0"` on a whole number) — the inverse of `(percent * 100).round()`
+/// used in `_MembershipPlanFormDialogState._submit` below.
+String _bpsToPercentText(int bps) {
+  final value = bps / 100;
+  return value == value.roundToDouble() ? value.round().toString() : value.toString();
+}
+
+/// A resolved `{id, label}` pair for one selected benefit-scope product or
+/// category — the id is what is actually sent to the backend; the label
+/// is purely a display convenience, resolved once (never re-derived, never
+/// guessed) via [PosCatalogAdminGateway.product]/[PosCategoryAdminGateway
+/// .listCategories].
+class _ScopeItem {
+  const _ScopeItem({required this.id, required this.label});
+  final String id;
+  final String label;
+}
+
+/// `POST/PUT /membership-plans` — TASK 16.21 extends the previously
+/// minimal admin form (name/description/duration/free-text benefit
+/// description/active toggle) with the STRUCTURED benefit the pricing
+/// engine actually enforces at checkout (ADR-0020): benefit type, its
+/// amount, and its own product/category scope — reusing
+/// [_ProductSelectorDialog] (TASK 16.20A) for products and the new
+/// [_CategorySelectorDialog] for categories, never a cashier-typed
+/// arbitrary discount (Phase 43's "never let a cashier type an arbitrary
+/// membership discount" applies equally to the admin who *defines* the
+/// plan: the amount is a structured, validated field, not free text).
+/// Branch eligibility stays a backend-configured default here — Part U
 /// calls for minimum operational management, not a full catalog editor.
 class _MembershipPlanFormDialog extends StatefulWidget {
-  const _MembershipPlanFormDialog({required this.membershipsGateway, this.existing});
+  const _MembershipPlanFormDialog({
+    required this.membershipsGateway,
+    required this.catalogAdminGateway,
+    required this.categoryAdminGateway,
+    this.existing,
+  });
   final PosMembershipsGateway membershipsGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosCategoryAdminGateway categoryAdminGateway;
   final PosMembershipPlan? existing;
 
   @override
@@ -24300,10 +24470,70 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
   late final _durationController = TextEditingController(text: widget.existing?.durationDays?.toString() ?? '');
   late final _benefitController = TextEditingController(text: widget.existing?.benefitDescription ?? '');
   late bool _active = widget.existing?.active ?? true;
+
+  // TASK 16.21 — the structured benefit fields.
+  late String? _benefitType = widget.existing?.benefitType;
+  late final _percentController = TextEditingController(
+    text: widget.existing?.benefitPercentageBasisPoints == null
+        ? ''
+        : _bpsToPercentText(widget.existing!.benefitPercentageBasisPoints!),
+  );
+  late final _fixedAmountController = TextEditingController(text: widget.existing?.benefitFixedAmount ?? '');
+  List<_ScopeItem> _benefitProducts = const [];
+  List<_ScopeItem> _benefitCategories = const [];
+  bool _scopeLoading = false;
+
   bool _busy = false;
   String? _error;
 
   bool get _isEdit => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_resolveExistingScope());
+  }
+
+  /// The existing plan only carries raw ids ([PosMembershipPlan
+  /// .benefitProductIds]/`.benefitCategoryIds`) — this resolves each into
+  /// a display label ONCE on open, never guessed, never left showing a
+  /// bare id. A product/category that failed to resolve (e.g. since
+  /// archived) still shows, labeled with its own id, rather than silently
+  /// vanishing from the scope the plan actually still carries.
+  Future<void> _resolveExistingScope() async {
+    final existing = widget.existing;
+    if (existing == null) return;
+    if (existing.benefitProductIds.isEmpty && existing.benefitCategoryIds.isEmpty) return;
+    setState(() => _scopeLoading = true);
+    final products = await Future.wait(
+      existing.benefitProductIds.map((id) async {
+        try {
+          final product = await widget.catalogAdminGateway.product(id);
+          return _ScopeItem(id: id, label: product.name);
+        } on Object {
+          return _ScopeItem(id: id, label: id);
+        }
+      }),
+    );
+    List<_ScopeItem> categories = const [];
+    if (existing.benefitCategoryIds.isNotEmpty) {
+      try {
+        final page = await widget.categoryAdminGateway.listCategories(limit: 200);
+        final byId = {for (final category in page.items) category.id: category.name};
+        categories = existing.benefitCategoryIds
+            .map((id) => _ScopeItem(id: id, label: byId[id] ?? id))
+            .toList(growable: false);
+      } on Object {
+        categories = existing.benefitCategoryIds.map((id) => _ScopeItem(id: id, label: id)).toList(growable: false);
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _benefitProducts = products;
+      _benefitCategories = categories;
+      _scopeLoading = false;
+    });
+  }
 
   @override
   void dispose() {
@@ -24311,8 +24541,36 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
     _descriptionController.dispose();
     _durationController.dispose();
     _benefitController.dispose();
+    _percentController.dispose();
+    _fixedAmountController.dispose();
     super.dispose();
   }
+
+  Future<void> _addBenefitProduct() async {
+    final picked = await showDialog<PosCatalogProduct>(
+      context: context,
+      builder: (dialogContext) => _ProductSelectorDialog(catalogAdminGateway: widget.catalogAdminGateway),
+    );
+    if (picked == null) return;
+    if (_benefitProducts.any((item) => item.id == picked.id)) return;
+    setState(() => _benefitProducts = [..._benefitProducts, _ScopeItem(id: picked.id, label: picked.name)]);
+  }
+
+  Future<void> _addBenefitCategory() async {
+    final picked = await showDialog<PosCatalogCategory>(
+      context: context,
+      builder: (dialogContext) => _CategorySelectorDialog(categoryAdminGateway: widget.categoryAdminGateway),
+    );
+    if (picked == null) return;
+    if (_benefitCategories.any((item) => item.id == picked.id)) return;
+    setState(() => _benefitCategories = [..._benefitCategories, _ScopeItem(id: picked.id, label: picked.name)]);
+  }
+
+  void _removeBenefitProduct(String id) =>
+      setState(() => _benefitProducts = _benefitProducts.where((item) => item.id != id).toList(growable: false));
+
+  void _removeBenefitCategory(String id) =>
+      setState(() => _benefitCategories = _benefitCategories.where((item) => item.id != id).toList(growable: false));
 
   Future<void> _submit() async {
     final name = _nameController.text.trim();
@@ -24326,6 +24584,30 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
       setState(() => _error = 'La duración debe ser un número de días.');
       return;
     }
+
+    // TASK 16.21 — validated client-side up front for a fast, clear error
+    // (the backend re-validates the exact same shape authoritatively —
+    // this is a convenience, never the source of truth).
+    int? benefitPercentageBasisPoints;
+    String? benefitFixedAmount;
+    final benefitType = _benefitType;
+    if (benefitType == 'percentage_discount') {
+      final percentText = _percentController.text.trim();
+      final percent = double.tryParse(percentText);
+      if (percentText.isEmpty || percent == null || percent <= 0 || percent > 100) {
+        setState(() => _error = 'El porcentaje debe ser mayor a 0 y hasta 100.');
+        return;
+      }
+      benefitPercentageBasisPoints = (percent * 100).round();
+    } else if (benefitType == 'fixed_amount_discount' || benefitType == 'fixed_price') {
+      final amountText = _fixedAmountController.text.trim();
+      if (amountText.isEmpty || !RegExp(r'^\d+(\.\d{1,4})?$').hasMatch(amountText)) {
+        setState(() => _error = 'Ingresa un monto válido (por ejemplo 25.00).');
+        return;
+      }
+      benefitFixedAmount = amountText;
+    }
+
     setState(() {
       _busy = true;
       _error = null;
@@ -24338,6 +24620,17 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
       active: _active,
       durationDays: duration,
       benefitDescription: benefit.isEmpty ? null : benefit,
+      benefitType: benefitType,
+      benefitPercentageBasisPoints: benefitPercentageBasisPoints,
+      benefitFixedAmount: benefitFixedAmount,
+      // Always sent when a benefit type is configured — an EMPTY list is
+      // itself meaningful ("applies to every eligible product"), never
+      // omitted just because it's empty (that would leave a prior, now-
+      // cleared scope silently unchanged on an update — see `updatePlan`'s
+      // own "undefined means leave alone, [] means explicitly clear"
+      // distinction in `memberships.service.ts`).
+      benefitProductIds: benefitType == null ? null : _benefitProducts.map((item) => item.id).toList(growable: false),
+      benefitCategoryIds: benefitType == null ? null : _benefitCategories.map((item) => item.id).toList(growable: false),
     );
     try {
       if (_isEdit) {
@@ -24371,7 +24664,7 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 680),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -24406,9 +24699,118 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
                   key: const Key('pos-membership-plan-benefit'),
                   controller: _benefitController,
                   maxLines: 2,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Beneficio (opcional)'),
+                  decoration: const InputDecoration(isDense: true, labelText: 'Beneficio (texto libre, opcional)'),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 14),
+                Text(
+                  'Beneficio en el cobro (ADR-0020)',
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'El descuento que el sistema aplica automáticamente al cobrar — distinto del texto libre de arriba.',
+                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-membership-plan-benefit-type'),
+                  initialValue: _benefitType,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Tipo de beneficio'),
+                  items: const [
+                    DropdownMenuItem(value: null, child: Text('Sin beneficio automático')),
+                    DropdownMenuItem(value: 'percentage_discount', child: Text('Descuento porcentual')),
+                    DropdownMenuItem(value: 'fixed_amount_discount', child: Text('Descuento de monto fijo')),
+                    DropdownMenuItem(value: 'fixed_price', child: Text('Precio fijo')),
+                  ],
+                  onChanged: (value) => setState(() => _benefitType = value),
+                ),
+                if (_benefitType == 'percentage_discount') ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('pos-membership-plan-benefit-percent'),
+                    controller: _percentController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Porcentaje de descuento (%)'),
+                  ),
+                ],
+                if (_benefitType == 'fixed_amount_discount' || _benefitType == 'fixed_price') ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('pos-membership-plan-benefit-amount'),
+                    controller: _fixedAmountController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      labelText: _benefitType == 'fixed_price' ? 'Precio fijo por unidad' : 'Monto fijo de descuento',
+                    ),
+                  ),
+                ],
+                if (_benefitType != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Productos elegibles',
+                    style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Vacío = aplica a todos los productos elegibles (ADR-0020).',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                  const SizedBox(height: 6),
+                  if (_scopeLoading)
+                    const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: LinearProgressIndicator())
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final item in _benefitProducts)
+                          _ScopeChip(
+                            key: Key('pos-membership-plan-benefit-product-${item.id}'),
+                            label: item.label,
+                            onRemove: () => _removeBenefitProduct(item.id),
+                          ),
+                        ActionChip(
+                          key: const Key('pos-membership-plan-benefit-product-add'),
+                          avatar: const Icon(Icons.add, size: 14),
+                          label: const Text('Agregar producto'),
+                          onPressed: () => unawaited(_addBenefitProduct()),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Categorías elegibles',
+                    style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Vacío = aplica a todas las categorías elegibles (ADR-0020).',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                  const SizedBox(height: 6),
+                  if (!_scopeLoading)
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final item in _benefitCategories)
+                          _ScopeChip(
+                            key: Key('pos-membership-plan-benefit-category-${item.id}'),
+                            label: item.label,
+                            onRemove: () => _removeBenefitCategory(item.id),
+                          ),
+                        ActionChip(
+                          key: const Key('pos-membership-plan-benefit-category-add'),
+                          avatar: const Icon(Icons.add, size: 14),
+                          label: const Text('Agregar categoría'),
+                          onPressed: () => unawaited(_addBenefitCategory()),
+                        ),
+                      ],
+                    ),
+                ],
+                const SizedBox(height: 10),
                 SwitchListTile(
                   key: const Key('pos-membership-plan-active'),
                   contentPadding: EdgeInsets.zero,
@@ -24451,6 +24853,42 @@ class _MembershipPlanFormDialogState extends State<_MembershipPlanFormDialog> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// TASK 16.21 — a small removable chip for one selected benefit-scope
+/// product/category, mirroring `_CouponChip`'s exact shape (label + a
+/// close affordance), reused for both scopes rather than two near-
+/// identical widgets.
+class _ScopeChip extends StatelessWidget {
+  const _ScopeChip({super.key, required this.label, required this.onRemove});
+  final String label;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Container(
+      padding: const EdgeInsets.only(left: 8, right: 2, top: 2, bottom: 2),
+      decoration: BoxDecoration(
+        color: palette.actionTint,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: palette.text)),
+          IconButton(
+            tooltip: 'Quitar',
+            onPressed: onRemove,
+            icon: Icon(Icons.close, size: 13, color: palette.textMuted),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+          ),
+        ],
       ),
     );
   }
@@ -26451,6 +26889,147 @@ class _ProductSelectorDialogState extends State<_ProductSelectorDialog> {
                           item.tracksInventory ? '${item.code} · con inventario' : '${item.code} · sin inventario',
                           style: TextStyle(fontSize: 11, color: palette.textMuted),
                         ),
+                        onTap: () => Navigator.of(context).pop(item),
+                      );
+                    },
+                  ),
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _CategorySelectorPhase { loading, ready, empty, failure }
+
+/// TASK 16.21 — a real category picker for a membership benefit's own
+/// category scope, mirroring [_ProductSelectorDialog]'s exact shape
+/// (search, loading/empty/failure states, tap-to-pick). No category
+/// picker existed anywhere else in this app to safely reuse (unlike the
+/// product picker, which TASK 16.20A already built) — categories are
+/// typically few enough that this loads the whole active list once
+/// rather than requiring a search term first.
+class _CategorySelectorDialog extends StatefulWidget {
+  const _CategorySelectorDialog({required this.categoryAdminGateway});
+  final PosCategoryAdminGateway categoryAdminGateway;
+
+  @override
+  State<_CategorySelectorDialog> createState() => _CategorySelectorDialogState();
+}
+
+class _CategorySelectorDialogState extends State<_CategorySelectorDialog> {
+  final _searchController = TextEditingController();
+  _CategorySelectorPhase _phase = _CategorySelectorPhase.loading;
+  List<PosCatalogCategory> _items = const [];
+  String? _errorMessage;
+  Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({String? search}) async {
+    setState(() {
+      _phase = _CategorySelectorPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final page = await widget.categoryAdminGateway.listCategories(
+        limit: 50,
+        status: 'active',
+        search: (search == null || search.isEmpty) ? null : search,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _phase = page.items.isEmpty ? _CategorySelectorPhase.empty : _CategorySelectorPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _CategorySelectorPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _CategorySelectorPhase.failure;
+        _errorMessage = 'No fue posible buscar categorías.';
+      });
+    }
+  }
+
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () => unawaited(_load(search: value.trim())));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text('Buscar categoría', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+                  IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                key: const Key('pos-membership-plan-category-search'),
+                controller: _searchController,
+                autofocus: true,
+                onChanged: _onQueryChanged,
+                decoration: const InputDecoration(isDense: true, hintText: 'Nombre o código', prefixIcon: Icon(Icons.search)),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: switch (_phase) {
+                  _CategorySelectorPhase.loading => const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+                  _CategorySelectorPhase.empty => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text('No hay categorías activas.', style: TextStyle(color: palette.textSecondary)),
+                  ),
+                  _CategorySelectorPhase.failure => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Text(_errorMessage ?? 'No fue posible buscar categorías.', style: TextStyle(color: palette.error)),
+                  ),
+                  _CategorySelectorPhase.ready => ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _items.length,
+                    separatorBuilder: (context, index) => Divider(height: 1, color: palette.border),
+                    itemBuilder: (context, index) {
+                      final item = _items[index];
+                      return ListTile(
+                        key: Key('pos-membership-plan-category-result-${item.id}'),
+                        dense: true,
+                        title: Text(item.name),
+                        subtitle: Text(item.code, style: TextStyle(fontSize: 11, color: palette.textMuted)),
                         onTap: () => Navigator.of(context).pop(item),
                       );
                     },

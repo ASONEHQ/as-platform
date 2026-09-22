@@ -618,6 +618,22 @@ export class LoyaltyRepository {
     return ledgerEntry(row);
   }
 
+  /** TASK 16.21 (Phase 37) — every original `entry_type='earn'` row a
+   * given Sale produced (one per eligible program), read WITHIN the
+   * refund-completion transaction so a reversal is computed from the
+   * exact amount that sale actually earned, never recomputed against
+   * today's (possibly since-changed) program configuration. */
+  public async earnEntriesForSale(client: LoyaltyTransaction, companyId: string, saleId: string): Promise<LoyaltyLedgerEntryRow[]> {
+    const rows = result<LedgerDb>(
+      await client.query(
+        `select ${LEDGER_COLUMNS} from loyalty_ledger
+         where company_id=$1 and source_type='sale' and source_id=$2 and entry_type='earn'`,
+        [companyId, saleId],
+      ),
+    ).rows;
+    return rows.map(ledgerEntry);
+  }
+
   public async ledgerForAccount(companyId: string, accountId: string, limit: number): Promise<LoyaltyLedgerEntryRow[]> {
     const rows = result<LedgerDb>(
       await this.database.pool.query(

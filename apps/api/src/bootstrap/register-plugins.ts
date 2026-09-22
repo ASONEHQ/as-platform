@@ -336,21 +336,32 @@ export async function registerPlugins(
         loyaltyRepository,
         customersRepository,
       );
+      // TASK 13.0/16.21: constructed before `promotionsService`/
+      // `salesService` — `MembershipsService.resolveCheckoutBenefit` is
+      // now a real pricing input for both the standalone quote endpoint
+      // and real sale creation (ADR-0020 "Membership pricing
+      // placement"), the identical reasoning `rewardsService` above
+      // already established. Also still needed, unchanged, by
+      // `paymentService` below for the settlement-time activation hook
+      // (ADR-0017 "Activation boundary").
+      const membershipsRepository = new MembershipsRepository(options.infrastructure.database);
+      const membershipsService = new MembershipsService(membershipsRepository);
       // TASK 12.9: constructed before `salesService` — real sale
       // creation independently re-evaluates promotions/coupons/manual
-      // discounts/reward benefit through the exact same pricing engine
-      // the standalone quote endpoint uses (never trusts a client-
-      // submitted quote — see ADR-0016/ADR-0019), so `SalesService`
-      // needs this repository directly. `promotionsService` itself now
-      // also takes `rewardsService` (TASK 13.2) for the quote endpoint's
-      // own reward-benefit preview.
+      // discounts/reward+membership benefit through the exact same
+      // pricing engine the standalone quote endpoint uses (never trusts
+      // a client-submitted quote — see ADR-0016/ADR-0019/ADR-0020), so
+      // `SalesService` needs this repository directly. `promotionsService`
+      // itself now also takes `rewardsService`/`membershipsService` for
+      // the quote endpoint's own benefit previews.
       const promotionsRepository = new PromotionsRepository(options.infrastructure.database);
-      const promotionsService = new PromotionsService(promotionsRepository, rewardsService);
+      const promotionsService = new PromotionsService(promotionsRepository, rewardsService, membershipsService);
       const salesService = new SalesService(
         salesRepository,
         promotionsRepository,
         customersRepository,
         rewardsService,
+        membershipsService,
       );
       const paymentRepository = new PaymentRepository(options.infrastructure.database);
       // TASK 12.7: constructed before `paymentService` — a cash payment
@@ -365,13 +376,6 @@ export async function registerPlugins(
         cashService,
         operationalAreasRepository,
       );
-      // TASK 13.0: constructed before `paymentService` — membership
-      // activation happens inside the SAME transaction
-      // `SalesRepository.trySettleSale` uses to newly settle a Sale (see
-      // `PaymentService.applyPostSettlementHooks` and ADR-0017
-      // "Activation boundary").
-      const membershipsRepository = new MembershipsRepository(options.infrastructure.database);
-      const membershipsService = new MembershipsService(membershipsRepository);
       // TASK 12.4B.1: constructed unconditionally, even with no
       // MERCADO_PAGO_ACCESS_TOKEN set — see MercadoPagoClient's own doc
       // comment for why this is the correct "fail safely" boundary.
@@ -397,11 +401,19 @@ export async function registerPlugins(
       // instance the payment side uses (never a second, separately
       // configured one).
       const refundsRepository = new RefundsRepository(options.infrastructure.database);
+      // TASK 16.21 (Phase 37) — `loyaltyService`/`rewardsService` as the
+      // 5th/6th args: a completed FULL refund reverses that sale's own
+      // loyalty earn + any reward entitlement it caused to newly cross a
+      // threshold (never a partial refund — see `RefundsService.
+      // completeRefund`'s own doc comment). Both are already constructed
+      // above for `paymentService`; reused here, never a second instance.
       const refundsService = new RefundsService(
         refundsRepository,
         paymentRepository,
         cashRepository,
         mercadoPagoProvider,
+        loyaltyService,
+        rewardsService,
       );
       // TASK 12.5B: the receipt route (`GET /sales/{id}/receipt`) composes
       // a sale with its payments, so `registerSaleRoutes` now needs

@@ -180,6 +180,36 @@ class PosReceiptPayment {
   bool get isCash => paymentMethod == 'cash';
 }
 
+/// TASK 16.21 — one `sale_discounts` row, curated for a receipt: never
+/// `source_id` (an internal customer-membership/coupon/promotion/reward
+/// id — a receipt tells a customer what happened, not an internal
+/// identifier), always the backend's own `label_snapshot`, never a
+/// fabricated business name (mirrors [PosAppliedDiscount] in
+/// `pos_promotions_gateway.dart`, but for the immutable POST-sale
+/// breakdown rather than a live pricing preview).
+class PosReceiptDiscount {
+  const PosReceiptDiscount({
+    required this.saleItemId,
+    required this.sourceType,
+    required this.label,
+    required this.amount,
+  });
+
+  factory PosReceiptDiscount.fromJson(Map<String, Object?> json) => PosReceiptDiscount(
+    saleItemId: json['sale_item_id'] as String?,
+    sourceType: json['source_type']! as String,
+    label: json['label']! as String,
+    amount: json['amount']! as String,
+  );
+
+  final String? saleItemId;
+  final String sourceType;
+  final String label;
+  final String amount;
+
+  bool get isMembership => sourceType == 'membership';
+}
+
 class PosReceipt {
   const PosReceipt({
     required this.sale,
@@ -187,11 +217,18 @@ class PosReceipt {
     required this.cashier,
     required this.items,
     required this.payments,
+    // TASK 16.21 — additive, defaults to empty rather than `required`, so
+    // every existing call site across the test suite that predates this
+    // field keeps compiling unchanged (mirrors how `discounts` is simply
+    // absent/empty for a legacy or undiscounted sale at the JSON layer
+    // too — see `fromJson` below).
+    this.discounts = const <PosReceiptDiscount>[],
   });
 
   factory PosReceipt.fromJson(Map<String, Object?> json) {
     final rawItems = json['items'];
     final rawPayments = json['payments'];
+    final rawDiscounts = json['discounts'];
     final business = json['business'];
     final cashier = json['cashier'];
     return PosReceipt(
@@ -207,6 +244,9 @@ class PosReceipt {
                 .map(PosReceiptPayment.fromJson)
                 .toList(growable: false)
           : const <PosReceiptPayment>[],
+      discounts: rawDiscounts is List<Object?>
+          ? rawDiscounts.whereType<Map<String, Object?>>().map(PosReceiptDiscount.fromJson).toList(growable: false)
+          : const <PosReceiptDiscount>[],
     );
   }
 
@@ -215,6 +255,7 @@ class PosReceipt {
   final PosReceiptCashier? cashier;
   final List<PosReceiptItem> items;
   final List<PosReceiptPayment> payments;
+  final List<PosReceiptDiscount> discounts;
 
   /// The cash leg, if this sale was (at least partly) paid in cash — the
   /// common case this task targets. `null` for a sale with no cash
@@ -226,4 +267,12 @@ class PosReceipt {
     }
     return null;
   }
+
+  /// TASK 16.21 — "Receipt (show membership benefit clearly)": the
+  /// membership-sourced subset of [discounts], summed into one amount for
+  /// display (a plan can discount more than one eligible line — Phase
+  /// 4's own worked example). Empty unless this sale genuinely had an
+  /// active, eligible membership attached at the moment it was created.
+  List<PosReceiptDiscount> get membershipDiscounts =>
+      discounts.where((entry) => entry.isMembership).toList(growable: false);
 }

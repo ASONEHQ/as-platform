@@ -149,6 +149,14 @@ integration('PostgreSQL memberships lifecycle (TASK 13.0)', { concurrent: false 
     await database.pool.query('delete from payments where company_id=$1', [companyId]);
     await database.pool.query('delete from customer_memberships where company_id=$1', [companyId]);
     await database.pool.query('delete from membership_plan_branches where company_id=$1', [companyId]);
+    // TASK 16.21 — the two new benefit-scope tables are restrict-FK
+    // children of `membership_plans` (mirrors `promotion_products`/
+    // `promotion_categories`' own precedent); must be cleared BEFORE the
+    // plans themselves or this delete fails and leaks plan rows (with
+    // their `product_id`) into the next test, breaking `membership_plans_
+    // company_product_uq`.
+    await database.pool.query('delete from membership_plan_benefit_products where company_id=$1', [companyId]);
+    await database.pool.query('delete from membership_plan_benefit_categories where company_id=$1', [companyId]);
     await database.pool.query('delete from membership_plans where company_id=$1', [companyId]);
     await database.pool.query('delete from sale_items where company_id=$1', [companyId]);
     await database.pool.query('delete from sales where company_id=$1', [companyId]);
@@ -228,6 +236,85 @@ integration('PostgreSQL memberships lifecycle (TASK 13.0)', { concurrent: false 
     it('branch scope: empty means all branches; a non-empty scope restricts activation to those branches', async () => {
       const created = await createPlan('plan-branchscope-1', { branchIds: [otherBranchId] });
       expect(created.branchIds).toEqual([otherBranchId]);
+    });
+  });
+
+  describe('membership benefit fields (TASK 16.21)', () => {
+    it('creates a plan with a structured percentage benefit scoped to a product', async () => {
+      const created = await createPlan('plan-benefit-1', {
+        benefitType: 'percentage_discount',
+        benefitPercentageBasisPoints: 1000,
+        benefitProductIds: [plainProductId],
+      });
+      expect(created.benefitType).toBe('percentage_discount');
+      expect(created.benefitPercentageBasisPoints).toBe(1000);
+      expect(created.benefitProductIds).toEqual([plainProductId]);
+      expect(created.benefitCategoryIds).toEqual([]);
+      const read = await memberships.plan(context, created.id);
+      expect(read.benefitType).toBe('percentage_discount');
+      expect(read.benefitProductIds).toEqual([plainProductId]);
+    });
+
+    it('an empty benefit scope is valid — "applies to every eligible product", never rejected as incomplete', async () => {
+      const created = await createPlan('plan-benefit-emptyscope-1', {
+        benefitType: 'fixed_amount_discount',
+        benefitFixedAmount: '25.0000',
+      });
+      expect(created.benefitProductIds).toEqual([]);
+      expect(created.benefitCategoryIds).toEqual([]);
+    });
+
+    it('rejects a benefit_type with no matching value (percentage_discount without basis points)', async () => {
+      await expect(
+        memberships.createPlan(context, 'plan-benefit-halfset-1', {
+          name: 'Half-set',
+          benefitType: 'percentage_discount',
+        }),
+      ).rejects.toThrow(/benefit_percentage_basis_points/);
+    });
+
+    it('rejects a benefit value with no benefit_type', async () => {
+      await expect(
+        memberships.createPlan(context, 'plan-benefit-novaluetype-1', {
+          name: 'No type',
+          benefitFixedAmount: '10.0000',
+        }),
+      ).rejects.toThrow(/benefit_type/);
+    });
+
+    it('rejects percentage_discount mixed with a fixed amount on the same plan', async () => {
+      await expect(
+        memberships.createPlan(context, 'plan-benefit-mixed-1', {
+          name: 'Mixed',
+          benefitType: 'percentage_discount',
+          benefitPercentageBasisPoints: 1000,
+          benefitFixedAmount: '5.0000',
+        }),
+      ).rejects.toThrow(/benefit_fixed_amount/);
+    });
+
+    it('updatePlan validates against the MERGED final shape, not the partial input in isolation', async () => {
+      const plan = await createPlan('plan-benefit-update-1', {
+        benefitType: 'fixed_price',
+        benefitFixedAmount: '80.0000',
+      });
+      // Only touching the fixed amount — must NOT be rejected as
+      // "missing benefit_type" since the plan already has one.
+      const updated = await memberships.updatePlan(context, plan.id, plan.version, { benefitFixedAmount: '70.0000' });
+      expect(updated.benefitType).toBe('fixed_price');
+      expect(updated.benefitFixedAmount).toBe('70.0000');
+    });
+
+    it('updatePlan replaces the benefit scope entirely when new product/category ids are supplied', async () => {
+      const plan = await createPlan('plan-benefit-rescope-1', {
+        benefitType: 'percentage_discount',
+        benefitPercentageBasisPoints: 1000,
+        benefitProductIds: [plainProductId],
+      });
+      const updated = await memberships.updatePlan(context, plan.id, plan.version, {
+        benefitProductIds: [membershipProductId],
+      });
+      expect(updated.benefitProductIds).toEqual([membershipProductId]);
     });
   });
 

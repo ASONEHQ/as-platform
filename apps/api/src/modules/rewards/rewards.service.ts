@@ -480,6 +480,74 @@ export class RewardsService {
     }
   }
 
+  // --- Refund reversal hook (Phase 37, TASK 16.21) --------------------------
+
+  /** Called from `RefundsService.completeRefund`, in the SAME transaction,
+   * immediately AFTER `LoyaltyService.reverseEarnForRefund` has already
+   * inserted that reversal's negative `earn` entries — `cumulative
+   * EarnedUnits` below therefore reads the POST-reversal total. For every
+   * program with a threshold, recomputes the cycle the account would
+   * genuinely be at now and revokes any AUTOMATIC entitlement whose
+   * `cycle_number` is no longer reached — but ONLY while it is still
+   * `'available'`. An entitlement the customer already REDEEMED before
+   * the refund is a closed historical fact (Part O: redemption is
+   * itself an explicit, one-shot customer transaction, already recorded
+   * with its own `sale_reward_usages` evidence) — this deliberately
+   * never claws it back, matching this task's own "honest refund
+   * semantics" requirement over a silently-impossible retroactive
+   * un-redemption. Internal hook only (no `reward.revoke` permission
+   * check — the actor here is whoever is completing the REFUND, not
+   * necessarily someone provisioned for manual revocation; the
+   * revocation is a direct, attributable, audited consequence of their
+   * own action, not a free-standing privileged operation). */
+  public async reverseIssuanceForRefund(
+    client: RewardTransaction & LoyaltyTransaction,
+    context: RewardIssuanceContext & { refundId: string },
+  ): Promise<void> {
+    if (context.customerId === null) return;
+    const programs = await this.loyaltyRepository.activePrograms(context.companyId);
+    const rewardPrograms = programs.filter((program) => program.rewardType !== null && program.rewardThreshold !== null);
+    if (rewardPrograms.length === 0) return;
+    const account = await this.loyaltyRepository.accountByCustomerId(client, context.companyId, context.customerId);
+    if (account === null) return;
+    for (const program of rewardPrograms) {
+      const threshold = program.rewardThreshold;
+      if (threshold === null) continue; // narrows for TS; filtered above.
+      const totalEarned = await this.loyaltyRepository.cumulativeEarnedUnits(client, context.companyId, account.id, program.id);
+      const newCycle = Math.floor(totalEarned / threshold);
+      const revocable = await this.repository.availableEntitlementsAboveCycle(client, context.companyId, account.id, program.id, newCycle);
+      for (const entitlement of revocable) {
+        const revoked = await this.repository.markRevoked(client, context.companyId, entitlement.id, entitlement.version, {
+          revokedBy: context.actorId,
+          revokedReason: `Automatic reversal: refund of the sale that earned toward cycle ${entitlement.cycleNumber?.toString() ?? '?'} left this reward's threshold no longer reached.`,
+          timestamp: context.timestamp,
+        });
+        await this.repository.auditAndPublish(client, {
+          companyId: context.companyId,
+          actorId: context.actorId,
+          actorPermissions: [],
+          requestId: randomUUID(),
+          correlationId: context.correlationId,
+          timestamp: context.timestamp,
+        }, {
+          action: 'reward_entitlement.revoked_for_refund',
+          resourceType: 'reward_entitlement',
+          resourceId: revoked.id,
+          eventType: 'reward.revoked',
+          version: revoked.version,
+          payload: {
+            reward_entitlement_id: revoked.id,
+            customer_id: context.customerId,
+            loyalty_program_id: program.id,
+            refund_id: context.refundId,
+            status: revoked.status,
+          },
+          branchId: context.branchId,
+        });
+      }
+    }
+  }
+
   // --- Revocation (Part O) ---------------------------------------------------
 
   public async revoke(

@@ -426,20 +426,28 @@ export const saleDiscounts = pgTable(
     // TASK 13.2 — `'reward'` added, mirroring `'promotion'`/`'coupon'`'s
     // own shape exactly (a reward's `source_id` is the entitlement id it
     // came from, see `sale_discounts_source_fields_ck` below).
-    check('sale_discounts_source_type_ck', sql`${table.sourceType} in ('promotion','coupon','manual','reward')`),
+    // TASK 16.21 — `'membership'` added the identical way: `source_id` is
+    // the `customer_memberships.id` the benefit was evaluated from (Part
+    // 17 "sale snapshot" — this row alone, frozen at sale creation, is
+    // sufficient to explain WHY a membership discount occurred even if
+    // the plan is edited or the membership later expires/cancels).
+    check(
+      'sale_discounts_source_type_ck',
+      sql`${table.sourceType} in ('promotion','coupon','manual','reward','membership')`,
+    ),
     check('sale_discounts_amount_ck', sql`${table.amount} >= 0`),
     check(
       'sale_discounts_basis_points_ck',
       sql`${table.basisPoints} is null or (${table.basisPoints} >= 0 and ${table.basisPoints} <= 10000)`,
     ),
     check('sale_discounts_label_nonblank_ck', sql`length(btrim(${table.labelSnapshot})) > 0`),
-    // A promotion/coupon/reward source always carries the id it came
-    // from and never a reason code (that's a manual-discount-only
+    // A promotion/coupon/reward/membership source always carries the id
+    // it came from and never a reason code (that's a manual-discount-only
     // field); a manual source always carries a reason code and never a
     // source id — the two shapes are never blurred together.
     check(
       'sale_discounts_source_fields_ck',
-      sql`(${table.sourceType} in ('promotion','coupon','reward') and ${table.sourceId} is not null and ${table.reasonCode} is null)
+      sql`(${table.sourceType} in ('promotion','coupon','reward','membership') and ${table.sourceId} is not null and ${table.reasonCode} is null)
         or (${table.sourceType} = 'manual' and ${table.sourceId} is null and ${table.reasonCode} is not null)`,
     ),
   ],

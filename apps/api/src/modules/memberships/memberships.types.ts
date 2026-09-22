@@ -7,6 +7,17 @@
 export type MembershipStatus = 'pending' | 'active' | 'expired' | 'cancelled';
 export const membershipStatuses: readonly MembershipStatus[] = ['pending', 'active', 'expired', 'cancelled'];
 
+// TASK 16.21 (ADR-0020) — mirrors `RewardBenefitType`, deliberately
+// without `free_eligible_item` (a standing membership discount, not a
+// one-shot reward redemption) — see `membership_plans`' own schema doc
+// comment.
+export type MembershipBenefitType = 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price';
+export const membershipBenefitTypes: readonly MembershipBenefitType[] = [
+  'percentage_discount',
+  'fixed_amount_discount',
+  'fixed_price',
+];
+
 export interface MembershipPlanRow {
   id: string;
   companyId: string;
@@ -16,6 +27,14 @@ export interface MembershipPlanRow {
   productId: string | null;
   durationDays: number | null;
   benefitDescription: string | null;
+  benefitType: MembershipBenefitType | null;
+  benefitPercentageBasisPoints: number | null;
+  benefitFixedAmount: string | null;
+  /** Empty means "not restricted by specific product" — mirrors
+   * `PromotionRow.productIds`' own "both-empty means everything"
+   * convention (see `membership_plan_benefit_products`' schema doc). */
+  benefitProductIds: readonly string[];
+  benefitCategoryIds: readonly string[];
   branchIds: readonly string[];
   createdBy: string;
   updatedBy: string;
@@ -32,6 +51,11 @@ export interface CreateMembershipPlanInput {
   productId?: string;
   durationDays?: number;
   benefitDescription?: string;
+  benefitType?: MembershipBenefitType;
+  benefitPercentageBasisPoints?: number;
+  benefitFixedAmount?: string;
+  benefitProductIds?: readonly string[];
+  benefitCategoryIds?: readonly string[];
   branchIds?: readonly string[];
 }
 

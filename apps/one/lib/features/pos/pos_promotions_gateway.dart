@@ -136,10 +136,16 @@ class PosAppliedDiscount {
         lineIndex: json['line_index'] as int?,
       );
 
-  /// `'promotion'` | `'coupon'` | `'manual'` | `'reward'` (TASK 13.2 —
-  /// ADR-0019: an attached, backend-validated reward entitlement, e.g. a
-  /// VIP Pass; `sourceId` is the entitlement id, `label` is always the
-  /// backend's own `'Recompensa'`, never a fabricated business name).
+  /// `'promotion'` | `'coupon'` | `'manual'` | `'reward'` | `'membership'`
+  /// (TASK 13.2 — ADR-0019: an attached, backend-validated reward
+  /// entitlement, e.g. a VIP Pass; `sourceId` is the entitlement id,
+  /// `label` is always the backend's own `'Recompensa'`, never a
+  /// fabricated business name. TASK 16.21 — ADR-0020: `'membership'` is
+  /// the attached customer's own active membership benefit, resolved
+  /// automatically server-side whenever a customer is attached — never
+  /// something this app computes or requests explicitly; `sourceId` is
+  /// the `customer_memberships` id, `label` is always the backend's own
+  /// `'Membresía'`).
   final String sourceType;
   final String? sourceId;
   final String label;
@@ -153,6 +159,7 @@ class PosAppliedDiscount {
   bool get isCoupon => sourceType == 'coupon';
   bool get isManual => sourceType == 'manual';
   bool get isReward => sourceType == 'reward';
+  bool get isMembership => sourceType == 'membership';
 }
 
 /// One requested coupon code the backend could not apply — an honest
@@ -246,6 +253,14 @@ class PosPricingQuote {
   /// the backend accepted it (ADR-0019). Never guessed client-side.
   List<PosAppliedDiscount> get appliedRewards =>
       appliedDiscounts.where((entry) => entry.isReward).toList(growable: false);
+
+  /// TASK 16.21: the membership-benefit subset of [appliedDiscounts] —
+  /// empty unless a customer with a genuinely active, eligible membership
+  /// is attached to this quote (ADR-0020). Resolved automatically by the
+  /// backend, never requested explicitly by this app (unlike
+  /// [appliedRewards]'s `reward_entitlement_id`).
+  List<PosAppliedDiscount> get appliedMemberships =>
+      appliedDiscounts.where((entry) => entry.isMembership).toList(growable: false);
 
   PosRejectedCoupon? rejectionFor(String code) {
     final normalized = code.trim().toUpperCase();

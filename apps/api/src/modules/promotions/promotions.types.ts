@@ -19,8 +19,10 @@ export const couponBenefitTypes: readonly CouponBenefitType[] = ['percentage', '
 // TASK 13.2 (ADR-0019) — `'reward'` added, a reward-entitlement-backed
 // benefit computed by the SAME pricing engine as promotion/coupon/manual,
 // never a parallel arithmetic path.
-export type DiscountSourceType = 'promotion' | 'coupon' | 'manual' | 'reward';
+// TASK 16.21 (ADR-0020) — `'membership'` added the identical way.
+export type DiscountSourceType = 'promotion' | 'coupon' | 'manual' | 'reward' | 'membership';
 export type RewardBenefitType = 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price' | 'free_eligible_item';
+export type MembershipBenefitType = 'percentage_discount' | 'fixed_amount_discount' | 'fixed_price';
 
 export interface PromotionRow {
   id: string;
@@ -127,6 +129,30 @@ export interface RewardBenefitCandidate {
    * everything (the deliberate INVERSE of how promotion scope treats
    * both-empty, since a reward must never silently discount an unrelated
    * product family). */
+  scope: { productIds: readonly string[]; categoryIds: readonly string[] };
+}
+
+/** TASK 16.21 (ADR-0020 "Membership pricing placement") — the membership
+ * analogue of [RewardBenefitCandidate], with one deliberate difference:
+ * scope here mirrors `PromotionScope`'s "both-empty means everything"
+ * convention (see `membershipPlanBenefitProducts`' own doc comment for
+ * why), not the reward candidate's inverse "both-empty means nothing".
+ * Resolved by `MembershipsService.resolveCheckoutBenefit` — at most ONE
+ * per cart (the customer's single best-eligible active membership,
+ * deterministically chosen the same way `selectPromotions` breaks ties —
+ * see that method's own doc comment), never re-derived inside the engine
+ * itself. `null`/`undefined` both mean "no membership benefit applies"
+ * (no customer attached, no active membership, or no benefit configured
+ * on the plan). */
+export interface MembershipBenefitCandidate {
+  customerMembershipId: string;
+  membershipPlanId: string;
+  benefitType: MembershipBenefitType;
+  benefitPercentageBasisPoints: number | null;
+  benefitFixedAmount: string | null;
+  /** Empty means "not restricted by specific product" — both empty means
+   * every product is eligible (the promotion convention; see this
+   * interface's own doc comment). */
   scope: { productIds: readonly string[]; categoryIds: readonly string[] };
 }
 

@@ -156,6 +156,10 @@ async function fixture(
     sale: vi.fn(() => Promise.resolve({ sale: saleValue(), items: [saleItemValue()] })),
     cancelSale: vi.fn(() => Promise.resolve({ value: saleValue(), replayed: false })),
     receiptOrganization: vi.fn(() => Promise.resolve(organizationValue())),
+    // TASK 16.21 — the receipt's own itemized discount breakdown (Part
+    // V, TASK 12.9's `saleDiscounts`); empty by default, matching a
+    // plain undiscounted sale.
+    saleDiscounts: vi.fn(() => Promise.resolve([])),
     // TASK 12.6 Part B.
     listSales: vi.fn(() => Promise.resolve({ items: [saleValue()], nextCursor: null })),
     listSummaries: vi.fn(() =>
@@ -317,6 +321,32 @@ describe('sale HTTP routes (TASK 12.4A.1)', () => {
       headers: { authorization: 'Bearer token' },
     });
     expect(rejected.statusCode).toBe(403);
+  });
+
+  it('a receipt includes the itemized discount breakdown, so a membership benefit shows clearly (TASK 16.21)', async () => {
+    const { app, service } = await fixture(['sale.read']);
+    service.saleDiscounts = vi.fn(() =>
+      Promise.resolve([
+        {
+          id: 'discount-1',
+          saleItemId: 'item-1',
+          sourceType: 'membership',
+          sourceId: 'membership-1',
+          labelSnapshot: 'Membresía',
+          reasonCode: null,
+          amount: '10.0000',
+          basisPoints: 1000,
+        },
+      ]),
+    );
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sales/${saleId}/receipt`,
+      headers: { authorization: 'Bearer token' },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ data: { discounts: { source_type: string; label: string; amount: string }[] } }>();
+    expect(body.data.discounts).toEqual([{ sale_item_id: 'item-1', source_type: 'membership', label: 'Membresía', amount: '10.0000' }]);
   });
 
   it("never fetches attempt data for a cash payment's receipt line, and fetches it only for a card_terminal payment", async () => {
