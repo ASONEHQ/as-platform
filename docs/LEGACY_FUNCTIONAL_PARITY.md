@@ -5032,6 +5032,12 @@ some other screen's refresh happening first) — not fixed by this task,
 which is scoped to onboarding/readiness, not to the pre-existing
 product-catalogue caching strategy; flagged for a follow-up task rather
 than silently worked around or omitted from this report.
+**CLOSED by TASK 16.17A** (see that section below) — `PosReadController`
+now carries branch/company-aware scoping, request coalescing, and
+`invalidate*`/`reset` methods, and every catalog/category/inventory
+admin-mutation gateway is wrapped to call the right `invalidate*()` on
+success; the exact scenario described here was reproduced live and
+certified fixed with no manual refresh required.
 
 **§18 Tenant isolation and direct-ID tampering.** New `customer-onboarding.integration.test.ts`
 proves, with two independently-provisioned real tenants (never INFLAPARK
@@ -5199,10 +5205,10 @@ clasificar)" for the same reason. Every test asserting the old label
 text was updated to assert the new one; no test was weakened.
 
 **§24 Genuine, honest remaining limitations.** The client-side product-
-catalogue staleness in §17 is real and disclosed, not fixed — a future
-task should make `PosReadController` (or its POS-screen consumer
-specifically) refresh on a shorter, more predictable trigger than "some
-other screen happened to call refresh". Live direct-API-ID-tampering
+catalogue staleness in §17 is real and disclosed — **CLOSED by TASK
+16.17A** (see that section below): `PosReadController` was rebuilt with
+a deliberate invalidation strategy and certified live to no longer
+require "some other screen happened to call refresh". Live direct-API-ID-tampering
 could not be mechanically demonstrated in this browser-automation
 environment (§18) — covered by dedicated backend integration tests
 instead. The Flutter text-input automation used for this task's own
@@ -5220,6 +5226,307 @@ this project's own established convention (never retroactively alter or
 delete a real posted financial transaction), for inspection. Physical
 80mm printer certification remains outstanding, unchanged from every
 prior task.
+
+## TASK 16.17A — POS Catalog Cache Freshness + Cross-Module Consistency (2026-09-22)
+
+**§1 Forensic root cause.** `PosReadController` (`pos_read_controller.dart`)
+is a `ChangeNotifier` holding a `PosReadState<T>` per resource
+(products/categories/inventory balances/users), each gated by a
+load-ONCE-per-session idle guard: `if (!refresh && phase != idle)
+return;`. It is shared across the whole POS shell — constructed once in
+`dashboard_screen.dart` and read by the POS sale grid, the Productos
+admin list, the Inventario admin list's own product/variant picker, and
+Cafetería — but the FIVE gateways that actually mutate the data it
+caches (`PosCatalogAdminGateway`, `PosCategoryAdminGateway`,
+`PosInventoryAdminGateway`, `PosPurchasingGateway`,
+`PosPurchaseOrdersGateway`) had zero awareness of the controller's
+existence. A successful `createProductPrice`/`changeProductPrice`/
+`updateProduct`/inventory-posting/direct-purchase/PO-receipt call never
+told the controller its cache was now stale — exactly the mechanism
+behind the TASK 16.17 §17 "Sin precio" bug. Two additional real gaps
+were found reading the same code, neither explicitly named in TASK
+16.17's own report:
+  * **Branch-scope gap** — `_loadDataFor(PosModule.pos)` calls
+    `loadProducts(branchId: session.branchId)` while
+    `_loadDataFor(PosModule.products)` calls `loadProducts()` with no
+    `branchId` at all; the pre-existing idle guard ignored the
+    `branchId` argument entirely once `phase != idle`, so navigating
+    Productos → POS (or the reverse) could silently keep serving
+    whichever branch's price set loaded first.
+  * **Company-switch leak gap** — `AuthController.switchCompany`
+    (used by a company-wide-access actor's company picker) stays inside
+    `AuthPhase.authenticated` and never routes through `/login`, so
+    `DashboardScreen` — and the `PosReadController` it owns — is never
+    unmounted/rebuilt the way a genuine logout is. Every cached
+    product/category/balance/user list from the OLD company would have
+    kept serving under the NEW one until some other trigger happened to
+    call `refresh: true`.
+
+**§2 Every stale-state path mapped before writing code**, per the
+task's own instruction: createProduct, updateProduct (name/status/
+etc.), duplicateProduct, uploadProductImage/deleteProductImage,
+createProductPrice, changeProductPrice, product option/option-value/
+barcode create+update (catalog admin); createCategory/updateCategory
+(category admin); every mutating method on `PosInventoryAdminGateway`
+— locations, movements (create/lines/submit/post/cancel/reverse),
+transfers (create/decide/ship/receive/cancel), counts (create/start/
+record-line/submit/approve/apply/cancel), reservations (create/confirm/
+release), reconciliation (acknowledge/dismiss/repair) — deliberately
+including every one of these rather than trying to hand-pick only the
+"truly" balance-affecting subset, since a false-positive extra
+revalidation is cheap and a false negative is the exact bug class this
+task exists to close; direct-purchase create/reverse and purchase-order
+receive (purchase-order create/submit/cancel never post real stock, so
+they do NOT invalidate — confirmed against `purchase-orders.routes.ts`'s
+own `receive` being the sole stock-posting endpoint); a real cash/card/
+zero-total sale settling (consumes stock server-side).
+
+**§3 Invalidation architecture chosen — one deliberate strategy, not
+scattered refreshes.**
+  1. `PosReadController` itself gained branch-aware scoping
+     (`_productsScope`/`_balancesScope` + `_productsRequested`/
+     `_balancesRequested`, so a different `branchId` argument is
+     treated as stale even mid-idle), in-flight request coalescing
+     (an in-flight `Future` per resource plus a "rerun me once more
+     when you finish" flag — a duplicate `loadProducts`/`invalidate`
+     call while one is already in flight never fires a second
+     concurrent HTTP request, and is never dropped either), four
+     `invalidate*()` methods (`invalidateProducts`/
+     `invalidateCategories`/`invalidateBalances`; a no-op before the
+     resource was ever requested), and a `reset()` that clears every
+     resource back to `idle` and notifies (the company-switch fix).
+  2. A new file, `pos_catalog_freshness_gateways.dart`, defines FIVE
+     decorator classes — `FreshnessAwareCatalogAdminGateway`,
+     `FreshnessAwareCategoryAdminGateway`,
+     `FreshnessAwareInventoryAdminGateway`,
+     `FreshnessAwarePurchasingGateway`,
+     `FreshnessAwarePurchaseOrdersGateway` — each wrapping the REAL
+     gateway one-for-one: every read-only method is a pure
+     pass-through; every mutating method calls the real inner method
+     first and, ONLY once it resolves without throwing, fires the
+     right `unawaited(controller.invalidate*())` and returns the
+     real result unchanged. Wired exactly once, in
+     `dashboard_screen.dart` (the app's own composition root), around
+     the real `PlatformScope`-provided gateways before they reach
+     `PosShell` — every other call site in the app is completely
+     unaware these decorators exist.
+  3. A new `PosReadControllerScope extends InheritedWidget`
+     (in `pos_read_controller.dart`) makes the controller reachable
+     from `BuildContext` — used to add exactly 3 `invalidateBalances()`
+     calls, at the 3 real sale-settlement points already in
+     `pos_shell.dart` (`_submitSaleForPayment`'s `approved` branch,
+     `_submitCashSaleForPayment`'s post-confirm point,
+     `_submitZeroTotalSale`'s post-`completeZeroTotalSale` point) —
+     never a fourth invented settlement path. `PosShell.build()` wraps
+     its whole subtree in this scope.
+  4. `PosShell._PosShellState.didUpdateWidget` gained a
+     `companyChanged` check (comparing
+     `widget.context.session.companyId`) that calls
+     `widget.controller.reset()` — closing the company-switch leak
+     gap — alongside its pre-existing `branchChanged` handling, which
+     itself is now redundant-but-harmless given the controller's own
+     new branch-scope tracking, and was left unchanged rather than
+     removed (smaller diff, zero behavior change to keep).
+  Deliberately NOT done: no global cache-disable, no blind
+  "refetch everything after every action" — every invalidation is
+  scoped to exactly the resource(s) that mutation can affect.
+
+**§4 Product/price/inventory freshness — certified.** Live, in a real
+local stack (Docker Postgres/Redis/MinIO, `as-one-api` dev server, a
+freshly `flutter build web --release` bundle — never `flutter run`'s
+hot-reload), against a brand-new generic tenant ("Freshness QA Retail",
+USD, `America/Chicago`, provisioned via the real
+`provision:production-owner:dev` CLI, never INFLAPARK):
+  * Created "Refresco de Cola" (FRESH-001) with no price — POS
+    immediately showed "Sin precio" (the exact TASK 16.17 §17 starting
+    condition).
+  * From the Productos admin screen's Precios tab, saved a real
+    $12.50 price, then navigated back to Punto de Venta via the
+    sidebar only — **no "Actualizar" tap anywhere** — POS showed
+    "$12.50" immediately.
+  * Edited the price to $9.99 the same way — POS showed "$9.99"
+    immediately, no refresh.
+  * Editing the product's name the same way (no price/name UI
+    re-render trigger) updated the POS tile's displayed name
+    immediately.
+  * A real Compra Directa receipt of 10 units (after creating a real
+    inventory location, since none existed yet) posted a real
+    `inventory_balances` row (`quantity_on_hand: 10.000000`,
+    confirmed both via the Existencias admin screen and a direct
+    Postgres query) with no manual refresh needed to see it reflected
+    server-side.
+  * A real cash sale of 1 unit (after opening a real cash-register
+    session) completed (`sales.status = 'completed'`,
+    `payments.status = 'captured'`) and the shared balance cache was
+    invalidated exactly once (confirmed: `inventory_balances
+    .quantity_on_hand` went from `10.000000` to exactly `9.000000` —
+    a single Postgres-verified decrement, never fabricated locally
+    and never doubled).
+  * A failed price mutation (the inner gateway made to throw) left
+    the POS price exactly as it was before — no fabricated new value,
+    no cache corruption — confirmed both live (product edit dialog
+    scenario, `pos_shell_freshness_test.dart`) and at the controller/
+    decorator unit level.
+
+**§5 Cross-module consistency.** The Existencias (Inventario admin)
+screen and the direct Postgres row both independently confirmed the
+real, authoritative stock figures at every step above — the POS screen
+was never the only place showing correct data. One genuine, HONESTLY
+DISCLOSED gap found live and NOT fixed by this task (out of this
+task's contracted scope — see §11): `pos_inventory_admin_screen.dart`'s
+own Existencias tab holds its own independent `_branchId` state (its
+own `State`, its own gateway calls — it is not a `PosReadController`
+consumer at all, confirmed by grep) and does not react to
+`widget.context.session.branchId` changing after a branch switch
+within the same already-open session; it kept showing "Sin
+información" for a branch whose real balance the network response
+(and Postgres) both confirmed was present and correct, until the page
+was reloaded. This is a DIFFERENT bug, in a screen this task's own
+scope (`PosReadController` + the 5 admin-mutation gateways) never
+covers, discovered purely as a side effect of this task's own branch-
+switch certification — not a regression this task introduced (that
+file was never touched) and not masked or silently worked around.
+
+**§6 Branch/tenant/session isolation — certified.** A second real
+branch ("Second Branch", `America/New_York`) was created in the same
+tenant; switching the topbar branch selector to it showed the SAME
+company-wide $9.99 price (correct — no branch override exists) and, in
+the Existencias admin screen, correctly showed **zero** stock — never
+the other branch's real `9` leaking across. Switching back to Main
+Branch (after the pre-existing Existencias-screen gap above) still
+resolved to the real, correct branch-scoped data on the POS side. A
+genuine, real session-token expiry occurred mid-certification (a
+Fastify/JWT access token naturally expiring during the extended
+manual-browser session) and the app correctly, honestly redirected to
+`/login` rather than silently continuing with stale credentials —
+independently demonstrating the logout path's own natural cache
+isolation (`DashboardScreen`/`PosReadController` unmount on the
+`AuthPhase` transition, confirmed by reading `router.dart`'s own
+`redirect` switch in the forensic-audit phase, §1). Company-switch
+isolation (`reset()` firing on `AuthController.switchCompany`) is
+covered by `pos_shell_freshness_test.dart`'s own dedicated widget test
+(a real multi-company switchCompany flow was not separately re-driven
+live in the browser, since the freshly-provisioned QA tenant's owner
+belongs to only one company — company-wide multi-company access was
+already exercised for a DIFFERENT purpose in TASK 16.17's own §16).
+
+**§7 Failure behavior.** `PosReadController` never fabricates data on
+a failed load or a failed revalidation — a failure surfaces through the
+pre-existing `PosReadPhase.failure` state with the real backend error
+message, carrying no stale-but-relabeled item list a caller could
+misread as fresh (`pos_read_controller_test.dart`'s own "honest
+failure behavior" group). The `FreshnessAware*` decorators invalidate
+strictly AFTER the inner gateway call resolves without throwing — a
+failed mutation never reaches the `unawaited(invalidate*())` line at
+all, confirmed by dedicated failure-path tests on every one of the 5
+decorators. No refresh loop or request storm is possible: the
+controller's own in-flight-Future-plus-pending-rerun-flag coalescing
+guarantees at most one real HTTP call per resource in flight, and at
+most one more queued.
+
+**§8 TASK 16.17 regression.** Byte-for-byte Postgres row-count
+snapshots of every INFLAPARK-scoped table this task could possibly
+have touched (branches, cash_movements, cash_registers, cash_sessions,
+company_memberships, inventory_balances, inventory_locations,
+operational_areas, payments, product_prices, products, roles, sales,
+user_roles) plus the sum of every sale total and every on-hand
+quantity, taken immediately before and after this task's live work,
+are IDENTICAL. The Configuración readiness screen, re-checked live
+against the freshly-provisioned QA tenant, still correctly evaluates
+and shows "Tu sucursal está lista para vender." with every stage
+green — the readiness architecture (untouched by this task; no file
+under `apps/api/src/modules/readiness/` or `pos_readiness_*.dart` was
+edited) remains correct.
+
+**§9 Files changed.**
+  * `apps/one/lib/features/pos/pos_read_controller.dart` — rewritten:
+    branch-aware scoping, request coalescing, `invalidate*`/`reset`,
+    `PosReadControllerScope`.
+  * `apps/one/lib/features/pos/pos_catalog_freshness_gateways.dart`
+    (new) — the 5 `FreshnessAware*` decorators.
+  * `apps/one/lib/features/pos/pos_shell.dart` — wraps its subtree in
+    `PosReadControllerScope`; `didUpdateWidget` gained the
+    `companyChanged` → `reset()` branch; 3 new
+    `invalidateBalances()` calls at the real sale-settlement points.
+  * `apps/one/lib/features/dashboard/dashboard_screen.dart` — wraps
+    the 5 mutating gateways with the new decorators at the
+    composition root.
+  * New tests: `apps/one/test/pos_read_controller_test.dart` (13
+    cases — branch/company scoping, coalescing, invalidate no-ops,
+    the exact TASK 16.17 bug at the controller level, `reset()`,
+    honest-failure behavior, `PosReadControllerScope`),
+    `apps/one/test/pos_catalog_freshness_gateways_test.dart` (13
+    cases — one success/one failure/one read-only-passthrough
+    representative per decorator, plus category-invalidates-products
+    too), `apps/one/test/pos_shell_freshness_test.dart` (8 live-tree
+    widget cases — the exact bug regression ×3, inventory freshness,
+    sale→inventory freshness, branch switch, company switch, failed-
+    mutation honesty).
+  * No backend (`apps/api`) file was touched — this task's own
+    forensic audit concluded the staleness was entirely a Flutter-
+    side caching-strategy gap, never a backend defect, so no backend
+    change was needed or made.
+
+**§10 Tests.** All 34 new tests pass. The full pre-existing POS/
+dashboard/read-gateway/readiness/no-hardcoded-tenant suite (287 tests
+across `pos_shell_test.dart` and its Wave 1–3 siblings,
+`pos_read_gateway_test.dart`, `pos_readiness_shell_test.dart`,
+`pos_no_hardcoded_tenant_test.dart`) stays 100% green — zero
+regressions. `flutter analyze` stays at the established 167-issue/
+0-error baseline (unchanged count; the 3 new files each analyze with
+zero issues of their own). `flutter build web --release` succeeds
+(88.0s compile, icon tree-shaking as usual, no errors).
+
+**§11 Live browser certification (A–F, per the task's own
+acceptance list).** (A) product with no price → POS "Sin precio":
+certified. (B) admin creates an active price → navigate directly to
+POS → correct price appears with **no** "Actualizar" tap: certified.
+(C) admin edits the price → POS immediately reflects the new price:
+certified. (D) a real Compra Directa receipt is reflected without
+manual refresh: certified (Existencias screen + direct Postgres
+query). (E) selling one unit decrements inventory exactly once, never
+fabricated/doubled: certified at the strongest possible level — a
+direct Postgres row check (`10.000000` → `9.000000`, one payment row).
+(F) switching branch never reuses another branch's stale
+catalog/price/inventory: certified (Second Branch correctly showed
+$9.99 — the real company-wide price — and zero leaked stock from Main
+Branch's real 9). No manual browser reload was used to make any of
+A–F pass; the one reload that did occur, mid-certification, was to
+recover from a genuine session-token expiry unrelated to any of these
+assertions (and itself demonstrated correct logout-path cache
+isolation — see §6).
+
+**§12 Genuine remaining limitations, honestly disclosed.**
+  * `pos_inventory_admin_screen.dart`'s Existencias tab does not
+    react to a branch switch within an already-open session (§5) —
+    a real, live-discovered bug, but in a screen outside this task's
+    own contracted scope (not a `PosReadController` consumer); left
+    unfixed and explicitly flagged here rather than silently
+    patched-in-passing or omitted.
+  * The post-cash-sale success/receipt dialog threw an uncaught
+    `TypeError` during this task's own live certification, at the
+    exact moment the session's access token expired mid-flow
+    (confirmed: the underlying sale and payment both genuinely
+    completed server-side — Postgres-verified — only the SUCCESS
+    DIALOG's own secondary network call, likely a branding/receipt
+    fetch, hit the expired token honestly with a 401 and something in
+    that path dereferenced a null without a defensive check). A
+    pre-existing gap in that dialog's own error handling, unrelated
+    to catalog/price/inventory freshness — not investigated further
+    or fixed, since it is outside this task's scope; flagged for a
+    follow-up task.
+  * Physical 80mm printer certification remains outstanding,
+    unchanged from every prior task.
+  * The "ACCESS GO QA Customer" tenant from TASK 16.17 was not
+    reused for this task's own live certification (its
+    provisioning-time password was never persisted/retrievable, per
+    that task's own "never logged" convention) — a fresh, separate,
+    equally-generic "Freshness QA Retail" tenant was provisioned
+    instead, following the same real `provision:production-owner:dev`
+    CLI path, and is deliberately left in place on the local dev
+    database (same "never retroactively alter/delete a real posted
+    financial transaction" convention TASK 16.17 established) for
+    inspection.
 
 ## How to read the priority calls in this document
 

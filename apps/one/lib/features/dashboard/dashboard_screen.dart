@@ -6,6 +6,7 @@ import '../../core/networking/api_client.dart';
 import '../../design_system/components/as_components.dart';
 import '../authentication/auth_models.dart';
 import '../authentication/auth_state.dart';
+import '../pos/pos_catalog_freshness_gateways.dart';
 import '../pos/pos_dashboard_gateway.dart';
 import '../pos/pos_read_controller.dart';
 import '../pos/pos_shell.dart';
@@ -110,8 +111,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             rewardsGateway: PlatformScope.of(context).posRewardsGateway,
             partiesGateway: PlatformScope.of(context).posPartiesGateway,
             heldSalesGateway: PlatformScope.of(context).posHeldSalesGateway,
-            purchasingGateway: PlatformScope.of(context).posPurchasingGateway,
-            purchaseOrdersGateway: PlatformScope.of(context).posPurchaseOrdersGateway,
+            // TASK 16.17A — wrapped so a successful direct-purchase/
+            // purchase-order-receipt mutation invalidates the shared
+            // `PosReadController` balance cache the exact same way a
+            // successful sale already does; see
+            // `pos_catalog_freshness_gateways.dart`'s own header doc
+            // comment for why the decorator pattern lives at this single
+            // composition root rather than scattered per call site.
+            purchasingGateway: FreshnessAwarePurchasingGateway(
+              PlatformScope.of(context).posPurchasingGateway,
+              controller!,
+            ),
+            purchaseOrdersGateway: FreshnessAwarePurchaseOrdersGateway(
+              PlatformScope.of(context).posPurchaseOrdersGateway,
+              controller!,
+            ),
             suppliersGateway: PlatformScope.of(context).posSuppliersGateway,
             reportsGateway: PlatformScope.of(context).posReportsGateway,
             accessGateway: PlatformScope.of(context).posAccessGateway,
@@ -124,10 +138,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
             productVariantsGateway: PlatformScope.of(context).posProductVariantsGateway,
             assistantGateway: PlatformScope.of(context).posAssistantGateway,
             identityAdminGateway: PlatformScope.of(context).posIdentityAdminGateway,
-            inventoryAdminGateway: PlatformScope.of(context).posInventoryAdminGateway,
-            categoryAdminGateway: PlatformScope.of(context).posCategoryAdminGateway,
+            // TASK 16.17A — see the `purchasingGateway`/`purchaseOrdersGateway`
+            // doc comment above; same rationale for every catalog/category/
+            // inventory admin mutation.
+            inventoryAdminGateway: FreshnessAwareInventoryAdminGateway(
+              PlatformScope.of(context).posInventoryAdminGateway,
+              controller!,
+            ),
+            categoryAdminGateway: FreshnessAwareCategoryAdminGateway(
+              PlatformScope.of(context).posCategoryAdminGateway,
+              controller!,
+            ),
             brandAdminGateway: PlatformScope.of(context).posBrandAdminGateway,
-            catalogAdminGateway: PlatformScope.of(context).posCatalogAdminGateway,
+            catalogAdminGateway: FreshnessAwareCatalogAdminGateway(
+              PlatformScope.of(context).posCatalogAdminGateway,
+              controller!,
+            ),
             branchAdminGateway: PlatformScope.of(context).posBranchAdminGateway,
             branchConsolidationGateway: PlatformScope.of(context).posBranchConsolidationGateway,
             operationalAreasGateway: PlatformScope.of(context).posOperationalAreasGateway,

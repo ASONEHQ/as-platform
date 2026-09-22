@@ -320,6 +320,22 @@ class _PosShellState extends State<PosShell> {
   @override
   void didUpdateWidget(covariant PosShell oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // TASK 16.17A — `AuthController.switchCompany` keeps the session inside
+    // `AuthPhase.authenticated` (never routes through `/login`), so unlike
+    // logout this does NOT unmount `DashboardScreen`/tear down its
+    // `PosReadController` — the controller instance, and every cached
+    // product/category/balance/user list it holds, would otherwise survive
+    // straight across a tenant switch. `reset()` (never a targeted
+    // `invalidate*`) is deliberate here: every one of the controller's
+    // resources was scoped to the OLD company and none of it is safe to
+    // keep even provisionally, unlike a branch change (still the same
+    // tenant) which only needs its two branch-scoped lists reloaded.
+    final companyChanged =
+        widget.context.session.companyId != oldWidget.context.session.companyId;
+    if (companyChanged) {
+      widget.controller.reset();
+      _loadDataFor(selected);
+    }
     final branchChanged =
         widget.context.session.branchId != oldWidget.context.session.branchId;
     if (!branchChanged) {
@@ -473,9 +489,20 @@ class _PosShellState extends State<PosShell> {
   }
 
   @override
-  Widget build(BuildContext context) => Theme(
-    data: dark ? PosTheme.dark() : PosTheme.light(),
-    child: Builder(
+  Widget build(BuildContext context) => PosReadControllerScope(
+    // TASK 16.17A — makes `widget.controller` reachable via `BuildContext`
+    // for the free-function sale-completion callbacks
+    // (`_submitSaleForPayment`/`_submitCashSaleForPayment`/
+    // `_submitZeroTotalSale`) deep under `_Content`, which already receive
+    // a `BuildContext` as their first parameter but have no constructor
+    // path back to this state object — see this file's own
+    // `PosReadControllerScope` import (`pos_read_controller.dart`) for why
+    // an `InheritedWidget` was chosen over threading the controller through
+    // every intervening widget.
+    controller: widget.controller,
+    child: Theme(
+      data: dark ? PosTheme.dark() : PosTheme.light(),
+      child: Builder(
       builder: (context) {
         // TASK 12.3B: CLIENTE mode is a dedicated locked surface, not a
         // navigation state inside the admin shell — when active, this is
@@ -590,6 +617,7 @@ class _PosShellState extends State<PosShell> {
           ),
         );
       },
+    ),
     ),
   );
 
@@ -1687,6 +1715,13 @@ Future<void> _submitSaleForPayment(
     // all — never fires it. `unawaited`: purely additive, must never
     // block or delay anything above.
     if (approved) {
+      // TASK 16.17A — a settled sale consumed real inventory server-side
+      // (`sale.service.ts`'s own stock-deduction step); the shared
+      // `PosReadController` balance cache must reflect that on its very
+      // next read, not just whenever some unrelated screen happens to
+      // reload it. `unawaited`: this must never block or delay the
+      // already-approved payment's own success feedback below.
+      unawaited(PosReadControllerScope.of(context).invalidateBalances());
       // A malformed `sale.total` (never actually observed — the backend's
       // own response) must never turn an already-approved payment into an
       // apparent failure; the feedback layer is purely additive.
@@ -1829,6 +1864,11 @@ Future<void> _submitCashSaleForPayment(
   // ADR-0009), and the ticket is left completely untouched.
   if (result == null) return;
   if (!context.mounted) return;
+  // TASK 16.17A — the cash payment just confirmed above (`result != null`)
+  // is the real, server-confirmed settlement point for this sale; see the
+  // identical rationale on the card path's own `invalidateBalances()`
+  // call in `_submitSaleForPayment`.
+  unawaited(PosReadControllerScope.of(context).invalidateBalances());
   final change = Money.parse(result.changeAmount, saleCurrency);
   final total = Money.parse(sale.total, saleCurrency);
   // TASK 12.5B: the ticket resets the moment success is confirmed —
@@ -1977,6 +2017,10 @@ Future<void> _submitZeroTotalSale(
     return;
   }
   if (!context.mounted) return;
+  // TASK 16.17A — `completeZeroTotalSale` above is this path's own real,
+  // server-confirmed settlement point; see the identical rationale on the
+  // card path's own `invalidateBalances()` call in `_submitSaleForPayment`.
+  unawaited(PosReadControllerScope.of(context).invalidateBalances());
 
   final Money total;
   try {
