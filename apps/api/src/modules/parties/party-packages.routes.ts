@@ -5,7 +5,7 @@ import { requireAuthenticatedUser, requireBranchAccess, requirePermission } from
 import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withPartyErrors } from './parties.http-errors.js';
-import type { PartyMutationContext, PartyPackageRow } from './parties.types.js';
+import type { PartyMutationContext, PartyPackageIncludedConsumable, PartyPackageRow } from './parties.types.js';
 import { packageQuoteInput, type PartyPackagesService } from './party-packages.service.js';
 
 interface Params {
@@ -21,6 +21,24 @@ const idempotencyHeaders = {
   properties: { 'idempotency-key': { type: 'string', minLength: 1, maxLength: 255 } },
 } as const;
 const jsonObjectSchema = { type: 'object' } as const;
+// TASK 16.20 (Part D4) — one planned consumable entry inside a package's
+// `included_consumables` array; see `parties.types.ts`'s own doc comment
+// on `PartyPackageIncludedConsumable` for the full rationale.
+const includedConsumablesSchema = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind', 'label', 'quantity'],
+    properties: {
+      kind: { type: 'string', enum: ['sock', 'snack'] },
+      label: { type: 'string', minLength: 1, maxLength: 200 },
+      quantity: { type: 'number', exclusiveMinimum: 0 },
+      product_id: { type: 'string', format: 'uuid' },
+      size: { type: 'string', minLength: 1, maxLength: 20 },
+    },
+  },
+} as const;
 
 function mutationContext(request: FastifyRequest, companyId: string, actorId: string): PartyMutationContext {
   return {
@@ -35,6 +53,29 @@ function mutationContext(request: FastifyRequest, companyId: string, actorId: st
 function expectedVersionFrom(request: FastifyRequest): bigint {
   const ifMatch = request.headers['if-match'];
   return BigInt(typeof ifMatch === 'string' ? ifMatch.replaceAll('"', '') : '0');
+}
+
+function includedConsumableHttp(entry: PartyPackageIncludedConsumable): Readonly<Record<string, unknown>> {
+  return {
+    kind: entry.kind,
+    label: entry.label,
+    quantity: entry.quantity,
+    product_id: entry.productId ?? null,
+    size: entry.size ?? null,
+  };
+}
+type IncludedConsumableInput = { kind: 'sock' | 'snack'; label: string; quantity: number; product_id?: string; size?: string };
+function includedConsumablesFromBody(
+  value: readonly IncludedConsumableInput[] | null | undefined,
+): readonly PartyPackageIncludedConsumable[] | null | undefined {
+  if (value === null) return null;
+  return value?.map((entry) => ({
+    kind: entry.kind,
+    label: entry.label,
+    quantity: entry.quantity,
+    ...(entry.product_id === undefined ? {} : { productId: entry.product_id }),
+    ...(entry.size === undefined ? {} : { size: entry.size }),
+  }));
 }
 
 function packageHttp(value: PartyPackageRow): Readonly<Record<string, unknown>> {
@@ -57,6 +98,7 @@ function packageHttp(value: PartyPackageRow): Readonly<Record<string, unknown>> 
     tax_code: value.taxCode,
     includes: value.includes,
     restrictions: value.restrictions,
+    included_consumables: value.includedConsumables === null ? null : value.includedConsumables.map(includedConsumableHttp),
     version: Number(value.version),
     created_at: value.createdAt.toISOString(),
     updated_at: value.updatedAt.toISOString(),
@@ -83,6 +125,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
       tax_code?: string;
       includes?: Record<string, unknown>;
       restrictions?: Record<string, unknown>;
+      included_consumables?: readonly IncludedConsumableInput[];
     };
   }>(
     '/api/v1/party-packages',
@@ -112,6 +155,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             tax_code: { type: 'string', enum: ['IVA_GENERAL', 'IVA_EXEMPT'] },
             includes: jsonObjectSchema,
             restrictions: jsonObjectSchema,
+            included_consumables: includedConsumablesSchema,
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -145,6 +189,9 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
             ...(body.includes === undefined ? {} : { includes: body.includes }),
             ...(body.restrictions === undefined ? {} : { restrictions: body.restrictions }),
+            ...(body.included_consumables === undefined
+              ? {}
+              : { includedConsumables: includedConsumablesFromBody(body.included_consumables) }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
@@ -227,6 +274,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
       tax_code?: string;
       includes?: Record<string, unknown> | null;
       restrictions?: Record<string, unknown> | null;
+      included_consumables?: readonly IncludedConsumableInput[] | null;
     };
   }>(
     '/api/v1/party-packages/:id',
@@ -253,6 +301,7 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
             tax_code: { type: 'string', enum: ['IVA_GENERAL', 'IVA_EXEMPT'] },
             includes: { anyOf: [jsonObjectSchema, { type: 'null' }] },
             restrictions: { anyOf: [jsonObjectSchema, { type: 'null' }] },
+            included_consumables: { anyOf: [includedConsumablesSchema, { type: 'null' }] },
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -262,12 +311,39 @@ export function registerPartyPackageRoutes(app: FastifyInstance, authentication:
       withPartyErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
         requirePermission(authentication, auth, 'party.manage');
+        const body = request.body;
         const updated = await service.updatePackage(
           mutationContext(request, auth.companyId, auth.userId),
           auth.permittedBranchIds,
           request.params.id,
           expectedVersionFrom(request),
-          request.body,
+          {
+            ...(body.name === undefined ? {} : { name: body.name }),
+            ...(body.description === undefined ? {} : { description: body.description }),
+            ...(body.status === undefined ? {} : { status: body.status }),
+            ...(body.price === undefined ? {} : { price: body.price }),
+            // TASK 16.20 — these 8 fields were previously spread straight
+            // from `request.body` (snake_case) into `updatePackage`'s
+            // camelCase `input`, so none of them were ever actually
+            // applied (a genuine, untested, silently-no-op latent bug —
+            // no existing test exercised a PATCH changing any of these).
+            // Fixed here as an explicit mapping, matching the POST
+            // handler's own already-correct style, since this exact call
+            // site was already being touched for `included_consumables`.
+            ...(body.duration_minutes === undefined ? {} : { durationMinutes: body.duration_minutes }),
+            ...(body.children_included === undefined ? {} : { childrenIncluded: body.children_included }),
+            ...(body.adults_included === undefined ? {} : { adultsIncluded: body.adults_included }),
+            ...(body.child_extra_cost === undefined ? {} : { childExtraCost: body.child_extra_cost }),
+            ...(body.adult_extra_cost === undefined ? {} : { adultExtraCost: body.adult_extra_cost }),
+            ...(body.capacity_max === undefined ? {} : { capacityMax: body.capacity_max }),
+            ...(body.extra_half_hour_cost === undefined ? {} : { extraHalfHourCost: body.extra_half_hour_cost }),
+            ...(body.tax_code === undefined ? {} : { taxCode: body.tax_code }),
+            ...(body.includes === undefined ? {} : { includes: body.includes }),
+            ...(body.restrictions === undefined ? {} : { restrictions: body.restrictions }),
+            ...(body.included_consumables === undefined
+              ? {}
+              : { includedConsumables: includedConsumablesFromBody(body.included_consumables) }),
+          },
         );
         return reply.header('etag', `"${updated.version.toString()}"`).send(successResponse(packageHttp(updated), request.requestContext));
       }),

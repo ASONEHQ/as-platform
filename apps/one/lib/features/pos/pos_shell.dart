@@ -3387,6 +3387,7 @@ class _Content extends StatelessWidget {
                     partiesGateway: partiesGateway,
                     customersGateway: customersGateway,
                     cashGateway: cashGateway,
+                    settingsGateway: settingsGateway,
                   ),
                   // TASK 14.3 Wave 1 Part B.1: the pre-reserved
                   // `PosModule.suspended` slot ("Ventas Suspendidas") —
@@ -24613,12 +24614,14 @@ class _FiestasAdmin extends StatefulWidget {
     required this.partiesGateway,
     required this.customersGateway,
     required this.cashGateway,
+    required this.settingsGateway,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPartiesGateway partiesGateway;
   final PosCustomersGateway customersGateway;
   final PosCashGateway cashGateway;
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_FiestasAdmin> createState() => _FiestasAdminState();
@@ -24672,7 +24675,11 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
             partiesGateway: widget.partiesGateway,
             customersGateway: widget.customersGateway,
           ),
-          _FiestasTab.ajustes => _FiestasAjustes(context: widget.context, partiesGateway: widget.partiesGateway),
+          _FiestasTab.ajustes => _FiestasAjustes(
+            context: widget.context,
+            partiesGateway: widget.partiesGateway,
+            settingsGateway: widget.settingsGateway,
+          ),
         },
     ],
   );
@@ -25459,14 +25466,15 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
   }
 }
 
-enum _AjustesTab { salones, paquetes }
+enum _AjustesTab { salones, paquetes, terminos }
 
 /// Ajustes — Salones/Paquetes admin CRUD, mirroring `_MembershipsAdmin`'s
 /// exact list+create+edit shape.
 class _FiestasAjustes extends StatefulWidget {
-  const _FiestasAjustes({required this.context, required this.partiesGateway});
+  const _FiestasAjustes({required this.context, required this.partiesGateway, required this.settingsGateway});
   final AuthenticatedContext context;
   final PosPartiesGateway partiesGateway;
+  final PosSettingsGateway settingsGateway;
 
   @override
   State<_FiestasAjustes> createState() => _FiestasAjustesState();
@@ -25488,18 +25496,200 @@ class _FiestasAjustesState extends State<_FiestasAjustes> {
             segments: const [
               ButtonSegment(value: _AjustesTab.salones, label: Text('Salones')),
               ButtonSegment(value: _AjustesTab.paquetes, label: Text('Paquetes')),
+              ButtonSegment(value: _AjustesTab.terminos, label: Text('Términos legales')),
             ],
             selected: {_tab},
             onSelectionChanged: (value) => setState(() => _tab = value.first),
           ),
         ),
       ),
-      if (_tab == _AjustesTab.salones)
-        _RoomsAdmin(context: widget.context, partiesGateway: widget.partiesGateway)
-      else
-        _PackagesAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
+      switch (_tab) {
+        _AjustesTab.salones => _RoomsAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
+        _AjustesTab.paquetes => _PackagesAdmin(context: widget.context, partiesGateway: widget.partiesGateway),
+        _AjustesTab.terminos => _PartyLegalTermsAdmin(context: widget.context, settingsGateway: widget.settingsGateway),
+      },
     ],
   );
+}
+
+/// TASK 16.20 (Part P) — a real editor for `parties.contract_terms`/
+/// `parties.waiver_terms` (company-wide; no branch-override UI yet — the
+/// backend already honors one if ever set directly, see that setting's
+/// own doc comment), reusing the ALREADY-GENERIC [PosSettingsGateway]
+/// (`pos_receipt_branding_screen.dart`'s own established pattern), never
+/// a bespoke parties-only settings mechanism. Empty means "use the
+/// platform's own generic default clauses" — a real, honest, working
+/// default for a brand-new tenant, never a blank/broken document.
+class _PartyLegalTermsAdmin extends StatefulWidget {
+  const _PartyLegalTermsAdmin({required this.context, required this.settingsGateway});
+  final AuthenticatedContext context;
+  final PosSettingsGateway settingsGateway;
+
+  @override
+  State<_PartyLegalTermsAdmin> createState() => _PartyLegalTermsAdminState();
+}
+
+class _PartyLegalTermsAdminState extends State<_PartyLegalTermsAdmin> {
+  _AdminListPhase _phase = _AdminListPhase.loading;
+  String? _errorMessage;
+  final _contractController = TextEditingController();
+  final _waiverController = TextEditingController();
+  int _contractVersion = 1;
+  int _waiverVersion = 1;
+  bool _savingContract = false;
+  bool _savingWaiver = false;
+
+  bool get _canManage => widget.context.permissions.contains('party.manage');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _contractController.dispose();
+    _waiverController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _AdminListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final settings = await widget.settingsGateway.effectiveCompanySettings(
+        companyId: widget.context.session.companyId,
+        keys: const ['parties.contract_terms', 'parties.waiver_terms'],
+      );
+      if (!mounted) return;
+      for (final setting in settings) {
+        if (setting.key == 'parties.contract_terms') {
+          _contractController.text = setting.stringValue ?? '';
+          _contractVersion = setting.version;
+        } else if (setting.key == 'parties.waiver_terms') {
+          _waiverController.text = setting.stringValue ?? '';
+          _waiverVersion = setting.version;
+        }
+      }
+      setState(() => _phase = _AdminListPhase.ready);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _AdminListPhase.failure;
+        _errorMessage = 'No fue posible cargar los términos legales.';
+      });
+    }
+  }
+
+  Future<void> _save(String key, TextEditingController controller, int expectedVersion, void Function(bool busy) setBusy) async {
+    setBusy(true);
+    try {
+      final updated = await widget.settingsGateway.setCompanySetting(
+        companyId: widget.context.session.companyId,
+        key: key,
+        value: controller.text,
+        valueType: 'string',
+        expectedVersion: expectedVersion,
+      );
+      if (!mounted) return;
+      setState(() {
+        setBusy(false);
+        if (key == 'parties.contract_terms') {
+          _contractVersion = updated.version;
+        } else {
+          _waiverVersion = updated.version;
+        }
+      });
+      _showNotice(context, 'Términos guardados.');
+    } on PosSettingVersionConflict {
+      if (!mounted) return;
+      setBusy(false);
+      _showNotice(context, 'Alguien más actualizó estos términos. Se recargó la versión más reciente.');
+      unawaited(_load());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setBusy(false);
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      setBusy(false);
+      _showNotice(context, 'No fue posible guardar los términos.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    if (!_canManage) return const _PermissionState();
+    return switch (_phase) {
+      _AdminListPhase.loading => const _LoadingState(),
+      _AdminListPhase.failure => _FailureState(
+        message: _errorMessage ?? 'No fue posible cargar los términos legales.',
+        onRetry: () => unawaited(_load()),
+      ),
+      _AdminListPhase.empty || _AdminListPhase.ready => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            title: 'Términos del contrato',
+            description: 'Una cláusula por línea. Vacío usa el texto genérico incluido en la plataforma. '
+                'Un documento ya generado conserva el texto vigente al momento de generarse — nunca cambia solo.',
+          ),
+          TextField(
+            key: const Key('pos-fiestas-terms-contract'),
+            controller: _contractController,
+            maxLines: 8,
+            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              key: const Key('pos-fiestas-terms-contract-save'),
+              onPressed: _savingContract
+                  ? null
+                  : () => unawaited(_save('parties.contract_terms', _contractController, _contractVersion, (busy) => _savingContract = busy)),
+              style: FilledButton.styleFrom(backgroundColor: palette.action),
+              child: _savingContract
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Guardar contrato'),
+            ),
+          ),
+          const SizedBox(height: 18),
+          const _SectionHeader(title: 'Términos del deslinde', description: 'Una cláusula por línea. Vacío usa el texto genérico incluido en la plataforma.'),
+          TextField(
+            key: const Key('pos-fiestas-terms-waiver'),
+            controller: _waiverController,
+            maxLines: 8,
+            decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              key: const Key('pos-fiestas-terms-waiver-save'),
+              onPressed: _savingWaiver
+                  ? null
+                  : () => unawaited(_save('parties.waiver_terms', _waiverController, _waiverVersion, (busy) => _savingWaiver = busy)),
+              style: FilledButton.styleFrom(backgroundColor: palette.action),
+              child: _savingWaiver
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Guardar deslinde'),
+            ),
+          ),
+        ],
+      ),
+    };
+  }
 }
 
 class _RoomsAdmin extends StatefulWidget {
@@ -27167,6 +27357,50 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
   }
 }
 
+/// TASK 16.20 (Part G) — the human-readable label for a consumable's
+/// event-day status. Never a raw `stock_deducted` code or a UUID.
+String _partyConsumableStatusLabel(PosPartyConsumableDisplayStatus status) => switch (status) {
+  PosPartyConsumableDisplayStatus.delivered => 'Entregado',
+  PosPartyConsumableDisplayStatus.included => 'Incluido',
+  PosPartyConsumableDisplayStatus.pending => 'Pendiente',
+  PosPartyConsumableDisplayStatus.notTracked => 'No aplica',
+};
+
+/// TASK 16.20 (Part D4) — the one explicit "Entregar/registrar consumo"
+/// business moment: shows the PLANNED quantity, lets the operator confirm
+/// or correct it (e.g. a package included 25 but only 23 attended), and
+/// returns `null` on cancel. Never silently issues the planned amount
+/// without this confirmation.
+Future<String?> _confirmIssueQuantity(
+  BuildContext context, {
+  required String title,
+  required String plannedQuantity,
+  required bool allowDecimal,
+}) {
+  final controller = TextEditingController(text: plannedQuantity);
+  return showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        key: const Key('pos-fiestas-issue-quantity-field'),
+        controller: controller,
+        autofocus: true,
+        keyboardType: TextInputType.numberWithOptions(decimal: allowDecimal),
+        decoration: const InputDecoration(labelText: 'Cantidad a entregar', isDense: true),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancelar')),
+        FilledButton(
+          key: const Key('pos-fiestas-issue-quantity-confirm'),
+          onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+          child: const Text('Entregar'),
+        ),
+      ],
+    ),
+  );
+}
+
 class _SnacksSection extends StatefulWidget {
   const _SnacksSection({
     required this.reservationId,
@@ -27194,6 +27428,7 @@ class _SnacksSectionState extends State<_SnacksSection> {
   final _quantityController = TextEditingController(text: '1');
   bool _busy = false;
   String? _error;
+  String? _deductingId;
 
   @override
   void dispose() {
@@ -27241,6 +27476,31 @@ class _SnacksSectionState extends State<_SnacksSection> {
     }
   }
 
+  Future<void> _deduct(PosPartySnack snack) async {
+    final issuedQuantity = await _confirmIssueQuantity(
+      context,
+      title: 'Entregar ${snack.nameSnapshot}',
+      plannedQuantity: snack.quantity,
+      allowDecimal: true,
+    );
+    if (issuedQuantity == null || issuedQuantity.isEmpty || !mounted) return;
+    setState(() => _deductingId = snack.id);
+    try {
+      await widget.partiesGateway.deductSnack(widget.reservationId, snack.id, issuedQuantity: issuedQuantity);
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      widget.onChanged();
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      _showNotice(context, posPartyErrorMessage(error));
+    } on Object {
+      if (!mounted) return;
+      setState(() => _deductingId = null);
+      _showNotice(context, 'No fue posible descontar el inventario.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -27255,8 +27515,29 @@ class _SnacksSectionState extends State<_SnacksSection> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(
                 children: [
-                  Expanded(child: Text('${snack.nameSnapshot} × ${snack.quantity}', style: TextStyle(color: palette.text, fontSize: 12))),
+                  Expanded(
+                    child: Text(
+                      snack.isDeducted && snack.issuedQuantity != snack.quantity
+                          ? '${snack.nameSnapshot} × ${snack.quantity} (entregado: ${snack.issuedQuantity})'
+                          : '${snack.nameSnapshot} × ${snack.quantity}',
+                      style: TextStyle(color: palette.text, fontSize: 12),
+                    ),
+                  ),
                   Text(_formatPartyMoney(snack.lineTotal, widget.currencyCode), style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                  const SizedBox(width: 8),
+                  // TASK 16.20 (Part G) — human-readable Incluido/
+                  // Entregado/Pendiente/No aplica, never a raw code.
+                  Text(_partyConsumableStatusLabel(snack.displayStatus), style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+                  if (widget.canManage && snack.canDeduct) ...[
+                    const SizedBox(width: 8),
+                    TextButton(
+                      key: Key('pos-fiestas-snack-deduct-${snack.id}'),
+                      onPressed: _deductingId == snack.id ? null : () => unawaited(_deduct(snack)),
+                      child: _deductingId == snack.id
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('Entregar'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -27397,9 +27678,21 @@ class _SocksSectionState extends State<_SocksSection> {
   }
 
   Future<void> _deduct(PosPartySock sock) async {
+    final issuedQuantityText = await _confirmIssueQuantity(
+      context,
+      title: 'Entregar calcetas talla ${sock.size}',
+      plannedQuantity: sock.quantity.toString(),
+      allowDecimal: false,
+    );
+    if (issuedQuantityText == null || issuedQuantityText.isEmpty || !mounted) return;
+    final issuedQuantity = int.tryParse(issuedQuantityText);
+    if (issuedQuantity == null || issuedQuantity <= 0) {
+      _showNotice(context, 'La cantidad a entregar debe ser un número entero mayor que cero.');
+      return;
+    }
     setState(() => _deductingId = sock.id);
     try {
-      await widget.partiesGateway.deductSock(widget.reservationId, sock.id);
+      await widget.partiesGateway.deductSock(widget.reservationId, sock.id, issuedQuantity: issuedQuantity);
       if (!mounted) return;
       setState(() => _deductingId = null);
       widget.onChanged();
@@ -27428,15 +27721,17 @@ class _SocksSectionState extends State<_SocksSection> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(
                 children: [
-                  Expanded(child: Text('Talla ${sock.size} × ${sock.quantity}', style: TextStyle(color: palette.text, fontSize: 12))),
-                  Text(
-                    switch (sock.stockDeducted) {
-                      'deducted' => 'Descontado',
-                      'not_applicable' => 'No aplica',
-                      _ => 'Pendiente',
-                    },
-                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  Expanded(
+                    child: Text(
+                      sock.isDeducted && sock.issuedQuantity != sock.quantity
+                          ? 'Talla ${sock.size} × ${sock.quantity} (entregado: ${sock.issuedQuantity})'
+                          : 'Talla ${sock.size} × ${sock.quantity}',
+                      style: TextStyle(color: palette.text, fontSize: 12),
+                    ),
                   ),
+                  // TASK 16.20 (Part G) — human-readable Incluido/
+                  // Entregado/Pendiente/No aplica, never a raw code.
+                  Text(_partyConsumableStatusLabel(sock.displayStatus), style: TextStyle(color: palette.textSecondary, fontSize: 11)),
                   if (widget.canManage && sock.canDeduct) ...[
                     const SizedBox(width: 8),
                     TextButton(
@@ -27444,7 +27739,7 @@ class _SocksSectionState extends State<_SocksSection> {
                       onPressed: _deductingId == sock.id ? null : () => unawaited(_deduct(sock)),
                       child: _deductingId == sock.id
                           ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Text('Descontar stock'),
+                          : const Text('Entregar'),
                     ),
                   ],
                 ],
@@ -27599,6 +27894,15 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
   String? _cancelTotalPaid;
   String? _docError;
   bool _docBusy = false;
+  final _couponController = TextEditingController();
+  bool _couponBusy = false;
+  String? _couponError;
+
+  @override
+  void dispose() {
+    _couponController.dispose();
+    super.dispose();
+  }
 
   bool get _canManage => widget.context.permissions.contains('party.manage');
   bool get _canCancel => widget.context.permissions.contains('party.cancel');
@@ -27767,6 +28071,64 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
     if (recorded == true && mounted) {
       _changed = true;
       unawaited(_load());
+    }
+  }
+
+  Future<void> _applyCoupon() async {
+    final code = _couponController.text.trim();
+    if (code.isEmpty) {
+      setState(() => _couponError = 'Ingresa un código de cupón.');
+      return;
+    }
+    setState(() {
+      _couponBusy = true;
+      _couponError = null;
+    });
+    try {
+      await widget.partiesGateway.applyCoupon(widget.reservationId, code);
+      if (!mounted) return;
+      _couponController.clear();
+      _changed = true;
+      setState(() => _couponBusy = false);
+      unawaited(_load());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = 'No fue posible aplicar el cupón.';
+      });
+    }
+  }
+
+  Future<void> _removeCoupon() async {
+    setState(() {
+      _couponBusy = true;
+      _couponError = null;
+    });
+    try {
+      await widget.partiesGateway.removeCoupon(widget.reservationId);
+      if (!mounted) return;
+      _changed = true;
+      setState(() => _couponBusy = false);
+      unawaited(_load());
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _couponBusy = false;
+        _couponError = 'No fue posible quitar el cupón.';
+      });
     }
   }
 
@@ -27967,6 +28329,55 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
           _QuoteLine(label: 'Total cotizado', amount: _balance!.quotedTotal, currency: reservation.currencyCode),
           _QuoteLine(label: 'Pagado', amount: _balance!.totalPaid, currency: reservation.currencyCode),
           _QuoteLine(label: 'Saldo pendiente', amount: _balance!.outstandingBalance, currency: reservation.currencyCode, emphasize: true),
+        ],
+        // TASK 16.20 (Part L1) — a real, backend-validated coupon, never a
+        // client-side discount. Only editable while the reservation is
+        // still open (not completed/cancelled) and the actor can manage.
+        if (_canManage && !_cancelled && reservation.status != 'completed') ...[
+          const SizedBox(height: 10),
+          if (reservation.couponCodeSnapshot != null)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Cupón aplicado: ${reservation.couponCodeSnapshot}',
+                    style: TextStyle(color: palette.text, fontSize: 12),
+                  ),
+                ),
+                TextButton(
+                  key: const Key('pos-fiestas-coupon-remove'),
+                  onPressed: _couponBusy ? null : () => unawaited(_removeCoupon()),
+                  child: _couponBusy
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Quitar'),
+                ),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('pos-fiestas-coupon-code'),
+                    controller: _couponController,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Código de cupón'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  key: const Key('pos-fiestas-coupon-apply'),
+                  onPressed: _couponBusy ? null : () => unawaited(_applyCoupon()),
+                  style: FilledButton.styleFrom(backgroundColor: palette.action),
+                  child: _couponBusy
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Aplicar'),
+                ),
+              ],
+            ),
+          if (_couponError != null) ...[
+            const SizedBox(height: 6),
+            Text(_couponError!, key: const Key('pos-fiestas-coupon-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+          ],
         ],
         if (_canRecordPayment) ...[
           const SizedBox(height: 8),

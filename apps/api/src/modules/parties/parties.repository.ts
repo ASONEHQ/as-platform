@@ -7,6 +7,7 @@ import {
   type PartyAccountStatus,
   type PartyDocumentType,
   type PartyMutationContext,
+  type PartyPackageIncludedConsumable,
   type PartyPackageRow,
   type PartyPackageStatus,
   type PartyReservationDocumentRow,
@@ -62,13 +63,15 @@ function dateOnly(value: Date | string): string {
 const ROOM_COLUMNS =
   'id,company_id,branch_id,code,name,status,capacity_children,capacity_adults,capacity_total,color,notes,created_by,updated_by,version,created_at,updated_at';
 const PACKAGE_COLUMNS =
-  'id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,tax_code,includes,restrictions,created_by,updated_by,version,created_at,updated_at';
+  'id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,tax_code,includes,restrictions,included_consumables,created_by,updated_by,version,created_at,updated_at';
 const RESERVATION_COLUMNS =
-  'id,company_id,branch_id,reservation_number,customer_id,customer_display_name,customer_phone,celebrant_name,celebrant_age,room_id,package_id,room_name_snapshot,package_name_snapshot,event_date,start_time,end_time,children_count,adults_count,seller_user_id,status,account_status,subtotal_amount,discount_total,tax_total,quoted_total,currency_code,notes,cancelled_at,cancelled_by,cancellation_reason,created_by,updated_by,version,created_at,updated_at';
+  'id,company_id,branch_id,reservation_number,customer_id,customer_display_name,customer_phone,celebrant_name,celebrant_age,room_id,package_id,room_name_snapshot,package_name_snapshot,event_date,start_time,end_time,children_count,adults_count,seller_user_id,status,account_status,subtotal_amount,discount_total,tax_total,coupon_id,coupon_code_snapshot,quoted_total,currency_code,notes,cancelled_at,cancelled_by,cancellation_reason,created_by,updated_by,version,created_at,updated_at';
+const COUPON_COLUMNS =
+  'id,company_id,normalized_code,benefit_type,benefit_percentage_basis_points,benefit_fixed_amount,active,starts_at,ends_at,min_subtotal,usage_limit_total';
 const SNACK_COLUMNS =
-  'id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,tax_snapshot,tax_total,created_at';
+  'id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,tax_snapshot,tax_total,product_variant_id,stock_deducted,stock_deducted_at,issued_quantity,included_in_package,created_at';
 const SOCK_COLUMNS =
-  'id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,stock_deducted_at,created_at';
+  'id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,stock_deducted_at,issued_quantity,included_in_package,created_at';
 const PAYMENT_COLUMNS =
   'id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,created_by,created_at';
 const DOCUMENT_COLUMNS = 'id,company_id,reservation_id,document_type,generated_by,created_at';
@@ -111,6 +114,7 @@ interface PackageDb {
   tax_code: string;
   includes: Readonly<Record<string, unknown>> | null;
   restrictions: Readonly<Record<string, unknown>> | null;
+  included_consumables: readonly Readonly<Record<string, unknown>>[] | null;
   created_by: string;
   updated_by: string;
   version: string;
@@ -142,6 +146,8 @@ interface ReservationDb {
   subtotal_amount: string | null;
   discount_total: string;
   tax_total: string;
+  coupon_id: string | null;
+  coupon_code_snapshot: string | null;
   quoted_total: string;
   currency_code: string;
   notes: string | null;
@@ -165,6 +171,11 @@ interface SnackDb {
   line_total: string;
   tax_snapshot: Readonly<Record<string, unknown>> | null;
   tax_total: string;
+  product_variant_id: string | null;
+  stock_deducted: string;
+  stock_deducted_at: Date | string | null;
+  issued_quantity: string | null;
+  included_in_package: boolean;
   created_at: Date | string;
 }
 interface SockDb {
@@ -176,7 +187,22 @@ interface SockDb {
   product_variant_id: string | null;
   stock_deducted: string;
   stock_deducted_at: Date | string | null;
+  issued_quantity: number | null;
+  included_in_package: boolean;
   created_at: Date | string;
+}
+interface CouponDb {
+  id: string;
+  company_id: string;
+  normalized_code: string;
+  benefit_type: string;
+  benefit_percentage_basis_points: number | null;
+  benefit_fixed_amount: string | null;
+  active: boolean;
+  starts_at: Date | string | null;
+  ends_at: Date | string | null;
+  min_subtotal: string | null;
+  usage_limit_total: number | null;
 }
 interface PaymentDb {
   id: string;
@@ -243,6 +269,10 @@ function packageRow(row: PackageDb): PartyPackageRow {
     taxCode: row.tax_code as PartyPackageRow['taxCode'],
     includes: row.includes,
     restrictions: row.restrictions,
+    includedConsumables:
+      row.included_consumables === null
+        ? null
+        : (row.included_consumables as unknown as readonly PartyPackageIncludedConsumable[]),
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     version: BigInt(row.version),
@@ -276,6 +306,8 @@ function reservation(row: ReservationDb): PartyReservationRow {
     subtotalAmount: row.subtotal_amount,
     discountTotal: row.discount_total,
     taxTotal: row.tax_total,
+    couponId: row.coupon_id,
+    couponCodeSnapshot: row.coupon_code_snapshot,
     quotedTotal: row.quoted_total,
     currencyCode: row.currency_code,
     notes: row.notes,
@@ -301,6 +333,11 @@ function snack(row: SnackDb): PartyReservationSnackRow {
     lineTotal: row.line_total,
     taxSnapshot: row.tax_snapshot,
     taxTotal: row.tax_total,
+    productVariantId: row.product_variant_id,
+    stockDeducted: row.stock_deducted as PartySockDeductionStatus,
+    stockDeductedAt: row.stock_deducted_at === null ? null : new Date(row.stock_deducted_at),
+    issuedQuantity: row.issued_quantity,
+    includedInPackage: row.included_in_package,
     createdAt: new Date(row.created_at),
   };
 }
@@ -314,6 +351,8 @@ function sock(row: SockDb): PartyReservationSockRow {
     productVariantId: row.product_variant_id,
     stockDeducted: row.stock_deducted as PartySockDeductionStatus,
     stockDeductedAt: row.stock_deducted_at === null ? null : new Date(row.stock_deducted_at),
+    issuedQuantity: row.issued_quantity,
+    includedInPackage: row.included_in_package,
     createdAt: new Date(row.created_at),
   };
 }
@@ -651,6 +690,7 @@ export class PartiesRepository {
       taxCode: string;
       includes: Readonly<Record<string, unknown>> | null;
       restrictions: Readonly<Record<string, unknown>> | null;
+      includedConsumables: readonly PartyPackageIncludedConsumable[] | null;
       actorId: string;
       timestamp: Date;
     },
@@ -660,8 +700,8 @@ export class PartiesRepository {
         `insert into party_packages
          (id,company_id,branch_id,code,name,description,status,price,currency_code,duration_minutes,
           children_included,adults_included,child_extra_cost,adult_extra_cost,capacity_max,extra_half_hour_cost,
-          tax_code,includes,restrictions,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19,$19,$20,$20)
+          tax_code,includes,restrictions,included_consumables,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19::jsonb,$20,$20,$21,$21)
          returning ${PACKAGE_COLUMNS}`,
         [
           input.id,
@@ -682,6 +722,7 @@ export class PartiesRepository {
           input.taxCode,
           input.includes === null ? null : JSON.stringify(input.includes),
           input.restrictions === null ? null : JSON.stringify(input.restrictions),
+          input.includedConsumables === null ? null : JSON.stringify(input.includedConsumables),
           input.actorId,
           input.timestamp,
         ],
@@ -751,6 +792,7 @@ export class PartiesRepository {
       taxCode?: string;
       includes?: Readonly<Record<string, unknown>> | null;
       restrictions?: Readonly<Record<string, unknown>> | null;
+      includedConsumables?: readonly PartyPackageIncludedConsumable[] | null;
       updatedBy: string;
       timestamp: Date;
     },
@@ -761,8 +803,8 @@ export class PartiesRepository {
       values.push(value);
       sets.push(`${column}=$${String(values.length)}`);
     }
-    function setJson(column: string, value: Readonly<Record<string, unknown>> | null): void {
-      values.push(value === null ? null : JSON.stringify(value));
+    function setJson(column: string, value: unknown): void {
+      values.push(value === null || value === undefined ? null : JSON.stringify(value));
       sets.push(`${column}=$${String(values.length)}::jsonb`);
     }
     if (input.name !== undefined) set('name', input.name);
@@ -779,6 +821,7 @@ export class PartiesRepository {
     if (input.taxCode !== undefined) set('tax_code', input.taxCode);
     if (input.includes !== undefined) setJson('includes', input.includes);
     if (input.restrictions !== undefined) setJson('restrictions', input.restrictions);
+    if (input.includedConsumables !== undefined) setJson('included_consumables', input.includedConsumables);
     values.push(expectedVersion.toString());
     const row = result<PackageDb>(
       await client.query(
@@ -1007,6 +1050,8 @@ export class PartiesRepository {
       subtotalAmount?: string;
       discountTotal?: string;
       taxTotal?: string;
+      couponId?: string | null;
+      couponCodeSnapshot?: string | null;
       quotedTotal?: string;
       notes?: string | null;
       updatedBy: string;
@@ -1037,6 +1082,8 @@ export class PartiesRepository {
     if (input.subtotalAmount !== undefined) set('subtotal_amount', input.subtotalAmount);
     if (input.discountTotal !== undefined) set('discount_total', input.discountTotal);
     if (input.taxTotal !== undefined) set('tax_total', input.taxTotal);
+    if (input.couponId !== undefined) set('coupon_id', input.couponId);
+    if (input.couponCodeSnapshot !== undefined) set('coupon_code_snapshot', input.couponCodeSnapshot);
     if (input.quotedTotal !== undefined) set('quoted_total', input.quotedTotal);
     if (input.notes !== undefined) set('notes', input.notes);
     values.push(expectedVersion.toString());
@@ -1092,6 +1139,88 @@ export class PartiesRepository {
     return reservation(row);
   }
 
+  // --- Coupons (TASK 16.20 Part L1) --------------------------------------------
+
+  /** Locks the coupon row for the duration of the caller's transaction —
+   * the same `for update` discipline `PromotionsRepository.
+   * lockCouponByNormalizedCode` uses for sales, reproduced here (not
+   * imported) since this repository never depends on another module's
+   * repository class, matching this codebase's established
+   * module-isolation convention. */
+  public async lockCouponByNormalizedCode(
+    client: PartyTransaction,
+    companyId: string,
+    normalizedCode: string,
+  ): Promise<
+    | (Readonly<{
+        id: string;
+        benefitType: 'percentage' | 'fixed_amount';
+        benefitPercentageBasisPoints: number | null;
+        benefitFixedAmount: string | null;
+        active: boolean;
+        startsAt: Date | null;
+        endsAt: Date | null;
+        minSubtotal: string | null;
+        usageLimitTotal: number | null;
+      }>)
+    | null
+  > {
+    const row = result<CouponDb>(
+      await client.query(
+        `select ${COUPON_COLUMNS} from coupons where company_id=$1 and normalized_code=$2 for update`,
+        [companyId, normalizedCode],
+      ),
+    ).rows[0];
+    if (row === undefined) return null;
+    return {
+      id: row.id,
+      benefitType: row.benefit_type as 'percentage' | 'fixed_amount',
+      benefitPercentageBasisPoints: row.benefit_percentage_basis_points,
+      benefitFixedAmount: row.benefit_fixed_amount,
+      active: row.active,
+      startsAt: row.starts_at === null ? null : new Date(row.starts_at),
+      endsAt: row.ends_at === null ? null : new Date(row.ends_at),
+      minSubtotal: row.min_subtotal,
+      usageLimitTotal: row.usage_limit_total,
+    };
+  }
+
+  /** Counted inside the SAME transaction as the coupon-row lock above, so
+   * two concurrent `applyCoupon` calls for a coupon at its last remaining
+   * redemption serialize correctly — mirrors `PromotionsRepository`'s own
+   * locked-cumulative-count pattern for `coupon_redemptions`. */
+  public async partyCouponRedemptionCount(client: PartyTransaction, companyId: string, couponId: string): Promise<number> {
+    const row = result<{ count: string }>(
+      await client.query(
+        `select count(*)::text as count from party_reservation_coupon_redemptions where company_id=$1 and coupon_id=$2`,
+        [companyId, couponId],
+      ),
+    ).rows[0];
+    return Number(row?.count ?? '0');
+  }
+
+  public async insertPartyCouponRedemption(
+    client: PartyTransaction,
+    input: { id: string; companyId: string; branchId: string; reservationId: string; couponId: string; amount: string; timestamp: Date },
+  ): Promise<void> {
+    await client.query(
+      `insert into party_reservation_coupon_redemptions (id,company_id,branch_id,reservation_id,coupon_id,amount,redeemed_at)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
+      [input.id, input.companyId, input.branchId, input.reservationId, input.couponId, input.amount, input.timestamp],
+    );
+  }
+
+  /** Releases the redemption slot — called both by an explicit
+   * `removeCoupon` and by `cancelReservation` (mirrors sales' own
+   * "released if the sale is cancelled before completion," ADR-0016). A
+   * reservation that never redeemed a coupon simply deletes zero rows. */
+  public async deletePartyCouponRedemption(client: PartyTransaction, companyId: string, reservationId: string): Promise<void> {
+    await client.query(`delete from party_reservation_coupon_redemptions where company_id=$1 and reservation_id=$2`, [
+      companyId,
+      reservationId,
+    ]);
+  }
+
   // --- Snacks ------------------------------------------------------------------
 
   public async insertSnack(
@@ -1107,6 +1236,9 @@ export class PartiesRepository {
       lineTotal: string;
       taxSnapshot: Readonly<Record<string, unknown>> | null;
       taxTotal: string;
+      productVariantId: string | null;
+      stockDeducted: PartySockDeductionStatus;
+      includedInPackage: boolean;
       timestamp: Date;
     },
   ): Promise<PartyReservationSnackRow> {
@@ -1114,8 +1246,8 @@ export class PartiesRepository {
       await client.query(
         `insert into party_reservation_snacks
          (id,company_id,reservation_id,product_id,name_snapshot,unit_price_snapshot,quantity,line_total,
-          tax_snapshot,tax_total,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
+          tax_snapshot,tax_total,product_variant_id,stock_deducted,included_in_package,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
          returning ${SNACK_COLUMNS}`,
         [
           input.id,
@@ -1128,6 +1260,9 @@ export class PartiesRepository {
           input.lineTotal,
           input.taxSnapshot === null ? null : JSON.stringify(input.taxSnapshot),
           input.taxTotal,
+          input.productVariantId,
+          input.stockDeducted,
+          input.includedInPackage,
           input.timestamp,
         ],
       ),
@@ -1146,6 +1281,40 @@ export class PartiesRepository {
     return rows.map(snack);
   }
 
+  public async lockSnack(
+    client: PartyTransaction,
+    companyId: string,
+    reservationId: string,
+    id: string,
+  ): Promise<PartyReservationSnackRow | null> {
+    const row = result<SnackDb>(
+      await client.query(
+        `select ${SNACK_COLUMNS} from party_reservation_snacks
+         where company_id=$1 and reservation_id=$2 and id=$3 for update`,
+        [companyId, reservationId, id],
+      ),
+    ).rows[0];
+    return row === undefined ? null : snack(row);
+  }
+
+  public async markSnackDeducted(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    issuedQuantity: string,
+    timestamp: Date,
+  ): Promise<PartyReservationSnackRow> {
+    const row = result<SnackDb>(
+      await client.query(
+        `update party_reservation_snacks set stock_deducted='deducted', stock_deducted_at=$3, issued_quantity=$4
+         where company_id=$1 and id=$2 returning ${SNACK_COLUMNS}`,
+        [companyId, id, timestamp, issuedQuantity],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Snack update did not return a row.');
+    return snack(row);
+  }
+
   // --- Socks -------------------------------------------------------------------
 
   public async insertSock(
@@ -1157,16 +1326,26 @@ export class PartiesRepository {
       size: string;
       quantity: number;
       productVariantId: string | null;
+      includedInPackage: boolean;
       timestamp: Date;
     },
   ): Promise<PartyReservationSockRow> {
     const row = result<SockDb>(
       await client.query(
         `insert into party_reservation_socks
-         (id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,created_at)
-         values ($1,$2,$3,$4,$5,$6,'pending',$7)
+         (id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,included_in_package,created_at)
+         values ($1,$2,$3,$4,$5,$6,'pending',$7,$8)
          returning ${SOCK_COLUMNS}`,
-        [input.id, input.companyId, input.reservationId, input.size, input.quantity, input.productVariantId, input.timestamp],
+        [
+          input.id,
+          input.companyId,
+          input.reservationId,
+          input.size,
+          input.quantity,
+          input.productVariantId,
+          input.includedInPackage,
+          input.timestamp,
+        ],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Sock insertion did not return a row.');
@@ -1199,12 +1378,18 @@ export class PartiesRepository {
     return row === undefined ? null : sock(row);
   }
 
-  public async markSockDeducted(client: PartyTransaction, companyId: string, id: string, timestamp: Date): Promise<PartyReservationSockRow> {
+  public async markSockDeducted(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    issuedQuantity: number,
+    timestamp: Date,
+  ): Promise<PartyReservationSockRow> {
     const row = result<SockDb>(
       await client.query(
-        `update party_reservation_socks set stock_deducted='deducted', stock_deducted_at=$3
+        `update party_reservation_socks set stock_deducted='deducted', stock_deducted_at=$3, issued_quantity=$4
          where company_id=$1 and id=$2 returning ${SOCK_COLUMNS}`,
-        [companyId, id, timestamp],
+        [companyId, id, timestamp, issuedQuantity],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Sock update did not return a row.');
@@ -1264,18 +1449,79 @@ export class PartiesRepository {
 
   public async insertDocumentAudit(
     client: PartyTransaction,
-    input: { id: string; companyId: string; reservationId: string; documentType: PartyDocumentType; generatedBy: string; timestamp: Date },
+    input: {
+      id: string;
+      companyId: string;
+      reservationId: string;
+      documentType: PartyDocumentType;
+      generatedBy: string;
+      termsSnapshot: readonly string[];
+      timestamp: Date;
+    },
   ): Promise<PartyReservationDocumentRow> {
     const row = result<DocumentDb>(
       await client.query(
-        `insert into party_reservation_documents (id,company_id,reservation_id,document_type,generated_by,created_at)
-         values ($1,$2,$3,$4,$5,$6)
+        `insert into party_reservation_documents (id,company_id,reservation_id,document_type,generated_by,terms_snapshot,created_at)
+         values ($1,$2,$3,$4,$5,$6::jsonb,$7)
          returning ${DOCUMENT_COLUMNS}`,
-        [input.id, input.companyId, input.reservationId, input.documentType, input.generatedBy, input.timestamp],
+        [input.id, input.companyId, input.reservationId, input.documentType, input.generatedBy, JSON.stringify(input.termsSnapshot), input.timestamp],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Document audit insertion did not return a row.');
     return documentRow(row);
+  }
+
+  /** TASK 16.20 (Part P) — the FIRST-ever-generated document of this type
+   * for this reservation already froze the clause text; every later
+   * generation (a reprint) reuses that SAME snapshot rather than
+   * re-resolving the (possibly since-changed) live setting — this is what
+   * makes "an already-issued contract must not silently mutate" actually
+   * true across reprints, not merely across the room/package-name
+   * snapshots that already existed. */
+  public async earliestDocumentTermsSnapshot(
+    companyId: string,
+    reservationId: string,
+    documentType: PartyDocumentType,
+  ): Promise<readonly string[] | null> {
+    const row = result<{ terms_snapshot: readonly string[] | null }>(
+      await this.database.pool.query(
+        `select terms_snapshot from party_reservation_documents
+         where company_id=$1 and reservation_id=$2 and document_type=$3 and terms_snapshot is not null
+         order by created_at asc limit 1`,
+        [companyId, reservationId, documentType],
+      ),
+    ).rows[0];
+    return row?.terms_snapshot ?? null;
+  }
+
+  /** TASK 16.20 (Part P) — resolves a tenant's real, effective text
+   * setting (branch override wins over company-wide, matching every other
+   * setting's own resolution order) directly against the actual
+   * `branch_settings`/`company_settings` tables — never a parallel/fake
+   * config mechanism. A deliberately small, module-local read (mirrors
+   * this repository's own "never depend on another module's repository
+   * class" convention, e.g. `lockCouponByNormalizedCode`'s doc comment)
+   * rather than pulling in `SettingsService` (whose `effectiveBranchSettings`
+   * also enforces its own HTTP-layer branch-access permission check,
+   * redundant with — and a mismatched shape for — the check this service
+   * already performed against the reservation itself). Returns `null` for
+   * "not configured" (blank/absent/retired), never a fabricated default. */
+  public async resolveTenantTextSetting(companyId: string, branchId: string, key: string): Promise<string | null> {
+    const branchRow = result<{ value: string }>(
+      await this.database.pool.query(
+        `select value from branch_settings where company_id=$1 and branch_id=$2 and key=$3 and status='active'`,
+        [companyId, branchId, key],
+      ),
+    ).rows[0];
+    if (branchRow !== undefined && branchRow.value.trim().length > 0) return branchRow.value;
+    const companyRow = result<{ value: string }>(
+      await this.database.pool.query(`select value from company_settings where company_id=$1 and key=$2 and status='active'`, [
+        companyId,
+        key,
+      ]),
+    ).rows[0];
+    if (companyRow !== undefined && companyRow.value.trim().length > 0) return companyRow.value;
+    return null;
   }
 
   public async documentsSummary(
@@ -1330,6 +1576,32 @@ export class PartiesRepository {
     ).rows[0];
     if (row === undefined) return null;
     return { name: row.name, price: row.amount ?? '0.0000', taxCode: row.tax_code };
+  }
+
+  /** TASK 16.20 — resolves a snack's real default inventory-tracked variant,
+   * the exact same `is_default=true and status<>'retired'` pattern
+   * `SalesRepository.resolveProductLines` uses for normal sale lines
+   * (`sales.repository.ts`). `tracksInventory=false` (or no variant at
+   * all) means this product was never meant to move real stock — `addSnack`
+   * uses that to set an honest `stock_deducted='not_applicable'` rather
+   * than a `'pending'` deduction that could never actually post. */
+  public async productVariantForInventory(
+    companyId: string,
+    productId: string,
+  ): Promise<{ variantId: string; tracksInventory: boolean } | null> {
+    const row = result<{ variant_id: string | null; tracks_inventory: boolean }>(
+      await this.database.pool.query(
+        `select pv.id as variant_id, p.tracks_inventory
+         from products p
+         left join product_variants pv
+           on pv.company_id=p.company_id and pv.product_id=p.id
+              and pv.is_default=true and pv.status<>'retired'
+         where p.company_id=$1 and p.id=$2`,
+        [companyId, productId],
+      ),
+    ).rows[0];
+    if (row === undefined || row.variant_id === null || !row.tracks_inventory) return null;
+    return { variantId: row.variant_id, tracksInventory: row.tracks_inventory };
   }
 
   public async organizationForReservation(

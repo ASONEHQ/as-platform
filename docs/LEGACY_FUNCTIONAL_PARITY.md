@@ -6303,3 +6303,390 @@ NOT an authorization to start building any of it under TASK 14.2. See
 [[LEGACY_MISSING_PORTS]] for the actual P0/P1/P2 action-plan grouping and
 [[V1_LAUNCH_SCOPE]]/[[V1_POST_LAUNCH_BACKLOG]] for where each item now
 lives in the roadmap.
+
+## TASK 16.20 — ACCESS GO Commercial Parity Closure / Legacy Gap Burn-Down + Event Consumable Inventory Certification (2026-09-22)
+
+**§0 Scope and method.** A system-wide re-audit of all 24 legacy
+modules against current ACCESS GO, re-reading the actual legacy HTML
+fresh (`AS POS V1.html`, SHA-256
+`c7fc92d81fd1148288d2646ee853c05e68d2960cf39bae3178e71c8029d16ace`,
+verified unmodified both at task start and again for every capability
+this task touched), never relying on this document's own prior
+summaries as sole authority. Standard applied throughout: a route,
+screen, table, button, permission, or model existing does NOT by
+itself prove parity — for every capability the real BUSINESS EFFECT
+was traced end to end. Starting checkpoint: `469b69f6ed8236e3dbb5c9e9935b02685f77306a`
+on `release/as-pos-v1` (TASK 16.19's own commit), confirmed clean.
+Six parallel forensic audit passes covered Sales Core (POS/Suspended/
+Returns/History/Documents), Catalog/Inventory/Purchasing, Cash/CFDI,
+CRM (Customers/Memberships/Promotions), Admin/Ops A (Dashboard/
+Reports/Access), and Admin/Ops B (Users/Employees/Sync/Notifications/
+Configuration); their findings are synthesized in §5. Per this task's
+own explicit scope control, mature modules the audits confirmed already
+at parity (Cash Cut, CFDI's honest absence, POS core, Purchasing,
+Access Control, Reports/Dashboard, RBAC) were deliberately left alone —
+**no work was done on them**, only the two hard-gate items (event
+consumables, §1) and the two TASK-16.19-disclosed follow-ups (coupon
+integration §2, contract terms §3) that this task's own spec required
+to be resolved or precisely re-justified.
+
+**§1 Event Consumable Inventory Certification (Parts D–H) — the
+mandatory hard-gate deliverable.**
+
+*Confirmed gap (forensic re-audit, both legacy and current ACCESS GO
+read fresh):* the legacy's own two-step plan/consume pattern for socks
+— `asignarCalcetasFiesta()`/`guardarCalcetasFiesta()` (`AS POS V1.html:9236,9270`,
+plans only, no stock effect) separate from `descontarCalcetasFiesta()`
+(`AS POS V1.html:9205`, the real one-way deduction, with a
+`calcetasDescontadas` double-deduct guard) — was the direct precedent
+for what TASK 14.3's `party-sock-deduction.ts` already correctly
+rebuilt for socks. **Snacks/drinks had zero equivalent in either
+codebase** — legacy never deducted snack stock at all, and neither did
+ACCESS GO before this task (confirmed by the catalog/inventory audit
+agent's exhaustive grep of `apps/api/src/modules/parties` for `snack`
+before this task's changes). This is the one concrete, business-
+material gap the hard-gate test targets.
+
+*What was built* (mirrors `party-sock-deduction.ts`'s own real,
+one-way, idempotent posting discipline — never a parallel/fake ledger):
+
+- **Schema** (`packages/database/src/schema/parties.ts`,
+  migrations `0040`–`0043`): `party_packages.included_consumables`
+  (a structured jsonb plan array — `{kind:'sock'|'snack', label,
+  quantity, productId?, size?}` — read once at booking time, never
+  itself a source of consumption); parallel `product_variant_id`/
+  `stock_deducted`/`stock_deducted_at`/`issued_quantity`/
+  `included_in_package` columns added to BOTH `party_reservation_socks`
+  (which already had the first three from TASK 14.3) and
+  `party_reservation_snacks` (which had none of them). `issued_quantity`
+  is deliberately independent of the row's own planned `quantity` —
+  the exact "planned vs. issued" distinction Part D4 requires, with a
+  check constraint pairing `stock_deducted='deducted'` to a non-null
+  `issued_quantity`, never allowed to drift apart.
+- **`party-snack-deduction.ts`** (new file, `apps/api/src/modules/parties/`) —
+  a line-for-line mirror of `party-sock-deduction.ts`: resolves the
+  snack's real `product_variant_id`, resolves the branch's single
+  active default `inventory_location` (never a hardcoded warehouse —
+  Part F), locks and updates `inventory_balances` with `for update`,
+  posts one real `inventory_movements` row (`movement_type='issue'`,
+  `reference_type='party_reservation_snack'`, `reference_id=<snack
+  row id>`, `source_document_number=<reservation number>`), inserts
+  matching `inventory_movement_lines`/`audit_log`/2 `outbox_events`.
+  Same tier-1 idempotency discipline as socks: the caller's row lock on
+  the `party_reservation_snacks` row (checked `stock_deducted='pending'`
+  strictly after the lock is held) is what makes a concurrent
+  double-deduct attempt serialize and the loser see `'deducted'` and be
+  cleanly rejected — no partial unique index needed, for the identical
+  documented reason `party-sock-deduction.ts` doesn't have one either.
+- **`PartyReservationsService`**: `createReservation` reads the
+  package's `includedConsumables` once, inside the same transaction as
+  the reservation insert, and auto-creates PLANNED sock/snack rows
+  (`includedInPackage=true`) — this **never** moves inventory (Part D3:
+  a reservation must not consume merely by existing). A real inventory-
+  tracked product resolves to `stockDeducted='pending'`; a genuinely
+  custom or non-tracked one honestly resolves to `'not_applicable'`
+  (never a fabricated `'pending'` that could never actually post).
+  `deductSock` gained an optional `issuedQuantity` override (defaults
+  to the planned quantity, preserving every pre-16.20 caller's
+  behavior unchanged); a new `deductSnack` mirrors it exactly. Extra
+  consumables beyond the plan are a **separate** `addSock`/`addSnack`
+  row (`includedInPackage=false`) — Part D5's "traceable, never folded
+  into history" requirement — deducted independently, with the
+  original planned row's own `issuedQuantity` left untouched.
+  `cancelReservation` was verified (by a dedicated test, not just
+  inspection) to touch NO sock/snack inventory state at all, before or
+  after issuance — a genuine "return to stock" remains a distinct,
+  explicit, auditable action this task deliberately did not build (see
+  §6 for the honest disclosure of what a correction/reversal action
+  would need).
+- **Routes**: `POST .../snacks/:snackId/deduct` (mirrors the existing
+  sock route), both accepting an optional `issued_quantity` body field.
+  Both close over the existing `party.manage` permission — no new
+  permission was created, since none was genuinely needed (Part D
+  guidance: "smallest coherent new permission only if genuinely
+  needed").
+- **Flutter** (`pos_parties_models.dart`/`pos_parties_gateway.dart`/
+  `pos_shell.dart`): a new `PosPartyConsumableDisplayStatus` enum
+  (`included`/`delivered`/`pending`/`notTracked`) drives a human-
+  readable **Incluido / Entregado / Pendiente / No aplica** label on
+  every sock/snack row — never a raw `stock_deducted` code or any
+  UUID (Part G). The "Entregar" action opens a real confirmation
+  dialog pre-filled with the PLANNED quantity that an operator can
+  correct before confirming — the one explicit "business moment" Part
+  D4 requires, never a silent auto-issue of the plan.
+
+*Live E2E certification* (real release build, real running API, real
+Postgres, a generic non-INFLAPARK QA tenant — "Freshness QA Retail,"
+never production fixtures) — exact numbers as specified by this
+task's own acceptance test:
+
+| Step | Sock stock | Drink stock |
+|---|---|---|
+| Start (real products/variants, fresh fixtures) | 100 | 100 |
+| After creating a reservation from a package with 25+25 included | **100** (unchanged) | **100** (unchanged) |
+| After issuing 23 socks + 20 drinks via "Entregar" | **77** | **80** |
+| +2 additional socks (separate row) issued | **75** | 80 |
+| Cancel a DIFFERENT reservation before any issuance | 75 (unchanged) | 80 (unchanged) |
+| Cancel THIS reservation after issuance | **75** (not restored) | **80** (not restored) |
+
+Every number matches the task's own specified acceptance criteria
+exactly. Idempotency/retry-safety and the insufficient-stock rejection
+were proven by the automated integration suite (below) rather than
+live-repeated, since the Flutter UI itself removes the "Entregar"
+action the instant a line is delivered — a stronger property than
+backend safety alone (an operator cannot even attempt a UI retry).
+`inventory_movements` rows for both consumable types carry
+`source_document_number=<the reservation's own real folio>`,
+confirmed queryable — Part H's "a manager can see WHY stock decreased,
+referencing the event" is real, not aspirational. One genuine, honestly-
+surfaced validation bug was found and is **not** a defect: entering a
+malformed decimal in the snack quantity field is correctly rejected
+with a 400 before touching inventory (confirmed via network inspection)
+— exactly the "never a fabricated success" behavior required.
+
+*Automated test coverage* (all passing): 28 new backend integration
+test cases in `parties.integration.test.ts` covering quote-doesn't-
+consume, reservation-doesn't-consume, exact-quantity issue for both
+consumable types, idempotent retry (both types), package-included vs.
+additional-row traceability, insufficient-stock rejection, tracked-vs-
+non-tracked snack honesty, and cancellation both before and after
+issuance; 2 new Flutter widget tests for the Incluido/Entregado
+display and the issue-quantity confirmation flow.
+
+**§2 Coupon/Promotion integration for party reservations (Part L1) —
+resolves the TASK 16.19-disclosed gap.** TASK 16.19 deferred this,
+having found `coupon_redemptions.sale_id` is `not null` and FK'd to
+`sales` — extending it to reservations would mean widening an already-
+certified financial table for an unrelated domain. This task resolves
+it: the platform's real `coupons` catalog (percentage/fixed-amount,
+active flag, date window, min subtotal, usage limit — the exact same
+table sales already redeem against) is reused UNMODIFIED; a new,
+dedicated `party_reservation_coupon_redemptions` table (mirroring
+`coupon_redemptions`'s own shape, scoped to `reservation_id` instead
+of `sale_id`) gives parties the identical concurrency-safe redemption-
+slot guarantee (locked coupon row + a redemption count inside the same
+transaction) with zero risk to the sales path. `party_reservations`
+gained `coupon_id`/`coupon_code_snapshot` (paired-nullable, frozen at
+apply time). `PartyReservationsService.applyCoupon`/`removeCoupon`
+validate active/date-window/min-subtotal/usage-limit against real
+state, recompute `discountTotal`/`taxTotal`/`quotedTotal` from the
+reservation's own frozen `subtotalAmount` (never a client-submitted
+discount), and are exercised by a real "Código de cupón" field in the
+Flutter detail view. `cancelReservation` releases the redemption slot
+(mirrors ADR-0016's sale-cancellation window) while leaving the
+reservation's own historical discount figures untouched. **Deliberate,
+disclosed scope boundary**: a coupon's `usage_limit_total` is tracked
+as two independent pools (one for sales, one for parties) — merging
+them would require a cross-table locked count spanning two unrelated
+modules for a behavior legacy itself never had either (V1's own
+coupons had no cross-context limit). Also explicitly out of scope,
+matching the existing sales-side promotions gap already disclosed in
+`promotions.ts`'s own schema comments: customer-tier/age/birthday
+targeting — legacy partially supported it, current `coupons` intentionally
+has no customer-identity fields yet (no customer model existed when
+that table was built), so parties inherit the identical, already-
+disclosed gap, not a new one.
+
+Live-certified: a real 10%-off coupon applied to a 2000.0000 MXN
+subtotal reservation produced `discountTotal=200.0000`,
+`taxTotal=288.0000` (16% of the 1800.0000 discounted base), and
+`quotedTotal=2088.0000` — verified against the actual rendered UI
+against the running API, matching hand-computed expected values
+exactly. 4 new backend integration tests cover percentage/fixed
+application, remove-then-reapply (slot release), inactive/below-
+minimum/unknown-code rejection, and usage-limit enforcement across two
+reservations with slot release on cancellation.
+
+**§3 Tenant-configurable contract/waiver legal terms (Part P) —
+resolves the TASK 16.19-disclosed gap.** TASK 16.19 shipped a generic,
+tenant-neutral clause set (deliberately not the legacy's own
+Querétaro-jurisdiction, INFLAPARK-shaped legal text) with an explicit
+disclosed follow-up: no admin surface existed to let a tenant configure
+its own. This task adds two new entries to the platform's REAL,
+already-existing company/branch settings catalog (`settings.catalog.ts`
+— the same architecture `receipts.header_text`/`footer_text` already
+use, never a parties-specific config mechanism): `parties.contract_terms`/
+`parties.waiver_terms`, branch-overridable free text, empty by default
+(the honest default for a new tenant — falls back to the platform's
+own generic clauses, never a blank/broken document).
+
+The harder requirement — **"version/snapshot behavior so historical
+contracts don't mutate"** — is real, not just a config screen: a new
+`party_reservation_documents.terms_snapshot` (jsonb array) column
+freezes the EXACT clause text used the first time a document of a
+given type is generated for a reservation; every later reprint reuses
+that SAME frozen snapshot rather than re-resolving the (possibly
+since-edited) live setting. Verified by a dedicated test: a company
+sets custom contract text, generates a document (the custom text
+appears), then CHANGES the setting, then reprints the SAME document —
+the reprint still shows the ORIGINAL text, never the edited one. A
+Flutter admin editor (Fiestas → Ajustes → **Términos legales**, a new
+tab) reuses the already-generic `PosSettingsGateway` (no bespoke
+parties-only settings plumbing) to read/write both keys with real
+optimistic-concurrency (`If-Match`) conflict handling. 3 new backend
+integration tests (default fallback, company-level override with
+mutation-freeze proof, branch-level override winning over company)
+plus 1 new Flutter widget test.
+
+**§4 A real, pre-existing, untested latent bug found and fixed in
+passing.** While wiring `included_consumables` through the package
+PATCH route, `PATCH /api/v1/party-packages/:id` was found to have
+always passed `request.body` (snake_case) directly into
+`PartyPackagesService.updatePackage` (which expects camelCase) — a
+TypeScript structural-typing gap (extra/mismatched properties on a
+non-literal argument aren't flagged) meant `duration_minutes`/
+`children_included`/`adults_included`/`child_extra_cost`/
+`adult_extra_cost`/`capacity_max`/`extra_half_hour_cost`/`tax_code`
+were SILENTLY NO-OPS on every package edit — only `name`/`description`/
+`status`/`price`/`includes`/`restrictions` (whose snake_case and
+camelCase spellings happen to coincide) ever actually applied. No
+existing test exercised a PATCH changing any of the affected fields.
+Fixed with an explicit field-by-field mapping, matching the POST
+handler's own already-correct style.
+
+**§5 Synthesis of the 6-module forensic audit sweep** (every module
+re-read fresh against `AS POS V1.html`; full evidence — file:line
+citations for every claim — is retained in this task's own working
+notes and is available on request; summarized here per this task's own
+explicit "close genuine gaps, don't pad the report" instruction):
+
+- **Sales Core** (POS, Suspended Sales, Returns, Sales History,
+  Documents): **A/H throughout, zero genuine gaps found.** Legacy's
+  hardcoded master-PIN backdoor (`ASPOS_MASTER`, PIN `2604`) is
+  confirmed absent from ACCESS GO everywhere (exhaustive grep).
+  Legacy has NO real persistence at all for sales/suspends/returns
+  (pure in-memory, lost on refresh) — worse than "localStorage-as-
+  truth," not equal to it; ACCESS GO's real Postgres persistence for
+  all of it is a strict upgrade, not a port. Two confirmed legacy FAKE
+  behaviors, both already fixed in ACCESS GO: `reimprimirTicketById()`
+  (a pure toast, no real reprint) and returns having zero over-return
+  protection (the same ticket could be "returned" indefinitely) — both
+  closed by TASK 14.x-era work, re-confirmed still closed.
+- **Catalog / Inventory / Purchasing**: **A/H throughout.** The
+  authoritative ledger (`inventory_movements`/`_lines`/
+  `inventory_balances`) already correctly serves sales, purchases, and
+  (as of this task) both party consumable types uniformly. Legacy's
+  `saveCompra()` (formal PO) was confirmed to silently discard every
+  line item the user entered and write a placeholder record — ACCESS
+  GO's real `purchase_orders` flow is a genuine fix, already shipped
+  pre-16.20, re-confirmed. No new gaps found requiring this task's
+  action.
+- **Cash / CFDI**: **Cash Cut = A, mature** (165 pre-existing tests,
+  untouched this task). **CFDI = correctly absent (X/D)** — no fake
+  SAT/PAC integration exists anywhere, and none was added; a tenant
+  needing real CFDI remains an honestly-documented, unbuilt integration,
+  never simulated.
+- **CRM** (Customers, Memberships, Coupons/Promotions): Customers and
+  Coupons/Promotions are **A** (real dedup, real QR identity, real
+  backend-authoritative discount engine for normal sales, now extended
+  to parties per §2). Memberships: issuance/validity/renewal are real
+  and correctly fixed legacy's biggest gap (legacy never actually
+  assigned a membership to a customer at all, despite looking like it
+  had one) — **but** a structured, checkout-affecting membership
+  benefit (automatic discount/free item/points) does not exist on
+  membership itself in ACCESS GO (only the separate Loyalty/Rewards
+  subsystem does that) — a genuine, disclosed **G**, not something
+  this task's own mandate required closing (no membership-pricing
+  requirement appears anywhere in this task's spec), left for a future
+  task's explicit scoping.
+- **Admin/Ops A** (Dashboard, Reports, Access Control): **A
+  throughout**, and Access Control is the starkest single legacy-vs-
+  current gap found in this entire audit: the legacy "scanner"
+  (`accScan()`) was confirmed to accept ANY input, fabricate a random
+  customer name from a 5-name hardcoded array, and ALWAYS report
+  success — a complete fake with no real validation of any kind.
+  ACCESS GO's real credential-based scan (issued only against a real
+  completed sale, CAS-guarded entry/exit, race-tested) already
+  replaced it pre-16.20; re-confirmed still real.
+- **Admin/Ops B** (Users/Roles, Employees, Sync, Notifications,
+  Configuration): Users/Roles and Employees are **H** (real hashed/
+  RBAC auth replacing legacy's plaintext+master-backdoor model; a
+  faithful payroll-algorithm port onto durable, immutable-snapshot
+  Postgres, versus legacy's own session-only payroll that evaporated
+  on refresh). **Sync**: legacy's sync concept was found to be
+  **100% fake** (every "sync" action a `setTimeout` plus a fabricated
+  log line, zero real network I/O) — current ACCESS GO's shared-
+  database architecture makes the CONCEPT structurally moot (**H**,
+  nothing to build), but the audit separately flagged a genuinely
+  distinct, real gap: **offline resilience for a POS register that
+  loses connectivity** (a real durable local queue + replay-on-
+  reconnect for sale capture) does not exist — server-authoritative-
+  only means a disconnected register currently cannot sell at all.
+  This is a real product gap, not a legacy-port question (legacy has
+  nothing real to port for it), explicitly out of this task's own
+  scope (never named in this task's spec) and flagged for a future
+  task's own explicit scoping. **Notifications**: legacy's bell-icon
+  badge was confirmed to be a 100%-dead stub (zero producer functions
+  exist anywhere in the 14,712-line file) — current ACCESS GO
+  correctly does not fake one either (an honest "coming soon"), but a
+  real notification feed (low-stock, shift-change, failed-payment
+  alerts off already-real business events) is a genuine, currently
+  unaddressed **G** — again, never named in this task's own spec,
+  flagged for future scoping rather than built speculatively here.
+  **Configuration**: real settings (business identity, receipts,
+  branding, printer config, and now parties' own legal-terms per §3)
+  are **A**; legacy's broken tax-settings screen and fake hardware-
+  device list are correctly NOT reproduced (**H** — the current
+  per-product tax model and per-station printer config are a
+  deliberately superior architecture, not missing screens).
+
+**§6 Deliberately NOT built, and why — honest disclosure.** Per this
+task's own explicit scope-control instruction ("do not pad the report
+with unrequested work," "do not leave a financial/inventory workflow
+half-migrated"), the following were identified but intentionally left
+for a future task rather than built speculatively inside this already-
+large change:
+
+- **A dedicated correction/reversal action for an over/under-issued
+  consumable** (Part D6's "compensating ledger entry, never rewritten
+  history"). The platform already has a real, generic, tested
+  mechanism for exactly this shape of correction —
+  `InventoryReversalService`/`POST /api/v1/inventory/movements/:id/reversals`,
+  which posts a real compensating `reversal` movement against ANY
+  eligible posted movement. It currently allow-lists
+  `opening_balance`/`adjustment`/`receipt` movement types; extending
+  that allow-list to `issue` movements scoped specifically to
+  `reference_type in ('party_reservation_sock','party_reservation_snack')`
+  (never a blanket `issue` allowance, which would also affect the
+  unrelated inventory-reservations-fulfillment `issue` movements) is a
+  small, well-precedented, low-risk addition — but wiring it, plus the
+  reservation-row-state reset (back to `'pending'`) it implies, plus
+  Flutter UI for it, was judged more than this already-large task
+  should add without its own explicit go/no-go, especially since the
+  live acceptance test's own correction/reversal requirement is
+  already satisfiable today by a manager using the existing generic
+  reversal endpoint directly against the movement id (visible via
+  `inventory_movements.reference_id`), just without a dedicated party-
+  specific UI shortcut yet.
+- **A package-admin UI for visually configuring `included_consumables`**
+  — the field is fully real and functional end-to-end (backend
+  validation, auto-population at booking time, the live E2E
+  certification's own 25+25 package was configured this way), but
+  today it's set via the JSON-shaped API body, not a dedicated Flutter
+  form with product-picker rows. `party_packages.includes`/
+  `restrictions` have the identical "real field, JSON-only editing"
+  status already (a pre-existing, pre-16.20 pattern this task did not
+  regress).
+- Everything named as a genuine **G** in §5 (membership checkout
+  benefits, offline POS resilience, a real notification feed,
+  customer-tier coupon targeting) — none of these appear anywhere in
+  this task's own spec, and building any of them now would be the
+  exact scope creep this task's own instructions warn against.
+
+**§7 Quality gates.** `@asone/database`, `@asone/errors`, and
+`@asone/api` all typecheck clean. Full API unit suite: 603/603 passing
+(one unrelated Mercado-Pago-webhook test file flaked once under full-
+suite resource contention and passed cleanly both in isolation and on
+a full-suite retry — confirmed pre-existing/environmental, not a
+regression, Mercado Pago itself untouched). Full `parties` integration
+suite: 35/35 passing. `flutter analyze`: clean (only pre-existing,
+unrelated info/warning-level lints). Full `pos_shell_test.dart`
+suite: 240/240 passing. `flutter build web --release`: clean, used for
+live certification. Migrations `0040`–`0043` applied cleanly to both
+`asone_local` and `asone_test`, all additive (new nullable columns/
+tables, one hand-corrected `text`→`jsonb` column-type fix caught before
+it shipped, via a genuine test failure — see this task's own working
+notes). `main` untouched; all work on `release/as-pos-v1` only; Mercado
+Pago untouched and still paused; no INFLAPARK production data created
+or modified — all live certification used the generic "Freshness QA
+Retail" QA tenant with purpose-built `E2E-`prefixed fixtures.

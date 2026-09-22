@@ -277,6 +277,25 @@ class AppFailure {
       'Este paquete no está disponible para el salón seleccionado.',
       code: 'package_room_not_eligible',
     ),
+    // TASK 16.20 (Part L1) — the identical bug class documented above,
+    // pre-empted this time rather than found live: every new party error
+    // code must have its own case here, or `posPartyErrorMessage`'s own
+    // matching cases can never fire against a real backend response.
+    'coupon_inactive' => const AppFailure(
+      AppErrorKind.validation,
+      'Este cupón no está activo (puede estar desactivado, aún no vigente, o ya vencido).',
+      code: 'coupon_inactive',
+    ),
+    'coupon_min_subtotal_not_met' => const AppFailure(
+      AppErrorKind.validation,
+      'El subtotal de esta reservación no alcanza el mínimo requerido por el cupón.',
+      code: 'coupon_min_subtotal_not_met',
+    ),
+    'coupon_usage_limit_reached' => const AppFailure(
+      AppErrorKind.validation,
+      'Este cupón ya alcanzó su límite de usos.',
+      code: 'coupon_usage_limit_reached',
+    ),
     // TASK 14.4 Wave 2: "People" (Empleados/Horarios/Checador/Nómina) —
     // the four genuinely new codes `people.types.ts`'s `PeopleErrorCode`
     // introduces beyond the generic ones already mapped above

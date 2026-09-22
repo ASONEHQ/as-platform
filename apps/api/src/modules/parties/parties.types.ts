@@ -70,6 +70,20 @@ export interface PartyRoomRow {
 export const partyPackageTaxCodes = ['IVA_GENERAL', 'IVA_EXEMPT'] as const;
 export type PartyPackageTaxCode = (typeof partyPackageTaxCodes)[number];
 
+/** TASK 16.20 (Part D4) — one planned consumable entry inside a package's
+ * `includedConsumables` array. `productId`/`productVariantId` are honest
+ * hints only: `createReservation` re-resolves a real inventory variant at
+ * booking time rather than trusting a stale package-level snapshot (a
+ * package's catalog linkage can change after the package was configured).
+ */
+export interface PartyPackageIncludedConsumable {
+  kind: 'sock' | 'snack';
+  label: string;
+  quantity: number;
+  productId?: string;
+  size?: string;
+}
+
 export interface PartyPackageRow {
   id: string;
   companyId: string;
@@ -90,6 +104,7 @@ export interface PartyPackageRow {
   taxCode: PartyPackageTaxCode;
   includes: Readonly<Record<string, unknown>> | null;
   restrictions: Readonly<Record<string, unknown>> | null;
+  includedConsumables: readonly PartyPackageIncludedConsumable[] | null;
   createdBy: string;
   updatedBy: string;
   version: bigint;
@@ -122,6 +137,8 @@ export interface PartyReservationRow {
   subtotalAmount: string | null;
   discountTotal: string;
   taxTotal: string;
+  couponId: string | null;
+  couponCodeSnapshot: string | null;
   quotedTotal: string;
   currencyCode: string;
   notes: string | null;
@@ -146,6 +163,11 @@ export interface PartyReservationSnackRow {
   lineTotal: string;
   taxSnapshot: Readonly<Record<string, unknown>> | null;
   taxTotal: string;
+  productVariantId: string | null;
+  stockDeducted: PartySockDeductionStatus;
+  stockDeductedAt: Date | null;
+  issuedQuantity: string | null;
+  includedInPackage: boolean;
   createdAt: Date;
 }
 
@@ -158,6 +180,8 @@ export interface PartyReservationSockRow {
   productVariantId: string | null;
   stockDeducted: PartySockDeductionStatus;
   stockDeductedAt: Date | null;
+  issuedQuantity: number | null;
+  includedInPackage: boolean;
   createdAt: Date;
 }
 
@@ -203,7 +227,11 @@ export type PartyErrorCode =
   | 'inventory_location_not_found'
   // TASK 16.19
   | 'capacity_exceeded'
-  | 'package_room_not_eligible';
+  | 'package_room_not_eligible'
+  // TASK 16.20 (Part L1)
+  | 'coupon_inactive'
+  | 'coupon_min_subtotal_not_met'
+  | 'coupon_usage_limit_reached';
 
 export class PartyError extends Error {
   constructor(

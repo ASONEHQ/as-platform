@@ -16,12 +16,14 @@ describe('settings catalog', () => {
   // `AS POS V1.html`'s operator-uploaded business logo) — 14 → 15.
   // TASK 16.7B added `receipts.paper_width_mm` (thermal-printer readiness:
   // real 58mm/80mm paper width driving `buildReceiptHtml`) — 15 → 16.
-  it('defines the closed public version 1 catalog with 16 unique keys', () => {
+  // TASK 16.20 added `parties.contract_terms`/`parties.waiver_terms`
+  // (Part P: tenant-configurable party contract/waiver legal text) — 16 → 18.
+  it('defines the closed public version 1 catalog with 18 unique keys', () => {
     expect(SETTINGS_CATALOG_VERSION).toBe(1);
-    expect(settingsCatalog).toHaveLength(16);
-    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(16);
+    expect(settingsCatalog).toHaveLength(18);
+    expect(new Set(settingsCatalog.map(({ key }) => key)).size).toBe(18);
     expect(settingsCatalog.map((definition) => definition.public)).toEqual(
-      Array.from({ length: 16 }, () => true),
+      Array.from({ length: 18 }, () => true),
     );
   });
 

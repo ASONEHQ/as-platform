@@ -141,6 +141,37 @@ export const settingsCatalog = [
     normalize: (value: unknown) => boundedString(500)('receipts.footer_text', value),
   },
   {
+    // TASK 16.20 (Part P) — resolves the TASK 16.19-disclosed gap:
+    // tenant-configurable party contract terms, via this SAME real
+    // company/branch settings architecture every other tenant-facing
+    // text setting already uses (`receipts.header_text`'s own precedent
+    // immediately above). Empty (the honest default for a new tenant)
+    // means "use the platform's own generic, tenant-neutral clause set"
+    // (`party-reservations.service.ts`'s `DEFAULT_CONTRACT_CLAUSES`) —
+    // never a blank/broken document. A non-empty value is one clause per
+    // line. See `party_reservation_documents.terms_snapshot`'s own doc
+    // comment for how a reservation's already-generated document is
+    // frozen against a LATER change to this setting.
+    key: 'parties.contract_terms',
+    type: 'string',
+    technicalDefault: '',
+    branchOverride: true,
+    public: true,
+    resolveDefault: constantDefault(''),
+    normalize: (value: unknown) => boundedString(20_000)('parties.contract_terms', value),
+  },
+  {
+    // TASK 16.20 (Part P) — the waiver/deslinde counterpart to
+    // `parties.contract_terms` immediately above; same semantics.
+    key: 'parties.waiver_terms',
+    type: 'string',
+    technicalDefault: '',
+    branchOverride: true,
+    public: true,
+    resolveDefault: constantDefault(''),
+    normalize: (value: unknown) => boundedString(20_000)('parties.waiver_terms', value),
+  },
+  {
     key: 'receipts.show_company_tax_id',
     type: 'boolean',
     technicalDefault: false,

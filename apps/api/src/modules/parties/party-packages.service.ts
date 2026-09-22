@@ -9,6 +9,7 @@ import {
   PartyError,
   partyPackageTaxCodes,
   type PartyMutationContext,
+  type PartyPackageIncludedConsumable,
   type PartyPackageRow,
   type PartyPackageStatus,
 } from './parties.types.js';
@@ -30,6 +31,41 @@ function jsonObject(value: unknown, field: string): Readonly<Record<string, unkn
   if (typeof value !== 'object' || Array.isArray(value))
     throw new PartyError('validation_error', `${field} must be a JSON object.`);
   return value as Readonly<Record<string, unknown>>;
+}
+
+/** TASK 16.20 (Part D4) — validates a package's `included_consumables`
+ * plan. This is intentionally a lightweight JSON-shape check, not an FK
+ * validation: a bogus/retired `productId` is never rejected here (matches
+ * `includes`/`restrictions`' own established freeform-JSON precedent) —
+ * it simply resolves to an honest `not_applicable`/no-variant row when a
+ * reservation is actually created from this package
+ * (`PartyReservationsService.resolveSnackInventory`/
+ * `productVariantForInventory`), never a silent fabrication. */
+function parseIncludedConsumables(value: unknown, field: string): readonly PartyPackageIncludedConsumable[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value)) throw new PartyError('validation_error', `${field} must be a JSON array.`);
+  return value.map((entry, index) => {
+    const label = `${field}[${String(index)}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
+      throw new PartyError('validation_error', `${label} must be a JSON object.`);
+    const record = entry as Record<string, unknown>;
+    if (record.kind !== 'sock' && record.kind !== 'snack')
+      throw new PartyError('validation_error', `${label}.kind must be "sock" or "snack".`);
+    const entryLabel = nonBlank(String(record.label ?? ''), `${label}.label`, 200);
+    if (typeof record.quantity !== 'number' || !Number.isFinite(record.quantity) || record.quantity <= 0)
+      throw new PartyError('validation_error', `${label}.quantity must be a positive number.`);
+    if (record.productId !== undefined && typeof record.productId !== 'string')
+      throw new PartyError('validation_error', `${label}.productId must be a string.`);
+    if (record.size !== undefined && typeof record.size !== 'string')
+      throw new PartyError('validation_error', `${label}.size must be a string.`);
+    return {
+      kind: record.kind,
+      label: entryLabel,
+      quantity: record.quantity,
+      ...(typeof record.productId === 'string' ? { productId: record.productId } : {}),
+      ...(typeof record.size === 'string' ? { size: record.size } : {}),
+    };
+  });
 }
 
 function packagePayload(value: PartyPackageRow): Readonly<Record<string, unknown>> {
@@ -68,6 +104,7 @@ export class PartyPackagesService {
       taxCode?: string;
       includes?: unknown;
       restrictions?: unknown;
+      includedConsumables?: unknown;
     },
   ): Promise<{ value: PartyPackageRow; replayed: boolean }> {
     if (input.branchId !== undefined && !branchIds.includes(input.branchId))
@@ -88,6 +125,7 @@ export class PartyPackagesService {
     const taxCode = normalizeTaxCode(input.taxCode ?? 'IVA_GENERAL');
     const includes = jsonObject(input.includes, 'includes');
     const restrictions = jsonObject(input.restrictions, 'restrictions');
+    const includedConsumables = parseIncludedConsumables(input.includedConsumables, 'included_consumables');
     const id = input.id ?? randomUUID();
     const requestHash = hash({
       branchId: input.branchId ?? null,
@@ -126,6 +164,7 @@ export class PartyPackagesService {
             taxCode,
             includes,
             restrictions,
+            includedConsumables,
             actorId: context.actorId,
             timestamp: context.timestamp,
           });
@@ -178,6 +217,7 @@ export class PartyPackagesService {
       taxCode?: string;
       includes?: unknown;
       restrictions?: unknown;
+      includedConsumables?: unknown;
     },
   ): Promise<PartyPackageRow> {
     return this.repository.transaction(async (client) => {
@@ -211,6 +251,9 @@ export class PartyPackagesService {
         ...(input.taxCode === undefined ? {} : { taxCode: normalizeTaxCode(input.taxCode) }),
         ...(input.includes === undefined ? {} : { includes: jsonObject(input.includes, 'includes') }),
         ...(input.restrictions === undefined ? {} : { restrictions: jsonObject(input.restrictions, 'restrictions') }),
+        ...(input.includedConsumables === undefined
+          ? {}
+          : { includedConsumables: parseIncludedConsumables(input.includedConsumables, 'included_consumables') }),
         updatedBy: context.actorId,
         timestamp: context.timestamp,
       });

@@ -55,5 +55,16 @@ void main() {
       expect(failure.code, 'package_room_not_eligible');
       expect(failure.kind, AppErrorKind.validation);
     });
+
+    // TASK 16.20 (Part L1) — pre-empting the identical bug class this file
+    // already found twice (price_conflict, capacity_exceeded/
+    // package_room_not_eligible) for the 3 new coupon rejection codes.
+    for (final code in ['coupon_inactive', 'coupon_min_subtotal_not_met', 'coupon_usage_limit_reached']) {
+      test('$code decodes to its own real code, never the generic "unknown" fallback', () {
+        final failure = AppFailure.fromCode(code);
+        expect(failure.code, code);
+        expect(failure.kind, AppErrorKind.validation);
+      });
+    }
   });
 }

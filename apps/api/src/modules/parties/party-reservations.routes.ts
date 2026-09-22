@@ -23,6 +23,10 @@ interface SockParams {
   id: string;
   sockId: string;
 }
+interface SnackParams {
+  id: string;
+  snackId: string;
+}
 
 const errorSchema = { type: 'object', additionalProperties: true } as const;
 const commonErrors = { 400: errorSchema, 401: errorSchema, 403: errorSchema, 404: errorSchema, 409: errorSchema } as const;
@@ -73,6 +77,8 @@ function reservationHttp(value: PartyReservationRow): Readonly<Record<string, un
     subtotal_amount: value.subtotalAmount,
     discount_total: value.discountTotal,
     tax_total: value.taxTotal,
+    coupon_id: value.couponId,
+    coupon_code_snapshot: value.couponCodeSnapshot,
     quoted_total: value.quotedTotal,
     currency_code: value.currencyCode,
     notes: value.notes,
@@ -95,6 +101,11 @@ function snackHttp(value: PartyReservationSnackRow): Readonly<Record<string, unk
     line_total: value.lineTotal,
     tax_snapshot: value.taxSnapshot,
     tax_total: value.taxTotal,
+    product_variant_id: value.productVariantId,
+    stock_deducted: value.stockDeducted,
+    stock_deducted_at: value.stockDeductedAt?.toISOString() ?? null,
+    issued_quantity: value.issuedQuantity,
+    included_in_package: value.includedInPackage,
     created_at: value.createdAt.toISOString(),
   };
 }
@@ -107,6 +118,8 @@ function sockHttp(value: PartyReservationSockRow): Readonly<Record<string, unkno
     product_variant_id: value.productVariantId,
     stock_deducted: value.stockDeducted,
     stock_deducted_at: value.stockDeductedAt?.toISOString() ?? null,
+    issued_quantity: value.issuedQuantity,
+    included_in_package: value.includedInPackage,
     created_at: value.createdAt.toISOString(),
   };
 }
@@ -492,6 +505,55 @@ export function registerPartyReservationRoutes(
       }),
   );
 
+  // --- Coupons (TASK 16.20 Part L1) --------------------------------------------------
+
+  app.post<{ Params: Params; Body: { code: string } }>(
+    '/api/v1/party-reservations/:id/coupon',
+    {
+      schema: {
+        tags: ['parties'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['code'],
+          properties: { code: { type: 'string', minLength: 1, maxLength: 64 } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.manage');
+        const updated = await service.applyCoupon(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          { code: request.body.code },
+        );
+        return reply.header('etag', `"${updated.version.toString()}"`).send(successResponse(reservationHttp(updated), request.requestContext));
+      }),
+  );
+
+  app.delete<{ Params: Params }>(
+    '/api/v1/party-reservations/:id/coupon',
+    {
+      schema: {
+        tags: ['parties'],
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.manage');
+        const updated = await service.removeCoupon(mutationContext(request, auth.companyId, auth.userId), auth.permittedBranchIds, request.params.id);
+        return reply.header('etag', `"${updated.version.toString()}"`).send(successResponse(reservationHttp(updated), request.requestContext));
+      }),
+  );
+
   // --- Snacks ------------------------------------------------------------------------
 
   app.post<{ Params: Params; Body: { product_id?: string; name_snapshot?: string; unit_price_snapshot?: string; quantity: string } }>(
@@ -588,12 +650,23 @@ export function registerPartyReservationRoutes(
       }),
   );
 
-  app.post<{ Params: SockParams }>(
+  app.post<{ Params: SockParams; Body: { issued_quantity?: number } }>(
     '/api/v1/party-reservations/:id/socks/:sockId/deduct',
     {
       schema: {
         tags: ['parties'],
         params: { type: 'object', required: ['id', 'sockId'], properties: { id: { type: 'string' }, sockId: { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            // TASK 16.20 (Part D4) — the ACTUAL amount an operator is
+            // issuing, independently of the row's own planned `quantity`
+            // (e.g. a package included 25 but only 23 attended). Omit to
+            // issue exactly the planned quantity (pre-16.20 behavior).
+            issued_quantity: { type: 'integer', minimum: 1 },
+          },
+        },
         response: { 200: responseSchema, ...commonErrors },
       },
     },
@@ -606,8 +679,40 @@ export function registerPartyReservationRoutes(
           auth.permittedBranchIds,
           request.params.id,
           request.params.sockId,
+          request.body.issued_quantity === undefined ? undefined : { issuedQuantity: request.body.issued_quantity },
         );
         return reply.send(successResponse(sockHttp(updated), request.requestContext));
+      }),
+  );
+
+  app.post<{ Params: SnackParams; Body: { issued_quantity?: string } }>(
+    '/api/v1/party-reservations/:id/snacks/:snackId/deduct',
+    {
+      schema: {
+        tags: ['parties'],
+        params: { type: 'object', required: ['id', 'snackId'], properties: { id: { type: 'string' }, snackId: { type: 'string' } } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            issued_quantity: { type: 'string', pattern: '^(?:0|[1-9]\\d*)(?:\\.\\d{1,6})?$' },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.manage');
+        const updated = await service.deductSnack(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          request.params.id,
+          request.params.snackId,
+          request.body.issued_quantity === undefined ? undefined : { issuedQuantity: request.body.issued_quantity },
+        );
+        return reply.send(successResponse(snackHttp(updated), request.requestContext));
       }),
   );
 

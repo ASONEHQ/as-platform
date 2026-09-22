@@ -34,6 +34,13 @@ String posPartyErrorMessage(ApiException error, {String? fallback}) {
       return 'El número de invitados excede el aforo del salón o del paquete seleccionado.';
     case 'package_room_not_eligible':
       return 'Este paquete no está disponible para el salón seleccionado.';
+    // TASK 16.20 (Part L1) — honest, specific coupon rejections.
+    case 'coupon_inactive':
+      return 'Este cupón no está activo (puede estar desactivado, aún no vigente, o ya vencido).';
+    case 'coupon_min_subtotal_not_met':
+      return 'El subtotal de esta reservación no alcanza el mínimo requerido por el cupón.';
+    case 'coupon_usage_limit_reached':
+      return 'Este cupón ya alcanzó su límite de usos.';
     case 'resource_conflict':
       return fallback ?? 'La operación no se pudo completar porque el recurso está en un estado inesperado.';
     default:
@@ -136,6 +143,16 @@ abstract interface class PosPartiesGateway {
   /// (`party.cancel`) — [reasonCode] is required by the backend schema.
   Future<PosPartyCancellationResult> cancelReservation(String id, {required String reasonCode, required int version});
 
+  // --- Coupon (TASK 16.20 Part L1) ------------------------------------------
+
+  /// `POST /api/v1/party-reservations/{id}/coupon` (`party.manage`) —
+  /// applies a real, backend-validated coupon from the platform's own
+  /// coupons catalog; recomputes discount/tax/total server-side.
+  Future<PosPartyReservation> applyCoupon(String reservationId, String code);
+
+  /// `DELETE /api/v1/party-reservations/{id}/coupon` (`party.manage`).
+  Future<PosPartyReservation> removeCoupon(String reservationId);
+
   // --- Snacks --------------------------------------------------------------
 
   /// `POST /api/v1/party-reservations/{id}/snacks` (`party.manage`).
@@ -143,6 +160,14 @@ abstract interface class PosPartiesGateway {
 
   /// `GET /api/v1/party-reservations/{id}/snacks` (`party.read`).
   Future<List<PosPartySnack>> listSnacks(String reservationId);
+
+  /// `POST /api/v1/party-reservations/{id}/snacks/{snackId}/deduct`
+  /// (`party.manage`) — TASK 16.20, the snack/drink mirror of [deductSock]:
+  /// a real, one-way stock deduction, backend-guarded against
+  /// double-deduction. [issuedQuantity] overrides the planned quantity
+  /// (e.g. the package included 25, only 20 were actually handed out);
+  /// omit to issue exactly the planned amount.
+  Future<PosPartySnack> deductSnack(String reservationId, String snackId, {String? issuedQuantity});
 
   // --- Socks -----------------------------------------------------------------
 
@@ -155,7 +180,10 @@ abstract interface class PosPartiesGateway {
   /// `POST /api/v1/party-reservations/{id}/socks/{sockId}/deduct`
   /// (`party.manage`) — a real, one-way stock deduction (recovery doc
   /// Capability 11); the backend itself guards against double-deduction.
-  Future<PosPartySock> deductSock(String reservationId, String sockId);
+  /// [issuedQuantity] overrides the planned quantity (TASK 16.20 — e.g. a
+  /// package included 25 socks, only 23 children attended); omit to issue
+  /// exactly the planned amount (pre-16.20 behavior).
+  Future<PosPartySock> deductSock(String reservationId, String sockId, {int? issuedQuantity});
 
   // --- Payments / balance ------------------------------------------------------
 
@@ -399,6 +427,18 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
   }
 
   @override
+  Future<PosPartyReservation> applyCoupon(String reservationId, String code) async {
+    final envelope = await _client.postJson('/api/v1/party-reservations/$reservationId/coupon', body: {'code': code});
+    return _decodeReservation(envelope);
+  }
+
+  @override
+  Future<PosPartyReservation> removeCoupon(String reservationId) async {
+    final envelope = await _client.deleteJson('/api/v1/party-reservations/$reservationId/coupon');
+    return _decodeReservation(envelope);
+  }
+
+  @override
   Future<PosPartySnack> addSnack(String reservationId, PosPartySnackInput input) async {
     final envelope = await _client.postJson(
       '/api/v1/party-reservations/$reservationId/snacks',
@@ -422,6 +462,19 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
   }
 
   @override
+  Future<PosPartySnack> deductSnack(String reservationId, String snackId, {String? issuedQuantity}) async {
+    final envelope = await _client.postJson(
+      '/api/v1/party-reservations/$reservationId/snacks/$snackId/deduct',
+      body: issuedQuantity == null ? const {} : {'issued_quantity': issuedQuantity},
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing snack data.');
+    }
+    return PosPartySnack.fromJson(data);
+  }
+
+  @override
   Future<PosPartySock> addSock(String reservationId, PosPartySockInput input) async {
     final envelope = await _client.postJson(
       '/api/v1/party-reservations/$reservationId/socks',
@@ -441,8 +494,11 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
   }
 
   @override
-  Future<PosPartySock> deductSock(String reservationId, String sockId) async {
-    final envelope = await _client.postJson('/api/v1/party-reservations/$reservationId/socks/$sockId/deduct');
+  Future<PosPartySock> deductSock(String reservationId, String sockId, {int? issuedQuantity}) async {
+    final envelope = await _client.postJson(
+      '/api/v1/party-reservations/$reservationId/socks/$sockId/deduct',
+      body: issuedQuantity == null ? const {} : {'issued_quantity': issuedQuantity},
+    );
     return _decodeSock(envelope);
   }
 
@@ -609,11 +665,23 @@ class EmptyPosPartiesGateway implements PosPartiesGateway {
       Future.error(StateError('No parties gateway is configured.'));
 
   @override
+  Future<PosPartyReservation> applyCoupon(String reservationId, String code) =>
+      Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<PosPartyReservation> removeCoupon(String reservationId) =>
+      Future.error(StateError('No parties gateway is configured.'));
+
+  @override
   Future<PosPartySnack> addSnack(String reservationId, PosPartySnackInput input) =>
       Future.error(StateError('No parties gateway is configured.'));
 
   @override
   Future<List<PosPartySnack>> listSnacks(String reservationId) async => const [];
+
+  @override
+  Future<PosPartySnack> deductSnack(String reservationId, String snackId, {String? issuedQuantity}) =>
+      Future.error(StateError('No parties gateway is configured.'));
 
   @override
   Future<PosPartySock> addSock(String reservationId, PosPartySockInput input) =>
@@ -623,7 +691,7 @@ class EmptyPosPartiesGateway implements PosPartiesGateway {
   Future<List<PosPartySock>> listSocks(String reservationId) async => const [];
 
   @override
-  Future<PosPartySock> deductSock(String reservationId, String sockId) =>
+  Future<PosPartySock> deductSock(String reservationId, String sockId, {int? issuedQuantity}) =>
       Future.error(StateError('No parties gateway is configured.'));
 
   @override

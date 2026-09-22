@@ -193,7 +193,9 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     await database.pool.query('delete from party_reservation_payments where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from party_reservation_socks where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from party_reservation_snacks where company_id=any($1)', [[companyId, otherCompanyId]]);
+    await database.pool.query('delete from party_reservation_coupon_redemptions where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from party_reservations where company_id=any($1)', [[companyId, otherCompanyId]]);
+    await database.pool.query('delete from coupons where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from party_packages where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from party_rooms where company_id=any($1)', [[companyId, otherCompanyId]]);
     await database.pool.query('delete from cash_movements where company_id=any($1)', [[companyId, otherCompanyId]]);
@@ -611,6 +613,487 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
           notes: 'should fail',
         }),
       ).rejects.toMatchObject({ code: 'invalid_reservation_state' });
+    });
+  });
+
+  // TASK 16.20 (Parts D-H) — the mandatory Event Consumable Inventory
+  // Certification. Exercises the exact acceptance numbers the task itself
+  // specifies: a generic sock product and a generic snack/drink product,
+  // each starting at 100 units; a package including 25 of each; quote and
+  // reservation-creation must NOT move stock; issuing 23 socks + 20 drinks
+  // must bring both to exactly 77/80; a retried issue must NOT
+  // double-decrement; +2 additional socks must bring the total to 75;
+  // cancellation before/after issuance must behave honestly.
+  describe('TASK 16.20 — event consumable inventory certification', () => {
+    let sockVariantId: string;
+    let drinkVariantId: string;
+    let drinkProductId: string;
+    let untrackedSnackAgainId: string;
+    let eventLocationId: string;
+    let certPackageId: string;
+
+    async function balanceOf(variantId: string): Promise<string> {
+      const row = await database.pool.query<{ quantity_on_hand: string }>(
+        `select quantity_on_hand::text from inventory_balances where company_id=$1 and branch_id=$2 and product_variant_id=$3`,
+        [companyId, branchId, variantId],
+      );
+      return row.rows[0]?.quantity_on_hand ?? 'MISSING';
+    }
+    async function movementCount(referenceType: string, referenceId: string): Promise<number> {
+      const row = await database.pool.query<{ count: string }>(
+        `select count(*)::text as count from inventory_movements where company_id=$1 and reference_type=$2 and reference_id=$3`,
+        [companyId, referenceType, referenceId],
+      );
+      return Number(row.rows[0]?.count ?? '0');
+    }
+
+    beforeAll(async () => {
+      // A SEPARATE inventory location from the other describe blocks'
+      // fixture, so this certification's balances are never polluted by
+      // (or pollute) unrelated tests sharing the same branch.
+      eventLocationId = randomUUID();
+      await database.pool.query(
+        `insert into inventory_locations (id,company_id,branch_id,code,normalized_code,name,location_type,status,allows_receiving,allows_issuing,is_default,created_by,updated_by)
+         values($1,$2,$3,'EVENTCERT','eventcert','Event Certification','event_storage','active',true,true,false,$4,$4)`,
+        [eventLocationId, companyId, branchId, userId],
+      );
+      // `postPartySockDeduction`/`postPartySnackDeduction` both resolve the
+      // branch's single active `is_default=true` location — flip the
+      // existing default fixture location off and this new one on, so
+      // this certification's movements land here, not on `inventoryLocationId`.
+      await database.pool.query(`update inventory_locations set is_default=false where id=$1`, [inventoryLocationId]);
+      await database.pool.query(`update inventory_locations set is_default=true where id=$1`, [eventLocationId]);
+
+      const sockProductId = randomUUID();
+      drinkProductId = randomUUID();
+      const untrackedSnackProductId = randomUUID();
+      await database.pool.query(
+        `insert into products
+         (id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+         values($1,$2,'CERT-SOCK','cert-sock','Certification Sock','simple',true,'IVA_EXEMPT','active',$3,$3),
+               ($4,$2,'CERT-DRINK','cert-drink','Certification Drink','simple',true,'IVA_GENERAL','active',$3,$3),
+               ($5,$2,'CERT-UNTRACKED','cert-untracked','Untracked Snack','simple',false,'IVA_GENERAL','active',$3,$3)`,
+        [sockProductId, companyId, userId, drinkProductId, untrackedSnackProductId],
+      );
+      await database.pool.query(
+        `insert into product_prices (id,company_id,product_id,amount,currency_code,status,created_by,updated_by)
+         values($1,$2,$3,'15.0000','MXN','active',$4,$4),($5,$2,$6,'0.0000','MXN','active',$4,$4)`,
+        [randomUUID(), companyId, drinkProductId, userId, randomUUID(), untrackedSnackProductId],
+      );
+      sockVariantId = randomUUID();
+      drinkVariantId = randomUUID();
+      await database.pool.query(
+        `insert into product_variants
+         (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+         values($1,$2,$3,'CERT-SOCK-DEFAULT','cert-sock-default','Certification Sock','unit',0,true,5,'MXN',true,$4,'active',$5,$5),
+               ($6,$2,$7,'CERT-DRINK-DEFAULT','cert-drink-default','Certification Drink','unit',6,true,3,'MXN',true,$8,'active',$5,$5)`,
+        [sockVariantId, companyId, sockProductId, '4'.repeat(64), userId, drinkVariantId, drinkProductId, '5'.repeat(64)],
+      );
+      await database.pool.query(
+        `insert into inventory_balances (id,company_id,branch_id,inventory_location_id,product_variant_id,quantity_on_hand,quantity_reserved,quantity_in_transit,average_unit_cost,version)
+         values($1,$2,$3,$4,$5,'100',0,0,0,1),($6,$2,$3,$4,$7,'100.000000',0,0,0,1)`,
+        [randomUUID(), companyId, branchId, eventLocationId, sockVariantId, randomUUID(), drinkVariantId],
+      );
+      untrackedSnackAgainId = untrackedSnackProductId;
+
+      // The package: 25 socks + 25 drinks included, auto-planned (never
+      // auto-consumed) at reservation-creation time (Part D4/E).
+      const pkgResult = await packages.createPackage(context(companyId, userId), branchIds, `pkg-cert-${randomUUID()}`, {
+        branchId,
+        code: 'CERT-PKG',
+        name: 'Certification Package',
+        price: '1000.0000',
+        durationMinutes: 60,
+        includedConsumables: [
+          { kind: 'sock', label: 'Certification Sock', quantity: 25, productId: sockProductId, size: 'Unica' },
+          { kind: 'snack', label: 'Certification Drink', quantity: 25, productId: drinkProductId },
+        ],
+      });
+      certPackageId = pkgResult.value.id;
+      expect(pkgResult.value.includedConsumables).toHaveLength(2);
+    });
+
+    afterAll(async () => {
+      await database.pool.query(`update inventory_locations set is_default=false where id=$1`, [eventLocationId]);
+      await database.pool.query(`update inventory_locations set is_default=true where id=$1`, [inventoryLocationId]);
+    });
+
+    it('quoting a package never touches inventory (a quote is a pure computation, no DB write at all)', async () => {
+      const pkg = await packages.packageRow(companyId, branchIds, certPackageId);
+      packageQuoteInput(pkg, { children: 0, adults: 0, extraHalfHours: 0 });
+      expect(await balanceOf(sockVariantId)).toBe('100.000000');
+      expect(await balanceOf(drinkVariantId)).toBe('100.000000');
+    });
+
+    it('creating a reservation from the package auto-plans socks/snacks WITHOUT moving any inventory', async () => {
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-cert-create-${randomUUID()}`, {
+        branchId,
+        roomId: roomB,
+        packageId: certPackageId,
+        eventDate: '2026-12-10',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      const detail = await reservations.reservationDetail(companyId, branchIds, created.value.id);
+      expect(detail.socks).toHaveLength(1);
+      expect(detail.socks[0]?.quantity).toBe(25);
+      expect(detail.socks[0]?.includedInPackage).toBe(true);
+      expect(detail.socks[0]?.stockDeducted).toBe('pending');
+      expect(detail.snacks).toHaveLength(1);
+      expect(detail.snacks[0]?.quantity).toBe('25.000000');
+      expect(detail.snacks[0]?.includedInPackage).toBe(true);
+      expect(detail.snacks[0]?.stockDeducted).toBe('pending');
+      // Stock unchanged by mere reservation existence (Part D3).
+      expect(await balanceOf(sockVariantId)).toBe('100.000000');
+      expect(await balanceOf(drinkVariantId)).toBe('100.000000');
+
+      // Cancel-before-issuance certification, on this SAME reservation:
+      // no sock/snack was ever deducted, so cancelling posts NO
+      // compensating movement at all (nothing to compensate).
+      await reservations.cancelReservation(context(companyId, userId), branchIds, `cancel-cert-preissue-${randomUUID()}`, created.value.id, created.value.version, {
+        reasonCode: 'customer_request',
+      });
+      expect(await balanceOf(sockVariantId)).toBe('100.000000');
+      expect(await balanceOf(drinkVariantId)).toBe('100.000000');
+      expect(await movementCount('party_reservation_sock', detail.socks[0]?.id ?? '')).toBe(0);
+      expect(await movementCount('party_reservation_snack', detail.snacks[0]?.id ?? '')).toBe(0);
+    });
+
+    describe('the full issue/retry/additional/cancel-after-issue lifecycle', () => {
+      let reservationId: string;
+      let sockLineId: string;
+      let snackLineId: string;
+
+      beforeAll(async () => {
+        const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-cert-lifecycle-${randomUUID()}`, {
+          branchId,
+          roomId: roomB,
+          packageId: certPackageId,
+          eventDate: '2026-12-11',
+          startTime: '09:00',
+          endTime: '11:00',
+        });
+        reservationId = created.value.id;
+        const detail = await reservations.reservationDetail(companyId, branchIds, reservationId);
+        sockLineId = detail.socks[0]?.id ?? '';
+        snackLineId = detail.snacks[0]?.id ?? '';
+      });
+
+      it('issuing 23 of 25 planned socks and 20 of 25 planned drinks brings stock to exactly 77/80', async () => {
+        const sockDeducted = await reservations.deductSock(context(companyId, userId), branchIds, reservationId, sockLineId, {
+          issuedQuantity: 23,
+        });
+        expect(sockDeducted.stockDeducted).toBe('deducted');
+        expect(sockDeducted.issuedQuantity).toBe(23);
+        expect(await balanceOf(sockVariantId)).toBe('77.000000');
+
+        const snackDeducted = await reservations.deductSnack(context(companyId, userId), branchIds, reservationId, snackLineId, {
+          issuedQuantity: '20',
+        });
+        expect(snackDeducted.stockDeducted).toBe('deducted');
+        expect(snackDeducted.issuedQuantity).toBe('20.000000');
+        expect(await balanceOf(drinkVariantId)).toBe('80.000000');
+
+        // Exactly one movement each — traceable to this exact reservation.
+        expect(await movementCount('party_reservation_sock', sockLineId)).toBe(1);
+        expect(await movementCount('party_reservation_snack', snackLineId)).toBe(1);
+      });
+
+      it('retrying the same issue never double-decrements (idempotent, stays 77/80)', async () => {
+        await expect(
+          reservations.deductSock(context(companyId, userId), branchIds, reservationId, sockLineId, { issuedQuantity: 23 }),
+        ).rejects.toMatchObject({ code: 'resource_conflict' });
+        await expect(
+          reservations.deductSnack(context(companyId, userId), branchIds, reservationId, snackLineId, { issuedQuantity: '20' }),
+        ).rejects.toMatchObject({ code: 'resource_conflict' });
+        expect(await balanceOf(sockVariantId)).toBe('77.000000');
+        expect(await balanceOf(drinkVariantId)).toBe('80.000000');
+        expect(await movementCount('party_reservation_sock', sockLineId)).toBe(1);
+        expect(await movementCount('party_reservation_snack', snackLineId)).toBe(1);
+      });
+
+      it('additional socks beyond the plan are a SEPARATE, traceable row — +2 brings stock to exactly 75', async () => {
+        const extra = await reservations.addSock(context(companyId, userId), branchIds, reservationId, {
+          size: 'Unica',
+          quantity: 2,
+          productVariantId: sockVariantId,
+        });
+        expect(extra.includedInPackage).toBe(false);
+        const extraDeducted = await reservations.deductSock(context(companyId, userId), branchIds, reservationId, extra.id);
+        expect(extraDeducted.issuedQuantity).toBe(2);
+        expect(await balanceOf(sockVariantId)).toBe('75.000000');
+        // The ORIGINAL planned row's own history is untouched — never
+        // rewritten to absorb the extra amount.
+        const originalStillIssued = await partiesRepository.lockSock(
+          { query: (sql, values) => database.pool.query(sql, values as unknown[]) },
+          companyId,
+          reservationId,
+          sockLineId,
+        );
+        expect(originalStillIssued?.issuedQuantity).toBe(23);
+      });
+
+      it('a non-inventory-tracked snack honestly stays not_applicable and cannot be deducted', async () => {
+        const custom = await reservations.addSnack(context(companyId, userId), branchIds, reservationId, {
+          productId: untrackedSnackAgainId,
+          quantity: '1',
+        });
+        expect(custom.stockDeducted).toBe('not_applicable');
+        // `productVariantId===null` is checked before `stockDeducted`
+        // (mirrors `deductSock`'s own check order exactly) — an honest
+        // "nothing to deduct" rejection either way, never a fabricated
+        // success.
+        await expect(
+          reservations.deductSnack(context(companyId, userId), branchIds, reservationId, custom.id),
+        ).rejects.toMatchObject({ code: 'validation_error' });
+      });
+
+      it('insufficient stock is honestly rejected, never a fabricated success or a negative balance', async () => {
+        const hugeSock = await reservations.addSock(context(companyId, userId), branchIds, reservationId, {
+          size: 'Unica',
+          quantity: 9999,
+          productVariantId: sockVariantId,
+        });
+        await expect(
+          reservations.deductSock(context(companyId, userId), branchIds, reservationId, hugeSock.id),
+        ).rejects.toMatchObject({ code: 'insufficient_inventory' });
+        expect(await balanceOf(sockVariantId)).toBe('75.000000');
+      });
+
+      it('cancelling AFTER issuance does not silently restore stock — 75/80 remains, no fabricated return-to-stock', async () => {
+        const current = await reservations.reservation(companyId, branchIds, reservationId);
+        await reservations.cancelReservation(context(companyId, userId), branchIds, `cancel-cert-postissue-${randomUUID()}`, reservationId, current.version, {
+          reasonCode: 'customer_request',
+        });
+        expect(await balanceOf(sockVariantId)).toBe('75.000000');
+        expect(await balanceOf(drinkVariantId)).toBe('80.000000');
+        // The already-posted movements are untouched — cancellation never
+        // rewrites or deletes inventory history.
+        expect(await movementCount('party_reservation_sock', sockLineId)).toBe(1);
+        expect(await movementCount('party_reservation_snack', snackLineId)).toBe(1);
+      });
+    });
+  });
+
+  // TASK 16.20 (Part L1) — resolves the TASK 16.19-disclosed gap: a real,
+  // backend-authoritative, concurrency-safe coupon integration for party
+  // reservations, sharing the platform's real `coupons` catalog (never a
+  // parallel/fake discount mechanism) while using a dedicated redemption
+  // table so the certified sales-coupon path is never touched.
+  // TASK 16.20 (Part P) — resolves the TASK 16.19-disclosed gap: real
+  // tenant-configurable contract/waiver text, with genuine
+  // version/snapshot behavior so an already-generated document's wording
+  // never silently mutates.
+  describe('TASK 16.20 — tenant-configurable contract/waiver terms (Part P)', () => {
+    async function setCompanySetting(key: string, value: string): Promise<void> {
+      await database.pool.query(
+        `insert into company_settings (id,company_id,key,value,value_type,status,created_by,updated_by)
+         values ($1,$2,$3,$4::jsonb,'string','active',$5,$5)
+         on conflict (company_id,key) do update set value=excluded.value, status='active'`,
+        [randomUUID(), companyId, key, JSON.stringify(value), userId],
+      );
+    }
+    async function setBranchSetting(key: string, value: string): Promise<void> {
+      await database.pool.query(
+        `insert into branch_settings (id,company_id,branch_id,key,value,value_type,status,created_by,updated_by)
+         values ($1,$2,$3,$4,$5::jsonb,'string','active',$6,$6)
+         on conflict (company_id,branch_id,key) do update set value=excluded.value, status='active'`,
+        [randomUUID(), companyId, branchId, key, JSON.stringify(value), userId],
+      );
+    }
+    afterAll(async () => {
+      await database.pool.query(`delete from company_settings where company_id=$1 and key like 'parties.%'`, [companyId]);
+      await database.pool.query(`delete from branch_settings where company_id=$1 and key like 'parties.%'`, [companyId]);
+    });
+
+    it('uses the generic tenant-neutral default when no setting is configured', async () => {
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-terms-default-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate: '2027-02-01',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const contract = await reservations.generateDocument(context(companyId, userId), branchIds, created.value.id, 'contract');
+      expect(contract.html).toContain('El cliente acepta la fecha, horario, salón y paquete');
+    });
+
+    it('uses a real company-configured clause set, and freezes it against a later setting change (never mutates on reprint)', async () => {
+      await setCompanySetting('parties.contract_terms', 'Cláusula única de la empresa para esta prueba.');
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-terms-company-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate: '2027-02-02',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const first = await reservations.generateDocument(context(companyId, userId), branchIds, created.value.id, 'contract');
+      expect(first.html).toContain('Cláusula única de la empresa para esta prueba.');
+      expect(first.html).not.toContain('El cliente acepta la fecha, horario, salón y paquete');
+
+      // Change the tenant's setting AFTER the document was first generated.
+      await setCompanySetting('parties.contract_terms', 'Cláusula MODIFICADA — nunca debe verse en el reprint anterior.');
+
+      const reprint = await reservations.generateDocument(context(companyId, userId), branchIds, created.value.id, 'contract');
+      expect(reprint.html).toContain('Cláusula única de la empresa para esta prueba.');
+      expect(reprint.html).not.toContain('MODIFICADA');
+    });
+
+    it('a branch-level override wins over the company-wide setting', async () => {
+      await setCompanySetting('parties.waiver_terms', 'Deslinde de nivel empresa.');
+      await setBranchSetting('parties.waiver_terms', 'Deslinde específico de esta sucursal.');
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-terms-branch-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate: '2027-02-03',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const waiver = await reservations.generateDocument(context(companyId, userId), branchIds, created.value.id, 'waiver');
+      expect(waiver.html).toContain('Deslinde específico de esta sucursal.');
+      expect(waiver.html).not.toContain('Deslinde de nivel empresa.');
+    });
+  });
+
+  describe('TASK 16.20 — coupon integration (Part L1)', () => {
+    let percentageCouponId: string;
+    let fixedCouponId: string;
+    let inactiveCouponId: string;
+    let minSubtotalCouponId: string;
+    let limitedCouponId: string;
+
+    beforeAll(async () => {
+      percentageCouponId = randomUUID();
+      fixedCouponId = randomUUID();
+      inactiveCouponId = randomUUID();
+      minSubtotalCouponId = randomUUID();
+      limitedCouponId = randomUUID();
+      await database.pool.query(
+        `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_percentage_basis_points,active,created_by,updated_by)
+         values($1,$2,'PARTY10','PARTY10','percentage',1000,true,$3,$3)`,
+        [percentageCouponId, companyId, userId],
+      );
+      await database.pool.query(
+        `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_fixed_amount,active,created_by,updated_by)
+         values($1,$2,'PARTY500','PARTY500','fixed_amount','500.0000',true,$3,$3)`,
+        [fixedCouponId, companyId, userId],
+      );
+      await database.pool.query(
+        `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_percentage_basis_points,active,created_by,updated_by)
+         values($1,$2,'PARTYOFF','PARTYOFF','percentage',1000,false,$3,$3)`,
+        [inactiveCouponId, companyId, userId],
+      );
+      await database.pool.query(
+        `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_percentage_basis_points,min_subtotal,active,created_by,updated_by)
+         values($1,$2,'PARTYBIG','PARTYBIG','percentage',1000,'5000.0000',true,$3,$3)`,
+        [minSubtotalCouponId, companyId, userId],
+      );
+      await database.pool.query(
+        `insert into coupons(id,company_id,code,normalized_code,benefit_type,benefit_percentage_basis_points,usage_limit_total,active,created_by,updated_by)
+         values($1,$2,'PARTY1USE','PARTY1USE','percentage',1000,1,true,$3,$3)`,
+        [limitedCouponId, companyId, userId],
+      );
+    });
+
+    async function newReservation(eventDate: string): Promise<{ id: string; version: bigint }> {
+      const created = await reservations.createReservation(context(companyId, userId), branchIds, `res-coupon-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate,
+        startTime: '09:00',
+        endTime: '10:00',
+        childrenCount: 10,
+      });
+      return { id: created.value.id, version: created.value.version };
+    }
+
+    it('applies a percentage coupon: recomputes discount/tax/total exactly, and rejects a second apply on the same reservation', async () => {
+      const { id } = await newReservation('2027-01-05');
+      // childrenCount:10 == included -> subtotal 3500.00; 10% off = 350.00;
+      // discounted base 3150.00; 16% tax = 504.00; total 3654.00.
+      const updated = await reservations.applyCoupon(context(companyId, userId), branchIds, id, { code: 'party10' });
+      expect(updated.discountTotal).toBe('350.0000');
+      expect(updated.taxTotal).toBe('504.0000');
+      expect(updated.quotedTotal).toBe('3654.0000');
+      expect(updated.couponId).toBe(percentageCouponId);
+      expect(updated.couponCodeSnapshot).toBe('PARTY10');
+
+      await expect(reservations.applyCoupon(context(companyId, userId), branchIds, id, { code: 'PARTY10' })).rejects.toMatchObject({
+        code: 'resource_conflict',
+      });
+
+      const redemptions = await database.pool.query<{ count: string }>(
+        `select count(*)::text as count from party_reservation_coupon_redemptions where company_id=$1 and reservation_id=$2`,
+        [companyId, id],
+      );
+      expect(redemptions.rows[0]?.count).toBe('1');
+    });
+
+    it('applies a fixed-amount coupon, then removes it — reverting to the original undiscounted total and freeing the redemption slot', async () => {
+      const { id } = await newReservation('2027-01-06');
+      const applied = await reservations.applyCoupon(context(companyId, userId), branchIds, id, { code: 'PARTY500' });
+      expect(applied.discountTotal).toBe('500.0000');
+      expect(applied.taxTotal).toBe('480.0000'); // (3500-500)*0.16
+      expect(applied.quotedTotal).toBe('3480.0000');
+
+      const removed = await reservations.removeCoupon(context(companyId, userId), branchIds, id);
+      expect(removed.discountTotal).toBe('0.0000');
+      expect(removed.taxTotal).toBe('560.0000');
+      expect(removed.quotedTotal).toBe('4060.0000');
+      expect(removed.couponId).toBeNull();
+      expect(removed.couponCodeSnapshot).toBeNull();
+
+      const redemptions = await database.pool.query<{ count: string }>(
+        `select count(*)::text as count from party_reservation_coupon_redemptions where company_id=$1 and reservation_id=$2`,
+        [companyId, id],
+      );
+      expect(redemptions.rows[0]?.count).toBe('0');
+
+      // The slot is genuinely free — the SAME coupon can be reapplied.
+      const reapplied = await reservations.applyCoupon(context(companyId, userId), branchIds, id, { code: 'PARTY500' });
+      expect(reapplied.discountTotal).toBe('500.0000');
+    });
+
+    it('an inactive coupon, a below-minimum subtotal, and an unknown code are all honestly rejected — never a fabricated discount', async () => {
+      const { id: idA } = await newReservation('2027-01-07');
+      await expect(reservations.applyCoupon(context(companyId, userId), branchIds, idA, { code: 'PARTYOFF' })).rejects.toMatchObject({
+        code: 'coupon_inactive',
+      });
+
+      const { id: idB } = await newReservation('2027-01-08');
+      await expect(reservations.applyCoupon(context(companyId, userId), branchIds, idB, { code: 'PARTYBIG' })).rejects.toMatchObject({
+        code: 'coupon_min_subtotal_not_met',
+      });
+
+      const { id: idC } = await newReservation('2027-01-09');
+      await expect(reservations.applyCoupon(context(companyId, userId), branchIds, idC, { code: 'NOSUCHCODE' })).rejects.toMatchObject({
+        code: 'resource_not_found',
+      });
+    });
+
+    it('a usage-limit-1 coupon can be redeemed once; a second reservation is rejected; cancelling the first frees the slot for a third', async () => {
+      const { id: idA } = await newReservation('2027-01-10');
+      await reservations.applyCoupon(context(companyId, userId), branchIds, idA, { code: 'PARTY1USE' });
+
+      const { id: idB } = await newReservation('2027-01-11');
+      await expect(reservations.applyCoupon(context(companyId, userId), branchIds, idB, { code: 'PARTY1USE' })).rejects.toMatchObject({
+        code: 'coupon_usage_limit_reached',
+      });
+
+      // Cancelling the first reservation releases its redemption slot
+      // (ADR-0016's own "released on cancellation" window, mirrored).
+      const currentA = await reservations.reservation(companyId, branchIds, idA);
+      await reservations.cancelReservation(context(companyId, userId), branchIds, `cancel-coupon-${randomUUID()}`, idA, currentA.version, {
+        reasonCode: 'customer_request',
+      });
+
+      const { id: idC } = await newReservation('2027-01-12');
+      const appliedC = await reservations.applyCoupon(context(companyId, userId), branchIds, idC, { code: 'PARTY1USE' });
+      expect(appliedC.couponCodeSnapshot).toBe('PARTY1USE');
     });
   });
 

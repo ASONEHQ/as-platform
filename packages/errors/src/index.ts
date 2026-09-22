@@ -179,6 +179,15 @@ export const infrastructureErrorCodes = [
   // eligibleRoomIds`) to a different set of rooms than the one selected.
   'capacity_exceeded',
   'package_room_not_eligible',
+  // TASK 16.20 (Part L1) — same rationale: `coupon_inactive` covers not-
+  // yet-active/expired/deactivated (an honest "this coupon cannot be used
+  // right now" family, mirroring how `capacity_exceeded` covers several
+  // related capacity checks under one code); `coupon_min_subtotal_not_met`
+  // and `coupon_usage_limit_reached` are each a genuinely distinct
+  // rejection reason a generic code cannot express.
+  'coupon_inactive',
+  'coupon_min_subtotal_not_met',
+  'coupon_usage_limit_reached',
   // TASK 14.4 (Wave 2): every other new-domain failure this wave reuses
   // an existing generic code (`resource_not_found`, `resource_conflict`,
   // `validation_error`, `version_conflict`, `idempotency_conflict`,

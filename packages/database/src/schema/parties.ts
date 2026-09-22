@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   char,
   check,
   date,
@@ -22,6 +23,7 @@ import { companyIdColumn, createdAtColumn, idColumn, updatedAtColumn } from './c
 import { customers } from './customers.js';
 import { companyMemberships } from './identity.js';
 import { branches, companies } from './organizations.js';
+import { coupons } from './promotions.js';
 
 /**
  * TASK 14.3 (Wave 1, Part A) — the "Fiestas" recovery domain.
@@ -158,6 +160,34 @@ export const partyPackages = pgTable(
     // TASK 14.3 Part A.7 (Cotizador): extra-time pricing, recovered from
     // legacy `tiempo.costoMediaHoraExtra`.
     extraHalfHourCost: numeric('extra_half_hour_cost', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 16.20 (Part D4 "package-included socks" / Part E "event
+    // snacks") — a package's own real, structured "this many of this
+    // real catalog item are included" list, recovering legacy's
+    // `paquete.incluye` concept (per-package quantities of socks/food/
+    // etc — `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.19 §1 forensic
+    // audit already found this rich in the legacy data model) as
+    // genuinely structured data instead of `includes`' own free-text
+    // key/value tag editor (which cannot express "25 of THIS specific
+    // catalog product/variant" — only a human-readable label/value
+    // string). A JSON array, each entry:
+    // `{kind: 'sock'|'snack', label: string, quantity: number,
+    //   productId?: string, productVariantId?: string, size?: string}`
+    // — `kind='sock'` needs `size` (+ `productVariantId` when that size
+    // is inventory-tracked); `kind='snack'` needs `productId`. Never a
+    // hardcoded tenant product ("Calcetas INFLAPARK") — always a real
+    // reference the tenant's own catalog/room-package admin configured,
+    // or `productVariantId`/`productId` omitted entirely for a
+    // non-inventory-tracked consumable (planned-quantity bookkeeping
+    // only, matching a custom/catalog-less snack's own existing
+    // pattern). `PartyReservationsService.createReservation` reads this
+    // ONCE, at booking time, to auto-populate `party_reservation_socks`/
+    // `party_reservation_snacks` with the PLANNED quantity (never
+    // consuming inventory itself — see those tables' own `issued_
+    // quantity` doc comments for the planned/issued distinction this
+    // whole design turns on).
+    includedConsumables: jsonb('included_consumables').$type<
+      ReadonlyArray<Readonly<Record<string, unknown>>>
+    >(),
     // TASK 16.19 — the same explicit tax CLASSIFICATION `products.tax_code`
     // already carries (`packages/database/src/catalog/pricing.ts`'s
     // `ProductTaxCode`/`ivaBasisPointsForTaxCode`), reused rather than a
@@ -235,6 +265,10 @@ export const partyPackages = pgTable(
       'party_packages_restrictions_object_ck',
       sql`${table.restrictions} is null or jsonb_typeof(${table.restrictions}) = 'object'`,
     ),
+    check(
+      'party_packages_included_consumables_array_ck',
+      sql`${table.includedConsumables} is null or jsonb_typeof(${table.includedConsumables}) = 'array'`,
+    ),
   ],
 );
 
@@ -292,16 +326,36 @@ export const partyReservations = pgTable(
     // TASK 16.19 — itemized breakdown of `quotedTotal` (Phase 10: "package
     // + guest counts + extras + taxes = total", clearly distinguishing
     // SUBTOTAL/TAX/TOTAL). `subtotalAmount` is the package+extras amount
-    // before tax; `discountTotal` is reserved for a future authorized
-    // discount (always `0` today — no discount mechanism is wired into
-    // party pricing yet, see `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK
-    // 16.19 section for why that is a disclosed follow-up, not silently
-    // dropped); `taxTotal` is this reservation's own frozen tax amount.
+    // before tax; `taxTotal` is this reservation's own frozen tax amount.
     // Nullable (`subtotalAmount`) only so a pre-migration reservation
     // (which has no breakdown) can be told apart from a genuine zero.
     subtotalAmount: numeric('subtotal_amount', { precision: 19, scale: 4 }),
+    // TASK 16.20 (Part L1) — closes the TASK 16.19-disclosed gap: `0`
+    // until a coupon is actually applied via `PartyReservationsService.
+    // applyCoupon`, which recomputes this from the coupon's own real
+    // `benefit_type`/`benefit_percentage_basis_points`/
+    // `benefit_fixed_amount` against `subtotalAmount` — never a
+    // client-submitted number. `taxTotal` is recomputed at the same
+    // moment against the POST-discount base, same tax model
+    // `computePartyQuote` already uses.
     discountTotal: numeric('discount_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
     taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 16.20 (Part L1) — the one coupon a reservation may have
+    // applied (parties keep this deliberately simpler than sales'
+    // multi-coupon stacking — legacy itself only ever applied one coupon
+    // per party too). `couponId` is a real FK; `couponCodeSnapshot`
+    // freezes the code AS TYPED at apply time (mirrors every other
+    // snapshot column in this table) so a later coupon rename/deactivation
+    // never rewrites this reservation's own history. The actual
+    // redemption-slot bookkeeping (concurrency-safe usage-limit
+    // enforcement) lives in `party_reservation_coupon_redemptions` below —
+    // a dedicated table, deliberately NOT a reuse of sales' own
+    // `coupon_redemptions` (whose `sale_id` is `not null` — see
+    // `docs/LEGACY_FUNCTIONAL_PARITY.md`'s TASK 16.19/16.20 sections for
+    // why extending that already-certified table was judged riskier than
+    // this small, mirrored, module-local one).
+    couponId: uuid('coupon_id'),
+    couponCodeSnapshot: text('coupon_code_snapshot'),
     // The Cotizador's price snapshot at booking time (recovery doc
     // Capability 7) — deliberately frozen, never recomputed from the
     // package's live price after booking (a later package price change
@@ -368,6 +422,11 @@ export const partyReservations = pgTable(
       foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
       name: 'party_reservations_updated_by_membership_fk',
     }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.couponId],
+      foreignColumns: [coupons.companyId, coupons.id],
+      name: 'party_reservations_coupon_scope_fk',
+    }).onDelete('restrict'),
     index('party_reservations_company_branch_idx').on(table.companyId, table.branchId),
     index('party_reservations_company_status_idx').on(table.companyId, table.status),
     index('party_reservations_company_customer_idx').on(table.companyId, table.customerId),
@@ -394,6 +453,10 @@ export const partyReservations = pgTable(
     ),
     check('party_reservations_discount_total_ck', sql`${table.discountTotal} >= 0`),
     check('party_reservations_tax_total_ck', sql`${table.taxTotal} >= 0`),
+    check(
+      'party_reservations_coupon_snapshot_ck',
+      sql`(${table.couponId} is null) = (${table.couponCodeSnapshot} is null)`,
+    ),
     check('party_reservations_quoted_total_ck', sql`${table.quotedTotal} >= 0`),
     check('party_reservations_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
     check('party_reservations_celebrant_age_ck', sql`${table.celebrantAge} is null or ${table.celebrantAge} >= 0`),
@@ -441,6 +504,9 @@ export const partyReservationSnacks = pgTable(
     productId: uuid('product_id'),
     nameSnapshot: text('name_snapshot').notNull(),
     unitPriceSnapshot: numeric('unit_price_snapshot', { precision: 19, scale: 4 }).notNull(),
+    // TASK 16.20 (Part D4/E — mirrors `party_reservation_socks.quantity`
+    // exactly) — the PLANNED quantity. Never moves inventory by itself;
+    // see `issuedQuantity` below for the one real consumption moment.
     quantity: numeric('quantity', { precision: 19, scale: 6 }).notNull(),
     // TASK 16.19 — `lineTotal` is now tax-INCLUSIVE (pretax subtotal +
     // `taxTotal`), mirroring `sale_items.line_total`'s own established
@@ -458,6 +524,32 @@ export const partyReservationSnacks = pgTable(
     // basis_points}` shape as `sale_items.taxSnapshot`, not a new format.
     taxSnapshot: jsonb('tax_snapshot').$type<Readonly<Record<string, unknown>>>(),
     taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 16.20 — closes the confirmed gap from the catalog/inventory
+    // audit: "snacks do not post to the inventory ledger at all." Real
+    // inventory-tracked variant this snack resolves to (mirrors
+    // `resolveProductLines`'s default-variant SQL pattern,
+    // `sales.repository.ts`), nullable for a genuinely custom, catalog-less
+    // snack, or a real catalog product that simply doesn't track
+    // inventory (`products.tracks_inventory=false`).
+    productVariantId: uuid('product_variant_id'),
+    // Default differs from socks ('pending'): most snacks are NOT
+    // inventory-tracked (custom one-off items, or a catalog product with
+    // `tracks_inventory=false`), so `'not_applicable'` is the honest
+    // default; `addSnack` sets this to `'pending'` only when a real
+    // trackable variant was actually resolved.
+    stockDeducted: text('stock_deducted').notNull().default('not_applicable'),
+    stockDeductedAt: timestamp('stock_deducted_at', { withTimezone: true, mode: 'date' }),
+    // TASK 16.20 — the ACTUAL quantity physically issued/delivered,
+    // frozen the moment `deductSnack` posts the one real inventory
+    // movement (`party-snack-deduction.ts`). Deliberately independent of
+    // `quantity` (the plan) — same "planned vs issued" distinction as
+    // `party_reservation_socks.issuedQuantity`. Decimal, matching this
+    // table's own existing `quantity` scale (unlike socks' integer).
+    issuedQuantity: numeric('issued_quantity', { precision: 19, scale: 6 }),
+    // TASK 16.20 (Part D5) — `true` only for a row `createReservation`
+    // itself auto-created from the package's `includedConsumables` at
+    // booking time; `false` for a row an operator explicitly added.
+    includedInPackage: boolean('included_in_package').notNull().default(false),
     createdAt: createdAtColumn(),
   },
   (table) => [
@@ -477,6 +569,22 @@ export const partyReservationSnacks = pgTable(
       'party_reservation_snacks_tax_snapshot_object_ck',
       sql`${table.taxSnapshot} is null or jsonb_typeof(${table.taxSnapshot}) = 'object'`,
     ),
+    check(
+      'party_reservation_snacks_stock_deducted_ck',
+      sql`${table.stockDeducted} in ('pending', 'deducted', 'not_applicable')`,
+    ),
+    check(
+      'party_reservation_snacks_stock_deducted_at_ck',
+      sql`(${table.stockDeducted} = 'deducted') = (${table.stockDeductedAt} is not null)`,
+    ),
+    check(
+      'party_reservation_snacks_issued_quantity_ck',
+      sql`(${table.stockDeducted} = 'deducted') = (${table.issuedQuantity} is not null)`,
+    ),
+    check(
+      'party_reservation_snacks_issued_quantity_positive_ck',
+      sql`${table.issuedQuantity} is null or ${table.issuedQuantity} > 0`,
+    ),
   ],
 );
 
@@ -487,6 +595,12 @@ export const partyReservationSocks = pgTable(
     companyId: companyIdColumn(),
     reservationId: uuid('reservation_id').notNull(),
     size: text('size').notNull(),
+    // TASK 16.20 (Part D4 "included/planned vs issued/consumed") — the
+    // PLANNED quantity (from the package's own `includedConsumables`, or
+    // whatever an operator manually adds) — this column's meaning is
+    // unchanged from TASK 14.3; it never moves inventory by itself (a
+    // reservation/quote never consumes stock just by existing — see
+    // `issuedQuantity` below for the one real consumption moment).
     quantity: integer('quantity').notNull(),
     // Recovery doc Capability 11 — the real inventory-tracked variant
     // this size maps to, when the business tracks socks as real stock;
@@ -494,6 +608,30 @@ export const partyReservationSocks = pgTable(
     productVariantId: uuid('product_variant_id'),
     stockDeducted: text('stock_deducted').notNull().default('pending'),
     stockDeductedAt: timestamp('stock_deducted_at', { withTimezone: true, mode: 'date' }),
+    // TASK 16.20 — the ACTUAL quantity physically issued/delivered,
+    // frozen the moment `deductSock` posts the one real inventory
+    // movement (`party-sock-deduction.ts`) — deliberately independent
+    // of `quantity` (the plan) exactly like legacy's own two-step
+    // "asignar" (plan, `guardarCalcetasFiesta`, line ~9270) then
+    // "descontar" (consume, `descontarCalcetasFiesta`, line ~9205) — the
+    // real legacy precedent for this distinction, re-verified against
+    // the actual HTML for this task. `null` until issued; an operator
+    // may issue a DIFFERENT amount than planned (e.g. package included
+    // 25, only 23 children attended) — see `PartyReservationsService.
+    // deductSock`'s own doc comment. Corrected in place by `correctSock`
+    // (a real compensating inventory movement, never a silent rewrite —
+    // see that method's own doc comment) without ever touching this
+    // row's own frozen `quantity` plan.
+    issuedQuantity: integer('issued_quantity'),
+    // TASK 16.20 (Part D5 "additional socks... must be traceable") —
+    // `true` only for a row `PartyReservationsService.createReservation`
+    // itself auto-created from the package's `includedConsumables` at
+    // booking time; `false` for a row an operator explicitly added
+    // (whether topping up a package-included size or a genuinely extra
+    // one) — the Flutter event-day view groups by this flag so
+    // "Incluido en paquete" vs "Adicional" is honest, never guessed from
+    // creation order or size matching.
+    includedInPackage: boolean('included_in_package').notNull().default(false),
     createdAt: createdAtColumn(),
   },
   (table) => [
@@ -513,6 +651,14 @@ export const partyReservationSocks = pgTable(
     check(
       'party_reservation_socks_stock_deducted_at_ck',
       sql`(${table.stockDeducted} = 'deducted') = (${table.stockDeductedAt} is not null)`,
+    ),
+    check(
+      'party_reservation_socks_issued_quantity_ck',
+      sql`(${table.stockDeducted} = 'deducted') = (${table.issuedQuantity} is not null)`,
+    ),
+    check(
+      'party_reservation_socks_issued_quantity_positive_ck',
+      sql`${table.issuedQuantity} is null or ${table.issuedQuantity} > 0`,
     ),
   ],
 );
@@ -573,6 +719,58 @@ export const partyReservationPayments = pgTable(
 );
 
 /**
+ * TASK 16.20 (Part L1) — the party-domain mirror of `coupon_redemptions`
+ * (`promotions.ts`), scoped to `reservationId` instead of `saleId`. A
+ * SEPARATE table rather than widening the sales one: `coupon_redemptions.
+ * sale_id` is `not null` and that table is already certified/tested
+ * against real POS sales — adding a nullable, mutually-exclusive
+ * `reservation_id` there would touch mature, working financial code for a
+ * new, unrelated domain. This table gives parties the exact same
+ * concurrency guarantee (`PartyReservationsService.applyCoupon` locks the
+ * coupon row and counts existing redemptions here inside the SAME
+ * transaction as the reservation it's applied to) with zero risk to the
+ * sales path. `usageLimitTotal` on a coupon is therefore tracked as TWO
+ * independent pools (one for sales, one for party reservations) — a
+ * disclosed, deliberate scope decision (see `docs/LEGACY_FUNCTIONAL_
+ * PARITY.md`'s TASK 16.20 section), not a silent gap: merging the pools
+ * would require a cross-table locked count spanning two otherwise-
+ * unrelated modules for a benefit legacy itself never needed (V1's own
+ * coupons had no cross-context usage limit either).
+ */
+export const partyReservationCouponRedemptions = pgTable(
+  'party_reservation_coupon_redemptions',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    branchId: uuid('branch_id').notNull(),
+    reservationId: uuid('reservation_id').notNull(),
+    couponId: uuid('coupon_id').notNull(),
+    amount: numeric('amount', { precision: 19, scale: 4 }).notNull(),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('party_reservation_coupon_redemptions_company_coupon_reservation_uq').on(
+      table.companyId,
+      table.couponId,
+      table.reservationId,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.couponId],
+      foreignColumns: [coupons.companyId, coupons.id],
+      name: 'party_reservation_coupon_redemptions_coupon_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.reservationId],
+      foreignColumns: [partyReservations.companyId, partyReservations.id],
+      name: 'party_reservation_coupon_redemptions_reservation_scope_fk',
+    }).onDelete('restrict'),
+    index('party_reservation_coupon_redemptions_coupon_idx').on(table.companyId, table.couponId),
+    index('party_reservation_coupon_redemptions_reservation_idx').on(table.companyId, table.reservationId),
+    check('party_reservation_coupon_redemptions_amount_ck', sql`${table.amount} >= 0`),
+  ],
+);
+
+/**
  * TASK 14.3 Part A.11 (Documents) — mirrors the platform's existing
  * receipt pattern: the printable HTML itself is always regenerated
  * on-demand from the reservation's live data (never stored as a blob,
@@ -588,6 +786,24 @@ export const partyReservationDocuments = pgTable(
     reservationId: uuid('reservation_id').notNull(),
     documentType: text('document_type').notNull(),
     generatedBy: uuid('generated_by').notNull(),
+    // TASK 16.20 (Part P) — resolves the TASK 16.19-disclosed gap. The
+    // HTML itself is still NEVER stored (regenerated fresh every call,
+    // exactly as before) — this freezes only the LEGAL CLAUSE TEXT that
+    // generation used, as a JSON array of strings, the one part of the
+    // document where "an already-issued contract must not silently
+    // mutate" (TASK 16.19's own requirement) genuinely matters: without
+    // this, a tenant editing `parties.contract_terms` next month, or a
+    // future platform code change to the generic default clauses, would
+    // silently rewrite the wording of every past reservation's document
+    // on its next reprint. `generateDocument` reuses the EARLIEST
+    // existing snapshot for a given (reservation, document_type) rather
+    // than re-resolving the live setting on every call — see that
+    // method's own doc comment. Nullable only so a pre-migration row
+    // (generated before this column existed) is told apart from a
+    // genuine future row. A real `jsonb` column (not `text`) so a read
+    // round-trips as an already-parsed array, never a raw JSON string
+    // that would silently double-encode on the next insert.
+    termsSnapshot: jsonb('terms_snapshot').$type<readonly string[]>(),
     generatedAt: createdAtColumn(),
   },
   (table) => [
@@ -606,6 +822,10 @@ export const partyReservationDocuments = pgTable(
     check(
       'party_reservation_documents_type_ck',
       sql`${table.documentType} in ('waiver', 'contract')`,
+    ),
+    check(
+      'party_reservation_documents_terms_snapshot_array_ck',
+      sql`${table.termsSnapshot} is null or jsonb_typeof(${table.termsSnapshot}) = 'array'`,
     ),
   ],
 );

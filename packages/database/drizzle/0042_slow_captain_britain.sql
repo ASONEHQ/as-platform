@@ -1,0 +1,2 @@
+ALTER TABLE "party_reservation_documents" ADD COLUMN "terms_snapshot" text;--> statement-breakpoint
+ALTER TABLE "party_reservation_documents" ADD CONSTRAINT "party_reservation_documents_terms_snapshot_array_ck" CHECK ("party_reservation_documents"."terms_snapshot" is null or jsonb_typeof("party_reservation_documents"."terms_snapshot"::jsonb) = 'array');

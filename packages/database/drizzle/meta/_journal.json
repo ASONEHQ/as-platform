@@ -281,6 +281,34 @@
       "when": 1790054444621,
       "tag": "0039_handy_post",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790084533943,
+      "tag": "0040_remarkable_multiple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790087225326,
+      "tag": "0041_strong_gladiator",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790088288389,
+      "tag": "0042_slow_captain_britain",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790088511708,
+      "tag": "0043_shallow_rawhide_kid",
+      "breakpoints": true
     }
   ]
 }

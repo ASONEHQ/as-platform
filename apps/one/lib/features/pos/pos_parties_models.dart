@@ -367,6 +367,8 @@ class PosPartyReservation {
     required this.subtotalAmount,
     required this.discountTotal,
     required this.taxTotal,
+    required this.couponId,
+    required this.couponCodeSnapshot,
     required this.quotedTotal,
     required this.currencyCode,
     required this.notes,
@@ -402,6 +404,8 @@ class PosPartyReservation {
     subtotalAmount: json['subtotal_amount'] as String?,
     discountTotal: json['discount_total'] as String? ?? '0.0000',
     taxTotal: json['tax_total'] as String? ?? '0.0000',
+    couponId: json['coupon_id'] as String?,
+    couponCodeSnapshot: json['coupon_code_snapshot'] as String?,
     quotedTotal: json['quoted_total']! as String,
     currencyCode: json['currency_code']! as String,
     notes: json['notes'] as String?,
@@ -452,6 +456,12 @@ class PosPartyReservation {
   final String? subtotalAmount;
   final String discountTotal;
   final String taxTotal;
+
+  /// TASK 16.20 (Part L1) — the one coupon applied to this reservation, if
+  /// any. Both null together (no coupon) or both set (a real, backend-
+  /// validated coupon) — never independently.
+  final String? couponId;
+  final String? couponCodeSnapshot;
 
   /// The grand total the customer owes (subtotal − discount + tax).
   final String quotedTotal;
@@ -516,6 +526,10 @@ class PosPartyReservationInput {
   };
 }
 
+/// TASK 16.20 (Part G) — the 3 event-day states a consumable line can be
+/// in, human-readable, never a raw `stock_deducted` code shown to staff.
+enum PosPartyConsumableDisplayStatus { included, delivered, pending, notTracked }
+
 class PosPartySnack {
   const PosPartySnack({
     required this.id,
@@ -526,6 +540,11 @@ class PosPartySnack {
     required this.quantity,
     required this.lineTotal,
     required this.taxTotal,
+    required this.productVariantId,
+    required this.stockDeducted,
+    required this.stockDeductedAt,
+    required this.issuedQuantity,
+    required this.includedInPackage,
     required this.createdAt,
   });
 
@@ -538,6 +557,11 @@ class PosPartySnack {
     quantity: json['quantity']! as String,
     lineTotal: json['line_total']! as String,
     taxTotal: json['tax_total'] as String? ?? '0.0000',
+    productVariantId: json['product_variant_id'] as String?,
+    stockDeducted: json['stock_deducted'] as String? ?? 'not_applicable',
+    stockDeductedAt: json['stock_deducted_at'] == null ? null : DateTime.parse(json['stock_deducted_at']! as String),
+    issuedQuantity: json['issued_quantity'] as String?,
+    includedInPackage: json['included_in_package'] as bool? ?? false,
     createdAt: DateTime.parse(json['created_at']! as String),
   );
 
@@ -551,7 +575,32 @@ class PosPartySnack {
   /// Tax-inclusive (subtotal + [taxTotal]) — TASK 16.19.
   final String lineTotal;
   final String taxTotal;
+
+  /// TASK 16.20 — real inventory-tracked variant this snack resolves to,
+  /// `null` when it doesn't track real stock.
+  final String? productVariantId;
+
+  /// `pending` | `deducted` | `not_applicable`.
+  final String stockDeducted;
+  final DateTime? stockDeductedAt;
+
+  /// The ACTUAL amount issued (frozen at deduction time), independent of
+  /// the planned [quantity] — `null` until issued.
+  final String? issuedQuantity;
+
+  /// `true` only for a line `createReservation` auto-planned from the
+  /// package's own `included_consumables`.
+  final bool includedInPackage;
   final DateTime createdAt;
+
+  bool get isDeducted => stockDeducted == 'deducted';
+  bool get canDeduct => stockDeducted == 'pending' && productVariantId != null;
+
+  PosPartyConsumableDisplayStatus get displayStatus {
+    if (stockDeducted == 'not_applicable') return PosPartyConsumableDisplayStatus.notTracked;
+    if (isDeducted) return PosPartyConsumableDisplayStatus.delivered;
+    return includedInPackage ? PosPartyConsumableDisplayStatus.included : PosPartyConsumableDisplayStatus.pending;
+  }
 }
 
 class PosPartySnackInput {
@@ -583,6 +632,8 @@ class PosPartySock {
     required this.productVariantId,
     required this.stockDeducted,
     required this.stockDeductedAt,
+    required this.issuedQuantity,
+    required this.includedInPackage,
     required this.createdAt,
   });
 
@@ -594,6 +645,8 @@ class PosPartySock {
     productVariantId: json['product_variant_id'] as String?,
     stockDeducted: json['stock_deducted']! as String,
     stockDeductedAt: json['stock_deducted_at'] == null ? null : DateTime.parse(json['stock_deducted_at']! as String),
+    issuedQuantity: json['issued_quantity'] as int?,
+    includedInPackage: json['included_in_package'] as bool? ?? false,
     createdAt: DateTime.parse(json['created_at']! as String),
   );
 
@@ -606,10 +659,24 @@ class PosPartySock {
   /// `pending` | `deducted` | `not_applicable`.
   final String stockDeducted;
   final DateTime? stockDeductedAt;
+
+  /// The ACTUAL amount issued (frozen at deduction time), independent of
+  /// the planned [quantity] — `null` until issued.
+  final int? issuedQuantity;
+
+  /// `true` only for a line `createReservation` auto-planned from the
+  /// package's own `included_consumables`.
+  final bool includedInPackage;
   final DateTime createdAt;
 
   bool get isDeducted => stockDeducted == 'deducted';
   bool get canDeduct => stockDeducted == 'pending' && productVariantId != null;
+
+  PosPartyConsumableDisplayStatus get displayStatus {
+    if (stockDeducted == 'not_applicable') return PosPartyConsumableDisplayStatus.notTracked;
+    if (isDeducted) return PosPartyConsumableDisplayStatus.delivered;
+    return includedInPackage ? PosPartyConsumableDisplayStatus.included : PosPartyConsumableDisplayStatus.pending;
+  }
 }
 
 class PosPartySockInput {

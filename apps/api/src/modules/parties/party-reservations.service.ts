@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 
-import type { ProductTaxCode } from '@asone/database';
+import { ivaBasisPointsForTaxCode, type ProductTaxCode } from '@asone/database';
 
 import type { CashRepository } from '../cash/cash.repository.js';
 import { CashError } from '../cash/cash.types.js';
+import { postPartySnackDeduction } from './party-snack-deduction.js';
 import { postPartySockDeduction } from './party-sock-deduction.js';
 import {
   assertWithinCapacity,
@@ -218,6 +219,58 @@ export class PartyReservationsService {
             actorId: context.actorId,
             timestamp: context.timestamp,
           });
+          // TASK 16.20 (Part D4/E) — auto-populate the PLANNED
+          // socks/snacks from the package's own `includedConsumables`, at
+          // booking time, inside this exact same transaction. This never
+          // moves inventory by itself — `insertSock`/`insertSnack` only
+          // ever write a `pending`/`not_applicable` row; the one real
+          // consumption moment is the operator's later explicit
+          // `deductSock`/`deductSnack` call. A reservation/quote must
+          // never consume stock merely by existing (Part D3).
+          if (pkg.includedConsumables !== null) {
+            for (const entry of pkg.includedConsumables) {
+              if (entry.quantity <= 0) continue;
+              if (entry.kind === 'sock') {
+                const variant =
+                  entry.productId === undefined
+                    ? null
+                    : await this.repository.productVariantForInventory(context.companyId, entry.productId);
+                await this.repository.insertSock(client, {
+                  id: randomUUID(),
+                  companyId: context.companyId,
+                  reservationId: created.id,
+                  size: nonBlank(entry.size ?? entry.label, 'size', 20),
+                  quantity: Math.trunc(entry.quantity),
+                  productVariantId: variant?.variantId ?? null,
+                  includedInPackage: true,
+                  timestamp: context.timestamp,
+                });
+              } else {
+                const resolved = await this.resolveSnackInventory(context.companyId, entry.productId);
+                await this.repository.insertSnack(client, {
+                  id: randomUUID(),
+                  companyId: context.companyId,
+                  reservationId: created.id,
+                  productId: entry.productId ?? null,
+                  nameSnapshot: nonBlank(entry.label, 'name_snapshot', 200),
+                  // An included consumable is already priced into the
+                  // package total (Part D5: "if complimentary, no
+                  // fabricated charge") — never a second, separate charge
+                  // for the same item.
+                  unitPriceSnapshot: '0.0000',
+                  quantity: String(entry.quantity),
+                  lineTotal: '0.0000',
+                  taxSnapshot: null,
+                  taxTotal: '0.0000',
+                  productVariantId: resolved.productVariantId,
+                  stockDeducted: resolved.stockDeducted,
+                  includedInPackage: true,
+                  timestamp: context.timestamp,
+                });
+              }
+            }
+          }
+
           await this.repository.auditAndPublish(client, context, {
             action: 'party_reservation.created',
             resourceType: 'party_reservation',
@@ -231,6 +284,23 @@ export class PartyReservationsService {
         },
       ),
     );
+  }
+
+  /** TASK 16.20 — shared by `createReservation`'s auto-population and
+   * `addSnack`: resolves a snack's real default inventory-tracked variant
+   * (mirrors `SalesRepository.resolveProductLines`'s own default-variant
+   * pattern). No `productId` (a genuinely custom snack) or a product that
+   * doesn't track inventory both honestly resolve to `not_applicable` —
+   * never a `pending` deduction that could never actually post. */
+  private async resolveSnackInventory(
+    companyId: string,
+    productId: string | undefined,
+  ): Promise<{ productVariantId: string | null; stockDeducted: 'pending' | 'not_applicable' }> {
+    if (productId === undefined) return { productVariantId: null, stockDeducted: 'not_applicable' };
+    const variant = await this.repository.productVariantForInventory(companyId, productId);
+    return variant === null
+      ? { productVariantId: null, stockDeducted: 'not_applicable' }
+      : { productVariantId: variant.variantId, stockDeducted: 'pending' };
   }
 
   /** Race-free ONLY because the caller already holds `lockRoom`'s `FOR
@@ -585,6 +655,13 @@ export class PartyReservationsService {
             cancellationReason: reasonCode,
             timestamp: context.timestamp,
           });
+          // TASK 16.20 (Part L1) — releases the coupon's redemption slot
+          // (ADR-0016's own "reserved at creation, released on
+          // cancellation" window, mirrored from sales). The reservation's
+          // own `discountTotal`/`couponCodeSnapshot` remain as historical
+          // record — only the SLOT is freed for reuse, never rewriting
+          // what this cancelled reservation actually was.
+          await this.repository.deletePartyCouponRedemption(client, context.companyId, id);
           await this.repository.auditAndPublish(client, context, {
             action: 'party_reservation.cancelled',
             resourceType: 'party_reservation',
@@ -598,6 +675,143 @@ export class PartyReservationsService {
         },
       ),
     );
+  }
+
+  // --- Coupons (TASK 16.20 Part L1) -----------------------------------------------
+
+  /** Resolves the TASK 16.19-disclosed gap: "determine whether the
+   * existing promotion engine can safely apply to party packages." It
+   * cannot — `evaluatePricing` is scoped to catalog products/categories, a
+   * concept party packages don't have. What CAN be shared safely,
+   * unmodified, is the platform's real `coupons` catalog itself
+   * (percentage/fixed-amount, date window, min subtotal, usage limit) —
+   * exactly what this method applies, backend-authoritative, never a
+   * client-submitted discount. Concurrency-safe via a locked coupon row +
+   * a redemption count in `party_reservation_coupon_redemptions`, inside
+   * the SAME transaction — mirrors `PromotionsService.redeemCoupon`'s own
+   * discipline for sales, applied to the party-specific redemption table
+   * (see that table's own doc comment for why it's separate).
+   */
+  public async applyCoupon(
+    context: PartyMutationContext,
+    branchIds: readonly string[],
+    reservationId: string,
+    input: { code: string },
+  ): Promise<PartyReservationRow> {
+    const normalizedCode = input.code.trim().toUpperCase();
+    if (normalizedCode.length === 0) throw new PartyError('validation_error', 'code cannot be blank.');
+    return this.repository.transaction(async (client) => {
+      const current = await this.repository.lockReservation(client, context.companyId, reservationId);
+      if (current === null || !branchIds.includes(current.branchId))
+        throw new PartyError('resource_not_found', 'The reservation was not found.');
+      if (current.status === 'completed' || current.status === 'cancelled')
+        throw new PartyError('invalid_reservation_state', `A ${current.status} reservation cannot be modified.`);
+      if (current.couponId !== null) throw new PartyError('resource_conflict', 'This reservation already has a coupon applied.');
+      if (current.subtotalAmount === null)
+        throw new PartyError('validation_error', 'This reservation has no priced subtotal to discount.');
+
+      const coupon = await this.repository.lockCouponByNormalizedCode(client, context.companyId, normalizedCode);
+      if (coupon === null) throw new PartyError('resource_not_found', 'The coupon was not found.');
+      if (!coupon.active) throw new PartyError('coupon_inactive', 'This coupon is not active.');
+      if (coupon.startsAt !== null && context.timestamp < coupon.startsAt)
+        throw new PartyError('coupon_inactive', 'This coupon is not active yet.');
+      if (coupon.endsAt !== null && context.timestamp > coupon.endsAt)
+        throw new PartyError('coupon_inactive', 'This coupon has expired.');
+
+      const subtotalUnits = moneyUnits(current.subtotalAmount, 'subtotal_amount');
+      if (coupon.minSubtotal !== null && subtotalUnits < moneyUnits(coupon.minSubtotal, 'min_subtotal'))
+        throw new PartyError('coupon_min_subtotal_not_met', `This coupon requires a subtotal of at least ${coupon.minSubtotal}.`);
+
+      if (coupon.usageLimitTotal !== null) {
+        const used = await this.repository.partyCouponRedemptionCount(client, context.companyId, coupon.id);
+        if (used >= coupon.usageLimitTotal)
+          throw new PartyError('coupon_usage_limit_reached', 'This coupon has reached its usage limit.');
+      }
+
+      const rawDiscountUnits =
+        coupon.benefitType === 'percentage'
+          ? (subtotalUnits * BigInt(coupon.benefitPercentageBasisPoints ?? 0) + 5_000n) / 10_000n
+          : moneyUnits(coupon.benefitFixedAmount ?? '0', 'benefit_fixed_amount');
+      // Never a discount larger than the subtotal itself — no negative total.
+      const discountUnits = rawDiscountUnits > subtotalUnits ? subtotalUnits : rawDiscountUnits;
+
+      const pkg = await this.repository.packageRow(context.companyId, current.packageId);
+      if (pkg === null) throw new PartyError('resource_not_found', 'The package was not found.');
+      const basisPoints = BigInt(ivaBasisPointsForTaxCode(pkg.taxCode));
+      const discountedBaseUnits = subtotalUnits - discountUnits;
+      const taxUnits = (discountedBaseUnits * basisPoints + 5_000n) / 10_000n;
+      const totalUnits = discountedBaseUnits + taxUnits;
+
+      await this.repository.insertPartyCouponRedemption(client, {
+        id: randomUUID(),
+        companyId: context.companyId,
+        branchId: current.branchId,
+        reservationId: current.id,
+        couponId: coupon.id,
+        amount: formatMoney(discountUnits),
+        timestamp: context.timestamp,
+      });
+      const updated = await this.repository.updateReservation(client, context.companyId, current.id, current.version, {
+        discountTotal: formatMoney(discountUnits),
+        taxTotal: formatMoney(taxUnits),
+        quotedTotal: formatMoney(totalUnits),
+        couponId: coupon.id,
+        couponCodeSnapshot: normalizedCode,
+        updatedBy: context.actorId,
+        timestamp: context.timestamp,
+      });
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.coupon_applied',
+        resourceType: 'party_reservation',
+        resourceId: updated.id,
+        payload: { reservation_id: updated.id, coupon_code: normalizedCode, discount_total: updated.discountTotal, quoted_total: updated.quotedTotal },
+      });
+      return updated;
+    });
+  }
+
+  /** The inverse of [applyCoupon] — releases the redemption slot and
+   * recomputes the reservation back to its undiscounted total, using the
+   * SAME `computePartyQuote`-shaped math (subtotal unchanged, tax
+   * recomputed against the full subtotal again). Never leaves a
+   * reservation in an inconsistent discount/tax/total state. */
+  public async removeCoupon(context: PartyMutationContext, branchIds: readonly string[], reservationId: string): Promise<PartyReservationRow> {
+    return this.repository.transaction(async (client) => {
+      const current = await this.repository.lockReservation(client, context.companyId, reservationId);
+      if (current === null || !branchIds.includes(current.branchId))
+        throw new PartyError('resource_not_found', 'The reservation was not found.');
+      if (current.status === 'completed' || current.status === 'cancelled')
+        throw new PartyError('invalid_reservation_state', `A ${current.status} reservation cannot be modified.`);
+      if (current.couponId === null) throw new PartyError('resource_conflict', 'This reservation has no coupon applied.');
+      if (current.subtotalAmount === null)
+        throw new PartyError('validation_error', 'This reservation has no priced subtotal.');
+
+      await this.repository.deletePartyCouponRedemption(client, context.companyId, current.id);
+
+      const pkg = await this.repository.packageRow(context.companyId, current.packageId);
+      if (pkg === null) throw new PartyError('resource_not_found', 'The package was not found.');
+      const subtotalUnits = moneyUnits(current.subtotalAmount, 'subtotal_amount');
+      const basisPoints = BigInt(ivaBasisPointsForTaxCode(pkg.taxCode));
+      const taxUnits = (subtotalUnits * basisPoints + 5_000n) / 10_000n;
+      const totalUnits = subtotalUnits + taxUnits;
+
+      const updated = await this.repository.updateReservation(client, context.companyId, current.id, current.version, {
+        discountTotal: formatMoney(0n),
+        taxTotal: formatMoney(taxUnits),
+        quotedTotal: formatMoney(totalUnits),
+        couponId: null,
+        couponCodeSnapshot: null,
+        updatedBy: context.actorId,
+        timestamp: context.timestamp,
+      });
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.coupon_removed',
+        resourceType: 'party_reservation',
+        resourceId: updated.id,
+        payload: { reservation_id: updated.id, quoted_total: updated.quotedTotal },
+      });
+      return updated;
+    });
   }
 
   // --- Snacks ------------------------------------------------------------------------
@@ -640,6 +854,12 @@ export class PartyReservationsService {
       const taxCode = resolveSnackTaxCode(productTaxCode, pkg.taxCode);
       const { taxTotal, taxSnapshot } = computeLineTax(unitPriceSnapshot, input.quantity, taxCode);
       const lineTotalUnits = subtotalUnits + moneyUnits(taxTotal);
+      // TASK 16.20 — a snack an OPERATOR explicitly adds (as opposed to
+      // one auto-populated from the package's `includedConsumables`) is
+      // real, additional, and never `includedInPackage`. If it resolves
+      // to a real inventory-tracked variant, it becomes stock-deductible
+      // exactly like a sock line already is.
+      const resolved = await this.resolveSnackInventory(context.companyId, input.productId);
       const created = await this.repository.insertSnack(client, {
         id: randomUUID(),
         companyId: context.companyId,
@@ -651,6 +871,9 @@ export class PartyReservationsService {
         lineTotal: formatMoney(lineTotalUnits),
         taxSnapshot,
         taxTotal,
+        productVariantId: resolved.productVariantId,
+        stockDeducted: resolved.stockDeducted,
+        includedInPackage: false,
         timestamp: context.timestamp,
       });
       await this.repository.audit(client, context, {
@@ -688,6 +911,7 @@ export class PartyReservationsService {
         size,
         quantity,
         productVariantId: input.productVariantId ?? null,
+        includedInPackage: false,
         timestamp: context.timestamp,
       });
       await this.repository.audit(client, context, {
@@ -710,12 +934,21 @@ export class PartyReservationsService {
    * guard, done for real this time). Idempotent via the row lock: only a
    * sock row still `stockDeducted='pending'` (checked AFTER the lock is
    * held, so a concurrent double-call serializes and the loser sees
-   * `'deducted'` and is rejected) is ever posted. */
+   * `'deducted'` and is rejected) is ever posted.
+   *
+   * TASK 16.20 (Part D4) — `issuedQuantity` is the real amount an
+   * operator is actually handing out, independently of the row's own
+   * PLANNED `quantity` (e.g. a package included 25 but only 23 children
+   * attended) — defaults to the planned quantity when omitted, exactly
+   * preserving pre-16.20 callers' behavior. Extra socks beyond the plan
+   * are a SEPARATE `addSock` row (Part D5 — traceable, never folded into
+   * this one row's own history). */
   public async deductSock(
     context: PartyMutationContext,
     branchIds: readonly string[],
     reservationId: string,
     sockId: string,
+    input?: { issuedQuantity?: number },
   ): Promise<PartyReservationSockRow> {
     return this.repository.transaction(async (client) => {
       const reservationRow = await this.reservation(context.companyId, branchIds, reservationId);
@@ -727,14 +960,71 @@ export class PartyReservationsService {
         throw new PartyError('resource_conflict', 'This sock line is not stock-tracked.');
       if (sockRow.stockDeducted === 'deducted')
         throw new PartyError('resource_conflict', 'This sock line was already deducted.');
+      const issuedQuantity =
+        input?.issuedQuantity === undefined ? sockRow.quantity : nonNegativeInteger(input.issuedQuantity, 'issued_quantity');
+      if (issuedQuantity <= 0) throw new PartyError('validation_error', 'issued_quantity must be greater than zero.');
 
       await postPartySockDeduction(
         client,
         { companyId: context.companyId, actorId: context.actorId, correlationId: context.correlationId, timestamp: context.timestamp },
         { id: reservationRow.id, branchId: reservationRow.branchId, reservationNumber: reservationRow.reservationNumber },
-        { id: sockRow.id, productVariantId: sockRow.productVariantId, quantity: sockRow.quantity, size: sockRow.size },
+        { id: sockRow.id, productVariantId: sockRow.productVariantId, quantity: issuedQuantity, size: sockRow.size },
       );
-      const updated = await this.repository.markSockDeducted(client, context.companyId, sockRow.id, context.timestamp);
+      const updated = await this.repository.markSockDeducted(client, context.companyId, sockRow.id, issuedQuantity, context.timestamp);
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.sock_deducted',
+        resourceType: 'party_reservation_sock',
+        resourceId: updated.id,
+        payload: { reservation_id: reservationRow.id, planned_quantity: sockRow.quantity, issued_quantity: issuedQuantity },
+      });
+      return updated;
+    });
+  }
+
+  /** TASK 16.20 (Part E) — the snack/drink mirror of `deductSock`, closing
+   * the confirmed gap that snacks never posted a real inventory movement
+   * at all (`docs/LEGACY_FUNCTIONAL_PARITY.md`, catalog/inventory audit).
+   * Same guard/idempotency shape; `issuedQuantity` defaults to the row's
+   * own planned `quantity` (a decimal string, matching the snack's own
+   * quantity scale). */
+  public async deductSnack(
+    context: PartyMutationContext,
+    branchIds: readonly string[],
+    reservationId: string,
+    snackId: string,
+    input?: { issuedQuantity?: string },
+  ): Promise<PartyReservationSnackRow> {
+    return this.repository.transaction(async (client) => {
+      const reservationRow = await this.reservation(context.companyId, branchIds, reservationId);
+      const snackRow = await this.repository.lockSnack(client, context.companyId, reservationRow.id, snackId);
+      if (snackRow === null) throw new PartyError('resource_not_found', 'The snack line was not found.');
+      if (snackRow.productVariantId === null)
+        throw new PartyError('validation_error', 'This snack line has no inventory variant to deduct.');
+      if (snackRow.stockDeducted === 'not_applicable')
+        throw new PartyError('resource_conflict', 'This snack line is not stock-tracked.');
+      if (snackRow.stockDeducted === 'deducted')
+        throw new PartyError('resource_conflict', 'This snack line was already deducted.');
+      let issuedQuantity = snackRow.quantity;
+      if (input?.issuedQuantity !== undefined) {
+        const match = /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.exec(input.issuedQuantity);
+        if (match === null || Number(input.issuedQuantity) <= 0)
+          throw new PartyError('validation_error', 'issued_quantity must be a positive decimal.');
+        issuedQuantity = input.issuedQuantity;
+      }
+
+      await postPartySnackDeduction(
+        client,
+        { companyId: context.companyId, actorId: context.actorId, correlationId: context.correlationId, timestamp: context.timestamp },
+        { id: reservationRow.id, branchId: reservationRow.branchId, reservationNumber: reservationRow.reservationNumber },
+        { id: snackRow.id, productVariantId: snackRow.productVariantId, quantity: issuedQuantity, nameSnapshot: snackRow.nameSnapshot },
+      );
+      const updated = await this.repository.markSnackDeducted(client, context.companyId, snackRow.id, issuedQuantity, context.timestamp);
+      await this.repository.audit(client, context, {
+        action: 'party_reservation.snack_deducted',
+        resourceType: 'party_reservation_snack',
+        resourceId: updated.id,
+        payload: { reservation_id: reservationRow.id, planned_quantity: snackRow.quantity, issued_quantity: issuedQuantity },
+      });
       return updated;
     });
   }
@@ -860,6 +1150,15 @@ export class PartyReservationsService {
 
   // --- Documents -----------------------------------------------------------------------
 
+  /** TASK 16.20 (Part P) — resolves the TASK 16.19-disclosed gap: real
+   * tenant-configurable contract/waiver legal text, via the platform's own
+   * company/branch settings architecture (`parties.contract_terms`/
+   * `parties.waiver_terms`), with real version/snapshot behavior so an
+   * already-generated document's wording never silently changes on a
+   * later reprint — see `earliestDocumentTermsSnapshot`'s own doc comment
+   * for exactly how. The rendered HTML itself is still NEVER stored
+   * (regenerated fresh every call, unchanged from TASK 14.3).
+   */
   public async generateDocument(
     context: PartyMutationContext,
     branchIds: readonly string[],
@@ -872,6 +1171,8 @@ export class PartyReservationsService {
       this.repository.room(context.companyId, reservationRow.roomId),
       this.repository.organizationForReservation(context.companyId, reservationRow.id),
     ]);
+    const existingSnapshot = await this.repository.earliestDocumentTermsSnapshot(context.companyId, reservationRow.id, documentType);
+    const clauses = existingSnapshot ?? (await this.resolveDocumentClauses(context.companyId, reservationRow.branchId, documentType));
     const document = await this.repository.transaction((client) =>
       this.repository.insertDocumentAudit(client, {
         id: randomUUID(),
@@ -879,11 +1180,26 @@ export class PartyReservationsService {
         reservationId: reservationRow.id,
         documentType,
         generatedBy: context.actorId,
+        termsSnapshot: clauses,
         timestamp: context.timestamp,
       }),
     );
-    const html = renderPartyDocumentHtml(documentType, reservationRow, pkg, room, organization);
+    const html = renderPartyDocumentHtml(documentType, reservationRow, pkg, room, organization, clauses);
     return { html, document };
+  }
+
+  /** A tenant's own configured text (one clause per non-blank line) when
+   * set, else the platform's generic, tenant-neutral default clause set —
+   * never a hardcoded tenant's own legal text in shared code (this
+   * task's own absolute constraint). */
+  private async resolveDocumentClauses(companyId: string, branchId: string, documentType: 'waiver' | 'contract'): Promise<readonly string[]> {
+    const key = documentType === 'contract' ? 'parties.contract_terms' : 'parties.waiver_terms';
+    const configured = await this.repository.resolveTenantTextSetting(companyId, branchId, key);
+    if (configured !== null) {
+      const lines = configured.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+      if (lines.length > 0) return lines;
+    }
+    return documentType === 'contract' ? DEFAULT_CONTRACT_CLAUSES : DEFAULT_WAIVER_CLAUSES;
   }
 }
 
@@ -950,13 +1266,33 @@ function escapeHtml(value: string): string {
  *  honest about what this system does and does not do (Phase 22: no
  *  e-signature claim). A tenant needing its own jurisdiction-specific
  *  legal text is a disclosed follow-up (no "edit my contract terms"
- *  admin surface exists yet — see this task's final report). */
+ *  admin surface existed at the time — TASK 16.20 Part P closes that: see
+ *  `PartyReservationsService.resolveDocumentClauses`/`parties.contract_
+ *  terms`/`parties.waiver_terms`. The clause sets below remain the
+ *  platform's own generic, tenant-neutral DEFAULT for a tenant that
+ *  hasn't configured its own — never a specific tenant's own legal text
+ *  in shared code. */
+const DEFAULT_CONTRACT_CLAUSES: readonly string[] = [
+  'El cliente acepta la fecha, horario, salón y paquete del evento descritos en este documento.',
+  'Un anticipo asegura la reservación; el saldo restante debe liquidarse a más tardar el día del evento.',
+  'Las cancelaciones se rigen por la política de cancelación de este negocio; cualquier reembolso de cantidades ya pagadas lo autoriza y gestiona un responsable del negocio de forma manual, nunca automática.',
+  'El negocio no se hace responsable de objetos personales perdidos o dañados durante el evento.',
+  'Invitados adicionales, refrigerios o extras no incluidos en el paquete descrito se cobran como cargos adicionales al momento del servicio.',
+  'El número de invitados no debe exceder el aforo autorizado para el salón y paquete reservados.',
+];
+const DEFAULT_WAIVER_CLAUSES: readonly string[] = [
+  'El firmante reconoce los riesgos inherentes a las actividades del área de juegos/eventos para todos los asistentes.',
+  'El firmante libera al negocio de responsabilidad por lesiones derivadas del uso ordinario de las instalaciones, salvo negligencia grave del negocio.',
+  'El firmante se compromete a que todos los asistentes seguirán las reglas de seguridad publicadas y las instrucciones del personal en todo momento.',
+];
+
 function renderPartyDocumentHtml(
   documentType: 'waiver' | 'contract',
   reservation: PartyReservationRow,
   pkg: PartyPackageRow | null,
   room: PartyRoomRow | null,
   organization: { companyName: string; branchName: string; branchAddress: Readonly<Record<string, unknown>> | null } | null,
+  clauses: readonly string[],
 ): string {
   const title = documentType === 'contract' ? 'Contrato de Prestación de Servicios' : 'Deslinde de Responsabilidad';
   const businessName = organization === null ? 'Negocio' : organization.companyName;
@@ -965,21 +1301,6 @@ function renderPartyDocumentHtml(
   const celebrant = reservation.celebrantName ?? 'N/D';
   const roomName = reservation.roomNameSnapshot ?? room?.name ?? 'N/D';
   const packageName = reservation.packageNameSnapshot ?? pkg?.name ?? 'N/D';
-  const clauses =
-    documentType === 'contract'
-      ? [
-          'El cliente acepta la fecha, horario, salón y paquete del evento descritos en este documento.',
-          'Un anticipo asegura la reservación; el saldo restante debe liquidarse a más tardar el día del evento.',
-          'Las cancelaciones se rigen por la política de cancelación de este negocio; cualquier reembolso de cantidades ya pagadas lo autoriza y gestiona un responsable del negocio de forma manual, nunca automática.',
-          'El negocio no se hace responsable de objetos personales perdidos o dañados durante el evento.',
-          'Invitados adicionales, refrigerios o extras no incluidos en el paquete descrito se cobran como cargos adicionales al momento del servicio.',
-          'El número de invitados no debe exceder el aforo autorizado para el salón y paquete reservados.',
-        ]
-      : [
-          'El firmante reconoce los riesgos inherentes a las actividades del área de juegos/eventos para todos los asistentes.',
-          'El firmante libera al negocio de responsabilidad por lesiones derivadas del uso ordinario de las instalaciones, salvo negligencia grave del negocio.',
-          'El firmante se compromete a que todos los asistentes seguirán las reglas de seguridad publicadas y las instrucciones del personal en todo momento.',
-        ];
   const clauseItems = clauses.map((clause) => `<li>${escapeHtml(clause)}</li>`).join('');
   const money = (value: string) => `${escapeHtml(reservation.currencyCode)} ${escapeHtml(value)}`;
   const breakdownRows =

@@ -1,6 +1,7 @@
 import { AppError } from '@asone/errors';
 
 import { CashError } from '../cash/cash.types.js';
+import { PartySnackDeductionError } from './party-snack-deduction.js';
 import { PartySockDeductionError } from './party-sock-deduction.js';
 import { PartyError } from './parties.types.js';
 
@@ -22,6 +23,13 @@ const partyErrorStatus: Readonly<Record<string, number>> = {
   // 400 (malformed input the JSON-schema layer already rejects earlier).
   capacity_exceeded: 422,
   package_room_not_eligible: 422,
+  // TASK 16.20 (Part L1) — same reasoning as capacity_exceeded/
+  // package_room_not_eligible above: an honest "this coupon cannot be
+  // applied as requested" rejection against real, current coupon state,
+  // never a 409 (implies a retry could resolve it) or a bare 400.
+  coupon_inactive: 422,
+  coupon_min_subtotal_not_met: 422,
+  coupon_usage_limit_reached: 422,
 };
 
 // Mirrors `cash.http-errors.ts`'s own table exactly — recording a
@@ -39,7 +47,7 @@ const cashErrorStatus: Readonly<Record<string, number>> = {
 };
 
 export function mapPartyError(error: unknown): Error {
-  if (error instanceof PartySockDeductionError)
+  if (error instanceof PartySockDeductionError || error instanceof PartySnackDeductionError)
     return new AppError({
       code: error.code,
       message: error.message,

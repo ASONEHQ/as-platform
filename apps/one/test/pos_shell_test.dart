@@ -8090,6 +8090,162 @@ void main() {
       expect(find.textContaining('Sin vendedor asignado'), findsOneWidget);
     });
 
+    // TASK 16.20 (Part G) — event-day Included/Delivered/Pending display
+    // and the explicit "Entregar" confirmation dialog. No prior test
+    // exercised the socks/snacks tab UI at all before this task.
+    testWidgets('a planned (package-included) sock line shows "Incluido" and lets an operator confirm/correct the issued quantity', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final sock = PosPartySock(
+        id: 'sock-99',
+        reservationId: 'reservation-1',
+        size: 'M',
+        quantity: 25,
+        productVariantId: 'variant-1',
+        stockDeducted: 'pending',
+        stockDeductedAt: null,
+        issuedQuantity: null,
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: [sock],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Calcetas'));
+      await tester.pumpAndSettle();
+      expect(find.text('Incluido'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-sock-deduct-sock-99')));
+      await tester.pumpAndSettle();
+      // The dialog pre-fills the PLANNED quantity — an operator can
+      // correct it (e.g. only 23 of the 25 planned actually attended).
+      expect(find.text('25'), findsWidgets);
+      await tester.enterText(find.byKey(const Key('pos-fiestas-issue-quantity-field')), '23');
+      await tester.tap(find.byKey(const Key('pos-fiestas-issue-quantity-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.deductSockCalls, [(reservationId: 'reservation-1', sockId: 'sock-99', issuedQuantity: 23)]);
+    });
+
+    testWidgets('an already-delivered snack shows "Entregado" with no deduct action; a non-tracked snack shows "No aplica"', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final deliveredSnack = PosPartySnack(
+        id: 'snack-delivered',
+        reservationId: 'reservation-1',
+        productId: 'product-1',
+        nameSnapshot: 'Refresco',
+        unitPriceSnapshot: '0.00',
+        quantity: '25',
+        lineTotal: '0.00',
+        taxTotal: '0.00',
+        productVariantId: 'variant-2',
+        stockDeducted: 'deducted',
+        stockDeductedAt: DateTime.utc(2026, 9, 4),
+        issuedQuantity: '20',
+        includedInPackage: true,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final untrackedSnack = PosPartySnack(
+        id: 'snack-untracked',
+        reservationId: 'reservation-1',
+        productId: null,
+        nameSnapshot: 'Dulces personalizados',
+        unitPriceSnapshot: '12.50',
+        quantity: '2',
+        lineTotal: '29.00',
+        taxTotal: '4.00',
+        productVariantId: null,
+        stockDeducted: 'not_applicable',
+        stockDeductedAt: null,
+        issuedQuantity: null,
+        includedInPackage: false,
+        createdAt: DateTime.utc(2026, 9, 4),
+      );
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: [deliveredSnack, untrackedSnack],
+          socks: const [],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Entregado'), findsOneWidget);
+      expect(find.textContaining('entregado: 20'), findsOneWidget);
+      expect(find.text('No aplica'), findsOneWidget);
+      // Neither line offers a deduct action: one is already delivered,
+      // the other was never stock-tracked to begin with.
+      expect(find.byKey(const Key('pos-fiestas-snack-deduct-snack-delivered')), findsNothing);
+      expect(find.byKey(const Key('pos-fiestas-snack-deduct-snack-untracked')), findsNothing);
+    });
+
+    // TASK 16.20 (Part L1) — the coupon-apply UI, a genuinely new
+    // capability (no prior test exercised it, since the coupon field
+    // didn't exist before this task).
+    testWidgets('applying a coupon code calls the gateway with the trimmed code and refreshes the detail view', (
+      tester,
+    ) async {
+      final reservation = _fixturePartyReservation();
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [reservation],
+        detailResult: PosPartyReservationDetail(
+          reservation: reservation,
+          snacks: const [],
+          socks: const [],
+          paymentsTotalPaid: '0.00',
+          paymentsCount: 0,
+          documentsCount: 0,
+          documentsLastGeneratedAt: null,
+          documentsLastDocumentType: null,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-coupon-code')), '  fiesta10  ');
+      await tester.tap(find.byKey(const Key('pos-fiestas-coupon-apply')));
+      await tester.pumpAndSettle();
+
+      // The widget trims whitespace before sending — matches every other
+      // form field's own established trimming convention in this file.
+      expect(partiesGateway.applyCouponCalls, [(reservationId: 'reservation-1', code: 'fiesta10')]);
+    });
+
     testWidgets('a 422 capacity_exceeded response surfaces the honest capacity message, never a generic error', (
       tester,
     ) async {
@@ -8156,6 +8312,60 @@ void main() {
       final call = partiesGateway.listReservationsCalls.last;
       expect(call.eventDateFrom, isNotNull);
       expect(call.eventDateFrom, call.eventDateTo);
+    });
+
+    // TASK 16.20 (Part P) — the tenant-configurable contract/waiver
+    // legal-terms editor, a genuinely new admin surface.
+    testWidgets('Ajustes > Términos legales shows the tenant\'s real configured contract/waiver text', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+      );
+      final settingsGateway = _RecordingSettingsGateway(
+        settings: const [
+          PosEffectiveSetting(
+            key: 'parties.contract_terms',
+            type: 'string',
+            value: 'Cláusula de prueba del contrato.',
+            source: 'company',
+            version: 3,
+          ),
+          PosEffectiveSetting(
+            key: 'parties.waiver_terms',
+            type: 'string',
+            value: '',
+            source: 'default',
+            version: 1,
+          ),
+        ],
+      );
+      await _pump(
+        tester,
+        const Size(1440, 900),
+        context: _contextWithParties(manage: true),
+        partiesGateway: partiesGateway,
+        settingsGateway: settingsGateway,
+      );
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Términos legales'));
+      await tester.pumpAndSettle();
+
+      // Compared field-by-field rather than as one record: `List` has no
+      // value `==`, so a whole-record `expect` would spuriously fail even
+      // when the actual and expected `keys` contents are identical.
+      expect(settingsGateway.effectiveCalls, hasLength(1));
+      expect(settingsGateway.effectiveCalls.single.companyId, 'company-id');
+      expect(settingsGateway.effectiveCalls.single.keys, ['parties.contract_terms', 'parties.waiver_terms']);
+      final contractField = tester.widget<TextField>(find.byKey(const Key('pos-fiestas-terms-contract')));
+      expect(contractField.controller?.text, 'Cláusula de prueba del contrato.');
+      final waiverField = tester.widget<TextField>(find.byKey(const Key('pos-fiestas-terms-waiver')));
+      expect(waiverField.controller?.text, '');
     });
 
     testWidgets('the package form lets an admin set the tax classification and restrict it to specific rooms', (
@@ -11072,6 +11282,24 @@ class _FakePartiesGateway implements PosPartiesGateway {
         );
   }
 
+  // TASK 16.20 (Part L1) — call log mirroring this fake's established
+  // `*Calls` convention.
+  final List<({String reservationId, String code})> applyCouponCalls = [];
+
+  @override
+  Future<PosPartyReservation> applyCoupon(String reservationId, String code) async {
+    applyCouponCalls.add((reservationId: reservationId, code: code));
+    return _fixturePartyReservation(id: reservationId);
+  }
+
+  final List<String> removeCouponCalls = [];
+
+  @override
+  Future<PosPartyReservation> removeCoupon(String reservationId) async {
+    removeCouponCalls.add(reservationId);
+    return _fixturePartyReservation(id: reservationId);
+  }
+
   @override
   Future<PosPartySnack> addSnack(String reservationId, PosPartySnackInput input) async => PosPartySnack(
     id: 'snack-1',
@@ -11082,11 +11310,42 @@ class _FakePartiesGateway implements PosPartiesGateway {
     quantity: input.quantity,
     lineTotal: input.unitPriceSnapshot ?? '0.00',
     taxTotal: '0.00',
+    productVariantId: null,
+    stockDeducted: 'not_applicable',
+    stockDeductedAt: null,
+    issuedQuantity: null,
+    includedInPackage: false,
     createdAt: DateTime.utc(2026, 9, 4),
   );
 
   @override
   Future<List<PosPartySnack>> listSnacks(String reservationId) async => const [];
+
+  // TASK 16.20 — call log so a test can assert the exact issued-quantity
+  // an operator confirmed, mirroring this fake's own established
+  // `*Calls` convention (e.g. `cancelCalls`/`quoteCalls` above).
+  final List<({String reservationId, String snackId, String? issuedQuantity})> deductSnackCalls = [];
+
+  @override
+  Future<PosPartySnack> deductSnack(String reservationId, String snackId, {String? issuedQuantity}) async {
+    deductSnackCalls.add((reservationId: reservationId, snackId: snackId, issuedQuantity: issuedQuantity));
+    return PosPartySnack(
+      id: snackId,
+      reservationId: reservationId,
+      productId: 'product-1',
+      nameSnapshot: 'Snack',
+      unitPriceSnapshot: '0.00',
+      quantity: '1',
+      lineTotal: '0.00',
+      taxTotal: '0.00',
+      productVariantId: 'variant-2',
+      stockDeducted: 'deducted',
+      stockDeductedAt: DateTime.utc(2026, 9, 4),
+      issuedQuantity: issuedQuantity ?? '1',
+      includedInPackage: false,
+      createdAt: DateTime.utc(2026, 9, 4),
+    );
+  }
 
   @override
   Future<PosPartySock> addSock(String reservationId, PosPartySockInput input) async => PosPartySock(
@@ -11097,23 +11356,33 @@ class _FakePartiesGateway implements PosPartiesGateway {
     productVariantId: input.productVariantId,
     stockDeducted: 'pending',
     stockDeductedAt: null,
+    issuedQuantity: null,
+    includedInPackage: false,
     createdAt: DateTime.utc(2026, 9, 4),
   );
 
   @override
   Future<List<PosPartySock>> listSocks(String reservationId) async => const [];
 
+  // TASK 16.20 — call log mirroring [deductSnackCalls] above.
+  final List<({String reservationId, String sockId, int? issuedQuantity})> deductSockCalls = [];
+
   @override
-  Future<PosPartySock> deductSock(String reservationId, String sockId) async => PosPartySock(
-    id: sockId,
-    reservationId: reservationId,
-    size: 'CH',
-    quantity: 1,
-    productVariantId: 'variant-1',
-    stockDeducted: 'deducted',
-    stockDeductedAt: DateTime.utc(2026, 9, 4),
-    createdAt: DateTime.utc(2026, 9, 4),
-  );
+  Future<PosPartySock> deductSock(String reservationId, String sockId, {int? issuedQuantity}) async {
+    deductSockCalls.add((reservationId: reservationId, sockId: sockId, issuedQuantity: issuedQuantity));
+    return PosPartySock(
+      id: sockId,
+      reservationId: reservationId,
+      size: 'CH',
+      quantity: 1,
+      productVariantId: 'variant-1',
+      stockDeducted: 'deducted',
+      stockDeductedAt: DateTime.utc(2026, 9, 4),
+      issuedQuantity: issuedQuantity ?? 1,
+      includedInPackage: false,
+      createdAt: DateTime.utc(2026, 9, 4),
+    );
+  }
 
   @override
   Future<PosPartyPayment> recordPayment(
@@ -11217,6 +11486,8 @@ PosPartyReservation _fixturePartyReservation({
   subtotalAmount: '1000.00',
   discountTotal: '0.00',
   taxTotal: '0.00',
+  couponId: null,
+  couponCodeSnapshot: null,
   quotedTotal: '1000.00',
   currencyCode: 'MXN',
   notes: notes,
