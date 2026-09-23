@@ -20,9 +20,11 @@ function nonBlank(value: string, field: string): string {
   if (trimmed.length === 0) throw new LoyaltyError('validation_error', `The ${field} must not be blank.`);
   return trimmed;
 }
+// TASK 16.23A — was 'validation_error' (400); see the identical fix's
+// rationale in customers.service.ts. Not a security bypass.
 function requirePermission(context: LoyaltyMutationContext, permission: string): void {
   if (!context.actorPermissions.includes(permission))
-    throw new LoyaltyError('validation_error', `This actor is not authorized (${permission}).`);
+    throw new LoyaltyError('permission_denied', `This actor is not authorized (${permission}).`);
 }
 function moneyUnits(value: string): bigint {
   const [whole = '', fraction = ''] = value.split('.');

@@ -16,6 +16,7 @@ import { MercadoPagoClient } from '../payments/providers/mercado-pago.client.js'
 import { MercadoPagoPointProvider } from '../payments/providers/mercado-pago.provider.js';
 import { SalesRepository } from '../sales/sales.repository.js';
 import { SalesService } from '../sales/sales.service.js';
+import { mapMembershipError } from './memberships.http-errors.js';
 import { MembershipsRepository } from './memberships.repository.js';
 import { MembershipsService } from './memberships.service.js';
 
@@ -223,6 +224,34 @@ integration('PostgreSQL memberships lifecycle (TASK 13.0)', { concurrent: false 
   }
 
   describe('membership plans (Part J)', () => {
+    // TASK 16.23A — a pre-launch audit found this service's own local
+    // requirePermission threw 'validation_error' (mapped to HTTP 400),
+    // contradicting every memberships route's own declared 403 response
+    // and the identical, correctly-403 pattern every other permission
+    // check in this codebase uses. Never a security bypass — the action
+    // was always blocked — but a real status-code/contract bug, and this
+    // module had zero integration-level permission-denial coverage.
+    it('an actor missing membership.manage is rejected with a real 403, not 400', async () => {
+      const restricted = { ...context, actorPermissions: ['sale.read'] };
+      await expect(
+        memberships.createPlan(restricted, 'plan-perm-denied-1', {
+          name: 'Denied Plan',
+          productId: membershipProductId,
+          durationDays: 30,
+        }),
+      ).rejects.toMatchObject({ code: 'permission_denied' });
+      try {
+        await memberships.createPlan(restricted, 'plan-perm-denied-2', {
+          name: 'Denied Plan',
+          productId: membershipProductId,
+          durationDays: 30,
+        });
+        expect.unreachable('expected createPlan to throw');
+      } catch (error) {
+        expect((mapMembershipError(error) as { statusCode?: number }).statusCode).toBe(403);
+      }
+    });
+
     it('creates, reads, and updates a plan', async () => {
       const created = await createPlan('plan-crud-1');
       expect(created.name).toBe('Plan plan-crud-1');

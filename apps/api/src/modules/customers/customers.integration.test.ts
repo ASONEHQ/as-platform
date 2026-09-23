@@ -8,6 +8,7 @@ import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 
 import { SalesRepository } from '../sales/sales.repository.js';
 import { SalesService } from '../sales/sales.service.js';
+import { mapCustomerError } from './customers.http-errors.js';
 import { CustomersRepository } from './customers.repository.js';
 import { CustomersService } from './customers.service.js';
 import { type CustomerError } from './customers.types.js';
@@ -147,6 +148,24 @@ integration('PostgreSQL customers foundation (TASK 13.0)', { concurrent: false }
       expect(created.value.status).toBe('active');
       expect(created.value.email).toBeNull();
       expect(created.value.phone).toBeNull();
+    });
+
+    // TASK 16.23A — a pre-launch audit found this service's own local
+    // requirePermission threw 'validation_error' (mapped to HTTP 400),
+    // contradicting every customers route's own declared 403 response
+    // and the identical, correctly-403 pattern every other permission
+    // check in this codebase uses. Never a security bypass — the action
+    // was always blocked — but a real status-code/contract bug.
+    it('an actor missing customer.create is rejected with a real 403, not 400', async () => {
+      const restricted = { ...context, actorPermissions: ['customer.read'] };
+      const attempt = customers.createCustomer(restricted, 'cust-create-denied', { firstName: 'Denied' });
+      await expect(attempt).rejects.toMatchObject({ code: 'permission_denied' });
+      try {
+        await customers.createCustomer(restricted, 'cust-create-denied-2', { firstName: 'Denied' });
+        expect.unreachable('expected createCustomer to throw');
+      } catch (error) {
+        expect((mapCustomerError(error) as { statusCode?: number }).statusCode).toBe(403);
+      }
     });
 
     it('reads a customer back by id', async () => {

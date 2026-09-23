@@ -264,9 +264,23 @@ export function resolveSnackTaxCode(
   return productTaxCode ?? packageTaxCode;
 }
 
+// TASK 16.23A — was `BigInt(Math.round(Number(quantity) * 1_000_000))`, a
+// float round-trip through a JS `number` (an ADR-0001 violation: money
+// arithmetic must never touch IEEE754 float, even transiently) — found
+// by a pre-launch audit. Replaced with the same exact regex-based
+// decimal-to-BigInt parse every sibling module already uses (e.g.
+// `sales.service.ts`'s `quantityUnits`, `promotions/pricing.service.ts`'s
+// `parseQuantityUnits`).
+const QUANTITY_SCALE = 1_000_000n;
+export function parseQuantityUnits(value: string, field: string): bigint {
+  const match = /^(\d{1,19})(?:\.(\d{1,6}))?$/u.exec(value);
+  if (match?.[1] === undefined) throw new PartyError('validation_error', `${field} is invalid.`);
+  return BigInt(match[1]) * QUANTITY_SCALE + BigInt((match[2] ?? '').padEnd(6, '0'));
+}
+
 export function computeLineTax(unitPriceSnapshot: string, quantity: string, taxCode: ProductTaxCode): { taxTotal: string; taxSnapshot: Readonly<Record<string, unknown>> } {
-  const quantityUnits = BigInt(Math.round(Number(quantity) * 1_000_000));
-  const subtotalUnits = (moneyUnits(unitPriceSnapshot, 'unit_price_snapshot') * quantityUnits) / 1_000_000n;
+  const quantityUnits = parseQuantityUnits(quantity, 'quantity');
+  const subtotalUnits = (moneyUnits(unitPriceSnapshot, 'unit_price_snapshot') * quantityUnits) / QUANTITY_SCALE;
   const basisPoints = ivaBasisPointsForTaxCode(taxCode);
   const taxUnits = (subtotalUnits * BigInt(basisPoints) + 5_000n) / 10_000n;
   return {

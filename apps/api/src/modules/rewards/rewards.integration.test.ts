@@ -755,7 +755,9 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
           loyaltyProgramId: program.id,
           reasonCode: 'vip_grant',
         }),
-      ).rejects.toMatchObject({ code: 'validation_error' });
+        // TASK 16.23A — was 'validation_error' (400); fixed to the
+        // correctly-403 'permission_denied' (see loyalty's identical fix).
+      ).rejects.toMatchObject({ code: 'permission_denied' });
     });
   });
 
@@ -916,7 +918,7 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
       const entitlement = await issueEntitlement('redeem-perm-1', customer.value.id, program.id);
       const noPermissionContext = { ...context, actorPermissions: ['reward.read'] };
       await expect(rewards.redeem(noPermissionContext, 'redeem-perm-1-key', entitlement.id, branchId)).rejects.toMatchObject({
-        code: 'validation_error',
+        code: 'permission_denied',
       });
     });
   });
@@ -966,7 +968,7 @@ integration('PostgreSQL reward entitlements (TASK 13.1)', { concurrent: false },
       const entitlement = await issueEntitlement('revoke-perm-1', customer.value.id, program.id);
       const noPermissionContext = { ...context, actorPermissions: ['reward.read'] };
       await expect(rewards.revoke(noPermissionContext, entitlement.id, entitlement.version, 'Nope')).rejects.toMatchObject({
-        code: 'validation_error',
+        code: 'permission_denied',
       });
     });
   });

@@ -18278,7 +18278,12 @@ List<CashCutLine>? _denominationLines(PosCashSession session, String currencyCod
       if (count.quantity > 0)
         CashCutLine(
           '${_formatMoney(count.value, currencyCode)} x ${count.quantity}',
-          _formatMoney((double.parse(count.value) * count.quantity).toStringAsFixed(4), currencyCode),
+          // TASK 16.23A — was `double.parse(...) * count.quantity`, an
+          // ADR-0001 violation on a real printed reconciliation document
+          // (found by a pre-launch audit); exact BigInt multiplication via
+          // Money's own integer `operator *`, matching every other money
+          // computation in this file.
+          _formatMoney((Money.parse(count.value, currencyCode) * count.quantity).toApiString(), currencyCode),
         ),
   ];
 }
@@ -18636,10 +18641,13 @@ class _CajaCurrentState extends State<_CajaCurrent> {
       companyId: widget.context.session.companyId,
     );
     if (!mounted) return;
-    double parse(String value) => double.tryParse(value) ?? 0;
-    final otherCashIn = (parse(summary.cashInTotal) - parse(summary.externalIncomeTotal)).toStringAsFixed(4);
+    // TASK 16.23A — was `double.tryParse(...)` subtraction, an ADR-0001
+    // violation on a real printed financial reconciliation document
+    // (found by a pre-launch audit); exact BigInt subtraction via Money.
+    Money money(String value) => Money.parse(value, session.currencyCode);
+    final otherCashIn = (money(summary.cashInTotal) - money(summary.externalIncomeTotal)).toApiString();
     final otherCashOut =
-        (parse(summary.cashOutTotal) - parse(summary.withdrawalTotal) - parse(summary.expenseTotal)).toStringAsFixed(4);
+        (money(summary.cashOutTotal) - money(summary.withdrawalTotal) - money(summary.expenseTotal)).toApiString();
     final html = buildCashCutHtml(
       isFinal: isFinal,
       businessName: widget.context.currentCompany?.name ?? 'AS ONE POS',
@@ -21329,10 +21337,12 @@ class _CutDetailDialogState extends State<_CutDetailDialog> {
     if (!mounted) return;
     final session = summary.session;
     final isFinal = session.status == 'closed';
-    double parse(String value) => double.tryParse(value) ?? 0;
-    final otherCashIn = (parse(summary.cashInTotal) - parse(summary.externalIncomeTotal)).toStringAsFixed(4);
+    // TASK 16.23A — was `double.tryParse(...)` subtraction; see the
+    // identical fix's rationale in `_printCashCut` above.
+    Money money(String value) => Money.parse(value, session.currencyCode);
+    final otherCashIn = (money(summary.cashInTotal) - money(summary.externalIncomeTotal)).toApiString();
     final otherCashOut =
-        (parse(summary.cashOutTotal) - parse(summary.withdrawalTotal) - parse(summary.expenseTotal)).toStringAsFixed(4);
+        (money(summary.cashOutTotal) - money(summary.withdrawalTotal) - money(summary.expenseTotal)).toApiString();
     final html = buildCashCutHtml(
       isFinal: isFinal,
       businessName: widget.companyName,

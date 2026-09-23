@@ -32,9 +32,16 @@ function deriveDisplayName(firstName: string, lastName: string | null, explicit:
   return [firstName, lastName ?? ''].join(' ').trim();
 }
 
+// TASK 16.23A — was 'validation_error' (mapped to 400 by
+// customers.http-errors.ts), contradicting every route's own declared
+// `403: errorSchema` response and the identical, correctly-403 pattern
+// `auth.guards.ts`'s shared `requirePermission` already uses everywhere
+// else in the codebase. Not a security bypass (the action was always
+// blocked) — a status-code/contract bug, caught by a pre-launch audit,
+// not a live incident.
 function requirePermission(context: CustomerMutationContext, permission: string): void {
   if (!context.actorPermissions.includes(permission))
-    throw new CustomerError('validation_error', `This actor is not authorized (${permission}).`);
+    throw new CustomerError('permission_denied', `This actor is not authorized (${permission}).`);
 }
 
 /** TASK 13.1A — `idempotent()`'s own persisted `response_body` is real

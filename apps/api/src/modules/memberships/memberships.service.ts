@@ -20,9 +20,11 @@ function nonBlank(value: string, field: string): string {
   if (trimmed.length === 0) throw new MembershipError('validation_error', `The ${field} must not be blank.`);
   return trimmed;
 }
+// TASK 16.23A — was 'validation_error' (400); see the identical fix's
+// rationale in customers.service.ts. Not a security bypass.
 function requirePermission(context: MembershipMutationContext, permission: string): void {
   if (!context.actorPermissions.includes(permission))
-    throw new MembershipError('validation_error', `This actor is not authorized (${permission}).`);
+    throw new MembershipError('permission_denied', `This actor is not authorized (${permission}).`);
 }
 function addDays(start: Date, days: number): Date {
   const result = new Date(start.getTime());

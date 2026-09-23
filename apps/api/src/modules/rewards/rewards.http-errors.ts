@@ -4,6 +4,7 @@ import { RewardError } from './rewards.types.js';
 
 const rewardErrorStatus: Readonly<Record<string, number>> = {
   validation_error: 400,
+  permission_denied: 403,
   resource_not_found: 404,
   resource_conflict: 409,
   version_conflict: 409,

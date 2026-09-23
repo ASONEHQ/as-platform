@@ -293,4 +293,16 @@ describe('computeLineTax', () => {
     expect(result.taxTotal).toBe('0.0000');
     expect(result.taxSnapshot).toEqual({ tax_code: 'IVA_EXEMPT', basis_points: 0 });
   });
+
+  // TASK 16.23A — was `BigInt(Math.round(Number(quantity) * 1_000_000))`,
+  // an ADR-0001 float-round-trip violation found by a pre-launch audit.
+  it('parses a decimal quantity exactly via BigInt, never a float round-trip', () => {
+    const result = computeLineTax('10.0000', '1.5', 'IVA_GENERAL');
+    expect(result.taxTotal).toBe('2.4000'); // 10*1.5=15 subtotal, 16% = 2.40
+  });
+
+  it('rejects a malformed quantity string cleanly, never silently coercing it', () => {
+    expect(() => computeLineTax('10.0000', 'not-a-number', 'IVA_GENERAL')).toThrow('quantity is invalid.');
+    expect(() => computeLineTax('10.0000', '-3', 'IVA_GENERAL')).toThrow('quantity is invalid.');
+  });
 });

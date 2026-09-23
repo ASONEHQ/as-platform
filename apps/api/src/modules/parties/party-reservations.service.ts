@@ -19,6 +19,7 @@ import {
   nonBlank,
   nonNegativeInteger,
   nonNegativeMoney,
+  parseQuantityUnits,
   positiveMoney,
   resolveSnackTaxCode,
 } from './parties.pricing.js';
@@ -993,7 +994,12 @@ export class PartyReservationsService {
       const quantityMatch = /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.exec(input.quantity);
       if (quantityMatch === null || Number(input.quantity) <= 0)
         throw new PartyError('validation_error', 'quantity must be a positive decimal.');
-      const subtotalUnits = (moneyUnits(unitPriceSnapshot) * BigInt(Math.round(Number(input.quantity) * 1_000_000))) / 1_000_000n;
+      // TASK 16.23A — was a float round-trip (`BigInt(Math.round(Number(
+      // input.quantity) * 1_000_000))`), an ADR-0001 violation found by a
+      // pre-launch audit; now the same exact regex-based parse
+      // `computeLineTax` below already uses.
+      const quantityUnits = parseQuantityUnits(input.quantity, 'quantity');
+      const subtotalUnits = (moneyUnits(unitPriceSnapshot) * quantityUnits) / 1_000_000n;
       // TASK 16.19 — a snack line is taxed like any other sellable line
       // (see `party_reservation_snacks.tax_snapshot`'s own doc comment):
       // the linked product's own real tax code, or this reservation's own

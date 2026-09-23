@@ -300,7 +300,11 @@ integration('PostgreSQL loyalty ledger (TASK 13.0)', { concurrent: false }, () =
           unitType: 'point',
           reason: 'Compensation',
         }),
-      ).rejects.toMatchObject({ code: 'validation_error' });
+        // TASK 16.23A — was 'validation_error' (400), a status-code
+        // contract bug found by a pre-launch audit; fixed to the
+        // correctly-403 'permission_denied' every other permission
+        // check in this codebase already uses.
+      ).rejects.toMatchObject({ code: 'permission_denied' });
     });
 
     it('records a signed manual adjustment with a required reason and actor, lazily creating the account', async () => {
@@ -353,7 +357,7 @@ integration('PostgreSQL loyalty ledger (TASK 13.0)', { concurrent: false }, () =
       const customer = await customers.createCustomer(context, 'cust-tenant-loy-1', { firstName: 'Yolanda' });
       const noPermissionContext = { ...context, actorPermissions: [] };
       await expect(loyalty.summary(noPermissionContext, customer.value.id)).rejects.toMatchObject({
-        code: 'validation_error',
+        code: 'permission_denied',
       });
     });
   });

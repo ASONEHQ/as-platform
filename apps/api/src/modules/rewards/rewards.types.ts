@@ -62,6 +62,7 @@ export interface RewardEntitlementTokenRow {
 
 export type RewardErrorCode =
   | 'validation_error'
+  | 'permission_denied'
   | 'resource_not_found'
   | 'resource_conflict'
   | 'version_conflict'

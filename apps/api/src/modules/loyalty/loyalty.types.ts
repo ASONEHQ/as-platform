@@ -119,7 +119,12 @@ export interface LoyaltySummary {
   ledger: readonly LoyaltyLedgerEntryRow[];
 }
 
-export type LoyaltyErrorCode = 'validation_error' | 'resource_not_found' | 'resource_conflict' | 'version_conflict';
+export type LoyaltyErrorCode =
+  | 'validation_error'
+  | 'permission_denied'
+  | 'resource_not_found'
+  | 'resource_conflict'
+  | 'version_conflict';
 
 export class LoyaltyError extends Error {
   constructor(
