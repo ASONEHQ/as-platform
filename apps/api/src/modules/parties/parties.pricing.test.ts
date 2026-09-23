@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertWithinCapacity,
+  capacityViolation,
+  computeEndTime,
   computeLineTax,
   computePartyQuote,
   formatMoney,
@@ -179,6 +181,71 @@ describe('assertWithinCapacity', () => {
       expect((error as PartyError).code).toBe('capacity_exceeded');
       expect((error as PartyError).details?.['limit']).toBe('room_total');
     }
+  });
+});
+
+// TASK 16.22 — the non-throwing predicate `availableRooms` scans many
+// candidate rooms with, extracted from `assertWithinCapacity`'s own body
+// so the two can never silently diverge.
+describe('capacityViolation (TASK 16.22 — non-throwing form)', () => {
+  const withinAllLimits = {
+    roomCapacityTotal: 30,
+    roomCapacityChildren: 25,
+    roomCapacityAdults: 15,
+    packageCapacityMax: 30,
+  };
+
+  it('returns null when every configured limit is satisfied', () => {
+    expect(capacityViolation({ ...withinAllLimits, children: 20, adults: 10 })).toBeNull();
+  });
+
+  it('returns the exact same first-violation shape assertWithinCapacity throws', () => {
+    expect(capacityViolation({ ...withinAllLimits, children: 100, adults: 0 })).toEqual({
+      limit: 'room_total',
+      capacity: 30,
+      requested: 100,
+    });
+  });
+
+  it('never treats an unconfigured (null) capacity field as zero', () => {
+    expect(
+      capacityViolation({
+        roomCapacityTotal: null,
+        roomCapacityChildren: null,
+        roomCapacityAdults: null,
+        packageCapacityMax: null,
+        children: 500,
+        adults: 500,
+      }),
+    ).toBeNull();
+  });
+});
+
+// TASK 16.22 (Phase 16 "extra time") — the recovered `sumarMinutosFiesta()`
+// formula, minus its midnight-wraparound bug.
+describe('computeEndTime (TASK 16.22)', () => {
+  it('adds the package duration to the start time', () => {
+    expect(computeEndTime('11:00', 120, 0)).toBe('13:00:00');
+  });
+
+  it('adds extra-half-hour blocks on top of the base duration', () => {
+    expect(computeEndTime('11:00', 120, 3)).toBe('14:30:00'); // 120 + 3*30 = 270 min
+  });
+
+  it('accepts an HH:MM:SS start time', () => {
+    expect(computeEndTime('11:00:00', 90, 0)).toBe('12:30:00');
+  });
+
+  it('rejects a start time that would end exactly at midnight', () => {
+    expect(() => computeEndTime('22:00', 120, 0)).toThrow(PartyError);
+  });
+
+  it('rejects a start time that would end after midnight — never silently wraps to an earlier clock time (the legacy bug)', () => {
+    expect(() => computeEndTime('23:00', 180, 0)).toThrow(PartyError);
+  });
+
+  it('rejects a malformed start time', () => {
+    expect(() => computeEndTime('not-a-time', 90, 0)).toThrow(PartyError);
   });
 });
 

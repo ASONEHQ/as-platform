@@ -131,6 +131,92 @@ class PosPartyRoomInput {
   };
 }
 
+/// TASK 16.22 — one room's live availability for a given package/date/
+/// time (`GET /party-reservations/availability`) — the genuine gap this
+/// task's own forensic audit of the legacy Cotizador found: the backend
+/// previously had no way to tell an operator which rooms were actually
+/// bookable before quoting one. Only rooms genuinely ELIGIBLE for the
+/// package appear at all (mirrors legacy's own `cotizadorSalonesCompatibles`
+/// filtering) — an ineligible room is never returned as "unavailable for
+/// another reason." Never trusted as the final booking gate — `POST
+/// /party-reservations` independently re-validates conflict/capacity/
+/// eligibility itself before ever committing.
+class PosPartyRoomAvailability {
+  const PosPartyRoomAvailability({
+    required this.roomId,
+    required this.code,
+    required this.name,
+    required this.capacityChildren,
+    required this.capacityAdults,
+    required this.capacityTotal,
+    required this.color,
+    required this.available,
+    required this.reason,
+    required this.conflictingReservationNumber,
+  });
+
+  factory PosPartyRoomAvailability.fromJson(Map<String, Object?> json) => PosPartyRoomAvailability(
+    roomId: json['room_id']! as String,
+    code: json['code']! as String,
+    name: json['name']! as String,
+    capacityChildren: json['capacity_children'] as int?,
+    capacityAdults: json['capacity_adults'] as int?,
+    capacityTotal: json['capacity_total'] as int?,
+    color: json['color'] as String?,
+    available: json['available'] == true,
+    reason: json['reason'] as String?,
+    conflictingReservationNumber: json['conflicting_reservation_number'] as String?,
+  );
+
+  final String roomId;
+  final String code;
+  final String name;
+  final int? capacityChildren;
+  final int? capacityAdults;
+  final int? capacityTotal;
+  final String? color;
+  final bool available;
+
+  /// `'conflict'` | `'capacity'` | `null` (only set when [available] is
+  /// `false`).
+  final String? reason;
+
+  /// Only set when [reason] is `'conflict'` — the real, human-readable
+  /// folio of the reservation already occupying this room/window, never
+  /// an internal id.
+  final String? conflictingReservationNumber;
+}
+
+/// The full `GET /party-reservations/availability` response — the
+/// server-computed `endTime` (package duration + extra half-hours, never
+/// recomputed client-side — see the backend's own `computeEndTime`) plus
+/// every eligible room's availability.
+class PosPartyRoomAvailabilityResult {
+  const PosPartyRoomAvailabilityResult({
+    required this.eventDate,
+    required this.startTime,
+    required this.endTime,
+    required this.rooms,
+  });
+
+  factory PosPartyRoomAvailabilityResult.fromJson(Map<String, Object?> json) {
+    final rawRooms = json['rooms'];
+    return PosPartyRoomAvailabilityResult(
+      eventDate: json['event_date']! as String,
+      startTime: json['start_time']! as String,
+      endTime: json['end_time']! as String,
+      rooms: rawRooms is List<Object?>
+          ? rawRooms.whereType<Map<String, Object?>>().map(PosPartyRoomAvailability.fromJson).toList(growable: false)
+          : const <PosPartyRoomAvailability>[],
+    );
+  }
+
+  final String eventDate;
+  final String startTime;
+  final String endTime;
+  final List<PosPartyRoomAvailability> rooms;
+}
+
 /// TASK 16.20A (Part 2) — one planned consumable entry inside a
 /// package's `included_consumables` (`includedConsumableHttp` in
 /// `party-packages.routes.ts`). `productId`/`productVariantId` are real

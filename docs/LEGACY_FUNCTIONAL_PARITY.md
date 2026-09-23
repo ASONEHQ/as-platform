@@ -7117,3 +7117,359 @@ INFLAPARK production data created or modified — all live certification
 used the generic "Freshness QA Retail" QA tenant with purpose-built
 `E2E 1621 Producto A`/`E2E 1621 Producto B`/`E2E VIP 1621`/`Bryant E2E
 QA` fixtures, created and owned entirely by this task.
+
+## TASK 16.22 — Fiestas/Eventos Commercial Master Closure: Cotizador + Calendario (2026-09-22)
+
+**§0 Scope and method.** Starting checkpoint `a34ec36` (TASK 16.21).
+Re-read the actual canonical legacy source
+(`AS POS V1.html`, SHA-256 `c7fc92d8...16ace`, confirmed byte-identical
+via a fresh hash before this audit) rather than relying on prior parity
+docs. Four parallel forensic audits: legacy Cotizador (lines 8208–8447 +
+dependencies), legacy Calendario (lines 1596–1712/6677–6920 +
+dependencies), current backend Fiestas architecture
+(`packages/database/src/schema/parties.ts`,
+`apps/api/src/modules/parties/`), current Flutter Fiestas architecture
+(`pos_parties_gateway.dart`, `_FiestasAdmin` and its children in
+`pos_shell.dart`). Per the task's own scope discipline, the mature
+existing backend (schema, GIST exclusion constraint, pricing engine,
+payments/deposits/contracts/consumables/coupons, 49/49 already-certified
+integration tests) was extended, never rebuilt.
+
+**§1 Legacy Cotizador — forensic findings.** The legacy Cotizador
+(`cotEstado` state object, `cotizadorActualizar`/`cotizadorAplicarPromo`/
+`cotizadorConvertirReservacion`) computed `total = package.price +
+max(0,children−included)×childCost + max(0,adults−included)×adultCost +
+extraHalfHours×halfHourCost − promoDiscount`, ALL client-side, with
+**zero tax anywhere** in event quoting (confirmed: IVA logic exists only
+for retail/CFDI, architecturally disconnected from parties). It rendered
+a live per-room card (`cotizadorSalonesCompatibles`/availability =
+`!hayConflictoFiesta(...) && capacityOk`), but that availability
+computation lived ONLY inside the Cotizador — the calendar itself never
+computed it, and `.../quote` (this task's own current-architecture
+audit) never even accepted a room or date/time. The legacy Cotizador
+also: never captured customer identity at all (customer entry happened
+later, in the reservation form); silently DROPPED the quoted adult count
+on conversion (no `mf-adultos` field existed in the legacy reservation
+form — current architecture already persists `adultsCount` correctly,
+TASK 16.19); had a completely broken deposit model
+(`calcularTotalFiesta = anticipo + saldo`, additive, double-counting a
+later deposit on top of the full quoted total, with a hardcoded
+"Anticipo (50%)" label on the printed contract regardless of the real
+amount); had per-head "extras" with **no price catalog at all** — every
+checked extra except tiempo-extra defaulted to `$0`, requiring the
+cashier to type a dollar amount by hand every time; had a SECOND,
+parallel, much cheaper calculation path (`mfAutoFillPaquete`, a
+free-text package-name datalist on the reservation form) that could
+silently produce a different total than the Cotizador for the identical
+package/guests; gated all editing behind a PIN check that accepted a
+**hardcoded universal bypass** (`ASPOS_MASTER`, PIN `"2604"`, visible in
+shipped client source); and computed extra-time end-times via
+`sumarMinutosFiesta`'s `%1440` modulo with **no date rollover**, so a
+late-enough start time could silently compute an end time earlier than
+its own start time. Full classification: pricing formula **A** (already
+matches current `computePartyQuote`, TASK 14.3/16.19 recovery); tax
+**H** (current architecture taxes correctly, legacy never did);
+per-room live availability **G** (the genuine gap this task closes —
+§4); customer capture **A** (correctly positioned in the reservation
+form already, per the task's own target workflow order); adult-count
+persistence **H**; deposit modeling **H** (current `balance` endpoint
+already correctly separates subtotal/discount/tax/quotedTotal/
+totalPaid/outstandingBalance); extras with no price catalog **P**
+(a legacy placeholder — never recreated, see §6); the parallel
+free-text auto-fill path **X** (does not exist in the current
+architecture — never ported); the master-PIN bypass **X** (never
+ported; current RBAC is real, server-enforced `party.manage`/
+`party.cancel`/`party.payment.record`); the midnight-wraparound bug
+**X** (the new `computeEndTime` throws a clean validation error instead
+— §4).
+
+**§2 Legacy Calendario — forensic findings.** Four views (Mes/Semana/
+Día/Lista), rendered as pills (month) or cards (week/day/list), colored
+by a 5-state status map. Conflict/availability logic
+(`hayConflictoFiesta`) matched by **exact salon NAME STRING + date**
+(never an id, never scoped by sucursal — a real legacy bug: two
+branches with a same-named room would false-positive conflict), a plain
+half-open interval overlap, cancelled reservations excluded from
+conflicts but still fully visible on the calendar. A `separacion`
+(buffer/turnaround) field existed in the salon config UI but was
+**dead code** — never read by the conflict check or anywhere else in the
+file (grep-confirmed 3 total hits, all in the salon CRUD form itself).
+Creating a reservation from the calendar only worked from the month
+view's day-cell click (`abrirNuevaFiesta` + date overwrite — no
+room/time carried over either); week/day/list views had no
+create-from-slot at all. Opening an event showed a view-only detail
+modal; editing required the same PIN gate as §1. No auto-refresh — a
+real, live-found staleness bug: saving a reservation via the modal only
+re-rendered the Lista tab, never the Calendario tab, even if it was the
+currently-visible view. Classification: multi-view rendering **A**
+(current architecture's month/week/day/list, grouped-list rendering, is
+a coherent equivalent — Phase 34 explicitly permits this over a
+decorative grid); conflict detection **H** (current architecture uses a
+real id/company-scoped GIST EXCLUSION CONSTRAINT, `party_reservations_
+room_time_excl` — race-free at the database level, something legacy
+never had); the dead `separacion` buffer **P** (never enforced even in
+legacy — correctly not invented now, Phase 43's own "if not, do NOT
+invent one" instruction); click-to-open-detail **G** (the genuine gap
+this task closes — §5, confirmed via grep that the pre-16.22 calendar
+card had zero `onTap`/`InkWell`/`GestureDetector`); create-from-slot
+**G** (closed — §5); the Lista-only stale-refresh bug **N/A** (current
+architecture's Calendario/Lista are both thin projections of the exact
+same `GET /party-reservations`/`.../calendar` backend truth, refetched
+independently on each screen's own load — no equivalent staleness
+class exists to inherit).
+
+**§3 Current backend/Flutter architecture — confirmed mature, not
+rebuilt.** Schema: `party_rooms`/`party_packages`/`party_reservations`
+(with the real GIST exclusion constraint)/`party_reservation_snacks`/
+`_socks`/`_payments` (thin, auditable links to real `cash_movements`
+rows, never a parallel ledger)/`_coupon_redemptions`/`_documents` (legal
+clause TEXT snapshot at first generation, HTML regenerated fresh every
+read). Pricing: `computePartyQuote` in `parties.pricing.ts`, exact
+BigInt fixed-point, already tax-aware (TASK 16.19). Availability: a
+real, row-locked, database-exclusion-constraint-backed conflict check
+(`overlappingReservations`/`rejectRoomConflict`), reused by both
+`createReservation` and `updateReservation`. No persisted "quote"
+entity exists (Phase 5) — pricing is a pure, ephemeral computation,
+re-run and FROZEN onto the reservation row only at real booking time;
+this is the correct answer for this business (a persisted, expirable
+"hold" was never a genuine legacy behavior either — Phase 30's own
+"do not accidentally block availability with abandoned quotes" is
+naturally satisfied by never creating one). RBAC: real, server-enforced
+`party.read`/`party.manage`/`party.cancel`/`party.payment.record` from
+day one (legacy's `verFiestas`/`gestionarFiestas` were defined but never
+actually enforced anywhere). Flutter: `_FiestasCotizador` already called
+the real backend `/quote` endpoint (never client math) but accepted no
+room/date/time; `_FiestasCalendario` already rendered real calendar data
+in four real views but its cards were inert.
+
+**§4 Closed: an availability-aware Cotizador (Phases 6, 8-12, 41-42).**
+New `GET /api/v1/party-reservations/availability` (`party.read`):
+given branch/package/event_date/start_time (+ optional children/adults/
+extra_half_hours/exclude_reservation_id), returns the real, server-
+computed `end_time` (new `computeEndTime` helper — the package duration
++ extra half-hours, throwing a clean `validation_error` instead of
+legacy's midnight-wraparound bug) plus every ELIGIBLE room's live
+availability. Reuses, never duplicates, the exact authoritative pieces
+`createReservation` itself already used: `isRoomEligibleForPackage`,
+a new non-throwing `capacityViolation` predicate (extracted from
+`assertWithinCapacity`'s own body — the throwing form is now a thin
+wrapper around it, byte-identical error messages, zero behavior change
+for existing callers), and a new `overlappingReservationsUnlocked`
+repository method (the unlocked, pool-based counterpart to
+`overlappingReservations`, mirroring `refunds.repository.ts`'s own
+established "unlocked preview" precedent from TASK 16.21) — a pure,
+read-only PREVIEW, never a booking action; `createReservation`
+independently re-validates conflict/capacity/eligibility inside its own
+locked transaction regardless (Phase 28/29), with the database's own
+exclusion constraint as the unconditional last line. Flutter: the
+Cotizador gained date/start-time pickers and a "Ver disponibilidad"
+button rendering each eligible room as a tappable card (green/available
+vs. red/occupied-or-over-capacity-with-an-honest-reason — mirrors
+legacy's own room-card UX, but branch-scoped, backend-authoritative,
+and reusing the SAME backend piece the calendar's own conflict data
+comes from). "Convertir a reservación" now requires a room to actually
+be selected (mirrors legacy's own `disabled unless salonElegido` gate)
+and carries package/children/adults/extraHalfHours/room/date/start-time/
+end-time straight into the reservation form's prefill — the operator
+never re-enters what the Cotizador already established (Phase 27). A
+real UX bug was found and fixed by this task's own test suite before
+any live pass: picking a date/time was wrongly invalidating the already-
+computed PRICE too (price never depends on date/time — only
+availability does); fixed by splitting into two invalidation paths.
+
+**§5 Closed: a real, operational Calendario (Phases 39-40).** Every
+calendar entry card is now wrapped in a real `InkWell` — tapping it
+opens the exact same `_PartyReservationDetailDialog` the Lista view
+already uses (by reservation id only; no second, calendar-only "event
+detail" model — Phase 39's own explicit "no duplicate calendar-only
+event detail model" instruction). Each day-group header gained a
+"Nueva reservación este día" icon button, opening the create form with
+that exact date pre-filled (Phase 40) — never forcing the operator to
+re-navigate to a month-grid day cell the way legacy required (this
+app's own list-grouped rendering already shows every visible date's own
+header, an equally direct entry point). Cotizador and Calendario share
+the identical underlying availability/conflict truth (§4's new endpoint
+and the calendar's own `GET .../calendar` are both thin views over the
+same `party_reservations` table and the same GIST exclusion constraint)
+— proven directly in §9's live pass.
+
+**§6 Deliberately NOT built (documented decisions, not omissions).**
+Ad-hoc "extras" with cashier-typed prices: legacy's own version was a
+broken placeholder (no price catalog, $0-by-default) — per this task's
+own "do not create fake generic text extras" instruction, not
+recreated; the current package-consumables (`included_consumables`,
+TASK 16.20/16.20A) and coupon mechanisms already cover the genuine
+structured needs a real "extra" would serve. A configurable
+deposit-REQUIREMENT (e.g. "50% due at booking"): legacy's own "50%" was
+a hardcoded contract-template string, never real configuration —
+inventing a new configurable-percentage system now would not be
+recovering a genuine legacy behavior, it would be adding new,
+ungrounded scope; the existing `purpose: deposit|balance|additional`
+payment-recording flow already lets a tenant collect whatever deposit
+it decides to, honestly. A persisted "quote" entity/hold: not a genuine
+legacy or current business requirement (§3). Branch-timezone-aware
+"Hoy" for the Calendario's own default anchor date: `DateTime.now()`
+(device-local) — this is a PRE-EXISTING, already-disclosed limitation
+from TASK 16.19 (its own §7 flagged "Flutter dashboard 'today' uses
+device wall clock only" as not fixed), not a regression this task
+introduced; left as an explicitly disclosed FOLLOW-UP rather than
+expanding this task's own scope further (the backend's own event-date/
+time handling is unaffected — `event_date`/`start_time`/`end_time` are
+plain, timezone-less wall-clock values, the structurally correct
+representation for a scheduled local event, never a UTC instant).
+
+**§7 Backend test coverage.** `parties.pricing.test.ts`: 32/32 (23
+pre-existing + 9 new — `capacityViolation`'s non-throwing form,
+`computeEndTime` including the deliberate midnight-rejection tests).
+`parties.integration.test.ts`: 59/59 (49 pre-existing + 10 new — every
+eligible room reported available with nothing conflicting; extra-half-
+hour blocks correctly extend the computed end time; a real overlapping
+booking reported unavailable with the real conflicting reservation
+number while an unaffected room stays available; `exclude_reservation_
+id` correctly excludes a reservation from its own conflict scan;
+capacity-exceeded reported honestly; only genuinely eligible rooms ever
+returned; branch-mismatch and cross-tenant rejection; two new HTTP-layer
+tests for the route itself, including a 403 permission-denial case).
+Full backend suite (unit + integration): 627 unit / 59+ integration,
+zero regressions — `tsc --noEmit` clean for `apps/api`, `drizzle-kit
+check` clean (no schema/migration changes were needed for this task;
+the availability preview and `computeEndTime` are pure additions to the
+existing pricing/repository layers).
+
+**§8 Flutter test coverage.** `pos_shell_test.dart`'s `'Fiestas'` group:
+22/22 (17 pre-existing + 5 new — availability check renders available/
+unavailable room cards and gates "Convertir a reservación" on a real
+room selection; a backend availability failure surfaces honestly;
+editing guest counts after checking availability clears the stale
+result; a calendar entry tap opens the real detail dialog; the per-day
+"+" opens a pre-filled create form). `'TASK 16.20A'` group: 14/14,
+unaffected. `flutter analyze`: clean (only pre-existing, unrelated
+info-level lints — zero new ones). No new migration, no new gateway
+class — `PosPartiesGateway.availableRooms` and two new models
+(`PosPartyRoomAvailability`/`PosPartyRoomAvailabilityResult`) extend the
+existing gateway/model files.
+
+**§9 Live certification (generic tenant, never INFLAPARK).** Against a
+real local stack (Docker Postgres/Redis/MinIO, the real `as-one-api`
+dev server, a freshly `flutter build web --release` bundle served
+statically — never `flutter run`'s hot-reload), on the "Freshness QA
+Retail" tenant (reused from TASK 16.17A/16.20/16.20A/16.21's own live
+certifications, still present on the local dev stack) via a dedicated,
+non-Owner QA staff account (`beta.tester@example.test`, the
+"Administrador de pruebas" role from TASK 16.18, which already carries
+`party.read`/`party.manage`/`party.cancel`/`party.payment.record` —
+reactivated and given a freshly-hashed password by a one-off script,
+deleted immediately after use, that never touched the tenant Owner's
+own credentials, following the same convention TASK 16.18's own
+certification established):
+
+  * Created purpose-built fixtures owned entirely by this task, through
+    the real Ajustes UI: two rooms (`E2E1622-A`/`E2E1622-B`, 30
+    children/15 adults/40 total capacity each) and one package
+    (`PKG-E2E1622`, "Paquete E2E 1622" — $3,000/120 min/20 children
+    included/10 adults included/$100 extra child/$50 extra adult/$400
+    extra half-hour/capacity 40, restricted to the two new rooms only,
+    deliberately excluding the pre-existing `SALON-QA` room to also
+    exercise Phase 11's eligibility filter).
+  * **Quoter E2E.** Through the real Cotizador: package + 25 children +
+    12 adults + 1 extra half-hour → "Cotizar". The rendered breakdown
+    (base 3000.00, niños extra 500.00, adultos extra 100.00, tiempo
+    extra 400.00, subtotal 4000.00, impuestos 640.00, total 4640.00)
+    was cross-checked against the raw `POST .../quote` response body
+    (`read_network_requests`, not the rendered text): `{"base":
+    "3000.0000","children_extra":"500.0000","adults_extra":
+    "100.0000","time_extra":"400.0000","subtotal":"4000.0000",
+    "tax_total":"640.0000","total":"4640.0000"}` — byte-identical to
+    this task's own worked example (Phase 20-22 confirmed against the
+    real, running, tax-aware pricing engine).
+  * **Availability E2E.** Picked date 2026-09-27 / 12:00 and tapped
+    "Ver disponibilidad" — both new rooms rendered available (green).
+    Raw response confirmed `end_time: "14:30:00"` (12:00 + 120 min +
+    30 min extra, Phase 16) and that only the two eligible rooms were
+    returned (Phase 11 — `SALON-QA` correctly absent).
+  * **Quote→Reservation E2E.** Selected Room A, attached a real new
+    customer ("E2E 1622 Cliente") via the real customer picker,
+    "Convertir a reservación" — the reservation form opened fully
+    pre-filled (room, package, date, 12:00/14:30, guest counts, all
+    from the quote/availability check, Phase 27/28 — no re-entry).
+    Saved; raw `POST /party-reservations` response confirmed a real
+    `PARTY-…` folio, `status: "held"`, and the exact quoted amounts
+    frozen onto the row (`subtotal_amount: "4000.0000"`, `tax_total:
+    "640.0000"`, `quoted_total: "4640.0000"`).
+  * **Conflict E2E.** Re-opened the Cotizador with the same package/
+    guests, same date, start time moved to 13:00 (overlapping the just
+    -created 12:00-14:30 booking) and re-checked availability: Room A
+    now rendered unavailable (red) while Room B stayed available. Raw
+    response: `{"available": false, "reason": "conflict",
+    "conflicting_reservation_number": "PARTY-a84fa6ac…"}` — the exact
+    real reservation, proving the GIST-exclusion-backed conflict check
+    (Phase 29/42) genuinely blocks the real double-booking, not merely
+    a client-side date comparison.
+  * **Calendar E2E.** Opened Calendario (Mes view) on the real branch:
+    the new reservation rendered as a real entry. Tapping it opened the
+    exact same reservation-detail dialog Lista uses (Phase 39 — no
+    duplicate model), showing the real folio and financial breakdown.
+    The per-day "+" on 2026-09-28 opened a new-reservation form with
+    that date correctly pre-filled (Phase 40).
+  * **Payment E2E.** From the calendar-opened detail dialog, recorded a
+    real $1,000 MXN "Anticipo" via "Registrar pago"; the dialog's own
+    financial section updated live to `Pagado: 1000.00 MXN` /
+    `Saldo pendiente: 3640.00 MXN` (4640 − 1000), reusing the exact
+    existing payment/balance architecture (Phase 51/52) — no new
+    payment code path.
+  * **Package snapshot E2E.** Queried the created reservation's row
+    directly (`subtotal_amount 4000.0000`, `package_name_snapshot
+    "Paquete E2E 1622"`), then changed the live `PKG-E2E1622` package's
+    price to $9,999 and re-queried the same reservation row: values
+    were byte-identical (4000.0000/640.0000/4640.0000) — confirming the
+    snapshot is a genuine frozen copy, not FK-derived. The price was
+    restored to $3,000 immediately after.
+  * **Dashboard consistency.** The real Dashboard's "Fiestas próximas"
+    (3→4) and "Saldo pendiente de fiestas" (6,460.00→11,100.00 MXN,
+    exactly +4,640.00) updated live to reflect the new reservation —
+    confirming Phase 64 (quotes never counted, only real reservations)
+    remains true for this task's own additions.
+  * **Genuine live bug found and fixed during this certification** (not
+    assumed from a code read): opening the real Calendario for the
+    first time in this task's own session failed outright with
+    "No fue posible cargar" — the underlying `GET .../calendar` request
+    returned `400 validation_error` (`{"field": "/limit", "rule":
+    "maximum"}`). Root cause: `PosPartiesGateway.calendar()`'s own
+    `limit` parameter defaulted to `500` in both the interface and the
+    `ApiPosPartiesGateway`/`EmptyPosPartiesGateway` implementations
+    (`pos_parties_gateway.dart`), while the route's own querystring
+    schema (`party-reservations.routes.ts`'s shared `listQuerystring`)
+    has always capped `limit` at `100` — meaning the entire Calendario
+    (every Mes/Semana/Día/Lista sub-view, which all share this one
+    call) had never successfully loaded a single reservation against a
+    real backend, a defect invisible to the existing test suite because
+    `_FakePartiesGateway` never builds or validates a real query
+    string. Fixed by lowering the three `limit = 500` defaults to
+    `limit = 100`, matching the server's own established, unchanged
+    cap; re-built the release bundle and re-verified live — Calendario
+    now loads and every check above (click-to-detail, per-day "+")
+    passed against the corrected build. This is the concrete proof
+    behind Phase 33's own instruction to certify the calendar as a
+    genuinely operational tool, not assume it from its tab existing.
+  * Full Flutter suite re-run after the fix: `'Fiestas'` group 22/22
+    (unaffected — no test asserted the stale `limit=500` default);
+    full suite 1117/1117, `flutter analyze` clean. Backend re-verified
+    in the same session: `tsc --noEmit` clean, parties module 91/91
+    (32 pricing + 59 integration, the latter run against a real
+    dedicated `asone_test` Postgres database per this repo's own
+    `DATABASE_TEST_URL` convention, not skipped).
+  * Final legacy re-audit (post-implementation, per this task's own
+    "do not rely on your initial audit" instruction): re-hashed
+    `AS POS V1.html` — SHA-256 `c7fc92d8…16ace`, unchanged, confirming
+    the forensic basis is still valid — and re-confirmed by direct
+    grep that `ASPOS_MASTER` (the hardcoded master-PIN/password
+    backdoor), `sumarMinutosFiesta` (the silent midnight-wraparound
+    bug), and `calcularTotalFiesta` (the additive anticipo+saldo
+    double-count) are exactly as characterized in §1/§2 above — none
+    of TASK 16.22's own changes altered how any of these three legacy
+    defects should be read.
+
+**§10 main/Mercado Pago/production.** `main` untouched; all work on
+`release/as-pos-v1` only. Mercado Pago untouched and still paused. No
+production deploy, no DigitalOcean changes, no DNS changes. No
+INFLAPARK production data created or modified.

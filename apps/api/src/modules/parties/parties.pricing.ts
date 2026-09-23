@@ -131,6 +131,20 @@ export function computePartyQuote(input: PartyQuoteInput): PartyQuoteBreakdown {
   };
 }
 
+export interface CapacityCheckInput {
+  roomCapacityTotal: number | null;
+  roomCapacityChildren: number | null;
+  roomCapacityAdults: number | null;
+  packageCapacityMax: number | null;
+  children: number;
+  adults: number;
+}
+export interface CapacityViolation {
+  limit: 'room_total' | 'room_children' | 'room_adults' | 'package_max';
+  capacity: number;
+  requested: number;
+}
+
 /**
  * TASK 16.19 (Phase 8/30 "capacity if applicable") — a room/package's
  * capacity fields (`party_rooms.capacity_children/adults/total`,
@@ -140,47 +154,83 @@ export function computePartyQuote(input: PartyQuoteInput): PartyQuoteBreakdown {
  * field is actually configured (`null` = "no limit set for this field,"
  * never treated as `0`) — matching every other "if applicable" capacity
  * rule in this codebase (e.g. `party_rooms.capacity_*` columns' own
- * nullable design). Throws the FIRST violated rule found, in a stable,
+ * nullable design). Returns the FIRST violated rule found, in a stable,
  * predictable order (room-total → room-children → room-adults →
- * package-max), never a partial/ambiguous multi-error report.
+ * package-max), never a partial/ambiguous multi-violation report — or
+ * `null` when every configured limit is satisfied. TASK 16.22 — extracted
+ * from `assertWithinCapacity`'s own original single-purpose body so the
+ * new room-availability preview (`PartyReservationsService.
+ * availableRooms`, scanning many candidate rooms) can ask "is this room
+ * within capacity" as a plain predicate, never by throwing-and-catching
+ * an exception for what is, for most rooms in a normal scan, an entirely
+ * expected/common outcome.
  */
-export function assertWithinCapacity(input: {
-  roomCapacityTotal: number | null;
-  roomCapacityChildren: number | null;
-  roomCapacityAdults: number | null;
-  packageCapacityMax: number | null;
-  children: number;
-  adults: number;
-}): void {
+export function capacityViolation(input: CapacityCheckInput): CapacityViolation | null {
   const totalGuests = input.children + input.adults;
-  if (input.roomCapacityTotal !== null && totalGuests > input.roomCapacityTotal) {
+  if (input.roomCapacityTotal !== null && totalGuests > input.roomCapacityTotal)
+    return { limit: 'room_total', capacity: input.roomCapacityTotal, requested: totalGuests };
+  if (input.roomCapacityChildren !== null && input.children > input.roomCapacityChildren)
+    return { limit: 'room_children', capacity: input.roomCapacityChildren, requested: input.children };
+  if (input.roomCapacityAdults !== null && input.adults > input.roomCapacityAdults)
+    return { limit: 'room_adults', capacity: input.roomCapacityAdults, requested: input.adults };
+  if (input.packageCapacityMax !== null && totalGuests > input.packageCapacityMax)
+    return { limit: 'package_max', capacity: input.packageCapacityMax, requested: totalGuests };
+  return null;
+}
+
+const CAPACITY_MESSAGE: Record<CapacityViolation['limit'], string> = {
+  room_total: "This room's capacity is {n} guests;",
+  room_children: "This room's children capacity is {n};",
+  room_adults: "This room's adults capacity is {n};",
+  package_max: "This package's capacity is {n} guests;",
+};
+
+/** The original throwing form, now a thin wrapper around
+ * `capacityViolation` — every existing caller (`createReservation`/
+ * `updateReservation`) is unchanged, byte-identical messages. */
+export function assertWithinCapacity(input: CapacityCheckInput): void {
+  const violation = capacityViolation(input);
+  if (violation === null) return;
+  throw new PartyError(
+    'capacity_exceeded',
+    `${CAPACITY_MESSAGE[violation.limit].replace('{n}', String(violation.capacity))} ${String(violation.requested)} were requested.`,
+    { limit: violation.limit, capacity: violation.capacity, requested: violation.requested },
+  );
+}
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/u;
+
+/**
+ * TASK 16.22 (Phase 16 "extra time") — the legacy `sumarMinutosFiesta()`
+ * end-time formula, `startTime + package.durationMinutes + extraHalfHours
+ * * 30`, recovered exactly EXCEPT for its one real bug: legacy wrapped
+ * the result modulo 1440 with no date rollover (`((total%1440)+1440)%
+ * 1440`), so an event starting late enough could silently compute an end
+ * time EARLIER than its own start time on the same calendar-date field —
+ * nonsensical, and exactly the kind of client-only "truth" this task's
+ * own Phase 75 forbids porting. `party_reservations.end_time > start_time`
+ * is a real DB check (this schema has no cross-midnight representation
+ * at all — `event_date` is one single date), so this function throws a
+ * clean, honest `validation_error` instead of silently wrapping. Kept
+ * server-side and reused by both the new room-availability preview and
+ * (as a client-side convenience mirror, never the source of truth) the
+ * Flutter Cotizador, exactly like `computePartyQuote` itself is shared
+ * rather than duplicated. */
+export function computeEndTime(startTime: string, durationMinutes: number, extraHalfHours: number): string {
+  const match = TIME_PATTERN.exec(startTime);
+  const [, hoursText, minutesText] = match ?? [];
+  if (hoursText === undefined || minutesText === undefined)
+    throw new PartyError('validation_error', 'start_time must be a valid HH:MM[:SS] time.');
+  const startMinutes = Number(hoursText) * 60 + Number(minutesText);
+  const totalMinutes = startMinutes + durationMinutes + extraHalfHours * 30;
+  if (totalMinutes >= 24 * 60)
     throw new PartyError(
-      'capacity_exceeded',
-      `This room's capacity is ${String(input.roomCapacityTotal)} guests; ${String(totalGuests)} were requested.`,
-      { limit: 'room_total', capacity: input.roomCapacityTotal, requested: totalGuests },
+      'validation_error',
+      'The event would end after midnight, on a different calendar date than it started; this is not supported.',
     );
-  }
-  if (input.roomCapacityChildren !== null && input.children > input.roomCapacityChildren) {
-    throw new PartyError(
-      'capacity_exceeded',
-      `This room's children capacity is ${String(input.roomCapacityChildren)}; ${String(input.children)} were requested.`,
-      { limit: 'room_children', capacity: input.roomCapacityChildren, requested: input.children },
-    );
-  }
-  if (input.roomCapacityAdults !== null && input.adults > input.roomCapacityAdults) {
-    throw new PartyError(
-      'capacity_exceeded',
-      `This room's adults capacity is ${String(input.roomCapacityAdults)}; ${String(input.adults)} were requested.`,
-      { limit: 'room_adults', capacity: input.roomCapacityAdults, requested: input.adults },
-    );
-  }
-  if (input.packageCapacityMax !== null && totalGuests > input.packageCapacityMax) {
-    throw new PartyError(
-      'capacity_exceeded',
-      `This package's capacity is ${String(input.packageCapacityMax)} guests; ${String(totalGuests)} were requested.`,
-      { limit: 'package_max', capacity: input.packageCapacityMax, requested: totalGuests },
-    );
-  }
+  const endHours = Math.floor(totalMinutes / 60);
+  const endMinutes = totalMinutes % 60;
+  return `${String(endHours).padStart(2, '0')}:${String(endMinutes).padStart(2, '0')}:00`;
 }
 
 /**

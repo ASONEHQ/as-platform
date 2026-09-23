@@ -25115,6 +25115,8 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
             context: widget.context,
             controller: widget.controller,
             partiesGateway: widget.partiesGateway,
+            customersGateway: widget.customersGateway,
+            cashGateway: widget.cashGateway,
           ),
           _FiestasTab.cotizador => _FiestasCotizador(
             context: widget.context,
@@ -25471,10 +25473,18 @@ enum _CalGranularity { month, week, day, list }
 /// grouped-list rendering rather than a bespoke grid-calendar widget —
 /// correctness/real-data over visual complexity, per task scope).
 class _FiestasCalendario extends StatefulWidget {
-  const _FiestasCalendario({required this.context, required this.controller, required this.partiesGateway});
+  const _FiestasCalendario({
+    required this.context,
+    required this.controller,
+    required this.partiesGateway,
+    required this.customersGateway,
+    required this.cashGateway,
+  });
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPartiesGateway partiesGateway;
+  final PosCustomersGateway customersGateway;
+  final PosCashGateway cashGateway;
 
   @override
   State<_FiestasCalendario> createState() => _FiestasCalendarioState();
@@ -25572,6 +25582,56 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
     return user?.displayName ?? id;
   }
 
+  // TASK 16.22 (Phase 39) — a calendar entry must open the REAL
+  // reservation detail, exactly like `_FiestasLista`'s own `_openDetail`
+  // (which this mirrors — `_PartyReservationDetailDialog` only ever
+  // needs the id, then fetches the full detail itself, so the
+  // calendar's own reduced `PosPartyCalendarEntry` projection is enough
+  // to open it). No second, calendar-only "event detail" model.
+  Future<void> _openDetail(String reservationId) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationDetailDialog(
+        reservationId: reservationId,
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        cashGateway: widget.cashGateway,
+      ),
+    );
+    if (changed == true) unawaited(_load());
+  }
+
+  // TASK 16.22 (Phase 40) — starting a reservation from a calendar date
+  // the operator is already looking at, with that date pre-filled — the
+  // operator should never have to re-enter the date they just navigated
+  // to. Room/time still require the operator's own selection (this
+  // calendar view carries no "which room, which time" selection state of
+  // its own to prefill beyond the date — unlike the Cotizador, which
+  // does carry that through its own availability picker).
+  Future<void> _openCreate({DateTime? prefillDate}) async {
+    final branchId = _branchId;
+    if (branchId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Esta sesión no tiene una sucursal asignada.')),
+      );
+      return;
+    }
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        branchId: branchId,
+        prefillEventDate: prefillDate,
+      ),
+    );
+    if (saved == true) unawaited(_load());
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -25627,13 +25687,32 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
               for (final date in sortedDates) ...[
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text(date, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(date, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12)),
+                      ),
+                      // TASK 16.22 (Phase 40) — starting a reservation
+                      // from the date the operator is already looking
+                      // at, never re-entering it.
+                      IconButton(
+                        key: Key('pos-fiestas-cal-new-for-date-$date'),
+                        tooltip: 'Nueva reservación este día',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => unawaited(_openCreate(prefillDate: DateTime.parse(date))),
+                        icon: Icon(Icons.add_circle_outline, size: 18, color: palette.action),
+                      ),
+                    ],
+                  ),
                 ),
                 for (final entry in (grouped[date]!..sort((a, b) => a.startTime.compareTo(b.startTime))))
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
-                    child: _PosCard(
+                    child: InkWell(
                       key: Key('pos-fiestas-cal-entry-${entry.id}'),
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => unawaited(_openDetail(entry.id)),
+                      child: _PosCard(
                       child: Row(
                         children: [
                           Expanded(
@@ -25657,6 +25736,7 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
                           _PartyStatusChip(status: entry.status),
                         ],
                       ),
+                      ),
                     ),
                   ),
               ],
@@ -25670,9 +25750,18 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
 
 /// Cotizador — a real quoting form, calling the real `.../quote` endpoint;
 /// every displayed figure is exactly what the backend returned, never
-/// client-computed. "Convertir a reservación" pre-fills the create-
-/// reservation form with the chosen package/guest counts — never a
-/// client-computed total.
+/// client-computed. TASK 16.22 closes this screen's own central gap
+/// (found by this task's own forensic re-audit of the legacy Cotizador):
+/// pricing alone never told an operator whether a room was actually
+/// bookable — `.../quote` never even accepted a date/time/room. This now
+/// also drives the real `GET /party-reservations/availability` preview
+/// (§ "AVAILABILITY / ROOM" of the target workflow), rendering each
+/// eligible room as a tappable card (available/occupied/over capacity —
+/// mirrors the legacy Cotizador's own room-card UX, but branch-scoped and
+/// backend-authoritative). "Convertir a reservación" pre-fills the
+/// create-reservation form with the chosen package/guest counts/room/
+/// date/time — never a client-computed total, and never re-trusted:
+/// `createReservation` independently revalidates before ever committing.
 class _FiestasCotizador extends StatefulWidget {
   const _FiestasCotizador({
     required this.context,
@@ -25701,7 +25790,16 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
   String? _quoteError;
   PosPartyQuote? _quote;
 
+  // TASK 16.22 — date/start-time + the live room-availability preview.
+  DateTime? _eventDate;
+  TimeOfDay? _startTime;
+  bool _loadingAvailability = false;
+  String? _availabilityError;
+  PosPartyRoomAvailabilityResult? _availability;
+  String? _selectedRoomId;
+
   bool get _canManage => widget.context.permissions.contains('party.manage');
+  String? get _branchId => widget.context.session.branchId;
 
   @override
   void initState() {
@@ -25777,9 +25875,127 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
     }
   }
 
+  // TASK 16.22 — price depends only on package/children/adults/extra
+  // half-hours (never on date/time — `computePartyQuote` itself takes no
+  // date/time input at all), so changing one of THOSE invalidates the
+  // quote too. Availability depends on ALL of package/date/time/guests,
+  // so it is always cleared alongside — a stale availability result must
+  // never be shown against a since-changed quote or a since-changed
+  // date/time.
+  void _invalidateQuoteAndAvailability() {
+    setState(() {
+      _quote = null;
+      _availability = null;
+      _selectedRoomId = null;
+      _availabilityError = null;
+    });
+  }
+
+  /// Date/time changes only ever invalidate the AVAILABILITY preview —
+  /// never the already-computed price, which does not depend on them.
+  void _invalidateAvailability() {
+    setState(() {
+      _availability = null;
+      _selectedRoomId = null;
+      _availabilityError = null;
+    });
+  }
+
+  Future<void> _pickEventDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _eventDate ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 3),
+    );
+    if (picked != null) {
+      setState(() => _eventDate = picked);
+      _invalidateAvailability();
+    }
+  }
+
+  Future<void> _pickStartTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _startTime ?? const TimeOfDay(hour: 12, minute: 0));
+    if (picked != null) {
+      setState(() => _startTime = picked);
+      _invalidateAvailability();
+    }
+  }
+
+  /// TASK 16.22 (Phase 9/11/12) — the genuine gap this task's own audit
+  /// found: pricing alone never told an operator whether a room was
+  /// actually bookable. Reuses the exact same authoritative backend piece
+  /// `createReservation` itself uses; only ELIGIBLE rooms are ever
+  /// returned (never shown as "unavailable" for a package they can't
+  /// even be used with).
+  Future<void> _checkAvailability() async {
+    final packageId = _packageId;
+    final branchId = _branchId;
+    final eventDate = _eventDate;
+    final startTime = _startTime;
+    if (packageId == null || branchId == null || eventDate == null || startTime == null) {
+      setState(() => _availabilityError = 'Selecciona paquete, fecha y hora de inicio.');
+      return;
+    }
+    setState(() {
+      _loadingAvailability = true;
+      _availabilityError = null;
+      _selectedRoomId = null;
+    });
+    try {
+      final result = await widget.partiesGateway.availableRooms(
+        branchId: branchId,
+        packageId: packageId,
+        eventDate: _isoDate(eventDate),
+        startTime: _formatTimeOfDay(startTime),
+        children: int.tryParse(_childrenController.text.trim()),
+        adults: int.tryParse(_adultsController.text.trim()),
+        extraHalfHours: int.tryParse(_extraHalfHoursController.text.trim()),
+      );
+      if (!mounted) return;
+      setState(() {
+        _availability = result;
+        _loadingAvailability = false;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingAvailability = false;
+        _availabilityError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _loadingAvailability = false;
+        _availabilityError = 'No fue posible consultar la disponibilidad.';
+      });
+    }
+  }
+
+  static String _formatTimeOfDay(TimeOfDay time) =>
+      '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+  /// Parses the backend's own `HH:MM:SS` response into a [TimeOfDay] —
+  /// display/prefill convenience only; the backend value itself remains
+  /// the source of truth (this is never sent back verbatim without going
+  /// through `_formatTimeOfDay` again at submit time).
+  static TimeOfDay? _parseHms(String value) {
+    final parts = value.split(':');
+    if (parts.length < 2) return null;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return null;
+    return TimeOfDay(hour: hour, minute: minute);
+  }
+
   Future<void> _convertToReservation() async {
     final packageId = _packageId;
-    final branchId = widget.context.session.branchId;
+    final branchId = _branchId;
+    final roomId = _selectedRoomId;
+    final eventDate = _eventDate;
+    final startTime = _startTime;
+    final availability = _availability;
     if (packageId == null || branchId == null) return;
     final saved = await showDialog<bool>(
       context: context,
@@ -25793,6 +26009,14 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
         prefillChildren: int.tryParse(_childrenController.text.trim()),
         prefillAdults: int.tryParse(_adultsController.text.trim()),
         prefillExtraHalfHours: int.tryParse(_extraHalfHoursController.text.trim()),
+        prefillRoomId: roomId,
+        prefillEventDate: eventDate,
+        prefillStartTime: startTime,
+        // TASK 16.22 — the availability preview's own server-computed
+        // end time (package duration + extra half-hours) — never
+        // recomputed client-side, and never wrapping past midnight (see
+        // the backend's own `computeEndTime` doc comment).
+        prefillEndTime: availability == null ? null : _parseHms(availability.endTime),
       ),
     );
     if (saved == true && mounted) {
@@ -25822,10 +26046,39 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                   initialValue: _packageId,
                   decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
                   items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
-                  onChanged: (value) => setState(() {
-                    _packageId = value;
-                    _quote = null;
-                  }),
+                  onChanged: (value) {
+                    setState(() => _packageId = value);
+                    _invalidateQuoteAndAvailability();
+                  },
+                ),
+                const SizedBox(height: 10),
+                // TASK 16.22 (Phase 8) — date/start-time: required for the
+                // availability preview below (price itself never depends
+                // on them), branch/company timezone semantics — no
+                // browser-local-time financial/scheduling truth (the
+                // value is a plain calendar date/wall-clock time, sent
+                // exactly as picked, the same way the reservation form
+                // itself already works).
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-quote-date'),
+                        onPressed: () => unawaited(_pickEventDate()),
+                        icon: const Icon(Icons.calendar_today_outlined, size: 15),
+                        label: Text(_eventDate == null ? 'Fecha' : _isoDate(_eventDate!)),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        key: const Key('pos-fiestas-quote-start-time'),
+                        onPressed: () => unawaited(_pickStartTime()),
+                        icon: const Icon(Icons.schedule_outlined, size: 15),
+                        label: Text(_startTime == null ? 'Hora inicio' : _startTime!.format(context)),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 10),
                 Row(
@@ -25836,7 +26089,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                         controller: _childrenController,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Niños'),
-                        onChanged: (_) => setState(() => _quote = null),
+                        onChanged: (_) => _invalidateQuoteAndAvailability(),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -25846,7 +26099,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                         controller: _adultsController,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Adultos'),
-                        onChanged: (_) => setState(() => _quote = null),
+                        onChanged: (_) => _invalidateQuoteAndAvailability(),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -25856,7 +26109,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                         controller: _extraHalfHoursController,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Medias horas extra'),
-                        onChanged: (_) => setState(() => _quote = null),
+                        onChanged: (_) => _invalidateQuoteAndAvailability(),
                       ),
                     ),
                   ],
@@ -25895,11 +26148,59 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                     _QuoteLine(label: 'Descuento', amount: '-${_quote!.discountTotal}', currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Impuestos', amount: _quote!.taxTotal, currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Total', amount: _quote!.total, currency: _quote!.currencyCode, emphasize: true),
+                  // TASK 16.22 (Phase 9-12) — the genuine gap this task's
+                  // own audit found: a quoted price alone never told an
+                  // operator whether a room was actually bookable for
+                  // it. Real availability, not decorative — reuses the
+                  // exact backend piece `createReservation` itself uses.
+                  const SizedBox(height: 14),
+                  Divider(color: palette.border),
+                  const SizedBox(height: 10),
+                  Text('Disponibilidad de salones', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    key: const Key('pos-fiestas-quote-check-availability'),
+                    onPressed: _loadingAvailability ? null : () => unawaited(_checkAvailability()),
+                    icon: _loadingAvailability
+                        ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: palette.action))
+                        : const Icon(Icons.event_available_outlined, size: 15),
+                    label: const Text('Ver disponibilidad'),
+                  ),
+                  if (_availabilityError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _availabilityError!,
+                      key: const Key('pos-fiestas-quote-availability-error'),
+                      style: TextStyle(color: palette.error, fontSize: 12),
+                    ),
+                  ],
+                  if (_availability != null) ...[
+                    const SizedBox(height: 10),
+                    if (_availability!.rooms.isEmpty)
+                      Text(
+                        'Ningún salón activo es compatible con este paquete.',
+                        style: TextStyle(color: palette.textMuted, fontSize: 12),
+                      )
+                    else
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final room in _availability!.rooms)
+                            _RoomAvailabilityCard(
+                              key: Key('pos-fiestas-quote-room-${room.roomId}'),
+                              room: room,
+                              selected: _selectedRoomId == room.roomId,
+                              onTap: room.available ? () => setState(() => _selectedRoomId = room.roomId) : null,
+                            ),
+                        ],
+                      ),
+                  ],
                   if (_canManage) ...[
                     const SizedBox(height: 14),
                     FilledButton.icon(
                       key: const Key('pos-fiestas-quote-convert'),
-                      onPressed: () => unawaited(_convertToReservation()),
+                      onPressed: _selectedRoomId == null ? null : () => unawaited(_convertToReservation()),
                       style: FilledButton.styleFrom(backgroundColor: palette.actionStrong),
                       icon: const Icon(Icons.event_available_outlined, size: 16),
                       label: const Text('Convertir a reservación'),
@@ -25911,6 +26212,61 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
           ),
         },
       ],
+    );
+  }
+}
+
+/// TASK 16.22 — one room card in the Cotizador's own availability
+/// preview: green/tappable when available, red/inert with an honest
+/// reason (occupied by another reservation's real folio, or over
+/// capacity) otherwise — mirrors the legacy Cotizador's own room-card
+/// UX, but backend-authoritative and branch-scoped.
+class _RoomAvailabilityCard extends StatelessWidget {
+  const _RoomAvailabilityCard({super.key, required this.room, required this.selected, required this.onTap});
+  final PosPartyRoomAvailability room;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = room.available ? palette.success : palette.error;
+    final reasonText = switch (room.reason) {
+      'conflict' => 'Ocupado${room.conflictingReservationNumber == null ? '' : ' (${room.conflictingReservationNumber})'}',
+      'capacity' => 'Capacidad insuficiente',
+      _ => null,
+    };
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Container(
+        width: 180,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: selected ? palette.actionTint : color.withValues(alpha: .08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: selected ? palette.action : color.withValues(alpha: .4), width: selected ? 2 : 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(room.available ? Icons.check_circle_outline : Icons.block, size: 15, color: color),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(room.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              room.available ? 'Disponible' : (reasonText ?? 'No disponible'),
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -27848,6 +28204,10 @@ class _PartyReservationFormDialog extends StatefulWidget {
     this.prefillChildren,
     this.prefillAdults,
     this.prefillExtraHalfHours,
+    this.prefillRoomId,
+    this.prefillEventDate,
+    this.prefillStartTime,
+    this.prefillEndTime,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -27859,6 +28219,22 @@ class _PartyReservationFormDialog extends StatefulWidget {
   final int? prefillChildren;
   final int? prefillAdults;
   final int? prefillExtraHalfHours;
+
+  // TASK 16.22 — carries the Cotizador's own live room+availability
+  // selection (Phase 27 "convert to reservation without re-entering the
+  // same data") and the Calendar's own "new reservation on this date"
+  // entry point (Phase 40) straight into the form's initial state —
+  // still just a PREFILL, never trusted: `_submit` sends whatever the
+  // operator ultimately confirms, and `createReservation` independently
+  // re-validates room/date/time server-side regardless (Phase 28).
+  // Customer selection is deliberately NOT prefillable here — it stays
+  // the reservation form's own step, matching the task's own target
+  // workflow order (CUSTOMER comes right before RESERVATION, after
+  // TOTAL/DEPOSIT — exactly where this form already places it).
+  final String? prefillRoomId;
+  final DateTime? prefillEventDate;
+  final TimeOfDay? prefillStartTime;
+  final TimeOfDay? prefillEndTime;
 
   @override
   State<_PartyReservationFormDialog> createState() => _PartyReservationFormDialogState();
@@ -27897,8 +28273,17 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
     super.initState();
     _customerId = widget.existing?.customerId;
     _customerDisplayName = widget.existing?.customerDisplayName;
-    _roomId = widget.existing?.roomId;
+    _roomId = widget.existing?.roomId ?? widget.prefillRoomId;
     _packageId = widget.existing?.packageId ?? widget.prefillPackageId;
+    // TASK 16.22 — a NEW reservation (no `existing`) picks up the
+    // Cotizador's/Calendar's own prefilled date/time when offered; an
+    // EDIT always keeps deriving these from the real, already-persisted
+    // reservation below (never overwritten by a prefill).
+    if (widget.existing == null) {
+      _eventDate = widget.prefillEventDate;
+      _startTime = widget.prefillStartTime;
+      _endTime = widget.prefillEndTime;
+    }
     final existing = widget.existing;
     if (existing != null) {
       final parts = existing.eventDate.split('-');

@@ -421,6 +421,146 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
     });
   });
 
+  describe('room availability preview (TASK 16.22)', () => {
+    // TASK 16.22's own forensic audit finding: the legacy Cotizador's
+    // central commercial value was showing, LIVE, which rooms were
+    // actually bookable for a package/date/time — `POST /party-packages/
+    // :id/quote` never accepted a room or date/time at all. This is the
+    // new preview endpoint that closes that gap, reusing the exact same
+    // authoritative pieces `createReservation` itself uses.
+    it('reports every eligible active room as available when nothing conflicts and capacity fits', async () => {
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId,
+        eventDate: '2026-11-20',
+        startTime: '10:00',
+        children: 5,
+        adults: 2,
+      });
+      expect(result.eventDate).toBe('2026-11-20');
+      expect(result.startTime).toBe('10:00:00');
+      expect(result.endTime).toBe('12:00:00'); // 10:00 + 120min package duration
+      const roomIds = result.rooms.map((entry) => entry.room.id);
+      expect(roomIds).toEqual(expect.arrayContaining([roomA, roomB]));
+      for (const entry of result.rooms) {
+        expect(entry.available).toBe(true);
+        expect(entry.reason).toBeNull();
+      }
+    });
+
+    it('adds extra-half-hour blocks into the computed end time', async () => {
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId,
+        eventDate: '2026-11-20',
+        startTime: '10:00',
+        extraHalfHours: 2, // 120 + 2*30 = 180 min
+      });
+      expect(result.endTime).toBe('13:00:00');
+    });
+
+    it('reports a room already booked for an overlapping window as unavailable, with the real conflicting reservation number — while an unaffected room stays available', async () => {
+      const booked = await reservations.createReservation(context(companyId, userId), branchIds, `res-avail-conflict-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate: '2026-11-21',
+        startTime: '10:00',
+        endTime: '12:00',
+      });
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId,
+        eventDate: '2026-11-21',
+        startTime: '11:00', // overlaps roomA's 10:00-12:00 booking
+      });
+      const roomAEntry = result.rooms.find((entry) => entry.room.id === roomA);
+      const roomBEntry = result.rooms.find((entry) => entry.room.id === roomB);
+      expect(roomAEntry?.available).toBe(false);
+      expect(roomAEntry?.reason).toBe('conflict');
+      expect(roomAEntry?.conflictingReservationNumber).toBe(booked.value.reservationNumber);
+      expect(roomBEntry?.available).toBe(true);
+    });
+
+    it('excludes the reservation being edited from its own conflict scan via exclude_reservation_id', async () => {
+      const booked = await reservations.createReservation(context(companyId, userId), branchIds, `res-avail-exclude-${randomUUID()}`, {
+        branchId,
+        roomId: roomA,
+        packageId,
+        eventDate: '2026-11-22',
+        startTime: '10:00',
+        endTime: '12:00',
+      });
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId,
+        eventDate: '2026-11-22',
+        startTime: '10:00',
+        excludeReservationId: booked.value.id,
+      });
+      const roomAEntry = result.rooms.find((entry) => entry.room.id === roomA);
+      expect(roomAEntry?.available).toBe(true);
+    });
+
+    it('reports a room whose capacity the requested guest count exceeds as unavailable — while a room with no configured limit stays available', async () => {
+      // roomA: capacityChildren=20; roomB has no capacity fields configured at all.
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId,
+        eventDate: '2026-11-23',
+        startTime: '09:00',
+        children: 25,
+      });
+      const roomAEntry = result.rooms.find((entry) => entry.room.id === roomA);
+      const roomBEntry = result.rooms.find((entry) => entry.room.id === roomB);
+      expect(roomAEntry?.available).toBe(false);
+      expect(roomAEntry?.reason).toBe('capacity');
+      expect(roomBEntry?.available).toBe(true);
+    });
+
+    it('only returns rooms genuinely ELIGIBLE for the package — an ineligible room is absent entirely, never shown as "unavailable for another reason"', async () => {
+      const restrictedPackage = await packages.createPackage(context(companyId, userId), branchIds, `pkg-restricted-${randomUUID()}`, {
+        branchId,
+        code: `RESTRICTED-${randomUUID()}`,
+        name: 'Room-restricted package',
+        price: '1000.0000',
+        durationMinutes: 60,
+        restrictions: { eligibleRoomIds: [roomB] },
+      });
+      const result = await reservations.availableRooms({ companyId }, branchIds, {
+        branchId,
+        packageId: restrictedPackage.value.id,
+        eventDate: '2026-11-24',
+        startTime: '09:00',
+      });
+      const roomIds = result.rooms.map((entry) => entry.room.id);
+      expect(roomIds).toEqual([roomB]);
+      expect(roomIds).not.toContain(roomA);
+    });
+
+    it('rejects a package that does not belong to the given branch, mirroring createReservation\'s own check', async () => {
+      await expect(
+        reservations.availableRooms({ companyId }, branchIds, {
+          branchId: otherBranchId, // packageId belongs to `branchId`, not `otherBranchId`
+          packageId,
+          eventDate: '2026-11-25',
+          startTime: '09:00',
+        }),
+      ).rejects.toMatchObject({ code: 'resource_not_found' });
+    });
+
+    it('enforces tenant isolation: a different company can never see company A\'s package/rooms via this preview', async () => {
+      await expect(
+        reservations.availableRooms({ companyId: otherCompanyId }, [otherCompanyBranchId], {
+          branchId: otherCompanyBranchId,
+          packageId, // belongs to companyId, not otherCompanyId
+          eventDate: '2026-11-26',
+          startTime: '09:00',
+        }),
+      ).rejects.toBeInstanceOf(PartyError);
+    });
+  });
+
   describe('deposits, balance, cancellation, socks, snacks, documents', () => {
     let reservationId: string;
     let reservationVersion: bigint;
@@ -1617,6 +1757,75 @@ integration('PostgreSQL party reservations domain (TASK 14.3 Wave 1 Part A)', { 
         headers: { authorization: 'Bearer x' },
       });
       expect(response.statusCode).toBe(200);
+    });
+
+    it('serves the room-availability preview over HTTP under party.read, with the real computed end_time and per-room reasons', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/party-reservations/availability?branch_id=${branchId}&package_id=${packageId}&event_date=2027-01-04&start_time=10:00&children=5`,
+        headers: { authorization: 'Bearer x' },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{
+        data: { event_date: string; start_time: string; end_time: string; rooms: { room_id: string; available: boolean; reason: string | null }[] };
+      }>();
+      expect(body.data.event_date).toBe('2027-01-04');
+      expect(body.data.end_time).toBe('12:00:00');
+      const roomIds = body.data.rooms.map((entry) => entry.room_id);
+      expect(roomIds).toEqual(expect.arrayContaining([roomA, roomB]));
+    });
+
+    it('rejects (403) the room-availability preview when the actor lacks party.read', async () => {
+      const noPermissionContext: AuthContext = {
+        sessionId: randomUUID(),
+        userId,
+        membershipId: randomUUID(),
+        companyId,
+        branchId,
+        expiresAt: new Date(Date.now() + 60_000),
+        companyWideAccess: true,
+        permissions: [],
+        permittedBranchIds: [branchId, otherBranchId],
+      };
+      const noPermissionAuthentication = {
+        authenticate: vi.fn(() => Promise.resolve(noPermissionContext)),
+        requirePermission: vi.fn((_context: AuthContext, permission: string) => {
+          if (!noPermissionContext.permissions.includes(permission))
+            throw new AppError({ code: 'permission_denied', message: 'Permission denied.', statusCode: 403 });
+        }),
+        requireBranchAccess: vi.fn(() => undefined),
+      } as unknown as AuthService;
+      const noPermissionApp = Fastify();
+      noPermissionApp.addHook('onRequest', (request, _reply, done) => {
+        request.requestContext = {
+          requestId: randomUUID(),
+          correlationId: randomUUID(),
+          companyId: undefined,
+          branchId: undefined,
+          userId: undefined,
+          sessionId: undefined,
+          deviceId: undefined,
+        };
+        done();
+      });
+      noPermissionApp.setErrorHandler((error, request, reply) => {
+        if (error instanceof AppError)
+          return reply.code(error.statusCode).send({
+            error: { code: error.code, message: error.message },
+            meta: { request_id: request.requestContext.requestId, correlation_id: request.requestContext.correlationId },
+          });
+        return reply.code(500).send({ error: { code: 'internal_error', message: (error as Error).message } });
+      });
+      registerPartyReservationRoutes(noPermissionApp, noPermissionAuthentication, reservations);
+      await noPermissionApp.ready();
+
+      const response = await noPermissionApp.inject({
+        method: 'GET',
+        url: `/api/v1/party-reservations/availability?branch_id=${branchId}&package_id=${packageId}&event_date=2027-01-04&start_time=10:00`,
+        headers: { authorization: 'Bearer x' },
+      });
+      expect(response.statusCode).toBe(403);
+      await noPermissionApp.close();
     });
 
     it('serves a real, printable HTML document over HTTP (raw text/html, not the JSON envelope)', async () => {

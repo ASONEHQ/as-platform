@@ -967,6 +967,37 @@ export class PartiesRepository {
     return rows.map(reservation);
   }
 
+  /** TASK 16.22 — the unlocked counterpart to `overlappingReservations`
+   * above: same query, reads straight from the pool (no transaction
+   * client, no `lockRoom` held) for the new room-availability PREVIEW
+   * endpoint (`PartyReservationsService.availableRooms`) — a plain read,
+   * never a booking action. `createReservation`/`updateReservation`
+   * re-run the real, locked `overlappingReservations` themselves before
+   * ever committing (Phase 28 "revalidate on conversion" — a stale
+   * preview can never actually over-commit; the database's own GIST
+   * exclusion constraint remains the unconditional last-line guarantee
+   * either way). */
+  public async overlappingReservationsUnlocked(
+    companyId: string,
+    roomId: string,
+    eventDate: string,
+    startTime: string,
+    endTime: string,
+    excludeId?: string,
+  ): Promise<readonly PartyReservationRow[]> {
+    const values: unknown[] = [companyId, roomId, eventDate, endTime, startTime];
+    let where =
+      'company_id=$1 and room_id=$2 and event_date=$3 and status<>\'cancelled\' and start_time<$4 and $5<end_time';
+    if (excludeId !== undefined) {
+      values.push(excludeId);
+      where += ` and id<>$${String(values.length)}`;
+    }
+    const rows = result<ReservationDb>(
+      await this.database.pool.query(`select ${RESERVATION_COLUMNS} from party_reservations where ${where}`, values),
+    ).rows;
+    return rows.map(reservation);
+  }
+
   public async listReservations(
     companyId: string,
     branchIds: readonly string[],

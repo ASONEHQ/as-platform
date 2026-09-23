@@ -8136,6 +8136,187 @@ void main() {
       expect(find.text('200.00 MXN'), findsOneWidget);
     });
 
+    // TASK 16.22 — the genuine gap this task's own forensic audit found:
+    // a quoted price alone never told an operator whether a room was
+    // actually bookable for it. `quotePackage` never accepted a room or
+    // date/time at all — this is the new, real availability preview.
+    testWidgets(
+      'Cotizador: checking availability calls the real endpoint with the picked date/time, renders available and unavailable room cards, and gates "Convertir a reservación" on a room being selected',
+      (tester) async {
+        final partiesGateway = _FakePartiesGateway(
+          packagesResult: [_fixturePartyPackage()],
+          quoteResult: const PosPartyQuote(
+            packageId: 'package-1',
+            currencyCode: 'MXN',
+            base: '1000.00',
+            childrenExtra: '0.00',
+            adultsExtra: '0.00',
+            timeExtra: '0.00',
+            subtotal: '1000.00',
+            discountTotal: '0.00',
+            taxTotal: '160.00',
+            total: '1160.00',
+          ),
+          availabilityResult: const PosPartyRoomAvailabilityResult(
+            eventDate: '2026-10-10',
+            startTime: '11:00:00',
+            endTime: '13:00:00',
+            rooms: [
+              PosPartyRoomAvailability(
+                roomId: 'room-open',
+                code: 'SALON-A',
+                name: 'Salón Disponible',
+                capacityChildren: null,
+                capacityAdults: null,
+                capacityTotal: null,
+                color: null,
+                available: true,
+                reason: null,
+                conflictingReservationNumber: null,
+              ),
+              PosPartyRoomAvailability(
+                roomId: 'room-busy',
+                code: 'SALON-B',
+                name: 'Salón Ocupado',
+                capacityChildren: null,
+                capacityAdults: null,
+                capacityTotal: null,
+                color: null,
+                available: false,
+                reason: 'conflict',
+                conflictingReservationNumber: 'PARTY-abc123',
+              ),
+            ],
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cotizador'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
+        await tester.pumpAndSettle();
+
+        // "Convertir a reservación" renders once a quote exists, but
+        // stays DISABLED before any room has been checked/selected.
+        expect(tester.widget<FilledButton>(find.byKey(const Key('pos-fiestas-quote-convert'))).onPressed, isNull);
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-date')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-start-time')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-check-availability')));
+        await tester.pumpAndSettle();
+
+        expect(partiesGateway.availableRoomsCalls, hasLength(1));
+        expect(partiesGateway.availableRoomsCalls.single.packageId, 'package-1');
+        expect(find.text('Salón Disponible'), findsOneWidget);
+        expect(find.text('Salón Ocupado'), findsOneWidget);
+        expect(find.text('Disponible'), findsOneWidget);
+        expect(find.textContaining('Ocupado (PARTY-abc123)'), findsOneWidget);
+
+        // The convert button now exists but stays disabled until a real
+        // available room is actually selected.
+        final convertFinder = find.byKey(const Key('pos-fiestas-quote-convert'));
+        expect(convertFinder, findsOneWidget);
+        expect(tester.widget<FilledButton>(convertFinder).onPressed, isNull);
+
+        // Tapping the OCCUPIED room does nothing — it is not selectable.
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-room-room-busy')));
+        await tester.pumpAndSettle();
+        expect(tester.widget<FilledButton>(convertFinder).onPressed, isNull);
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-room-room-open')));
+        await tester.pumpAndSettle();
+        expect(tester.widget<FilledButton>(convertFinder).onPressed, isNotNull);
+
+        await tester.tap(convertFinder);
+        await tester.pumpAndSettle();
+
+        // The reservation form opened with the room/date/time already
+        // carried over — the operator never re-enters what the
+        // Cotizador already established (Phase 27).
+        expect(find.byKey(const Key('pos-fiestas-reservation-save')), findsOneWidget);
+        expect(find.textContaining('Salón Disponible'), findsWidgets);
+      },
+    );
+
+    testWidgets('Cotizador: a backend failure checking availability surfaces honestly, never a silent blank state', (tester) async {
+      final partiesGateway = _FakePartiesGateway(
+        packagesResult: [_fixturePartyPackage()],
+        availabilityFailure: const ApiException(
+          AppFailure(AppErrorKind.validation, 'ignored', code: 'resource_not_found'),
+          statusCode: 404,
+        ),
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cotizador'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-date')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-start-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-check-availability')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-quote-availability-error')), findsOneWidget);
+      expect(tester.widget<FilledButton>(find.byKey(const Key('pos-fiestas-quote-convert'))).onPressed, isNull);
+    });
+
+    testWidgets(
+      'Cotizador: editing the guest counts after checking availability clears the stale result — never converts against an outdated room list',
+      (tester) async {
+        final partiesGateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()]);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cotizador'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-date')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-start-time')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-check-availability')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Salón A'), findsOneWidget); // the fake's own default room
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-quote-children')), '99');
+        await tester.pumpAndSettle();
+
+        // The stale availability preview is gone the moment an input
+        // that could change eligibility/capacity/pricing changes.
+        expect(find.text('Salón A'), findsNothing);
+        expect(find.byKey(const Key('pos-fiestas-quote-convert')), findsNothing);
+      },
+    );
+
     testWidgets('the detail view\'s financial section reflects the fake balance response, never a client computation', (
       tester,
     ) async {
@@ -8455,6 +8636,93 @@ void main() {
       final call = partiesGateway.listReservationsCalls.last;
       expect(call.eventDateFrom, isNotNull);
       expect(call.eventDateFrom, call.eventDateTo);
+    });
+
+    // TASK 16.22 (Phase 39) — a real, live-found gap this task's own
+    // audit confirmed: the calendar's own event cards had NO `onTap`/
+    // `InkWell`/`GestureDetector` at all (grep-verified against the
+    // pre-16.22 code) — tapping an entry did nothing. This proves the
+    // fix: tapping a calendar entry opens the REAL reservation detail,
+    // never a second calendar-only "event detail" model.
+    testWidgets('Calendario: tapping an entry opens the real reservation detail dialog', (tester) async {
+      final today = DateTime.now();
+      final todayIso =
+          '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        calendarResult: [
+          PosPartyCalendarEntry(
+            id: 'reservation-1',
+            roomId: 'room-1',
+            eventDate: todayIso,
+            startTime: '11:00:00',
+            endTime: '13:00:00',
+            status: 'held',
+            celebrantName: 'Camila',
+            customerDisplayName: null,
+            sellerUserId: null,
+          ),
+        ],
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calendario'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')));
+      await tester.pumpAndSettle();
+
+      // The real detail dialog opened — its own close button is proof
+      // (never a second, calendar-only detail widget).
+      expect(find.byKey(const Key('pos-fiestas-detail-close')), findsOneWidget);
+    });
+
+    // TASK 16.22 (Phase 40) — starting a reservation from the date an
+    // operator is already looking at, never re-entering it.
+    testWidgets('Calendario: the per-day "+" opens a new-reservation form with that date pre-filled', (tester) async {
+      final today = DateTime.now();
+      final todayIso =
+          '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        calendarResult: [
+          PosPartyCalendarEntry(
+            id: 'reservation-1',
+            roomId: 'room-1',
+            eventDate: todayIso,
+            startTime: '11:00:00',
+            endTime: '13:00:00',
+            status: 'held',
+            celebrantName: 'Camila',
+            customerDisplayName: null,
+            sellerUserId: null,
+          ),
+        ],
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Calendario'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(Key('pos-fiestas-cal-new-for-date-$todayIso')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-reservation-save')), findsOneWidget);
+      // The date button already shows the pre-filled date — never
+      // requiring the operator to pick it again (the calendar's own day
+      // header behind this dialog also shows the same ISO date string,
+      // hence scoping this to the date button specifically).
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-fiestas-reservation-date')), matching: find.text(todayIso)),
+        findsOneWidget,
+      );
     });
 
     // TASK 16.20 (Part P) — the tenant-configurable contract/waiver
@@ -11992,6 +12260,9 @@ class _FakePartiesGateway implements PosPartiesGateway {
     this.detailResult,
     this.correctSockFailure,
     this.correctSnackFailure,
+    this.availabilityResult,
+    this.availabilityFailure,
+    this.calendarResult,
   });
 
   final List<PosPartyRoom>? roomsResult;
@@ -12020,6 +12291,16 @@ class _FakePartiesGateway implements PosPartiesGateway {
   // insufficient stock) surfacing through the "Corregir entrega" dialog.
   final ApiException? correctSockFailure;
   final ApiException? correctSnackFailure;
+
+  // TASK 16.22 — the Cotizador's own room-availability preview.
+  final PosPartyRoomAvailabilityResult? availabilityResult;
+  final ApiException? availabilityFailure;
+  final List<({String branchId, String packageId, String eventDate, String startTime})> availableRoomsCalls = [];
+
+  // TASK 16.22 — lets a test populate real calendar entries (the
+  // hardcoded `=> const []` below predates this task, when no test
+  // exercised the calendar's own rendering/click behavior at all).
+  final List<PosPartyCalendarEntry>? calendarResult;
 
   // TASK 16.19 — recorded calls for the new package-form/"Hoy"-filter
   // tests, mirroring this fake's own established `create*Calls`/`*Calls`
@@ -12110,12 +12391,47 @@ class _FakePartiesGateway implements PosPartiesGateway {
   Future<List<PosPartyCalendarEntry>> calendar({
     required String from,
     required String to,
-    int limit = 500,
+    int limit = 100,
     String? branchId,
     String? status,
     String? roomId,
     String? sellerUserId,
-  }) async => const [];
+  }) async => calendarResult ?? const [];
+
+  @override
+  Future<PosPartyRoomAvailabilityResult> availableRooms({
+    required String branchId,
+    required String packageId,
+    required String eventDate,
+    required String startTime,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? excludeReservationId,
+  }) async {
+    availableRoomsCalls.add((branchId: branchId, packageId: packageId, eventDate: eventDate, startTime: startTime));
+    if (availabilityFailure != null) throw availabilityFailure!;
+    return availabilityResult ??
+        PosPartyRoomAvailabilityResult(
+          eventDate: eventDate,
+          startTime: '$startTime:00',
+          endTime: '12:00:00',
+          rooms: const [
+            PosPartyRoomAvailability(
+              roomId: 'room-1',
+              code: 'SALON-A',
+              name: 'Salón A',
+              capacityChildren: null,
+              capacityAdults: null,
+              capacityTotal: null,
+              color: null,
+              available: true,
+              reason: null,
+              conflictingReservationNumber: null,
+            ),
+          ],
+        );
+  }
 
   @override
   Future<PosPartyReservationDetail> reservationDetail(String id) async => detailResult ?? _fixturePartyDetail(id: id);

@@ -9,6 +9,8 @@ import { postPartySnackCorrection, postPartySnackDeduction } from './party-snack
 import { postPartySockCorrection, postPartySockDeduction } from './party-sock-deduction.js';
 import {
   assertWithinCapacity,
+  capacityViolation,
+  computeEndTime,
   computeLineTax,
   computePartyQuote,
   formatMoney,
@@ -301,6 +303,121 @@ export class PartyReservationsService {
         },
       ),
     );
+  }
+
+  // --- Room availability preview (TASK 16.22) ---------------------------------
+
+  /**
+   * The genuine gap this task's own forensic audit found: the legacy
+   * Cotizador's central commercial value was showing, LIVE, which rooms
+   * were actually available (conflict-free AND within capacity) for a
+   * given package/date/time — `POST /party-packages/:id/quote` never
+   * accepted a room or a date/time at all, so an operator had no way to
+   * know a room was even bookable before quoting one. This is a pure,
+   * read-only PREVIEW — never a booking action, never a hold on the
+   * room — reusing the exact same authoritative pieces `createReservation`
+   * itself uses (`isRoomEligibleForPackage`, `capacityViolation`,
+   * `overlappingReservationsUnlocked`/`overlappingReservations`), so the
+   * Cotizador's preview and the real booking gate can never silently
+   * diverge (Phase 41 "one authoritative availability engine"). Mirrors
+   * legacy's own `cotizadorSalonesCompatibles`/`cotizadorActualizar`
+   * filtering — only rooms genuinely ELIGIBLE for this package are
+   * returned at all (an ineligible room is never shown as "unavailable
+   * for another reason"), each with a real conflict/capacity reason —
+   * but, unlike legacy, correctly branch-scoped (legacy's own forensic
+   * audit found it offered every active room across every branch once a
+   * package had no explicit room list configured — a real legacy bug,
+   * intentionally not reproduced here).
+   *
+   * `createReservation`/`updateReservation` NEVER trust this preview —
+   * they independently re-run the real, row-locked conflict/capacity/
+   * eligibility checks inside their own transaction before ever
+   * committing (Phase 28/29 "revalidate on conversion"/"concurrent
+   * booking"), with the database's own `party_reservations_room_time_excl`
+   * GIST exclusion constraint as the unconditional last-line guarantee
+   * regardless of what this preview reported a moment earlier.
+   */
+  public async availableRooms(
+    context: { companyId: string },
+    branchIds: readonly string[],
+    input: {
+      branchId: string;
+      packageId: string;
+      eventDate: string;
+      startTime: string;
+      children?: number;
+      adults?: number;
+      extraHalfHours?: number;
+      excludeReservationId?: string;
+    },
+  ): Promise<{
+    eventDate: string;
+    startTime: string;
+    endTime: string;
+    rooms: readonly {
+      room: PartyRoomRow;
+      available: boolean;
+      reason: 'conflict' | 'capacity' | null;
+      conflictingReservationNumber: string | null;
+    }[];
+  }> {
+    if (!branchIds.includes(input.branchId))
+      throw new PartyError('validation_error', 'The branch is not authorized for this actor.');
+    const eventDate = normalizeDate(input.eventDate, 'event_date');
+    const startTime = normalizeTime(input.startTime, 'start_time');
+    const children = nonNegativeInteger(input.children ?? 0, 'children');
+    const adults = nonNegativeInteger(input.adults ?? 0, 'adults');
+    const extraHalfHours = nonNegativeInteger(input.extraHalfHours ?? 0, 'extra_half_hours');
+
+    const pkg = await this.repository.packageRow(context.companyId, input.packageId);
+    if (pkg === null || (pkg.branchId !== null && pkg.branchId !== input.branchId))
+      throw new PartyError('resource_not_found', 'The package was not found for this branch.');
+    const endTime = computeEndTime(startTime, pkg.durationMinutes, extraHalfHours);
+
+    const { items: branchRooms } = await this.repository.listRooms(context.companyId, branchIds, {
+      limit: 200,
+      branchId: input.branchId,
+      status: 'active',
+    });
+    const eligibleRooms = branchRooms.filter((room) => isRoomEligibleForPackage(pkg.restrictions, room.id));
+
+    const rooms: {
+      room: PartyRoomRow;
+      available: boolean;
+      reason: 'conflict' | 'capacity' | null;
+      conflictingReservationNumber: string | null;
+    }[] = [];
+    for (const room of eligibleRooms) {
+      const violation = capacityViolation({
+        roomCapacityTotal: room.capacityTotal,
+        roomCapacityChildren: room.capacityChildren,
+        roomCapacityAdults: room.capacityAdults,
+        packageCapacityMax: pkg.capacityMax,
+        children,
+        adults,
+      });
+      if (violation !== null) {
+        rooms.push({ room, available: false, reason: 'capacity', conflictingReservationNumber: null });
+        continue;
+      }
+      const conflicts = await this.repository.overlappingReservationsUnlocked(
+        context.companyId,
+        room.id,
+        eventDate,
+        startTime,
+        endTime,
+        input.excludeReservationId,
+      );
+      const conflict = conflicts[0];
+      rooms.push({
+        room,
+        available: conflict === undefined,
+        reason: conflict === undefined ? null : 'conflict',
+        conflictingReservationNumber: conflict?.reservationNumber ?? null,
+      });
+    }
+
+    return { eventDate, startTime, endTime, rooms };
   }
 
   /** TASK 16.20 — shared by `createReservation`'s auto-population and

@@ -117,14 +117,38 @@ abstract interface class PosPartiesGateway {
   /// same underlying data as [listReservations], reduced to the
   /// calendar's own projection; every Calendario sub-view (Mes/Semana/Día/
   /// Lista) reads from this one call over a different date range.
+  ///
+  /// TASK 16.22 — `limit`'s default must not exceed the route's own
+  /// querystring schema maximum (`party-reservations.routes.ts`'s shared
+  /// `listQuerystring.limit`, capped at 100); a higher client default was
+  /// live-caught rejecting every calendar load with a 400 `validation_error`
+  /// before a single reservation could ever render.
   Future<List<PosPartyCalendarEntry>> calendar({
     required String from,
     required String to,
-    int limit = 500,
+    int limit = 100,
     String? branchId,
     String? status,
     String? roomId,
     String? sellerUserId,
+  });
+
+  /// `GET /api/v1/party-reservations/availability` (`party.read`) — TASK
+  /// 16.22: given a package/date/start-time (+ optional guest counts/
+  /// extra half-hours), returns every ELIGIBLE room's live availability
+  /// (conflict/capacity-checked, backend-authoritative), plus the real
+  /// computed `end_time`. The Cotizador's live room picker; never trusted
+  /// as the actual booking gate — [createReservation] independently
+  /// re-validates before ever committing.
+  Future<PosPartyRoomAvailabilityResult> availableRooms({
+    required String branchId,
+    required String packageId,
+    required String eventDate,
+    required String startTime,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? excludeReservationId,
   });
 
   /// `GET /api/v1/party-reservations/{id}` (`party.read`).
@@ -368,7 +392,7 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
   Future<List<PosPartyCalendarEntry>> calendar({
     required String from,
     required String to,
-    int limit = 500,
+    int limit = 100,
     String? branchId,
     String? status,
     String? roomId,
@@ -390,6 +414,36 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
       throw const FormatException('Missing calendar data.');
     }
     return data.whereType<Map<String, Object?>>().map(PosPartyCalendarEntry.fromJson).toList(growable: false);
+  }
+
+  @override
+  Future<PosPartyRoomAvailabilityResult> availableRooms({
+    required String branchId,
+    required String packageId,
+    required String eventDate,
+    required String startTime,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? excludeReservationId,
+  }) async {
+    final query = <String, String>{
+      'branch_id': branchId,
+      'package_id': packageId,
+      'event_date': eventDate,
+      'start_time': startTime,
+      if (children != null) 'children': '$children',
+      if (adults != null) 'adults': '$adults',
+      if (extraHalfHours != null) 'extra_half_hours': '$extraHalfHours',
+      if (excludeReservationId != null) 'exclude_reservation_id': excludeReservationId,
+    };
+    final path = Uri(path: '/api/v1/party-reservations/availability', queryParameters: query).toString();
+    final envelope = await _client.getJson(path);
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing availability data.');
+    }
+    return PosPartyRoomAvailabilityResult.fromJson(data);
   }
 
   @override
@@ -675,12 +729,24 @@ class EmptyPosPartiesGateway implements PosPartiesGateway {
   Future<List<PosPartyCalendarEntry>> calendar({
     required String from,
     required String to,
-    int limit = 500,
+    int limit = 100,
     String? branchId,
     String? status,
     String? roomId,
     String? sellerUserId,
   }) async => const [];
+
+  @override
+  Future<PosPartyRoomAvailabilityResult> availableRooms({
+    required String branchId,
+    required String packageId,
+    required String eventDate,
+    required String startTime,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? excludeReservationId,
+  }) => Future.error(StateError('No parties gateway is configured.'));
 
   @override
   Future<PosPartyReservationDetail> reservationDetail(String id) =>

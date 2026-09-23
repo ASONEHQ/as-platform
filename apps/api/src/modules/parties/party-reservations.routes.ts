@@ -344,6 +344,87 @@ export function registerPartyReservationRoutes(
       }),
   );
 
+  // --- Room availability preview (TASK 16.22) -----------------------------------
+
+  app.get<{
+    Querystring: {
+      branch_id: string;
+      package_id: string;
+      event_date: string;
+      start_time: string;
+      children?: number;
+      adults?: number;
+      extra_half_hours?: number;
+      exclude_reservation_id?: string;
+    };
+  }>(
+    '/api/v1/party-reservations/availability',
+    {
+      schema: {
+        tags: ['parties'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['branch_id', 'package_id', 'event_date', 'start_time'],
+          properties: {
+            branch_id: { type: 'string', format: 'uuid' },
+            package_id: { type: 'string', format: 'uuid' },
+            event_date: { type: 'string', format: 'date' },
+            start_time: { type: 'string' },
+            children: { type: 'integer', minimum: 0 },
+            adults: { type: 'integer', minimum: 0 },
+            extra_half_hours: { type: 'integer', minimum: 0 },
+            exclude_reservation_id: { type: 'string', format: 'uuid' },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.read');
+        const query = request.query;
+        requireBranchAccess(authentication, auth, query.branch_id);
+        const result = await service.availableRooms(
+          { companyId: auth.companyId },
+          auth.permittedBranchIds,
+          {
+            branchId: query.branch_id,
+            packageId: query.package_id,
+            eventDate: query.event_date,
+            startTime: query.start_time,
+            ...(query.children === undefined ? {} : { children: query.children }),
+            ...(query.adults === undefined ? {} : { adults: query.adults }),
+            ...(query.extra_half_hours === undefined ? {} : { extraHalfHours: query.extra_half_hours }),
+            ...(query.exclude_reservation_id === undefined ? {} : { excludeReservationId: query.exclude_reservation_id }),
+          },
+        );
+        return reply.send(
+          successResponse(
+            {
+              event_date: result.eventDate,
+              start_time: result.startTime,
+              end_time: result.endTime,
+              rooms: result.rooms.map((entry) => ({
+                room_id: entry.room.id,
+                code: entry.room.code,
+                name: entry.room.name,
+                capacity_children: entry.room.capacityChildren,
+                capacity_adults: entry.room.capacityAdults,
+                capacity_total: entry.room.capacityTotal,
+                color: entry.room.color,
+                available: entry.available,
+                reason: entry.reason,
+                conflicting_reservation_number: entry.conflictingReservationNumber,
+              })),
+            },
+            request.requestContext,
+          ),
+        );
+      }),
+  );
+
   // --- Detail / edit -----------------------------------------------------------
 
   app.get<{ Params: Params }>(
