@@ -9,7 +9,9 @@
 /// more.
 library;
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:as_one/features/pos/pos_reports_gateway.dart';
 import 'package:as_one/features/pos/pos_reports_screen.dart';
 import 'package:as_one/features/pos/pos_tokens.dart';
@@ -228,15 +230,23 @@ Future<void> _pump(
   List<String> permissions = const ['report.read'],
 }) async {
   await tester.pumpWidget(
-    MaterialApp(
-      theme: PosTheme.light(),
-      home: Scaffold(
-        // Mirrors `pos_shell.dart`'s own `_Content` wrapper exactly (every
-        // non-POS module renders inside a `SingleChildScrollView`) — this
-        // screen itself is a plain, non-scrolling `Column`.
-        body: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: PosReportsScreen(context: _context(permissions), reportsGateway: gateway),
+    // TASK 16.23B (F-05) — `PosReportsScreen` now resolves its default
+    // date range's "business today" via `PlatformScope.of(context)
+    // .posReadGateway`, which throws with no such ancestor — mirrors the
+    // real app's own tree (`AsOneApp`'s `MaterialApp.builder` wraps every
+    // route in `PlatformScope`, see `app.dart`).
+    PlatformScope(
+      posReadGateway: const EmptyPosReadGateway(),
+      child: MaterialApp(
+        theme: PosTheme.light(),
+        home: Scaffold(
+          // Mirrors `pos_shell.dart`'s own `_Content` wrapper exactly (every
+          // non-POS module renders inside a `SingleChildScrollView`) — this
+          // screen itself is a plain, non-scrolling `Column`.
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: PosReportsScreen(context: _context(permissions), reportsGateway: gateway),
+          ),
         ),
       ),
     ),

@@ -366,4 +366,7 @@ class _FakeReadGateway implements PosReadGateway {
     usersCallCount++;
     return usersResult;
   }
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }

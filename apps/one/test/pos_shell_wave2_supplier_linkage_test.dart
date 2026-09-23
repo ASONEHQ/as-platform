@@ -30,6 +30,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
@@ -337,6 +338,9 @@ class _FixtureReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 PosPricing _price(String amount) => PosPricing.fromJson({'amount': amount, 'currency_code': 'MXN'});
@@ -384,23 +388,28 @@ Future<void> _pump(WidgetTester tester, {PosPurchasingGateway? purchasingGateway
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: _context,
-        controller: PosReadController(const _FixtureReadGateway()),
-        salesGateway: const EmptyPosSalesGateway(),
-        paymentsGateway: const EmptyPosPaymentsGateway(),
-        cashGateway: const EmptyPosCashGateway(),
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        purchasingGateway: purchasingGateway ?? _RecordingPurchasingGateway(),
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: const _FixtureReadGateway(),
+      child: MaterialApp(
+        home: PosShell(
+          context: _context,
+          controller: PosReadController(const _FixtureReadGateway()),
+          salesGateway: const EmptyPosSalesGateway(),
+          paymentsGateway: const EmptyPosPaymentsGateway(),
+          cashGateway: const EmptyPosCashGateway(),
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          purchasingGateway: purchasingGateway ?? _RecordingPurchasingGateway(),
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );

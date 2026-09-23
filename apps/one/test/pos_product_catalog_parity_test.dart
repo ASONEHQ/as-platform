@@ -14,6 +14,7 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
@@ -874,6 +875,9 @@ class _FixtureReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
@@ -1198,28 +1202,33 @@ Future<void> _pump(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: _context,
-        controller: PosReadController(readGateway),
-        salesGateway: const EmptyPosSalesGateway(),
-        paymentsGateway: const EmptyPosPaymentsGateway(),
-        cashGateway: const EmptyPosCashGateway(),
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        purchasingGateway: const EmptyPosPurchasingGateway(),
-        catalogAdminGateway: catalogAdminGateway ?? _RecordingCatalogAdminGateway(),
-        categoryAdminGateway: const EmptyPosCategoryAdminGateway(),
-        brandAdminGateway: const EmptyPosBrandAdminGateway(),
-        suppliersGateway: const EmptyPosSuppliersGateway(),
-        pickProductImage: pickProductImage,
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: readGateway,
+      child: MaterialApp(
+        home: PosShell(
+          context: _context,
+          controller: PosReadController(readGateway),
+          salesGateway: const EmptyPosSalesGateway(),
+          paymentsGateway: const EmptyPosPaymentsGateway(),
+          cashGateway: const EmptyPosCashGateway(),
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          purchasingGateway: const EmptyPosPurchasingGateway(),
+          catalogAdminGateway: catalogAdminGateway ?? _RecordingCatalogAdminGateway(),
+          categoryAdminGateway: const EmptyPosCategoryAdminGateway(),
+          brandAdminGateway: const EmptyPosBrandAdminGateway(),
+          suppliersGateway: const EmptyPosSuppliersGateway(),
+          pickProductImage: pickProductImage,
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );

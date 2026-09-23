@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
@@ -190,22 +191,26 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        MaterialApp(
-          home: PosShell(
-            context: _context,
-            controller: PosReadController(const _SlowPosReadGateway()),
-            salesGateway: _FakeSalesGateway(),
-            paymentsGateway: _FakePaymentsGateway(),
-            cashGateway: const EmptyPosCashGateway(),
-            refundsGateway: const EmptyPosRefundsGateway(),
-            promotionsGateway: const EmptyPosPromotionsGateway(),
-            customersGateway: const EmptyPosCustomersGateway(),
-            membershipsGateway: const EmptyPosMembershipsGateway(),
-            loyaltyGateway: const EmptyPosLoyaltyGateway(),
-            rewardsGateway: const EmptyPosRewardsGateway(),
-            partiesGateway: const EmptyPosPartiesGateway(),
-            onLogout: () {},
-            onBranchSelected: _noopBranchSelected,
+        // TASK 16.23B (F-05) — see `_pump`'s own doc comment.
+        PlatformScope(
+          posReadGateway: const _SlowPosReadGateway(),
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _SlowPosReadGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: const EmptyPosCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
           ),
         ),
       );
@@ -226,22 +231,26 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        MaterialApp(
-          home: PosShell(
-            context: _context,
-            controller: PosReadController(const _EmptyPosReadGateway()),
-            salesGateway: _FakeSalesGateway(),
-            paymentsGateway: _FakePaymentsGateway(),
-            cashGateway: const EmptyPosCashGateway(),
-            refundsGateway: const EmptyPosRefundsGateway(),
-            promotionsGateway: const EmptyPosPromotionsGateway(),
-            customersGateway: const EmptyPosCustomersGateway(),
-            membershipsGateway: const EmptyPosMembershipsGateway(),
-            loyaltyGateway: const EmptyPosLoyaltyGateway(),
-            rewardsGateway: const EmptyPosRewardsGateway(),
-            partiesGateway: const EmptyPosPartiesGateway(),
-            onLogout: () {},
-            onBranchSelected: _noopBranchSelected,
+        // TASK 16.23B (F-05) — see `_pump`'s own doc comment.
+        PlatformScope(
+          posReadGateway: const _EmptyPosReadGateway(),
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _EmptyPosReadGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: const EmptyPosCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
           ),
         ),
       );
@@ -256,22 +265,26 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
-        MaterialApp(
-          home: PosShell(
-            context: _context,
-            controller: PosReadController(const _FailingPosReadGateway()),
-            salesGateway: _FakeSalesGateway(),
-            paymentsGateway: _FakePaymentsGateway(),
-            cashGateway: const EmptyPosCashGateway(),
-            refundsGateway: const EmptyPosRefundsGateway(),
-            promotionsGateway: const EmptyPosPromotionsGateway(),
-            customersGateway: const EmptyPosCustomersGateway(),
-            membershipsGateway: const EmptyPosMembershipsGateway(),
-            loyaltyGateway: const EmptyPosLoyaltyGateway(),
-            rewardsGateway: const EmptyPosRewardsGateway(),
-            partiesGateway: const EmptyPosPartiesGateway(),
-            onLogout: () {},
-            onBranchSelected: _noopBranchSelected,
+        // TASK 16.23B (F-05) — see `_pump`'s own doc comment.
+        PlatformScope(
+          posReadGateway: const _FailingPosReadGateway(),
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _FailingPosReadGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: const EmptyPosCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
           ),
         ),
       );
@@ -3697,26 +3710,30 @@ void main() {
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
         await tester.pumpWidget(
-          MaterialApp(
-            home: PosShell(
-              context: _context,
-              controller: PosReadController(const _ClienteCatalogGateway()),
-              salesGateway: _FakeSalesGateway(),
-              paymentsGateway: _FakePaymentsGateway(),
-              // TASK 14.5A: this test exercises catalog/category rendering,
-              // not the cash-session gate — an already-open session (like
-              // every other test's own default) so entering CLIENTE mode
-              // itself never becomes the thing under test here.
-              cashGateway: _FakeCashGateway(),
-              refundsGateway: const EmptyPosRefundsGateway(),
-              promotionsGateway: const EmptyPosPromotionsGateway(),
-              customersGateway: const EmptyPosCustomersGateway(),
-              membershipsGateway: const EmptyPosMembershipsGateway(),
-              loyaltyGateway: const EmptyPosLoyaltyGateway(),
-              rewardsGateway: const EmptyPosRewardsGateway(),
-              partiesGateway: const EmptyPosPartiesGateway(),
-              onLogout: () {},
-              onBranchSelected: _noopBranchSelected,
+          // TASK 16.23B (F-05) — see `_pump`'s own doc comment.
+          PlatformScope(
+            posReadGateway: const _ClienteCatalogGateway(),
+            child: MaterialApp(
+              home: PosShell(
+                context: _context,
+                controller: PosReadController(const _ClienteCatalogGateway()),
+                salesGateway: _FakeSalesGateway(),
+                paymentsGateway: _FakePaymentsGateway(),
+                // TASK 14.5A: this test exercises catalog/category rendering,
+                // not the cash-session gate — an already-open session (like
+                // every other test's own default) so entering CLIENTE mode
+                // itself never becomes the thing under test here.
+                cashGateway: _FakeCashGateway(),
+                refundsGateway: const EmptyPosRefundsGateway(),
+                promotionsGateway: const EmptyPosPromotionsGateway(),
+                customersGateway: const EmptyPosCustomersGateway(),
+                membershipsGateway: const EmptyPosMembershipsGateway(),
+                loyaltyGateway: const EmptyPosLoyaltyGateway(),
+                rewardsGateway: const EmptyPosRewardsGateway(),
+                partiesGateway: const EmptyPosPartiesGateway(),
+                onLogout: () {},
+                onBranchSelected: _noopBranchSelected,
+              ),
             ),
           ),
         );
@@ -3740,25 +3757,29 @@ void main() {
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
         await tester.pumpWidget(
-          MaterialApp(
-            home: PosShell(
-              context: _context,
-              controller: PosReadController(const _EmptyPosReadGateway()),
-              salesGateway: _FakeSalesGateway(),
-              paymentsGateway: _FakePaymentsGateway(),
-              // TASK 14.5A: see the identical comment in the sibling test
-              // above — this test is about the empty-categories state, not
-              // the cash-session gate.
-              cashGateway: _FakeCashGateway(),
-              refundsGateway: const EmptyPosRefundsGateway(),
-              promotionsGateway: const EmptyPosPromotionsGateway(),
-              customersGateway: const EmptyPosCustomersGateway(),
-              membershipsGateway: const EmptyPosMembershipsGateway(),
-              loyaltyGateway: const EmptyPosLoyaltyGateway(),
-              rewardsGateway: const EmptyPosRewardsGateway(),
-              partiesGateway: const EmptyPosPartiesGateway(),
-              onLogout: () {},
-              onBranchSelected: _noopBranchSelected,
+          // TASK 16.23B (F-05) — see `_pump`'s own doc comment.
+          PlatformScope(
+            posReadGateway: const _EmptyPosReadGateway(),
+            child: MaterialApp(
+              home: PosShell(
+                context: _context,
+                controller: PosReadController(const _EmptyPosReadGateway()),
+                salesGateway: _FakeSalesGateway(),
+                paymentsGateway: _FakePaymentsGateway(),
+                // TASK 14.5A: see the identical comment in the sibling test
+                // above — this test is about the empty-categories state, not
+                // the cash-session gate.
+                cashGateway: _FakeCashGateway(),
+                refundsGateway: const EmptyPosRefundsGateway(),
+                promotionsGateway: const EmptyPosPromotionsGateway(),
+                customersGateway: const EmptyPosCustomersGateway(),
+                membershipsGateway: const EmptyPosMembershipsGateway(),
+                loyaltyGateway: const EmptyPosLoyaltyGateway(),
+                rewardsGateway: const EmptyPosRewardsGateway(),
+                partiesGateway: const EmptyPosPartiesGateway(),
+                onLogout: () {},
+                onBranchSelected: _noopBranchSelected,
+              ),
             ),
           ),
         );
@@ -10037,11 +10058,20 @@ Future<void> _pump(
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
+  // TASK 16.23B (F-05) — mirrors the REAL app's own tree exactly
+  // (`AsOneApp`'s `MaterialApp.builder` wraps every route in
+  // `PlatformScope`, see `app.dart`): `_Dashboard`/`_FiestasLista`/
+  // `_FiestasCalendario` now resolve "business today" via `PlatformScope
+  // .of(context).posReadGateway`, which throws with no such ancestor —
+  // this was a genuine test-harness/production divergence, not a reason
+  // to invent a second, parallel DI path just for these three widgets.
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: context ?? _context,
-        controller: PosReadController(const _FakeReadGateway()),
+    PlatformScope(
+      posReadGateway: const _FakeReadGateway(),
+      child: MaterialApp(
+        home: PosShell(
+          context: context ?? _context,
+          controller: PosReadController(const _FakeReadGateway()),
         salesGateway: salesGateway ?? _FakeSalesGateway(),
         paymentsGateway: paymentsGateway ?? _FakePaymentsGateway(),
         // TASK 12.7: defaults to an already-open session so every
@@ -10096,6 +10126,7 @@ Future<void> _pump(
         onBranchSelected: onBranchSelected ?? _noopBranchSelected,
       ),
     ),
+    ),
   );
   await tester.pumpAndSettle();
 }
@@ -10117,7 +10148,10 @@ Future<void> _pumpHarness(
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  await tester.pumpWidget(MaterialApp(home: harness));
+  // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment: the
+  // Dashboard tab (this harness's own default-active module) now needs a
+  // real `PlatformScope` ancestor, matching the real app's tree exactly.
+  await tester.pumpWidget(PlatformScope(posReadGateway: const _FakeReadGateway(), child: MaterialApp(home: harness)));
   await tester.pumpAndSettle();
 }
 
@@ -10644,6 +10678,9 @@ class _TrackingReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 /// TASK 12.3C: every fixture product now carries a real, valid,
@@ -11505,6 +11542,9 @@ class _FakeReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _SlowPosReadGateway implements PosReadGateway {
@@ -11528,6 +11568,9 @@ class _SlowPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _EmptyPosReadGateway implements PosReadGateway {
@@ -11549,6 +11592,9 @@ class _EmptyPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 /// TASK 12.3B: adds a third active category (`cat-3`, "Postres") with no
@@ -11590,6 +11636,9 @@ class _ClienteCatalogGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _FailingPosReadGateway implements PosReadGateway {
@@ -11613,6 +11662,9 @@ class _FailingPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 /// TASK 12.8: a controllable fake for E081/E082/E083/E084/E086 — see

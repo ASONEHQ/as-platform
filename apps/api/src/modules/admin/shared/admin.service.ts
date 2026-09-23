@@ -55,7 +55,13 @@ export class AdministrationService {
 
   public contextCompanies(actor: AdminActor): Promise<readonly Record<string, unknown>[]> {
     return this.repository.query<Record<string, unknown>>(
-      `select c.id company_id,c.display_name,c.currency_code,(c.id=$2) current,true switch_permitted
+      // TASK 16.23B (F-05) — `timezone` (the company's own real, configured
+      // IANA zone) alongside every other field this endpoint already
+      // returns, so the Flutter client has a real "resolve business today"
+      // fallback for company-wide-access sessions that have no single
+      // current branch to ask (see `BranchSummary.timezone`'s own identical
+      // field, already relied on for the branch case).
+      `select c.id company_id,c.display_name,c.currency_code,c.timezone,(c.id=$2) current,true switch_permitted
        from company_memberships m
        join companies c on c.id=m.company_id
        where m.user_id=$1 and m.status='active' and c.status='active'

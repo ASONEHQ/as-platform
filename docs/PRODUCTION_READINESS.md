@@ -59,7 +59,8 @@ Full findings table, severities, fixes, and test evidence live in that document.
 - **Zero confirmed cross-tenant/cross-branch data leaks** across the entire backend (5 independent sub-audits, ~200+ repository methods reviewed).
 - **RBAC enforcement itself confirmed correct** by direct reading across all 31 route files (~150 registrations); the real gap found was **test coverage** (many modules have no HTTP-level 403 integration test), not the enforcement code.
 - **4 real, fixed bugs**: a 400-vs-403 status-code contract bug in 4 modules (customers/memberships/loyalty/rewards), a float-money parsing violation in party snack pricing, and two print-only float-money display bugs in the cash-cut ticket. All four fixed with regression tests, all passing.
-- **2 documented, deferred findings** needing a dedicated follow-up task, not an overnight patch: the device-local "today" timezone issue (spread beyond the Fiestas Calendar into Dashboard and Reports) and report date-range filtering not being branch-timezone-aware.
+- **2 more real, fixed bugs (TASK 16.23B follow-up)**: the device-local "today" timezone issue (F-05, spread beyond the Fiestas Calendar into Dashboard and Reports) and report date-range filtering not being branch-timezone-aware (F-06) — both fixed by reusing the codebase's existing server-side `Intl`-based timezone primitives (a new stateless `GET /api/v1/context/business-date` endpoint for the Flutter client, and real UTC day-bounds instead of a `::date` cast for report queries), with regression coverage. See `docs/PRE_LAUNCH_AUDIT.md` for full detail.
+- **1 new documented, deferred finding (F-12)**: ~14 additional same-bug-class device-local-"today" usages found across People/Payroll, Purchasing, Catalog pricing, Promotions/Coupons, Branch Consolidation, and the Fiestas "Cotizador" — deliberately left out of TASK 16.23B's scope (which named only Fiestas Calendar/Dashboard/Sales Reports) and flagged for a dedicated follow-up using the same fix pattern.
 - **2 items needing a human product decision**, not a code fix: a non-functional QR-login tab visible to staff, and a register-access-revocation endpoint that doesn't cross-check its URL's `user_id` segment.
 
 ## 6. Security review — VERIFIED (read-only)
@@ -77,10 +78,20 @@ No real secrets committed. Structured logging redacts passwords/tokens/cookies/c
 | Flutter full test suite | **1117/1117** passed, zero regressions |
 | `flutter build web --release` | Clean, confirmed already live-deployed and verified against the real production API |
 
+## 7A. Quality gates (TASK 16.23B — Timezone Hardening follow-up)
+
+| Gate | Result |
+|---|---|
+| Backend `tsc --noEmit` | Clean |
+| Backend full suite (unit+integration, real `asone_test` Postgres, freshly migrated) | **1495/1495** passed (was 1486, +9 new F-05/F-06 regression tests), 0 failed (15 skipped, environment-gated, unchanged) |
+| Flutter `flutter analyze` | Clean, zero new lints |
+| Flutter full test suite | **1117/1117** passed, zero regressions (count unchanged — this pass extended existing test harnesses rather than adding net-new cases) |
+| `flutter build web --release` | Clean — `√ Built build\web` (74.6s compile). **NOT yet pushed/deployed** — production still serves the `c454443` bundle until this branch is reviewed and pushed |
+
 ## 8. Known limitations going into go-live
 
-- Device-local "today" (F-05 in `docs/PRE_LAUNCH_AUDIT.md`) affects the Fiestas Calendar, the Dashboard "today" summary, and the Sales Reports default date range whenever the device clock/timezone doesn't match the branch's configured one.
-- Report date-range filtering (F-06) uses the database session's timezone, not the branch's, for `::date` comparisons — can shift which calendar day a late-evening sale is attributed to in a report.
+- F-05 and F-06 (device-local "today" and report date-range filtering not being branch-timezone-aware) are **FIXED as of TASK 16.23B** — see `docs/PRE_LAUNCH_AUDIT.md` for root cause, fix, and regression coverage. Not yet pushed to production; live production (`c454443` at time of writing) still has the old behavior until this branch's changes are reviewed and pushed.
+- F-12 (new, TASK 16.23B): ~14 additional same-bug-class device-local-"today" usages remain across People/Payroll, Purchasing, Catalog pricing, Promotions/Coupons, Branch Consolidation, and the Fiestas "Cotizador" — deliberately out of this pass's scope, flagged for a dedicated follow-up.
 - No CI/CD or IaC exists — every deploy is DigitalOcean's own autodeploy reacting to a push to `release/as-pos-v1`; there is no automated smoke test gating a bad deploy from going live.
 - Integration-test coverage for permission-denial (403) paths is thin across most modules (enforcement itself is correct; the automated proof of it is not there yet for most modules).
 

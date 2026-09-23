@@ -16,6 +16,7 @@
 /// is deliberately the "does it actually work, live, in the UI" layer.
 library;
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_catalog_admin_gateway.dart';
@@ -453,6 +454,9 @@ class _MutableReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 /// A minimal `PosCatalogAdminGateway` whose price/product mutations write
@@ -758,28 +762,39 @@ Future<void> _pump(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: context ?? _context,
-        controller: controller,
-        salesGateway: salesGateway ?? _FixtureSalesGateway(),
-        paymentsGateway: paymentsGateway ?? const EmptyPosPaymentsGateway(),
-        cashGateway: cashGateway,
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        heldSalesGateway: const EmptyPosHeldSalesGateway(),
-        purchasingGateway: purchasingGateway,
-        purchaseOrdersGateway: const EmptyPosPurchaseOrdersGateway(),
-        catalogAdminGateway: catalogAdminGateway,
-        categoryAdminGateway: const EmptyPosCategoryAdminGateway(),
-        inventoryAdminGateway: const EmptyPosInventoryAdminGateway(),
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — mirrors the real app's own tree (`AsOneApp`'s
+    // `MaterialApp.builder` wraps every route in `PlatformScope`, see
+    // `app.dart`): `_Dashboard` now resolves "business today" via
+    // `PlatformScope.of(context).posReadGateway`, which throws with no
+    // such ancestor. A plain fresh fake (independent of `controller`'s
+    // own, private gateway) is enough — `businessDate` is a wholly
+    // separate concern from the products/categories/balances/users
+    // caching this file's `controller` param exercises.
+    PlatformScope(
+      posReadGateway: _MutableReadGateway(),
+      child: MaterialApp(
+        home: PosShell(
+          context: context ?? _context,
+          controller: controller,
+          salesGateway: salesGateway ?? _FixtureSalesGateway(),
+          paymentsGateway: paymentsGateway ?? const EmptyPosPaymentsGateway(),
+          cashGateway: cashGateway,
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          heldSalesGateway: const EmptyPosHeldSalesGateway(),
+          purchasingGateway: purchasingGateway,
+          purchaseOrdersGateway: const EmptyPosPurchaseOrdersGateway(),
+          catalogAdminGateway: catalogAdminGateway,
+          categoryAdminGateway: const EmptyPosCategoryAdminGateway(),
+          inventoryAdminGateway: const EmptyPosInventoryAdminGateway(),
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );

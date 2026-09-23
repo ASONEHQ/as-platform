@@ -1,4 +1,5 @@
 import { cashMovementDirection, type CashMovementType } from '../cash/cash.types.js';
+import { isValidIanaTimezone } from '../promotions/pricing.service.js';
 import type { FinancialExportRawRow, ReportsRepository } from './reports.repository.js';
 import {
   ReportsError,
@@ -89,13 +90,34 @@ function csvRow(values: readonly string[]): string {
 export class ReportsService {
   public constructor(private readonly repository: ReportsRepository) {}
 
+  // TASK 16.23B (F-06) — the ONE place every report resolves the real
+  // timezone `date_from`/`date_to` must be interpreted in: the requested
+  // branch's own when the report is pinned to one branch, or the
+  // company's own when it spans every branch the actor can see (`filter
+  // .branchId === undefined`) — a company-wide report needs a single,
+  // documented convention since branches in the same company could
+  // legitimately run different IANA zones. Re-validates with
+  // `isValidIanaTimezone` before use, mirroring `SalesService.createSale`/
+  // `CashService.partialClose`'s own re-validation of a value that is only
+  // ever checked non-blank at the DB level (see those functions' own doc
+  // comments) — never assumed valid just because it came out of storage.
+  private async resolveTimezone(companyId: string, branchId: string | undefined): Promise<string> {
+    const timezone =
+      branchId === undefined ? await this.repository.companyTimezone(companyId) : await this.repository.branchTimezone(companyId, branchId);
+    if (!isValidIanaTimezone(timezone))
+      throw new ReportsError('validation_error', `"${timezone}" is not a valid IANA timezone identifier.`);
+    return timezone;
+  }
+
   // --- Sales --------------------------------------------------------------
 
   public async salesReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<SalesReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const scoped = { ...filter, timezone };
     const [salesTotals, refundsTotals] = await Promise.all([
-      this.repository.salesTotals(companyId, branchIds, filter),
-      this.repository.refundsTotals(companyId, branchIds, filter),
+      this.repository.salesTotals(companyId, branchIds, scoped),
+      this.repository.refundsTotals(companyId, branchIds, scoped),
     ]);
     const grossSales = salesTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.grossSales }));
     const refundsTotal = refundsTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.refundsTotal }));
@@ -122,7 +144,8 @@ export class ReportsService {
 
   public async salesExportCsv(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<string> {
     validateRange(filter);
-    const rows = await this.repository.salesExportRows(companyId, branchIds, filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const rows = await this.repository.salesExportRows(companyId, branchIds, { ...filter, timezone });
     return buildSalesCsv(rows);
   }
 
@@ -130,10 +153,12 @@ export class ReportsService {
 
   public async financialReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<FinancialReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const scoped = { ...filter, timezone };
     const [movementTotals, closedSessions, sessionsOpenedCount] = await Promise.all([
-      this.repository.cashMovementTotals(companyId, branchIds, filter),
-      this.repository.closedSessionTotals(companyId, branchIds, filter),
-      this.repository.sessionsOpenedCount(companyId, branchIds, filter),
+      this.repository.cashMovementTotals(companyId, branchIds, scoped),
+      this.repository.closedSessionTotals(companyId, branchIds, scoped),
+      this.repository.sessionsOpenedCount(companyId, branchIds, scoped),
     ]);
     return {
       dateFrom: filter.dateFrom,
@@ -148,7 +173,8 @@ export class ReportsService {
 
   public async financialExportCsv(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<string> {
     validateRange(filter);
-    const rows = await this.repository.financialExportRows(companyId, branchIds, filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const rows = await this.repository.financialExportRows(companyId, branchIds, { ...filter, timezone });
     return buildFinancialCsv(rows);
   }
 
@@ -171,10 +197,11 @@ export class ReportsService {
 
   public async inventoryReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<InventoryReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
     const [balances, inventoryValue, movementVolume] = await Promise.all([
       this.repository.inventoryBalanceTotals(companyId, branchIds, filter.branchId),
       this.repository.inventoryValueByCurrency(companyId, branchIds, filter.branchId),
-      this.repository.inventoryMovementVolume(companyId, branchIds, filter),
+      this.repository.inventoryMovementVolume(companyId, branchIds, { ...filter, timezone }),
     ]);
     return {
       dateFrom: filter.dateFrom,
@@ -194,12 +221,16 @@ export class ReportsService {
 
   public async customersReport(companyId: string, filter: { dateFrom: string; dateTo: string }): Promise<CustomersReport> {
     validateRange({ ...filter });
+    // Customers/memberships carry no branch dimension in this schema — the
+    // company's own timezone is always the right (and only) resolution.
+    const timezone = await this.resolveTimezone(companyId, undefined);
+    const scoped = { ...filter, timezone };
     const [customersByStatus, newCustomersInRange, membershipsByStatus, newMembershipsInRange, activeLoyaltyAccountCount] =
       await Promise.all([
         this.repository.customersByStatus(companyId),
-        this.repository.newCustomersInRange(companyId, filter),
+        this.repository.newCustomersInRange(companyId, scoped),
         this.repository.membershipsByStatus(companyId),
-        this.repository.newMembershipsInRange(companyId, filter),
+        this.repository.newMembershipsInRange(companyId, scoped),
         this.repository.activeLoyaltyAccountCount(companyId),
       ]);
     return {
@@ -218,11 +249,13 @@ export class ReportsService {
 
   public async employeesReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<EmployeesReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const scoped = { ...filter, timezone };
     const [employeesByStatus, punchTotals, distinctEmployeesPunched, payroll] = await Promise.all([
       this.repository.employeesByStatus(companyId, branchIds, filter.branchId),
-      this.repository.punchTotals(companyId, branchIds, filter),
-      this.repository.distinctEmployeesPunched(companyId, branchIds, filter),
-      this.repository.closedPayrollTotals(companyId, branchIds, filter),
+      this.repository.punchTotals(companyId, branchIds, scoped),
+      this.repository.distinctEmployeesPunched(companyId, branchIds, scoped),
+      this.repository.closedPayrollTotals(companyId, branchIds, scoped),
     ]);
     const clockInCount = punchTotals.find((row) => row.punchType === 'clock_in')?.count ?? 0;
     const clockOutCount = punchTotals.find((row) => row.punchType === 'clock_out')?.count ?? 0;
@@ -243,12 +276,14 @@ export class ReportsService {
 
   public async partiesReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<PartiesReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const scoped = { ...filter, timezone };
     const [reservationsByStatus, bookedRevenue, collectedRevenue, activeRoomCount, roomsBookedCount] = await Promise.all([
-      this.repository.partyReservationsByStatus(companyId, branchIds, filter),
-      this.repository.partyBookedRevenue(companyId, branchIds, filter),
-      this.repository.partyCollectedRevenue(companyId, branchIds, filter),
+      this.repository.partyReservationsByStatus(companyId, branchIds, scoped),
+      this.repository.partyBookedRevenue(companyId, branchIds, scoped),
+      this.repository.partyCollectedRevenue(companyId, branchIds, scoped),
       this.repository.activeRoomCount(companyId, branchIds, filter.branchId),
-      this.repository.roomsBookedCount(companyId, branchIds, filter),
+      this.repository.roomsBookedCount(companyId, branchIds, scoped),
     ]);
     return {
       dateFrom: filter.dateFrom,
@@ -274,10 +309,12 @@ export class ReportsService {
     filter: ReportFilter,
   ): Promise<PromotionsReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const scoped = { ...filter, timezone };
     const [redemptionTotals, discountTotals, topCoupons] = await Promise.all([
-      this.repository.couponRedemptionTotals(companyId, branchIds, filter),
-      this.repository.discountTotalsBySourceType(companyId, branchIds, filter),
-      this.repository.topCoupons(companyId, branchIds, filter),
+      this.repository.couponRedemptionTotals(companyId, branchIds, scoped),
+      this.repository.discountTotalsBySourceType(companyId, branchIds, scoped),
+      this.repository.topCoupons(companyId, branchIds, scoped),
     ]);
     const promotionTotals = discountTotals.filter((row) => row.sourceType === 'promotion');
     const couponTotals = discountTotals.filter((row) => row.sourceType === 'coupon');
@@ -307,7 +344,8 @@ export class ReportsService {
     productVariantId?: string,
   ): Promise<string> {
     validateRange(filter);
-    const rows = await this.repository.kardexExportRows(companyId, branchIds, { ...filter, productVariantId });
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
+    const rows = await this.repository.kardexExportRows(companyId, branchIds, { ...filter, timezone, productVariantId });
     return buildKardexCsv(rows);
   }
 
@@ -315,8 +353,9 @@ export class ReportsService {
 
   public async accessReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<AccessReport> {
     validateRange(filter);
+    const timezone = await this.resolveTimezone(companyId, filter.branchId);
     const [eventTotals, currentOccupancy] = await Promise.all([
-      this.repository.accessEventTotals(companyId, branchIds, filter),
+      this.repository.accessEventTotals(companyId, branchIds, { ...filter, timezone }),
       this.repository.currentOccupancy(companyId, branchIds, filter.branchId),
     ]);
     return {

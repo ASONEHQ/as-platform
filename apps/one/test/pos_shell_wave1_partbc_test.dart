@@ -13,6 +13,7 @@
 /// never an invented stub.
 library;
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
@@ -470,6 +471,9 @@ class _FixtureReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _RecordingSalesGateway implements PosSalesGateway {
@@ -678,25 +682,31 @@ Future<void> _pump(
   tester.view.physicalSize = const Size(1440, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
+  final effectiveReadGateway = readGateway ?? const _FixtureReadGateway();
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: _context,
-        controller: PosReadController(readGateway ?? const _FixtureReadGateway()),
-        salesGateway: salesGateway ?? _RecordingSalesGateway(),
-        paymentsGateway: const EmptyPosPaymentsGateway(),
-        cashGateway: const EmptyPosCashGateway(),
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        heldSalesGateway: heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
-        purchasingGateway: purchasingGateway ?? const EmptyPosPurchasingGateway(),
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: effectiveReadGateway,
+      child: MaterialApp(
+        home: PosShell(
+          context: _context,
+          controller: PosReadController(effectiveReadGateway),
+          salesGateway: salesGateway ?? _RecordingSalesGateway(),
+          paymentsGateway: const EmptyPosPaymentsGateway(),
+          cashGateway: const EmptyPosCashGateway(),
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          heldSalesGateway: heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
+          purchasingGateway: purchasingGateway ?? const EmptyPosPurchasingGateway(),
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );

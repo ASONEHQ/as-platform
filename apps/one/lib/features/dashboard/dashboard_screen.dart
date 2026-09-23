@@ -68,12 +68,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final current = auth.context;
     if (current == null) return;
     if (!current.permissions.contains('report.read')) return;
+    // TASK 16.23B (F-05) — "today" must be the BUSINESS's own calendar
+    // day (the current branch's, or the company's for a company-wide
+    // session), never `DateTime.now()`'s device-local one, which can
+    // disagree with the branch's real "today" near a UTC boundary.
+    final timezone = current.businessTimezone;
+    if (timezone == null) return; // Absent on a genuinely misconfigured tenant — never a guessed date.
     _bannerRequested = true;
-    final gateway = PlatformScope.of(context).posDashboardGateway;
-    final today = _isoDate(DateTime.now());
+    final dashboardGateway = PlatformScope.of(context).posDashboardGateway;
+    final readGateway = PlatformScope.of(context).posReadGateway;
     final branchId = current.companyWideAccess ? null : current.session.branchId;
-    gateway
-        .summary(date: today, branchId: branchId)
+    readGateway
+        .businessDate(timezone: timezone)
+        .then((today) => dashboardGateway.summary(date: today, branchId: branchId))
         .then((summary) {
           if (!mounted) return;
           setState(() => _bannerSummary = summary);
@@ -225,14 +232,6 @@ Future<AuthenticatedContext> _adoptQuickSwitch(
   }
   return after!;
 }
-
-/// Device-local "today" ('YYYY-MM-DD') — mirrors `pos_shell.dart`'s own
-/// private `_isoDate` implementation exactly (that one is library-private
-/// to `pos_shell.dart`, so this is a deliberate, faithful copy, not a
-/// divergent one — same convention `pos_dashboard_gateway.dart`'s own
-/// header comment documents for `PosDashboardCurrencyAmount`).
-String _isoDate(DateTime value) =>
-    '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
 
 class _DashboardTopBanner extends StatelessWidget {
   const _DashboardTopBanner({required this.summary});

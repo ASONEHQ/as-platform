@@ -1003,3 +1003,127 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     expect(withExcludedData.coupon_redemption_count).toBe(3); // 2 permitted-branch + 1 excluded-branch.
   });
 });
+
+// TASK 16.23B (F-06) — isolated from the suite above (whose own fixtures
+// are all deliberately UTC, so they could never have caught this bug: a
+// UTC branch's own local calendar day IS the database session's `::date`
+// boundary, no discrepancy possible). A real non-UTC branch timezone is
+// the only way to prove `date_from`/`date_to` are resolved AS THE BRANCH
+// ITSELF OBSERVES THEM, not as the database session does.
+integration('Report Center — branch/company timezone resolution (TASK 16.23B, F-06)', { concurrent: false }, () => {
+  let database: DatabaseClient;
+  let service: ReportsService;
+
+  const companyId = randomUUID();
+  const mxBranchId = randomUUID();
+  const utcBranchId = randomUUID();
+  const userId = randomUUID();
+
+  // 2026-02-15 23:30 America/Mexico_City (UTC-6, no DST in February) is
+  // 2026-02-16 05:30 UTC — already the NEXT calendar day from the database
+  // session's own (UTC) point of view. The whole test hinges on this gap.
+  const saleId = randomUUID();
+  const saleLocalDate = '2026-02-15';
+  const saleUtcCalendarDate = '2026-02-16';
+  const saleCompletedAt = new Date('2026-02-16T05:30:00.000Z');
+
+  beforeAll(async () => {
+    if (!new URL(integrationDatabaseUrl).pathname.toLowerCase().includes('test'))
+      throw new Error('DATABASE_TEST_URL must identify a dedicated test database.');
+    database = createDatabaseClient({ connectionString: integrationDatabaseUrl, applicationName: 'asone-reports-tz-integration' });
+    service = new ReportsService(new ReportsRepository(database));
+
+    await applyIfMissing(database, 'companies', [
+      '0000_fantastic_black_cat.sql',
+      '0001_high_thor.sql',
+      '0002_true_sugar_man.sql',
+      '0003_curved_zuras.sql',
+      '0004_pink_nehzno.sql',
+      '0005_inventory_operations_foundation.sql',
+      '0006_inventory_transfers_and_reservations.sql',
+      '0007_inventory_counts_foundation.sql',
+      '0008_inventory_reconciliation_findings.sql',
+      '0009_auth_login_challenges.sql',
+      '0010_auth_session_transport_mode.sql',
+    ]);
+    await applyIfMissing(database, 'product_prices', ['0011_product_pricing_foundation.sql']);
+    await applyIfMissing(database, 'payment_terminals', ['0012_payment_and_terminal_foundation.sql']);
+    await applyIfMissing(database, 'sales', ['0013_sale_foundation.sql', '0014_sale_id_required.sql']);
+
+    await database.pool.query(
+      `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
+       values($1,'Reports TZ Co','Reports TZ Co',$2,'active','America/Mexico_City','MXN','es-MX')`,
+      [companyId, `reports-tz-${companyId}`],
+    );
+    await database.pool.query(
+      `insert into branches(id,company_id,name,code,status,timezone)
+       values($1,$2,'Reports TZ Branch (MX)','RTZMX','active','America/Mexico_City'),
+             ($3,$2,'Reports TZ Branch (UTC)','RTZUTC','active','UTC')`,
+      [mxBranchId, companyId, utcBranchId],
+    );
+    await database.pool.query(
+      `insert into users(id,email,normalized_email,display_name,status) values($1,$2,$2,'Reports TZ Actor','active')`,
+      [userId, `reports-tz-${userId}@example.test`],
+    );
+    await database.pool.query(
+      `insert into company_memberships(id,company_id,user_id,status) values($1,$2,$3,'active')`,
+      [randomUUID(), companyId, userId],
+    );
+    await database.pool.query(
+      `insert into sales(id,company_id,branch_id,sale_number,status,currency_code,subtotal,tax_total,total,completed_at,created_by)
+       values($1,$2,$3,'RTZ-0001','completed','MXN','100.0000','16.0000','116.0000',$4,$5)`,
+      [saleId, companyId, mxBranchId, saleCompletedAt, userId],
+    );
+  });
+
+  afterAll(async () => {
+    await database.pool.query('delete from sales where company_id=$1', [companyId]);
+    await database.pool.query('delete from company_memberships where company_id=$1', [companyId]);
+    await database.pool.query('delete from users where id=$1', [userId]);
+    await database.pool.query('delete from branches where company_id=$1', [companyId]);
+    await database.pool.query('delete from companies where id=$1', [companyId]);
+    await database.close();
+  });
+
+  it('a sale at 11:30pm branch-local time is counted on the BRANCH-LOCAL calendar day, even though it is already the next UTC day', async () => {
+    const report = await service.salesReport(companyId, [mxBranchId], {
+      dateFrom: saleLocalDate,
+      dateTo: saleLocalDate,
+      branchId: mxBranchId,
+    });
+    expect(report.transactionCount).toBe(1);
+    expect(report.grossSales).toEqual([{ currencyCode: 'MXN', amount: '116.0000' }]);
+  });
+
+  it('the SAME sale is correctly absent from the UTC calendar day — proves the range genuinely shifted, not just widened', async () => {
+    const report = await service.salesReport(companyId, [mxBranchId], {
+      dateFrom: saleUtcCalendarDate,
+      dateTo: saleUtcCalendarDate,
+      branchId: mxBranchId,
+    });
+    expect(report.transactionCount).toBe(0);
+  });
+
+  it('a company-wide report (no branch_id) resolves the COMPANY\'s own timezone — same branch-local day, same result', async () => {
+    const report = await service.salesReport(companyId, [mxBranchId, utcBranchId], {
+      dateFrom: saleLocalDate,
+      dateTo: saleLocalDate,
+    });
+    expect(report.transactionCount).toBe(1);
+  });
+
+  it('the CSV export uses the identical timezone-aware range — the sale appears in export rows for the branch-local day, not the UTC day', async () => {
+    const csvLocalDay = await service.salesExportCsv(companyId, [mxBranchId], {
+      dateFrom: saleLocalDate,
+      dateTo: saleLocalDate,
+      branchId: mxBranchId,
+    });
+    expect(csvLocalDay).toContain('RTZ-0001');
+    const csvUtcDay = await service.salesExportCsv(companyId, [mxBranchId], {
+      dateFrom: saleUtcCalendarDate,
+      dateTo: saleUtcCalendarDate,
+      branchId: mxBranchId,
+    });
+    expect(csvUtcDay).not.toContain('RTZ-0001');
+  });
+});

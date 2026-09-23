@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../app/app.dart' show PlatformScope;
 import '../../core/networking/api_client.dart';
 import '../../design_system/tokens/as_tokens.dart';
 import '../authentication/auth_models.dart';
@@ -3666,22 +3667,44 @@ class _Dashboard extends StatefulWidget {
 
 class _DashboardState extends State<_Dashboard> {
   String? _branchFilter;
-  late final String _today;
+  // TASK 16.23B (F-05) — was permanently device-local (`_isoDate(DateTime
+  // .now())`), disagreeing with the branch's own real "today" near a UTC
+  // boundary; this codebase's own `Intl`-based zone resolver was previously
+  // only a server-side primitive (`localDateString`), never exposed to the
+  // client — closed by the new `GET /context/business-date` endpoint (see
+  // that route's own doc comment) rather than inventing a client-side
+  // timezone database.
+  //
+  // `_today` starts `null` and `_DashboardBody` is never constructed until
+  // it resolves: `_DashboardBody` is keyed by `date`, so rendering it
+  // against a provisional device-local guess and then correcting `_today`
+  // would re-key it, tearing the body down and rebuilding it — firing
+  // `dashboardGateway.summary(...)` a second time. Resolving before the
+  // first render (instead of render-then-correct) keeps the fetch to
+  // exactly one call, matching `_DashboardBody`'s own doc comment above.
+  String? _today;
+  bool _businessTodayRequested = false;
 
   @override
-  void initState() {
-    super.initState();
-    // "Today" resolved once from the device's own local clock, exactly
-    // like `PosReportsScreen`'s own established convention
-    // (`_dateTo = DateTime(now.year, now.month, now.day)` in
-    // `pos_reports_screen.dart`) — this codebase has no IANA per-branch
-    // timezone conversion library anywhere (not in `pubspec.yaml`, not
-    // used by any other Wave 1/2 screen, including Reports, the closest
-    // precedent this task's own instructions point to), so inventing one
-    // here for a single screen would be new, unproven infrastructure,
-    // not a faithful port of an established pattern. Device-local time is
-    // still a real wall-clock "today," never a naive UTC assumption.
-    _today = _isoDate(DateTime.now());
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_businessTodayRequested) return;
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) {
+      // No timezone available — fall back to the device-local guess so the
+      // tab still renders, best-effort.
+      setState(() => _today = _isoDate(DateTime.now()));
+      return;
+    }
+    _businessTodayRequested = true;
+    PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone).then((today) {
+      if (!mounted) return;
+      setState(() => _today = today);
+    }).catchError((Object _) {
+      if (!mounted) return;
+      // Keep a device-local fallback on failure — best-effort, never blocks the tab.
+      setState(() => _today = _isoDate(DateTime.now()));
+    });
   }
 
   /// Mirrors `_HeldSales`/`PosReportsScreen`'s own `_branchId` getter
@@ -3695,14 +3718,16 @@ class _DashboardState extends State<_Dashboard> {
   @override
   Widget build(BuildContext context) {
     final allowed = widget.context.permissions.contains('report.read');
+    final today = _today;
     return Column(
       key: const Key('pos-dashboard'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SectionHeader(
           title: 'Dashboard',
-          description:
-              'Resumen operativo real de hoy ($_today), calculado por el servidor. Sin métricas simuladas.',
+          description: today == null
+              ? 'Resumen operativo real de hoy, calculado por el servidor. Sin métricas simuladas.'
+              : 'Resumen operativo real de hoy ($today), calculado por el servidor. Sin métricas simuladas.',
           action: const _VisualDialogButton(),
         ),
         // Real company/branch context, mirroring `_ReportsHeader`'s own
@@ -3758,10 +3783,20 @@ class _DashboardState extends State<_Dashboard> {
           ),
         if (!allowed)
           const KeyedSubtree(key: Key('pos-dashboard-permission'), child: _PermissionState())
+        else if (today == null)
+          // Business date still resolving — never construct `_DashboardBody`
+          // against a provisional guess (see `_today`'s own doc comment).
+          const KeyedSubtree(
+            key: Key('pos-dashboard-resolving'),
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 40),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          )
         else
           _DashboardBody(
-            key: ValueKey('pos-dashboard-body-$_today-${_branchId ?? 'all'}'),
-            date: _today,
+            key: ValueKey('pos-dashboard-body-$today-${_branchId ?? 'all'}'),
+            date: today,
             branchId: _branchId,
             dashboardGateway: widget.dashboardGateway,
           ),
@@ -25179,11 +25214,27 @@ class _FiestasListaState extends State<_FiestasLista> {
   // TASK 16.19 (Phase 17 "event-day operations... avoid requiring the
   // operator to navigate through multiple admin screens") — a fast,
   // one-tap way to see just today's events without leaving the admin
-  // list for a dedicated screen. Device-local "today", the same
-  // established convention `_DashboardState`'s own `_today` already uses
-  // for the identical reason (see that field's own doc comment: no IANA
-  // per-branch timezone library exists in this codebase yet).
+  // list for a dedicated screen.
+  //
+  // TASK 16.23B (F-05) — was device-local (`_isoDate(DateTime.now())`),
+  // which could disagree with this branch's own real "today" near a UTC
+  // boundary; resolved via the new `GET /context/business-date` endpoint
+  // (see that route's own doc comment) instead. `_load`/`_loadMore` are
+  // already `async`, so this is a plain `await`, never the two-phase
+  // provisional-then-corrected shape `_DashboardState`/`PosReportsScreen`
+  // need for their own synchronous `initState`.
   bool _todayOnly = false;
+
+  Future<String?> _resolveTodayIso() async {
+    if (!_todayOnly) return null;
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) return _isoDate(DateTime.now()); // Last-resort fallback — never crash the "Hoy" filter.
+    try {
+      return await PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone);
+    } on Object {
+      return _isoDate(DateTime.now());
+    }
+  }
 
   bool get _canRead => widget.context.permissions.contains('party.read');
   bool get _canManage => widget.context.permissions.contains('party.manage');
@@ -25204,7 +25255,7 @@ class _FiestasListaState extends State<_FiestasLista> {
     try {
       final roomsPage = await widget.partiesGateway.listRooms(branchId: _branchId, limit: 100);
       final packagesPage = await widget.partiesGateway.listPackages(limit: 100);
-      final todayIso = _todayOnly ? _isoDate(DateTime.now()) : null;
+      final todayIso = await _resolveTodayIso();
       final page = await widget.partiesGateway.listReservations(
         branchId: _branchId,
         status: _statusFilter,
@@ -25241,7 +25292,7 @@ class _FiestasListaState extends State<_FiestasLista> {
     if (cursor == null || _loadingMore) return;
     setState(() => _loadingMore = true);
     try {
-      final todayIso = _todayOnly ? _isoDate(DateTime.now()) : null;
+      final todayIso = await _resolveTodayIso();
       final page = await widget.partiesGateway.listReservations(
         branchId: _branchId,
         status: _statusFilter,
@@ -25502,6 +25553,12 @@ class _FiestasCalendario extends StatefulWidget {
 
 class _FiestasCalendarioState extends State<_FiestasCalendario> {
   _CalGranularity _granularity = _CalGranularity.month;
+  // TASK 16.23B (F-05) — was permanently device-local (`DateTime.now()`),
+  // which could anchor "Hoy" on the wrong calendar day near a UTC
+  // boundary; the field initializer's guess below is only ever
+  // PROVISIONAL, corrected by `_resolveAnchorToToday` before the FIRST
+  // `_load()` (see `initState`) and again on every "Hoy" tap (see
+  // `_goToToday`) — never a silent, uncorrected fallback.
   DateTime _anchor = DateTime.now();
   _AdminListPhase _phase = _AdminListPhase.loading;
   List<PosPartyCalendarEntry> _entries = const [];
@@ -25510,12 +25567,72 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
 
   String? get _branchId => widget.context.session.branchId;
 
+  bool _anchorResolveRequested = false;
+
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_onControllerChanged);
     unawaited(Future.microtask(widget.controller.loadUsers));
     unawaited(_load());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Guarded to run once, exactly like `_DashboardState`/`PosReportsScreen`
+    // — `didChangeDependencies` can fire again later (e.g. a theme/locale
+    // change), and this must never silently snap the operator's own
+    // in-progress navigation back to "today".
+    if (_anchorResolveRequested) return;
+    _anchorResolveRequested = true;
+    unawaited(_resolveAnchorToToday());
+  }
+
+  /// Resolves the real BUSINESS today (this branch's/company's own IANA
+  /// timezone) and re-anchors the calendar there if the operator has not
+  /// already navigated away from the initial, provisional device-local
+  /// guess — best-effort: on failure or a missing timezone, that
+  /// provisional guess simply stands, rather than blocking the calendar.
+  Future<void> _resolveAnchorToToday() async {
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) return;
+    final provisionalAnchor = _anchor;
+    try {
+      final todayIso = await PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone);
+      final parts = todayIso.split('-').map(int.parse).toList(growable: false);
+      final businessToday = DateTime(parts[0], parts[1], parts[2]);
+      if (!mounted || businessToday == provisionalAnchor || _anchor != provisionalAnchor) return;
+      setState(() => _anchor = businessToday);
+      unawaited(_load());
+    } on Object {
+      // Keep the provisional device-local guess — see this method's own doc comment.
+    }
+  }
+
+  /// The "Hoy" button's own handler — a real user action, so unlike
+  /// `_resolveAnchorToToday`'s best-effort startup correction, a genuine
+  /// failure here surfaces honestly (a SnackBar), never a silent no-op or
+  /// an uncorrected device-local fallback the operator did not ask for.
+  Future<void> _goToToday() async {
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) {
+      setState(() => _anchor = DateTime.now());
+      unawaited(_load());
+      return;
+    }
+    try {
+      final todayIso = await PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone);
+      final parts = todayIso.split('-').map(int.parse).toList(growable: false);
+      if (!mounted) return;
+      setState(() => _anchor = DateTime(parts[0], parts[1], parts[2]));
+      unawaited(_load());
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No fue posible obtener la fecha de hoy. Inténtalo de nuevo.')));
+    }
   }
 
   @override
@@ -25674,10 +25791,7 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
             IconButton(key: const Key('pos-fiestas-cal-prev'), onPressed: () => _nav(-1), icon: const Icon(Icons.chevron_left)),
             TextButton(
               key: const Key('pos-fiestas-cal-today'),
-              onPressed: () {
-                setState(() => _anchor = DateTime.now());
-                unawaited(_load());
-              },
+              onPressed: () => unawaited(_goToToday()),
               child: const Text('Hoy'),
             ),
             IconButton(key: const Key('pos-fiestas-cal-next'), onPressed: () => _nav(1), icon: const Icon(Icons.chevron_right)),

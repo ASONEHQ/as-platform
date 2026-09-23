@@ -49,6 +49,7 @@ class CompanySummary {
     this.current = false,
     this.switchPermitted = true,
     this.currencyCode,
+    this.timezone,
   });
   final String id;
   final String name;
@@ -58,6 +59,13 @@ class CompanySummary {
   /// The tenant's own ISO-4217 currency (`GET /context/companies`
   /// `currency_code`); `null` when the backend did not send it.
   final String? currencyCode;
+
+  /// TASK 16.23B (F-05) — the tenant's own real IANA timezone (`GET
+  /// /context/companies` `timezone`); `null` when the backend did not
+  /// send it. The "resolve business today" fallback for a company-wide
+  /// session with no single current branch — see `BranchSummary
+  /// .timezone`'s identical, branch-scoped counterpart.
+  final String? timezone;
 }
 
 class BranchSummary {
@@ -112,6 +120,18 @@ class AuthenticatedContext {
   /// The tenant's currency. 'MXN' is only the legacy fallback for a backend
   /// that did not send `currency_code`.
   String get companyCurrencyCode => currentCompany?.currencyCode ?? 'MXN';
+
+  /// TASK 16.23B (F-05) — the ONE real IANA timezone to resolve "business
+  /// today" against for whatever this session is currently scoped to: the
+  /// current BRANCH's own timezone when one is selected, or the COMPANY's
+  /// own when this is a company-wide-access session with no single branch
+  /// to ask — the exact same branch-then-company fallback convention
+  /// `ReportsService.resolveTimezone` already uses server-side (TASK
+  /// 16.23B, F-06), never a third, disagreeing rule invented here. `null`
+  /// only if the backend genuinely sent neither (should not happen for a
+  /// real, already-provisioned tenant — every company/branch row has a
+  /// required, validated `timezone` column).
+  String? get businessTimezone => currentBranch?.timezone ?? currentCompany?.timezone;
 }
 
 sealed class LoginOutcome {

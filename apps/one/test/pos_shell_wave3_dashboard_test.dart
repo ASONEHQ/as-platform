@@ -13,6 +13,7 @@ library;
 
 import 'dart:async';
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
@@ -288,6 +289,9 @@ class _FixtureReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 final _context = AuthenticatedContext(
@@ -348,23 +352,31 @@ final _noPermissionContext = AuthenticatedContext(
   permissions: const [],
 );
 
-Widget _shell({required PosDashboardGateway dashboardGateway, AuthenticatedContext? context}) => MaterialApp(
-  home: PosShell(
-    context: context ?? _context,
-    controller: PosReadController(const _FixtureReadGateway()),
-    salesGateway: const EmptyPosSalesGateway(),
-    paymentsGateway: const EmptyPosPaymentsGateway(),
-    cashGateway: const EmptyPosCashGateway(),
-    refundsGateway: const EmptyPosRefundsGateway(),
-    promotionsGateway: const EmptyPosPromotionsGateway(),
-    customersGateway: const EmptyPosCustomersGateway(),
-    membershipsGateway: const EmptyPosMembershipsGateway(),
-    loyaltyGateway: const EmptyPosLoyaltyGateway(),
-    rewardsGateway: const EmptyPosRewardsGateway(),
-    partiesGateway: const EmptyPosPartiesGateway(),
-    dashboardGateway: dashboardGateway,
-    onLogout: () {},
-    onBranchSelected: (_) async {},
+// TASK 16.23B (F-05) — mirrors the real app's own tree (`AsOneApp`'s
+// `MaterialApp.builder` wraps every route in `PlatformScope`, see
+// `app.dart`): `_Dashboard` now resolves "business today" via
+// `PlatformScope.of(context).posReadGateway`, which throws with no such
+// ancestor.
+Widget _shell({required PosDashboardGateway dashboardGateway, AuthenticatedContext? context}) => PlatformScope(
+  posReadGateway: const _FixtureReadGateway(),
+  child: MaterialApp(
+    home: PosShell(
+      context: context ?? _context,
+      controller: PosReadController(const _FixtureReadGateway()),
+      salesGateway: const EmptyPosSalesGateway(),
+      paymentsGateway: const EmptyPosPaymentsGateway(),
+      cashGateway: const EmptyPosCashGateway(),
+      refundsGateway: const EmptyPosRefundsGateway(),
+      promotionsGateway: const EmptyPosPromotionsGateway(),
+      customersGateway: const EmptyPosCustomersGateway(),
+      membershipsGateway: const EmptyPosMembershipsGateway(),
+      loyaltyGateway: const EmptyPosLoyaltyGateway(),
+      rewardsGateway: const EmptyPosRewardsGateway(),
+      partiesGateway: const EmptyPosPartiesGateway(),
+      dashboardGateway: dashboardGateway,
+      onLogout: () {},
+      onBranchSelected: (_) async {},
+    ),
   ),
 );
 

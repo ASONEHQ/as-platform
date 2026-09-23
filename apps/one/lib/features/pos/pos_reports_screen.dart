@@ -19,6 +19,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/app.dart';
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'money.dart';
@@ -67,6 +68,12 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
   _ReportArea _area = _ReportArea.sales;
   late DateTime _dateFrom;
   late DateTime _dateTo;
+  // TASK 16.23B (F-05) — the resolved BUSINESS "today", kept separate from
+  // `_dateTo` (which the user's own range picker freely changes) so the
+  // picker's own upper bound stays correct even after a manual pick. Only
+  // ever the provisional `initState` value until `_resolveBusinessToday`
+  // corrects it, exactly like `_dateTo`/`_dateFrom` themselves.
+  late DateTime _businessToday;
 
   @override
   void initState() {
@@ -75,9 +82,77 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
     // user can change it, but no report call ever fires before a real
     // range (however chosen) exists; this task's own instruction forbids
     // any silent "all time" default, and this is not that.
+    //
+    // TASK 16.23B (F-05) — the device's own clock is only ever a
+    // PROVISIONAL placeholder here, corrected immediately below via the
+    // real branch/company business date (never the final, authoritative
+    // value — the exact bug this task closes). `initState` cannot itself
+    // `await`, so this two-step (provisional-then-corrected) shape is the
+    // same one `_DashboardTopBanner`'s own async summary fetch already
+    // uses for the identical reason.
     final now = DateTime.now();
-    _dateTo = DateTime(now.year, now.month, now.day);
+    _businessToday = DateTime(now.year, now.month, now.day);
+    _dateTo = _businessToday;
     _dateFrom = _dateTo.subtract(const Duration(days: 6));
+  }
+
+  bool _businessTodayRequested = false;
+  // TASK 16.23B (F-05) — gates the report panels' first construction: each
+  // panel below is keyed by `_rangeKey` (derived from `_dateFrom`/`_dateTo`),
+  // so rendering one against the provisional device-local range and then
+  // correcting it would re-key the panel, tearing it down and rebuilding
+  // it — firing the report gateway a second time. Exactly the same failure
+  // mode `_Dashboard`/`_DashboardBody` had in `pos_shell.dart` (see that
+  // file's own `_today` doc comment); resolved the same way, by never
+  // constructing the panel until resolution (success, fallback, or a
+  // missing timezone) has completed.
+  bool _businessTodayResolved = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _resolveBusinessToday();
+  }
+
+  // Guarded by `_businessTodayRequested` exactly like `_DashboardTopBanner
+  // ._requestBannerSummary` — `didChangeDependencies` can fire more than
+  // once (e.g. a theme/locale change), and this must only ever correct
+  // the PROVISIONAL initState guess once, never re-fire and silently
+  // discard a user's own manually-picked range on an unrelated rebuild.
+  void _resolveBusinessToday() {
+    if (_businessTodayRequested) return;
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) {
+      // No timezone available — keep the provisional range and unblock
+      // the panels immediately; never crash the screen over this.
+      _businessTodayRequested = true;
+      setState(() => _businessTodayResolved = true);
+      return;
+    }
+    _businessTodayRequested = true;
+    PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone).then((today) {
+      if (!mounted) return;
+      final parts = today.split('-').map(int.parse).toList(growable: false);
+      final businessToday = DateTime(parts[0], parts[1], parts[2]);
+      // Only auto-correct the DEFAULT range (the user has not yet picked
+      // one of their own) — a real pick is never silently overwritten by
+      // a background timezone correction that lands after the fact.
+      final defaultRangeStillActive = _dateTo == _businessToday && _dateFrom == _businessToday.subtract(const Duration(days: 6));
+      setState(() {
+        _businessTodayResolved = true;
+        if (businessToday == _businessToday) return; // Provisional guess was already correct — no redundant rebuild.
+        _businessToday = businessToday;
+        if (defaultRangeStillActive) {
+          _dateTo = businessToday;
+          _dateFrom = businessToday.subtract(const Duration(days: 6));
+        }
+      });
+    }).catchError((Object _) {
+      if (!mounted) return;
+      // Keep the provisional range on failure — a best-effort correction,
+      // never a reason to block the whole Reports screen from rendering.
+      setState(() => _businessTodayResolved = true);
+    });
   }
 
   /// Mirrors `_HeldSales`'s own `_filter` getter exactly (see
@@ -95,11 +170,13 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
   String get _rangeKey => '${_filter.dateFrom}_${_filter.dateTo}_${_filter.branchId ?? 'all'}';
 
   Future<void> _pickRange() async {
-    final now = DateTime.now();
+    // TASK 16.23B (F-05) — bounded by the resolved BUSINESS today, not
+    // the device's own clock (which could disagree by a day at either
+    // edge of a UTC boundary and wrongly allow/forbid picking it).
     final picked = await showDateRangePicker(
       context: context,
-      firstDate: DateTime(now.year - 5),
-      lastDate: DateTime(now.year, now.month, now.day),
+      firstDate: DateTime(_businessToday.year - 5),
+      lastDate: _businessToday,
       initialDateRange: DateTimeRange(start: _dateFrom, end: _dateTo),
       helpText: 'Selecciona el rango del reporte',
       cancelText: 'Cancelar',
@@ -132,6 +209,11 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
         const SizedBox(height: 14),
         if (!allowed)
           const _ReportsPermissionState()
+        else if (!_businessTodayResolved)
+          // Business date still resolving — never construct a report panel
+          // against a provisional guess (see `_businessTodayResolved`'s own
+          // doc comment).
+          const _ReportsLoadingState()
         else
           switch (_area) {
             _ReportArea.sales => _SalesReportPanel(

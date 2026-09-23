@@ -6,6 +6,7 @@
 // file drives through real `PosShell` instances — mirrors that file's own
 // "pure logic first, then a widget-level check where reachable" split the
 // task's own brief asks for.
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_access_gateway.dart';
 import 'package:as_one/features/pos/pos_assistant_gateway.dart';
@@ -182,17 +183,22 @@ void main() {
           permittedRegisterIds: const ['reg-a'],
         );
         await tester.pumpWidget(
-          MaterialApp(
-            home: _Harness(
-              key: harnessKey,
-              initialContext: initialContext,
-              // Only `reg-a` actually exists on the branch — once
-              // `permittedRegisterIds` narrows to `reg-b` below, `reg-b`
-              // resolves to zero real eligible registers, making the
-              // resulting empty state directly observable proof the stale
-              // `reg-a` selection stopped silently applying.
-              cashGateway: const _StaticCashGateway(
-                registers: [PosCashRegister(id: 'reg-a', branchId: 'branch-id', code: 'CAJA-A', name: 'Caja A', status: 'active')],
+          // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment
+          // in `pos_shell_test.dart`.
+          PlatformScope(
+            posReadGateway: const EmptyPosReadGateway(),
+            child: MaterialApp(
+              home: _Harness(
+                key: harnessKey,
+                initialContext: initialContext,
+                // Only `reg-a` actually exists on the branch — once
+                // `permittedRegisterIds` narrows to `reg-b` below, `reg-b`
+                // resolves to zero real eligible registers, making the
+                // resulting empty state directly observable proof the stale
+                // `reg-a` selection stopped silently applying.
+                cashGateway: const _StaticCashGateway(
+                  registers: [PosCashRegister(id: 'reg-a', branchId: 'branch-id', code: 'CAJA-A', name: 'Caja A', status: 'active')],
+                ),
               ),
             ),
           ),
@@ -235,8 +241,11 @@ Future<void> _pump(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      home: _Harness(initialContext: context, cashGateway: cashGateway),
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: const EmptyPosReadGateway(),
+      child: MaterialApp(home: _Harness(initialContext: context, cashGateway: cashGateway)),
     ),
   );
   await tester.pumpAndSettle();

@@ -1,13 +1,15 @@
 import type { DatabaseClient } from '@asone/database';
 
-import type {
-  CashMovementTotal,
-  ClosedSessionTotal,
-  CurrencyAmount,
-  InventoryMovementVolume,
-  KardexExportRow,
-  SalesExportRow,
-  StatusCount,
+import { zonedDayBounds } from '../promotions/pricing.service.js';
+import {
+  ReportsError,
+  type CashMovementTotal,
+  type ClosedSessionTotal,
+  type CurrencyAmount,
+  type InventoryMovementVolume,
+  type KardexExportRow,
+  type SalesExportRow,
+  type StatusCount,
 } from './reports.types.js';
 
 /** Raw shape read off `cash_movements` for the financial CSV export —
@@ -46,6 +48,11 @@ export interface ReportScopeInput {
   readonly branchId?: string | undefined;
   readonly dateFrom: string;
   readonly dateTo: string;
+  // TASK 16.23B (F-06) — the real IANA timezone `dateFrom`/`dateTo` (plain
+  // calendar dates, no offset) must be resolved AS OBSERVED IN — the
+  // requested branch's own, or the company's own when the report spans
+  // every branch — resolved once in `ReportsService`, never guessed here.
+  readonly timezone: string;
 }
 
 /** Appends `company_id=$n` and `branch_id=any($n::uuid[])` (plus, when
@@ -77,11 +84,30 @@ function appendCompanyScope(where: string[], values: unknown[], companyId: strin
   where.push(`company_id = $${String(values.length)}`);
 }
 
-function appendTimestampRange(where: string[], values: unknown[], column: string, dateFrom: string, dateTo: string): void {
-  values.push(dateFrom);
-  where.push(`${column} >= $${String(values.length)}::date`);
-  values.push(dateTo);
-  where.push(`${column} < ($${String(values.length)}::date + interval '1 day')`);
+// TASK 16.23B (F-06) — was `${column} >= $n::date` / `< ($n::date +
+// interval '1 day')`, which Postgres evaluates the `::date` cast of a
+// `timestamptz` column in the DATABASE SESSION's own timezone (effectively
+// UTC), never the branch/company's configured one — a sale at 11pm
+// `America/Mexico_City` (already 05:00 UTC the NEXT day) could silently
+// fall outside a report filtered for "that day" from the business's own
+// perspective. Now resolves the real `[start, end)` UTC instant range for
+// `dateFrom`/`dateTo` AS OBSERVED IN `timezone`, via the same
+// `zonedDayBounds` primitive `CashService.closeSession`/`partialClose`
+// already use for the identical "branch-local calendar day" concept — one
+// shared, already-tested mechanism, not a second hand-rolled one — and
+// binds real timestamptz params compared with plain `>=`/`<` (no cast).
+function appendTimestampRange(
+  where: string[],
+  values: unknown[],
+  column: string,
+  dateFrom: string,
+  dateTo: string,
+  timezone: string,
+): void {
+  values.push(zonedDayBounds(dateFrom, timezone).start);
+  where.push(`${column} >= $${String(values.length)}`);
+  values.push(zonedDayBounds(dateTo, timezone).end);
+  where.push(`${column} < $${String(values.length)}`);
 }
 
 function appendDateColumnRange(where: string[], values: unknown[], column: string, dateFrom: string, dateTo: string): void {
@@ -94,6 +120,30 @@ function appendDateColumnRange(where: string[], values: unknown[], column: strin
 export class ReportsRepository {
   public constructor(private readonly database: DatabaseClient) {}
 
+  // TASK 16.23B (F-06) — the real, configured IANA timezone to resolve a
+  // report's `date_from`/`date_to` AS OBSERVED IN: the requested branch's
+  // own (`branches.timezone`) when one is pinned, or the company's own
+  // (`companies.timezone`) when the report spans every branch the actor
+  // can see — the same fallback convention `production-owner.service.ts`
+  // and the branch-consolidation module already use for "no single branch
+  // to ask." Read directly (not a settings resolver — this is each row's
+  // own column), mirroring `CashRepository.branchTimezone`'s exact shape.
+  public async branchTimezone(companyId: string, branchId: string): Promise<string> {
+    const row = result<{ timezone: string }>(
+      await this.database.pool.query('select timezone from branches where company_id=$1 and id=$2', [companyId, branchId]),
+    ).rows[0];
+    if (row === undefined) throw new ReportsError('resource_not_found', 'The branch was not found.');
+    return row.timezone;
+  }
+
+  public async companyTimezone(companyId: string): Promise<string> {
+    const row = result<{ timezone: string }>(
+      await this.database.pool.query('select timezone from companies where id=$1', [companyId]),
+    ).rows[0];
+    if (row === undefined) throw new ReportsError('resource_not_found', 'The company was not found.');
+    return row.timezone;
+  }
+
   // --- Sales --------------------------------------------------------------
 
   public async salesTotals(
@@ -105,7 +155,7 @@ export class ReportsRepository {
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
     where.push(`status = 'completed'`);
-    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ currency_code: string; gross: string; tx_count: string }>(
       await this.database.pool.query(
         `select currency_code, coalesce(sum(total),0)::text gross, count(*)::text tx_count
@@ -129,7 +179,7 @@ export class ReportsRepository {
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
     where.push(`status = 'completed'`);
-    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ currency_code: string; total: string; refund_count: string }>(
       await this.database.pool.query(
         `select currency_code, coalesce(sum(total),0)::text total, count(*)::text refund_count
@@ -153,7 +203,7 @@ export class ReportsRepository {
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
     where.push(`status = 'completed'`);
-    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{
       id: string;
       sale_number: string;
@@ -203,7 +253,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ movement_type: string; currency_code: string; amount: string; cnt: string }>(
       await this.database.pool.query(
         `select movement_type, currency_code, coalesce(sum(amount),0)::text amount, count(*)::text cnt
@@ -229,7 +279,7 @@ export class ReportsRepository {
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
     where.push(`status = 'closed'`);
-    appendTimestampRange(where, values, 'closed_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'closed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{
       currency_code: string;
       session_count: string;
@@ -264,7 +314,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'opened_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'opened_at', input.dateFrom, input.dateTo, input.timezone);
     const row = result<{ cnt: string }>(
       await this.database.pool.query(
         `select count(*)::text cnt from cash_sessions where ${where.join(' and ')}`,
@@ -299,7 +349,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{
       id: string;
       branch_id: string;
@@ -417,7 +467,7 @@ export class ReportsRepository {
       where.push(`m.branch_id = $${String(values.length)}`);
     }
     where.push(`m.status = 'posted'`);
-    appendTimestampRange(where, values, 'm.posted_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'm.posted_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ movement_type: string; movement_count: string; total_base_qty: string }>(
       await this.database.pool.query(
         `select m.movement_type, count(distinct m.id)::text movement_count,
@@ -455,7 +505,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendCompanyScope(where, values, companyId);
-    appendTimestampRange(where, values, 'created_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'created_at', input.dateFrom, input.dateTo, input.timezone);
     const row = result<{ cnt: string }>(
       await this.database.pool.query(
         `select count(*)::text cnt from customers where ${where.join(' and ')}`,
@@ -482,7 +532,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendCompanyScope(where, values, companyId);
-    appendTimestampRange(where, values, 'issued_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'issued_at', input.dateFrom, input.dateTo, input.timezone);
     const row = result<{ cnt: string }>(
       await this.database.pool.query(
         `select count(*)::text cnt from customer_memberships where ${where.join(' and ')}`,
@@ -529,7 +579,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ punch_type: string; cnt: string }>(
       await this.database.pool.query(
         `select punch_type, count(*)::text cnt from time_clock_punches where ${where.join(' and ')} group by punch_type`,
@@ -547,7 +597,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo, input.timezone);
     const row = result<{ cnt: string }>(
       await this.database.pool.query(
         `select count(distinct employee_id)::text cnt from time_clock_punches where ${where.join(' and ')}`,
@@ -643,7 +693,7 @@ export class ReportsRepository {
       values.push(input.branchId);
       where.push(`p.branch_id = $${String(values.length)}`);
     }
-    appendTimestampRange(where, values, 'p.created_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'p.created_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ currency_code: string; total: string }>(
       await this.database.pool.query(
         `select r.currency_code, coalesce(sum(p.amount_snapshot),0)::text total
@@ -702,10 +752,7 @@ export class ReportsRepository {
       values.push(input.branchId);
       where.push(`cr.branch_id = $${String(values.length)}`);
     }
-    values.push(input.dateFrom);
-    where.push(`cr.redeemed_at >= $${String(values.length)}::date`);
-    values.push(input.dateTo);
-    where.push(`cr.redeemed_at < ($${String(values.length)}::date + interval '1 day')`);
+    appendTimestampRange(where, values, 'cr.redeemed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ currency_code: string; total: string; cnt: string }>(
       await this.database.pool.query(
         `select s.currency_code, coalesce(sum(cr.amount),0)::text total, count(*)::text cnt
@@ -734,10 +781,7 @@ export class ReportsRepository {
       values.push(input.branchId);
       where.push(`sd.branch_id = $${String(values.length)}`);
     }
-    values.push(input.dateFrom);
-    where.push(`sd.created_at >= $${String(values.length)}::date`);
-    values.push(input.dateTo);
-    where.push(`sd.created_at < ($${String(values.length)}::date + interval '1 day')`);
+    appendTimestampRange(where, values, 'sd.created_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ source_type: string; currency_code: string; total: string; cnt: string }>(
       await this.database.pool.query(
         `select sd.source_type, s.currency_code, coalesce(sum(sd.amount),0)::text total, count(*)::text cnt
@@ -767,10 +811,7 @@ export class ReportsRepository {
       values.push(input.branchId);
       where.push(`cr.branch_id = $${String(values.length)}`);
     }
-    values.push(input.dateFrom);
-    where.push(`cr.redeemed_at >= $${String(values.length)}::date`);
-    values.push(input.dateTo);
-    where.push(`cr.redeemed_at < ($${String(values.length)}::date + interval '1 day')`);
+    appendTimestampRange(where, values, 'cr.redeemed_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ coupon_id: string; code: string; cnt: string }>(
       await this.database.pool.query(
         `select cr.coupon_id, c.code, count(*)::text cnt
@@ -806,10 +847,7 @@ export class ReportsRepository {
       values.push(input.branchId);
       where.push(`m.branch_id = $${String(values.length)}`);
     }
-    values.push(input.dateFrom);
-    where.push(`m.posted_at >= $${String(values.length)}::date`);
-    values.push(input.dateTo);
-    where.push(`m.posted_at < ($${String(values.length)}::date + interval '1 day')`);
+    appendTimestampRange(where, values, 'm.posted_at', input.dateFrom, input.dateTo, input.timezone);
     if (input.productVariantId !== undefined) {
       values.push(input.productVariantId);
       where.push(`l.product_variant_id = $${String(values.length)}`);
@@ -891,7 +929,7 @@ export class ReportsRepository {
     const where: string[] = [];
     const values: unknown[] = [];
     appendBranchScope(where, values, companyId, branchIds, input.branchId);
-    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo);
+    appendTimestampRange(where, values, 'occurred_at', input.dateFrom, input.dateTo, input.timezone);
     const rows = result<{ event_type: string; cnt: string }>(
       await this.database.pool.query(
         `select event_type, count(*)::text cnt from access_events where ${where.join(' and ')} group by event_type`,
@@ -919,4 +957,5 @@ export class ReportsRepository {
 export interface ReportDateRangeInput {
   readonly dateFrom: string;
   readonly dateTo: string;
+  readonly timezone: string;
 }

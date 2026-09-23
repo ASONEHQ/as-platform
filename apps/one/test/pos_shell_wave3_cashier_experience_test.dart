@@ -13,6 +13,7 @@
 // This file cannot see `pos_shell_test.dart`'s own private (leading-
 // underscore) fixtures/helpers — Dart privacy is per-file — so it builds
 // its own small, self-contained harness below.
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
@@ -485,27 +486,33 @@ Future<void> _pump(
   tester.view.physicalSize = const Size(1440, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
+  final effectiveReadGateway = readGateway ?? const _FixtureReadGateway();
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: context ?? _context,
-        controller: PosReadController(readGateway ?? const _FixtureReadGateway()),
-        salesGateway: const EmptyPosSalesGateway(),
-        paymentsGateway: const EmptyPosPaymentsGateway(),
-        cashGateway: const EmptyPosCashGateway(),
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        heldSalesGateway: heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
-        authGateway: authGateway ?? const EmptyPosAuthGateway(),
-        onQuickSwitchByPin: onQuickSwitchByPin,
-        onQuickSwitchByQr: onQuickSwitchByQr,
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: effectiveReadGateway,
+      child: MaterialApp(
+        home: PosShell(
+          context: context ?? _context,
+          controller: PosReadController(effectiveReadGateway),
+          salesGateway: const EmptyPosSalesGateway(),
+          paymentsGateway: const EmptyPosPaymentsGateway(),
+          cashGateway: const EmptyPosCashGateway(),
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          heldSalesGateway: heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
+          authGateway: authGateway ?? const EmptyPosAuthGateway(),
+          onQuickSwitchByPin: onQuickSwitchByPin,
+          onQuickSwitchByQr: onQuickSwitchByQr,
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );
@@ -600,6 +607,9 @@ class _FixtureReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
 }
 
 class _RecordingHeldSalesGateway extends EmptyPosHeldSalesGateway {

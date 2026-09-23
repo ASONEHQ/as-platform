@@ -4,6 +4,7 @@
 // load).
 library;
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
@@ -121,23 +122,28 @@ Future<void> _pump(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(
-      home: PosShell(
-        context: _context(permissions),
-        controller: PosReadController(const EmptyPosReadGateway()),
-        salesGateway: const EmptyPosSalesGateway(),
-        paymentsGateway: const EmptyPosPaymentsGateway(),
-        cashGateway: const EmptyPosCashGateway(),
-        refundsGateway: const EmptyPosRefundsGateway(),
-        promotionsGateway: const EmptyPosPromotionsGateway(),
-        customersGateway: const EmptyPosCustomersGateway(),
-        membershipsGateway: const EmptyPosMembershipsGateway(),
-        loyaltyGateway: const EmptyPosLoyaltyGateway(),
-        rewardsGateway: const EmptyPosRewardsGateway(),
-        partiesGateway: const EmptyPosPartiesGateway(),
-        readinessGateway: gateway,
-        onLogout: () {},
-        onBranchSelected: (_) async {},
+    // TASK 16.23B (F-05) — see `_pump`'s own identical doc comment in
+    // `pos_shell_test.dart`.
+    PlatformScope(
+      posReadGateway: const EmptyPosReadGateway(),
+      child: MaterialApp(
+        home: PosShell(
+          context: _context(permissions),
+          controller: PosReadController(const EmptyPosReadGateway()),
+          salesGateway: const EmptyPosSalesGateway(),
+          paymentsGateway: const EmptyPosPaymentsGateway(),
+          cashGateway: const EmptyPosCashGateway(),
+          refundsGateway: const EmptyPosRefundsGateway(),
+          promotionsGateway: const EmptyPosPromotionsGateway(),
+          customersGateway: const EmptyPosCustomersGateway(),
+          membershipsGateway: const EmptyPosMembershipsGateway(),
+          loyaltyGateway: const EmptyPosLoyaltyGateway(),
+          rewardsGateway: const EmptyPosRewardsGateway(),
+          partiesGateway: const EmptyPosPartiesGateway(),
+          readinessGateway: gateway,
+          onLogout: () {},
+          onBranchSelected: (_) async {},
+        ),
       ),
     ),
   );
