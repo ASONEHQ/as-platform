@@ -46,6 +46,40 @@ void main() {
     expect(controller.phase, AuthPhase.revoked);
   });
 
+  // TASK 16.23E — a reactive refresh (the one `ApiClient.onUnauthorized`
+  // fires mid-session on a real 401, NOT the bootstrap-time one the two
+  // tests above already cover) used to leave the controller silently
+  // stuck at its prior phase on failure: the stale token was never
+  // cleared and the router never redirected to `/login`, so every
+  // subsequent authenticated screen repeated the same 401→refresh→
+  // failure cycle for the rest of the session. Reproduces the exact
+  // production shape: a session that was genuinely authenticated first,
+  // then a later reactive refresh fails with a code `_handleFailure`
+  // does not special-case (`validation_error` — e.g. a transport-mode
+  // mismatch on the backend), which must still move the controller out
+  // of `authenticated` so the app can recover.
+  test(
+    'a reactive refresh failure after a real 401 does not leave the session silently stuck',
+    () async {
+      final gateway = FakeAuthGateway();
+      final controller = testAuthController(gateway);
+      await controller.bootstrapSession();
+      expect(controller.phase, AuthPhase.authenticated);
+
+      gateway.refreshError = const ApiException(
+        AppFailure(
+          AppErrorKind.validation,
+          'Refresh transport is invalid.',
+          code: 'validation_error',
+        ),
+      );
+      await expectLater(controller.refresh(), throwsA(isA<ApiException>()));
+
+      expect(controller.phase, AuthPhase.failure);
+      expect(controller.state.failure?.code, 'validation_error');
+    },
+  );
+
   test('keeps a company challenge only in memory and completes it', () async {
     final gateway = FakeAuthGateway()
       ..loginOutcome = LoginCompanySelection(

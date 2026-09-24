@@ -226,9 +226,31 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> refresh() =>
-      _refreshFuture ??= _refreshAndHydrate().whenComplete(() {
+      _refreshFuture ??= _guardedRefresh().whenComplete(() {
         _refreshFuture = null;
       });
+
+  // TASK 16.23E — `refresh()` is wired to `ApiClient.onUnauthorized` (see
+  // `bootstrap.dart`), fired reactively whenever any GET request hits a
+  // real 401 mid-session. `_refreshAndHydrate` on its own only records
+  // telemetry and rethrows — fine for `bootstrapSession()`, whose own
+  // call site already wraps it in `_handleFailure`, but this reactive
+  // path had no equivalent handling: a real refresh failure (expired/
+  // invalid refresh token, transport mismatch, etc.) left `_state` frozen
+  // at whatever phase it was already in, the stale access token never
+  // cleared, and the router never redirecting to `/login` — every
+  // subsequent authenticated screen for the rest of the session repeated
+  // the identical 401→refresh→failure cycle, each showing only its own
+  // generic per-screen error with no indication the real problem was the
+  // session itself.
+  Future<void> _guardedRefresh() async {
+    try {
+      await _refreshAndHydrate();
+    } on Object catch (error) {
+      _handleFailure(error);
+      rethrow;
+    }
+  }
 
   Future<void> _refreshAndHydrate({bool restored = false}) async {
     final csrf = _csrfToken;

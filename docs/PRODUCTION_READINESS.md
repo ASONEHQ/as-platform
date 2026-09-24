@@ -88,8 +88,20 @@ No real secrets committed. Structured logging redacts passwords/tokens/cookies/c
 | Flutter full test suite | **1117/1117** passed, zero regressions (count unchanged — this pass extended existing test harnesses rather than adding net-new cases) |
 | `flutter build web --release` | Clean — `√ Built build\web` (74.6s compile). **NOT yet pushed/deployed** — production still serves the `c454443` bundle until this branch is reviewed and pushed |
 
+## 7B. Quality gates (TASK 16.23E — admin auth/RBAC diagnostic follow-up)
+
+| Gate | Result |
+|---|---|
+| Flutter `flutter analyze` (changed files) | Clean, zero new lints |
+| Flutter full test suite | **1118/1118** passed (was 1117, +1 new regression test), zero regressions |
+| `flutter build web --release` | Clean, `√ Built build\web` |
+| Backend | Unchanged this task — no backend files modified, so no backend suite re-run was needed |
+
 ## 8. Known limitations going into go-live
 
+- **F-13 (new, TASK 16.23E, FIXED):** a real production session-lifecycle bug — a reactive access-token refresh (triggered mid-session by a real 401) that itself failed left the Flutter session silently stuck, repeating the same failure on every subsequent authenticated screen with no forced re-login. Root-caused via direct code trace and fixed (`auth_state.dart`'s `refresh()` now routes failures through the same handling `bootstrapSession()` already used). This explains TASK 16.23D's "Usuarios/Roles/Permisos 403" and "Sucursales/Áreas Operativas/Empleados 401+400" observations as ONE unified cause, not a separate RBAC gap — see `docs/PRE_LAUNCH_AUDIT.md` F-13/F-14 for full detail. **Not yet pushed to production.**
+- **F-14 (new, TASK 16.23E, deferred):** *why* the backend refresh call itself returns 400 in production (cookie/CORS/transport specifics) could not be conclusively pinned down from static code — needs a real browser Network-tab check and production CORS env verification. The backend behavior itself is intentional security hardening, not a bug.
+- Two TASK 16.23D findings (branch-selector switch, Control Acceso branch-scoped load) were re-verified by a human in a normal Chrome session and are **not** app defects — both PASS. Not modified.
 - F-05 and F-06 (device-local "today" and report date-range filtering not being branch-timezone-aware) are **FIXED as of TASK 16.23B** — see `docs/PRE_LAUNCH_AUDIT.md` for root cause, fix, and regression coverage. Not yet pushed to production; live production (`c454443` at time of writing) still has the old behavior until this branch's changes are reviewed and pushed.
 - F-12 (new, TASK 16.23B): ~14 additional same-bug-class device-local-"today" usages remain across People/Payroll, Purchasing, Catalog pricing, Promotions/Coupons, Branch Consolidation, and the Fiestas "Cotizador" — deliberately out of this pass's scope, flagged for a dedicated follow-up.
 - No CI/CD or IaC exists — every deploy is DigitalOcean's own autodeploy reacting to a push to `release/as-pos-v1`; there is no automated smoke test gating a bad deploy from going live.
