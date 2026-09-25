@@ -140,15 +140,5 @@ void main() {
       }
     });
 
-    test(
-      'Documentos/Notificaciones stay hidden today — both are unimplemented placeholder screens gated by '
-      'company_settings.read, a company-configuration-domain permission the beta preset deliberately excludes '
-      '(the same boundary the Manager template already establishes) — a genuine, disclosed, honest gap, not an '
-      'oversight',
-      () {
-        expect(posModuleVisibleFor(PosModule.documents, _betaTesterPermissionCodes), isFalse);
-        expect(posModuleVisibleFor(PosModule.notifications, _betaTesterPermissionCodes), isFalse);
-      },
-    );
   });
 }

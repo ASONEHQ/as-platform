@@ -67,9 +67,16 @@ enum PosModule {
   operationalAreas('Áreas Operativas', Icons.store_mall_directory_outlined, 'Administración'),
   employees('Empleados', Icons.badge_outlined, 'Administración'),
   history('Historial de Ventas', Icons.history_outlined, 'Administración'),
-  documents('Documentos', Icons.folder_outlined, 'Sistema'),
-  sync('Sincronización', Icons.sync_outlined, 'Sistema'),
-  notifications('Notificaciones', Icons.notifications_outlined, 'Sistema'),
+  // TASK 16.24 (Block D): `documents`/`sync`/`notifications` were removed
+  // from V1 nav entirely — each was a generic "Coming Soon" placeholder
+  // with no product spec and no backend route (`sync.execute` is a real,
+  // seeded permission grantable in Roles/Permisos — see
+  // `pos_permission_presentation.dart` — but no route or service in
+  // `apps/api` ever checks it; it exists in the catalog, reserved for a
+  // sync feature that was never built). Per the task's own default — hide
+  // an unspecified surface rather than present operators with a
+  // non-functional page — these nav entries are gone until a real spec
+  // exists, not stubbed.
   settings('Configuración', Icons.settings_outlined, 'Sistema'),
   // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer text —
   // see `pos_receipt_branding_screen.dart`.
@@ -199,10 +206,9 @@ enum PosModule {
 // ring up a sale" signal) even though the screen body underneath only
 // strictly needs `catalog.read` to render the product grid.
 //
-// Values for not-yet-implemented modules (`cafeteria`/`billing`/
-// `documents`/`notifications`) reuse the closest real, already-existing
-// permission — there is no dedicated backend permission for any of them
-// yet, and this table never invents one.
+// Values for not-yet-implemented modules (`cafeteria`/`billing`) reuse the
+// closest real, already-existing permission — there is no dedicated
+// backend permission for either yet, and this table never invents one.
 const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
   PosModule.pos: ['sale.create'],
   PosModule.cafeteria: ['sale.create'],
@@ -232,9 +238,6 @@ const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
   PosModule.operationalAreas: ['operational_area.read'],
   PosModule.employees: ['employee.read'],
   PosModule.history: ['sale.read'],
-  PosModule.documents: ['company_settings.read'],
-  PosModule.sync: ['sync.execute'],
-  PosModule.notifications: ['company_settings.read'],
   // TASK 16.17: gated by the readiness endpoint's own guard.
   PosModule.settings: ['branch.read'],
   PosModule.receiptBranding: ['company_settings.read'],

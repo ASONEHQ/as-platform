@@ -31,7 +31,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('keeps all 35 canonical modules in their inspected order', () {
+  test('keeps all 32 canonical modules in their inspected order', () {
     // TASK 14.5 (Wave 3): 3 new, real capabilities with no legacy sidebar
     // counterpart (Variantes/Marca del Ticket/Asistente) were appended
     // within their natural groups — 25 (Wave 2 baseline) + 3 = 28.
@@ -45,9 +45,12 @@ void main() {
     // TASK 16.15 added 2 more real, backend-wired capabilities, both
     // inserted within their natural groups (never a new group): Consolidado
     // de Sucursal (Caja y Finanzas, after Facturación CFDI) and Áreas
-    // Operativas (Administración, after Sucursales) — 33 + 2 = 35. The
-    // first/last module and the last module's group are unchanged.
-    expect(PosModule.values, hasLength(35));
+    // Operativas (Administración, after Sucursales) — 33 + 2 = 35.
+    // TASK 16.24 (Block D) removed Documentos/Sincronización/
+    // Notificaciones — 3 generic "Coming Soon" placeholders with no
+    // product spec and no backend route behind any of them — 35 - 3 = 32.
+    // The first/last module and the last module's group are unchanged.
+    expect(PosModule.values, hasLength(32));
     // Matches the canonical `.sb-item[data-nav]` order: Ventas first
     // (Punto de Venta) — not an app-specific "Inicio first" ordering.
     // Sistema no longer ends on Configuración specifically now that
@@ -58,7 +61,7 @@ void main() {
     expect(PosModule.values.first.label, 'Punto de Venta');
     expect(PosModule.values.last.label, 'Asistente');
     expect(PosModule.values.last.group, 'Sistema');
-    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(35));
+    expect(PosModule.values.map((item) => item.label).toSet(), hasLength(32));
   });
 
   testWidgets('renders the canonical desktop shell without fake KPIs', (
