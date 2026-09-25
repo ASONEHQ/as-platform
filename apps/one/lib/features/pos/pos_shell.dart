@@ -25484,6 +25484,7 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
             partiesGateway: widget.partiesGateway,
             customersGateway: widget.customersGateway,
             initialDate: _quoteDateHint,
+            onManagePackages: () => setState(() => _tab = _FiestasTab.ajustes),
           ),
           _FiestasTab.ajustes => _FiestasAjustes(
             context: widget.context,
@@ -25883,6 +25884,8 @@ class _FiestasCalendario extends StatefulWidget {
 }
 
 class _FiestasCalendarioState extends State<_FiestasCalendario> {
+  static const _weekdayLabels = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
   _CalGranularity _granularity = _CalGranularity.month;
   // TASK 16.23B (F-05) — was permanently device-local (`DateTime.now()`),
   // which could anchor "Hoy" on the wrong calendar day near a UTC
@@ -25891,10 +25894,27 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
   // `_load()` (see `initState`) and again on every "Hoy" tap (see
   // `_goToToday`) — never a silent, uncorrected fallback.
   DateTime _anchor = DateTime.now();
+  // TASK 16.24.2 — the grid's own "this is today" reference, kept
+  // separate from `_anchor` (which moves when the operator navigates
+  // months/weeks/days via `_nav`). Corrected to the real business date
+  // alongside `_anchor` in `_resolveAnchorToToday`/`_goToToday`, but
+  // never itself moved by `_nav` — a navigated-away calendar must still
+  // know which real day is "today".
+  DateTime _today = DateTime.now();
   _AdminListPhase _phase = _AdminListPhase.loading;
   List<PosPartyCalendarEntry> _entries = const [];
   Map<String, PosPartyRoom> _roomsById = const {};
   String? _errorMessage;
+  // TASK 16.24.2 — real, backend-supported filters (`calendar()` already
+  // accepts `status`/`roomId` — see `pos_parties_gateway.dart`) that
+  // existed in `_FiestasLista` but were never wired into the calendar
+  // during the Flutter port. Restored here, not invented: no "Sucursal"
+  // filter (the calendar is already branch-scoped by the session, same
+  // as Lista) and no "Vendedor" filter (Lista itself doesn't expose one
+  // either — adding a filter no sibling screen has would be new scope,
+  // not a restoration).
+  String? _statusFilter;
+  String? _roomFilter;
 
   String? get _branchId => widget.context.session.branchId;
 
@@ -25933,9 +25953,17 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
       final todayIso = await PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone);
       final parts = todayIso.split('-').map(int.parse).toList(growable: false);
       final businessToday = DateTime(parts[0], parts[1], parts[2]);
-      if (!mounted || businessToday == provisionalAnchor || _anchor != provisionalAnchor) return;
-      setState(() => _anchor = businessToday);
-      unawaited(_load());
+      if (!mounted) return;
+      // `_today` (the grid's "today" indicator) is always corrected —
+      // unlike `_anchor` (the viewed period), which only re-anchors if
+      // the operator hasn't already navigated away from the initial
+      // provisional guess.
+      final shouldReanchor = businessToday != provisionalAnchor && _anchor == provisionalAnchor;
+      setState(() {
+        _today = businessToday;
+        if (shouldReanchor) _anchor = businessToday;
+      });
+      if (shouldReanchor) unawaited(_load());
     } on Object {
       // Keep the provisional device-local guess — see this method's own doc comment.
     }
@@ -25948,7 +25976,11 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
   Future<void> _goToToday() async {
     final timezone = widget.context.businessTimezone;
     if (timezone == null) {
-      setState(() => _anchor = DateTime.now());
+      final now = DateTime.now();
+      setState(() {
+        _anchor = now;
+        _today = now;
+      });
       unawaited(_load());
       return;
     }
@@ -25956,7 +25988,11 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
       final todayIso = await PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone);
       final parts = todayIso.split('-').map(int.parse).toList(growable: false);
       if (!mounted) return;
-      setState(() => _anchor = DateTime(parts[0], parts[1], parts[2]));
+      final resolved = DateTime(parts[0], parts[1], parts[2]);
+      setState(() {
+        _anchor = resolved;
+        _today = resolved;
+      });
       unawaited(_load());
     } on Object {
       if (!mounted) return;
@@ -26000,7 +26036,13 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
     final (from, to) = _range();
     try {
       final rooms = await widget.partiesGateway.listRooms(branchId: _branchId, limit: 100);
-      final entries = await widget.partiesGateway.calendar(from: _isoDate(from), to: _isoDate(to), branchId: _branchId);
+      final entries = await widget.partiesGateway.calendar(
+        from: _isoDate(from),
+        to: _isoDate(to),
+        branchId: _branchId,
+        status: _statusFilter,
+        roomId: _roomFilter,
+      );
       if (!mounted) return;
       setState(() {
         _roomsById = {for (final room in rooms.items) room.id: room};
@@ -26090,6 +26132,291 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
     if (saved == true) unawaited(_load());
   }
 
+  // TASK 16.22 (Phase 40)/16.24.2 — the single "+" handler every
+  // rendering (month/week/day cells, list rows) shares: hand the date to
+  // the docked-no-more Cotizador tab if the caller wired that in,
+  // otherwise fall back to the old create-reservation dialog directly.
+  void _quoteOrCreateForDate(DateTime date) {
+    final onRequestQuote = widget.onRequestQuoteForDate;
+    if (onRequestQuote != null) {
+      onRequestQuote(date);
+    } else {
+      unawaited(_openCreate(prefillDate: date));
+    }
+  }
+
+  bool _isSameDate(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+  /// Sunday-start week boundary (matches the Dom/Lun/.../Sáb header order
+  /// the owner's reference implementation uses) containing [day].
+  DateTime _startOfWeek(DateTime day) {
+    final base = DateTime(day.year, day.month, day.day);
+    return base.subtract(Duration(days: base.weekday % 7));
+  }
+
+  // TASK 16.24.2 — one day cell, shared by the Month grid (compact,
+  // `maxVisible: 3`) and the Week grid (`maxVisible: 6`, one row so
+  // there's more room). Always renders the date number and a "+" quick
+  // action — an empty cell (zero reservations this day) is still a
+  // useful, actionable cell, never a blank space.
+  Widget _dayCell(
+    PosPalette palette,
+    DateTime day,
+    Map<String, List<PosPartyCalendarEntry>> grouped, {
+    bool muted = false,
+    int maxVisible = 3,
+  }) {
+    final iso = _isoDate(day);
+    final entries = List<PosPartyCalendarEntry>.of(grouped[iso] ?? const [])
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    final isToday = _isSameDate(day, _today);
+    final visible = entries.take(maxVisible).toList(growable: false);
+    final overflow = entries.length - visible.length;
+    return Container(
+      key: Key('pos-fiestas-cal-day-$iso'),
+      constraints: const BoxConstraints(minHeight: 88),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(border: Border.all(color: palette.border)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 20,
+                height: 20,
+                alignment: Alignment.center,
+                decoration: isToday ? BoxDecoration(color: palette.action, shape: BoxShape.circle) : null,
+                child: Text(
+                  '${day.day}',
+                  style: TextStyle(
+                    color: isToday ? Colors.white : (muted ? palette.textMuted : palette.text),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                key: Key('pos-fiestas-cal-new-for-date-$iso'),
+                tooltip: 'Cotizar/reservar este día',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+                iconSize: 14,
+                onPressed: () => _quoteOrCreateForDate(day),
+                icon: Icon(Icons.add_circle_outline, color: palette.action),
+              ),
+            ],
+          ),
+          for (final entry in visible)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: InkWell(
+                key: Key('pos-fiestas-cal-entry-${entry.id}'),
+                borderRadius: BorderRadius.circular(4),
+                onTap: () => unawaited(_openDetail(entry.id)),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(4)),
+                  child: Text(
+                    '${_hhmm(entry.startTime)} ${entry.celebrantName?.isNotEmpty == true ? entry.celebrantName! : (entry.customerDisplayName ?? 'Sin festejado')}',
+                    style: TextStyle(color: palette.text, fontSize: 10, fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ),
+            ),
+          if (overflow > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text('+$overflow más', style: TextStyle(color: palette.textMuted, fontSize: 9)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _weekdayHeaderRow(PosPalette palette) => Row(
+    children: [
+      for (final label in _weekdayLabels)
+        Expanded(
+          child: Center(
+            child: Text(label, style: TextStyle(color: palette.textMuted, fontWeight: FontWeight.w700, fontSize: 11)),
+          ),
+        ),
+    ],
+  );
+
+  // TASK 16.24.2 — the actual month grid the owner's reference
+  // implementation renders: 7 columns (Dom-Sáb), full weeks (including
+  // the muted lead/trail days from the adjacent months so every week row
+  // stays a complete 7 days), always visible regardless of whether the
+  // period has any reservations — zero reservations means empty cells,
+  // never a replaced/collapsed grid.
+  Widget _buildMonthGrid(PosPalette palette, Map<String, List<PosPartyCalendarEntry>> grouped) {
+    final firstOfMonth = DateTime(_anchor.year, _anchor.month);
+    final lastOfMonth = DateTime(_anchor.year, _anchor.month + 1, 0);
+    final gridStart = _startOfWeek(firstOfMonth);
+    final gridEnd = _startOfWeek(lastOfMonth).add(const Duration(days: 6));
+    final weeks = (gridEnd.difference(gridStart).inDays + 1) ~/ 7;
+    return Column(
+      key: const Key('pos-fiestas-cal-month-grid'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _weekdayHeaderRow(palette),
+        const SizedBox(height: 4),
+        for (var w = 0; w < weeks; w++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final day in List.generate(7, (d) => gridStart.add(Duration(days: w * 7 + d))))
+                    Expanded(child: _dayCell(palette, day, grouped, muted: day.month != _anchor.month)),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// The single week containing `_anchor` — same day-cell rendering as
+  /// Month, just one row, with more room per cell (`maxVisible: 6`).
+  Widget _buildWeekGrid(PosPalette palette, Map<String, List<PosPartyCalendarEntry>> grouped) {
+    final start = _startOfWeek(_anchor);
+    return Column(
+      key: const Key('pos-fiestas-cal-week-grid'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _weekdayHeaderRow(palette),
+        const SizedBox(height: 4),
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final day in List.generate(7, (d) => start.add(Duration(days: d))))
+                Expanded(child: _dayCell(palette, day, grouped, maxVisible: 6)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// `_anchor`'s own day — a real agenda (date header, "Hoy" badge when
+  /// applicable, the "+" quick action) that stays visible even when the
+  /// day has zero reservations (an honest inline line replaces the
+  /// entry list, never the whole day view).
+  Widget _buildDayView(PosPalette palette, Map<String, List<PosPartyCalendarEntry>> grouped) {
+    final iso = _isoDate(_anchor);
+    final entries = List<PosPartyCalendarEntry>.of(grouped[iso] ?? const [])
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+    final isToday = _isSameDate(_anchor, _today);
+    return Column(
+      key: const Key('pos-fiestas-cal-day-view'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Text('${_weekdayLabels[_anchor.weekday % 7]} $iso', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+            if (isToday) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: palette.action, borderRadius: BorderRadius.circular(4)),
+                child: const Text('Hoy', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
+              ),
+            ],
+            const Spacer(),
+            IconButton(
+              key: Key('pos-fiestas-cal-new-for-date-$iso'),
+              tooltip: 'Cotizar/reservar este día',
+              onPressed: () => _quoteOrCreateForDate(_anchor),
+              icon: Icon(Icons.add_circle_outline, color: palette.action),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (entries.isEmpty)
+          Text('Sin reservaciones este día.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+        else
+          for (final entry in entries) _calendarEntryCard(palette, entry),
+      ],
+    );
+  }
+
+  /// The pre-16.24.2 grouped-by-date list — kept exactly for List, the
+  /// one granularity the owner explicitly said MAY show an honest empty
+  /// state (it's data-driven, not a scheduling surface).
+  Widget _buildListView(PosPalette palette, Map<String, List<PosPartyCalendarEntry>> grouped) {
+    if (_entries.isEmpty) {
+      return const _EmptyState(message: 'No hay reservaciones en este periodo.');
+    }
+    final sortedDates = grouped.keys.toList()..sort();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final date in sortedDates) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(date, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12)),
+                ),
+                IconButton(
+                  key: Key('pos-fiestas-cal-new-for-date-$date'),
+                  tooltip: 'Cotizar/reservar este día',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _quoteOrCreateForDate(DateTime.parse(date)),
+                  icon: Icon(Icons.add_circle_outline, size: 18, color: palette.action),
+                ),
+              ],
+            ),
+          ),
+          for (final entry in (grouped[date]!..sort((a, b) => a.startTime.compareTo(b.startTime)))) _calendarEntryCard(palette, entry),
+        ],
+      ],
+    );
+  }
+
+  Widget _calendarEntryCard(PosPalette palette, PosPartyCalendarEntry entry) => Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: InkWell(
+      key: Key('pos-fiestas-cal-entry-${entry.id}'),
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => unawaited(_openDetail(entry.id)),
+      child: _PosCard(
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    entry.celebrantName?.isNotEmpty == true ? entry.celebrantName! : (entry.customerDisplayName ?? 'Sin festejado'),
+                    style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                  Text(
+                    '${_hhmm(entry.startTime)}-${_hhmm(entry.endTime)} · ${_roomsById[entry.roomId]?.name ?? 'Salón'} · '
+                    '${_sellerLabel(entry.sellerUserId)}',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            _PartyStatusChip(status: entry.status),
+          ],
+        ),
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
@@ -26097,7 +26424,25 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
     for (final entry in _entries) {
       grouped.putIfAbsent(entry.eventDate, () => []).add(entry);
     }
-    final sortedDates = grouped.keys.toList()..sort();
+    // TASK 16.24.2 — zero reservations is a real, legitimate data state
+    // for Month/Week/Día (the owner's own explicit correction): those 3
+    // are scheduling SURFACES, always rendered once loaded, regardless
+    // of whether `_entries` is empty. Only List (data-driven, not a
+    // scheduling surface) still shows an honest empty state — handled
+    // inside `_buildListView` itself, not by this switch.
+    final Widget body = switch (_phase) {
+      _AdminListPhase.loading => const _LoadingState(),
+      _AdminListPhase.failure => _FailureState(
+        message: _errorMessage ?? 'No fue posible cargar el calendario.',
+        onRetry: () => unawaited(_load()),
+      ),
+      _AdminListPhase.empty || _AdminListPhase.ready => switch (_granularity) {
+        _CalGranularity.month => _buildMonthGrid(palette, grouped),
+        _CalGranularity.week => _buildWeekGrid(palette, grouped),
+        _CalGranularity.day => _buildDayView(palette, grouped),
+        _CalGranularity.list => _buildListView(palette, grouped),
+      },
+    };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -26129,83 +26474,46 @@ class _FiestasCalendarioState extends State<_FiestasCalendario> {
           ],
         ),
         const SizedBox(height: 10),
-        switch (_phase) {
-          _AdminListPhase.loading => const _LoadingState(),
-          _AdminListPhase.empty => const _EmptyState(message: 'No hay reservaciones en este periodo.'),
-          _AdminListPhase.failure => _FailureState(
-            message: _errorMessage ?? 'No fue posible cargar el calendario.',
-            onRetry: () => unawaited(_load()),
-          ),
-          _AdminListPhase.ready => Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final date in sortedDates) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(date, style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12)),
-                      ),
-                      // TASK 16.22 (Phase 40) — starting a reservation
-                      // from the date the operator is already looking
-                      // at, never re-entering it.
-                      IconButton(
-                        key: Key('pos-fiestas-cal-new-for-date-$date'),
-                        tooltip: 'Cotizar/reservar este día',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () {
-                          final parsed = DateTime.parse(date);
-                          final onRequestQuote = widget.onRequestQuoteForDate;
-                          if (onRequestQuote != null) {
-                            onRequestQuote(parsed);
-                          } else {
-                            unawaited(_openCreate(prefillDate: parsed));
-                          }
-                        },
-                        icon: Icon(Icons.add_circle_outline, size: 18, color: palette.action),
-                      ),
-                    ],
-                  ),
-                ),
-                for (final entry in (grouped[date]!..sort((a, b) => a.startTime.compareTo(b.startTime))))
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: InkWell(
-                      key: Key('pos-fiestas-cal-entry-${entry.id}'),
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => unawaited(_openDetail(entry.id)),
-                      child: _PosCard(
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  entry.celebrantName?.isNotEmpty == true
-                                      ? entry.celebrantName!
-                                      : (entry.customerDisplayName ?? 'Sin festejado'),
-                                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
-                                ),
-                                Text(
-                                  '${_hhmm(entry.startTime)}-${_hhmm(entry.endTime)} · ${_roomsById[entry.roomId]?.name ?? 'Salón'} · '
-                                  '${_sellerLabel(entry.sellerUserId)}',
-                                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                                ),
-                              ],
-                            ),
-                          ),
-                          _PartyStatusChip(status: entry.status),
-                        ],
-                      ),
-                      ),
-                    ),
-                  ),
-              ],
-            ],
-          ),
-        },
+        // TASK 16.24.2 — real, backend-supported filters restored from
+        // `_FiestasLista`'s own equivalent row (see this state's field
+        // doc comments above for why Sucursal/Vendedor aren't included).
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-fiestas-cal-filter-status'),
+                initialValue: _statusFilter,
+                decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todos')),
+                  for (final status in partyReservationStatuses) DropdownMenuItem(value: status, child: Text(_partyStatusLabel(status))),
+                ],
+                onChanged: (value) {
+                  setState(() => _statusFilter = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String?>(
+                key: const Key('pos-fiestas-cal-filter-room'),
+                initialValue: _roomFilter,
+                decoration: const InputDecoration(isDense: true, labelText: 'Salón'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todos')),
+                  for (final room in _roomsById.values) DropdownMenuItem(value: room.id, child: Text(room.name)),
+                ],
+                onChanged: (value) {
+                  setState(() => _roomFilter = value);
+                  unawaited(_load());
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        body,
       ],
     );
   }
@@ -26232,6 +26540,7 @@ class _FiestasCotizador extends StatefulWidget {
     required this.partiesGateway,
     required this.customersGateway,
     this.initialDate,
+    this.onManagePackages,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -26244,6 +26553,12 @@ class _FiestasCotizador extends StatefulWidget {
   // simultaneously mounted, so there is no live cross-widget bridge to
   // maintain here, unlike TASK 16.24's rejected split-screen version.
   final DateTime? initialDate;
+  // TASK 16.24.2 — a non-destructive way out for an authorized actor
+  // when this branch genuinely has zero active packages (`_FiestasAdminState`
+  // hands in a callback that switches the Fiestas tab to Ajustes, where
+  // "Paquetes" already lives). Nullable so this widget still compiles
+  // standalone; never auto-creates a package itself.
+  final VoidCallback? onManagePackages;
 
   @override
   State<_FiestasCotizador> createState() => _FiestasCotizadorState();
@@ -26504,26 +26819,69 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
       children: [
         switch (_phase) {
           _AdminListPhase.loading => const _LoadingState(),
-          _AdminListPhase.empty => const _EmptyState(message: 'No hay paquetes activos para cotizar.'),
           _AdminListPhase.failure => _FailureState(
             message: _errorMessage ?? 'No fue posible cargar los paquetes.',
             onRetry: () => unawaited(_load()),
           ),
-          _AdminListPhase.ready => _PosCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+          // TASK 16.24.2 — zero active packages is a real, legitimate
+          // data state, never a reason to replace the whole quoting
+          // workspace with a generic empty-state card (the owner's own
+          // explicit correction). The workspace below always renders;
+          // only the package field itself honestly reflects whether
+          // there's anything to pick from.
+          _AdminListPhase.empty || _AdminListPhase.ready => _buildQuoteWorkspace(palette),
+        },
+      ],
+    );
+  }
+
+  Widget _buildQuoteWorkspace(PosPalette palette) => _PosCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_packages.isEmpty) ...[
+          Text('Paquete', style: TextStyle(color: palette.textSecondary, fontSize: 12, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Container(
+            key: const Key('pos-fiestas-quote-no-packages'),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
+              border: Border.all(color: palette.border),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
               children: [
-                DropdownButtonFormField<String>(
-                  key: const Key('pos-fiestas-quote-package'),
-                  initialValue: _packageId,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
-                  items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
-                  onChanged: (value) {
-                    setState(() => _packageId = value);
-                    _invalidateQuoteAndAvailability();
-                  },
+                Expanded(
+                  child: Text(
+                    'No hay paquetes activos en esta sucursal.',
+                    style: TextStyle(color: palette.textMuted, fontSize: 12),
+                  ),
                 ),
-                const SizedBox(height: 10),
+                if (_canManage && widget.onManagePackages != null) ...[
+                  const SizedBox(width: 8),
+                  TextButton(
+                    key: const Key('pos-fiestas-quote-manage-packages'),
+                    onPressed: widget.onManagePackages,
+                    child: const Text('Configurar paquetes'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+        ] else ...[
+          DropdownButtonFormField<String>(
+            key: const Key('pos-fiestas-quote-package'),
+            initialValue: _packageId,
+            decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
+            items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
+            onChanged: (value) {
+              setState(() => _packageId = value);
+              _invalidateQuoteAndAvailability();
+            },
+          ),
+          const SizedBox(height: 10),
+        ],
                 // TASK 16.22 (Phase 8) — date/start-time: required for the
                 // availability preview below (price itself never depends
                 // on them), branch/company timezone semantics — no
@@ -26589,7 +26947,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                 const SizedBox(height: 12),
                 FilledButton.icon(
                   key: const Key('pos-fiestas-quote-submit'),
-                  onPressed: _quoting ? null : () => unawaited(_quotePackage()),
+                  onPressed: _quoting || _packageId == null ? null : () => unawaited(_quotePackage()),
                   style: FilledButton.styleFrom(backgroundColor: palette.action),
                   icon: _quoting
                       ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
@@ -26681,11 +27039,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                 ],
               ],
             ),
-          ),
-        },
-      ],
-    );
-  }
+          );
 }
 
 /// TASK 16.22 — one room card in the Cotizador's own availability

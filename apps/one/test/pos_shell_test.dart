@@ -8300,7 +8300,10 @@ void main() {
           PosPartyCalendarEntry(
             id: 'reservation-1',
             roomId: 'room-1',
-            eventDate: '2026-10-10',
+            // TASK 16.24.2 — the calendar grid anchors to the fake
+            // `posReadGateway.businessDate()`'s fixed '2026-01-01', so
+            // the fixture entry must land there to render in the grid.
+            eventDate: '2026-01-01',
             startTime: '11:00:00',
             endTime: '13:00:00',
             status: 'held',
@@ -8336,6 +8339,145 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('pos-fiestas-quote-submit')), findsOneWidget);
       expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsNothing);
+    });
+
+    // TASK 16.24.2 — the owner's own correction: zero reservations/
+    // packages is a real, legitimate data state, never a reason to
+    // collapse a scheduling/quoting SURFACE into a generic empty-state
+    // card. These tests exercise exactly the gap the pre-16.24.2 test
+    // suite never caught (every prior fixture happened to include data).
+    group('empty-state parity (owner-reviewed correction)', () {
+      testWidgets('zero reservations: Month still renders the full grid (weekday headers, dates, today) — never the empty-state card', (
+        tester,
+      ) async {
+        final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], calendarResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Calendario'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-fiestas-cal-month-grid')), findsOneWidget);
+        expect(find.text('No hay reservaciones en este periodo.'), findsNothing);
+        for (final label in const ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']) {
+          expect(find.text(label), findsOneWidget);
+        }
+        // The business-today cell (the fake `businessDate()` fixture
+        // returns '2026-01-01' — see the sibling tests above) exists and
+        // its own "+" still works, proving an empty date stays useful.
+        expect(find.byKey(const Key('pos-fiestas-cal-day-2026-01-01')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-cal-new-for-date-2026-01-01')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('pos-fiestas-cal-new-for-date-2026-01-01')));
+        await tester.pumpAndSettle();
+        expect(
+          find.descendant(of: find.byKey(const Key('pos-fiestas-quote-date')), matching: find.text('2026-01-01')),
+          findsOneWidget,
+        );
+      });
+
+      testWidgets('zero reservations: Semana still renders a real 7-day week structure — never the empty-state card', (tester) async {
+        final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], calendarResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Calendario'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-cal-granularity')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Semana'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-fiestas-cal-week-grid')), findsOneWidget);
+        expect(find.text('No hay reservaciones en este periodo.'), findsNothing);
+        expect(find.byKey(const Key('pos-fiestas-cal-day-2026-01-01')), findsOneWidget);
+      });
+
+      testWidgets('zero reservations: Día still renders the day header/date and an honest inline "sin reservaciones" line — never the empty-state card', (
+        tester,
+      ) async {
+        final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], calendarResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Calendario'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-cal-granularity')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Día'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-fiestas-cal-day-view')), findsOneWidget);
+        expect(find.text('No hay reservaciones en este periodo.'), findsNothing);
+        expect(find.text('Sin reservaciones este día.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-cal-new-for-date-2026-01-01')), findsOneWidget);
+      });
+
+      testWidgets('zero reservations: Lista is the one granularity that MAY show the honest empty-state card', (tester) async {
+        final partiesGateway = _FakePartiesGateway(roomsResult: [_fixturePartyRoom()], calendarResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Calendario'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-cal-granularity')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.descendant(of: find.byKey(const Key('pos-fiestas-cal-granularity')), matching: find.text('Lista')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('No hay reservaciones en este periodo.'), findsOneWidget);
+      });
+
+      testWidgets('zero active packages: Cotizador still renders the full quoting workspace, with an honest inline message instead of a fake package', (
+        tester,
+      ) async {
+        final partiesGateway = _FakePartiesGateway(packagesResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(manage: true), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cotizador'));
+        await tester.pumpAndSettle();
+
+        // The workspace itself is still there — date/time/guest fields
+        // and the (disabled) submit button all still render.
+        expect(find.byKey(const Key('pos-fiestas-quote-date')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-quote-start-time')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-quote-children')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-quote-submit')), findsOneWidget);
+        expect(tester.widget<FilledButton>(find.byKey(const Key('pos-fiestas-quote-submit'))).onPressed, isNull);
+
+        // No fake package: the real dropdown is gone, replaced by an
+        // honest inline message.
+        expect(find.byKey(const Key('pos-fiestas-quote-package')), findsNothing);
+        expect(find.byKey(const Key('pos-fiestas-quote-no-packages')), findsOneWidget);
+        expect(find.text('No hay paquetes activos en esta sucursal.'), findsOneWidget);
+
+        // A non-destructive way out for an authorized actor — never an
+        // automatic package creation.
+        expect(partiesGateway.createPackageCalls, isEmpty);
+        await tester.tap(find.byKey(const Key('pos-fiestas-quote-manage-packages')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-fiestas-ajustes-tabs')), findsOneWidget);
+      });
+
+      testWidgets('zero active packages without party.manage: no "Configurar paquetes" action renders', (tester) async {
+        final partiesGateway = _FakePartiesGateway(packagesResult: const []);
+        await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+        await _navigateToFiestas(tester);
+        await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cotizador'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-fiestas-quote-no-packages')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-quote-manage-packages')), findsNothing);
+      });
     });
 
     testWidgets('Lista renders real rows from the fake gateway', (tester) async {
@@ -9009,9 +9151,13 @@ void main() {
     // fix: tapping a calendar entry opens the REAL reservation detail,
     // never a second calendar-only "event detail" model.
     testWidgets('Calendario: tapping an entry opens the real reservation detail dialog', (tester) async {
-      final today = DateTime.now();
-      final todayIso =
-          '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      // TASK 16.24.2 — the calendar's month/week/day GRID is now real and
+      // anchored to the authoritative BUSINESS today (never device-local
+      // `DateTime.now()`, per TASK 16.23B/F-05) — every fake
+      // `posReadGateway.businessDate()` in this file returns the fixed
+      // '2026-01-01', so a fixture entry must land on that same date to
+      // land inside the currently-displayed month grid.
+      const todayIso = '2026-01-01';
       final partiesGateway = _FakePartiesGateway(
         roomsResult: [_fixturePartyRoom()],
         packagesResult: [_fixturePartyPackage()],
@@ -9052,9 +9198,9 @@ void main() {
     // tab to Cotizador with the date pre-filled, rather than opening a
     // dialog over the calendar OR keeping both panes visible at once.
     testWidgets('Calendario: the per-day "+" switches to the Cotizador tab with the date pre-filled', (tester) async {
-      final today = DateTime.now();
-      final todayIso =
-          '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      // TASK 16.24.2 — see the sibling test above for why this is the
+      // fixed business-date fixture, not `DateTime.now()`.
+      const todayIso = '2026-01-01';
       final partiesGateway = _FakePartiesGateway(
         roomsResult: [_fixturePartyRoom()],
         packagesResult: [_fixturePartyPackage()],
