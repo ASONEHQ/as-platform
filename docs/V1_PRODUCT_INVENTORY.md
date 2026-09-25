@@ -64,20 +64,37 @@ the parity formula, not a gap.
 closed 4 remaining product gaps found via direct code audit, not
 assumption. **Fiestas** (Block A): the calendar/list/quoter/settings
 screens already existed, but opening the Cotizador used to replace the
-calendar entirely — now a docked `_FiestasWorkspace` keeps both visible
-together. **Payments** (Block B): a real Transfer method now exists
-end-to-end (never touches the cash drawer, inherits refund safety for
-free); CLIENTE's card-payment button was found to already be fully real
-(only a stale doc comment said otherwise); partial card-terminal
-refunds are confirmed correctly, permanently provider-limited (ADR-0015
-D15), not a bug. **Rewards** (Block C): the existing presentation-token
-endpoints are now wired into Flutter — issue/rotate a code from
-Customer Detail, resolve a code to redeem in the CAJERO checkout
-dialog. **Navigation** (Block D): removed 3 dead-end "Sistema" nav
-entries (Documentos/Sincronización/Notificaciones) that only ever
-rendered a generic "Coming Soon" placeholder with no product spec and
-no backend route behind any of them — hidden per this task's own
-default rather than left as a non-functional page.
+calendar entirely — TASK 16.24 first tried a docked side-by-side
+workspace; **TASK 16.24.1/16.24.2 (owner-reviewed correction)** then
+restored the original 4-tab structure (Lista/Calendario/Cotizador/
+Ajustes, each full-width) per the owner's own explicit rejection of
+the docked layout, and separately fixed a real bug the docked version
+introduced: Calendario/Cotizador used to collapse into a generic
+empty-state card on zero data — both now always render their real
+structure (a genuine Month/Week/Día grid with weekday headers/today
+indicator/empty cells, and a full quoting workspace with an honest
+"sin paquetes" message) regardless of data. **Payments** (Block B): a
+real Transfer method now exists end-to-end (never touches the cash
+drawer, inherits refund safety for free); CLIENTE's card-payment
+button was found to already be fully real (only a stale doc comment
+said otherwise); partial card-terminal refunds are confirmed
+correctly, permanently provider-limited (ADR-0015 D15), not a bug.
+**Rewards** (Block C): the existing presentation-token endpoints are
+now wired into Flutter — issue/rotate a code from Customer Detail,
+resolve a code to redeem in the CAJERO checkout dialog. **Navigation**
+(Block D): removed 3 dead-end "Sistema" nav entries (Documentos/
+Sincronización/Notificaciones) that only ever rendered a generic
+"Coming Soon" placeholder with no product spec and no backend route
+behind any of them — hidden per this task's own default rather than
+left as a non-functional page.
+
+**TASK 16.25 ("Reporting & Business Intelligence Center") update —
+2026-09-25**: see the updated Reports row above — a real "Inteligencia"
+management-overview tab, 4 new real backend aggregations, real charts
+(no new dependency), a real PDF/print export, fast date-range presets,
+and a real payment-method breakdown on Financiero, all built by
+composing the existing report/dashboard infrastructure rather than a
+second protocol.
 
 ## Classification key
 
@@ -115,7 +132,7 @@ default rather than left as a non-functional page.
 | Memberships (plan → sale → payment → activation → validation → renew/cancel) | 1 | ✅ | ✅ | ✅ (renew/cancel/validate buttons confirmed wired in `pos_shell.dart`) | ✅ | ✅ | 🟢 GREEN | launch-enabled only if the business sells a real membership product — data decision, not a code gap |
 | AS Rewards+ loyalty ledger + reward entitlements/redemption + checkout benefit application | 1 | ✅ | ✅ | ✅ | ✅ | ✅ (TASK 13.1/13.2 concurrency-proven, TASK 14.0 live QA; **TASK 16.24** added 6 Flutter tests for the presentation-token flow) | 🟡 YELLOW (by business decision) | **not an implementation gap** — fully built and proven; launch default is `enabled: false` per this task's own instruction ("do not force launch dependency on Rewards") until the business confirms the 5+1/VIP program for real. **TASK 16.24 (Block C)** wired the existing presentation-token endpoints into Flutter: Customer Detail can issue/rotate a real code (shown as selectable text — no QR-image package is a dependency), and the CAJERO rewards dialog can resolve a code to redeem for any customer, not only the one already attached to the sale |
 | Events / Parties (Fiestas) / Scheduling | 1 (backend), 16.24 (Flutter workspace) | ✅ | ✅ | ✅ (calendar/list/quoter/settings screens; **TASK 16.24** made the calendar always-visible while quoting — opening the Cotizador no longer hides it) | ✅ (real, server-enforced `party.*` codes) | ✅ (27/27 integration tests + a live 20-step E2E proof; **TASK 16.24** 22/22 Flutter Fiestas tests) | 🟢 GREEN | **TASK 14.3 (Wave 1) built this for real** — real `party_rooms`/`party_packages`/`party_reservations` (+snacks/socks/payments/documents), database-enforced room-conflict prevention (GIST exclusion constraint), a deterministic quote engine, deposit/balance tracking reusing the existing real cash-movement system, on-demand contract/waiver HTML generation. **TASK 16.24 (Block A)** closed the last UX gap: the calendar/list/quoter/settings screens already existed but opening the Cotizador used to replace the calendar entirely — a new docked `_FiestasWorkspace` shows both side by side (stacked on narrow viewports), with the calendar's per-day "+" prefilling the docked quoter's date instead of opening a separate dialog |
-| Reports (Sales/Financial/Inventory/Customers/Employees/Parties/Access/Promotions) | 1 | ✅ (`apps/api/src/modules/reports/` — now 8 real server-side-aggregated report areas including a **TASK 14.5 (Wave 3)** Promotions usage report, real date-range+branch scoping, CSV export on Sales/Financial/**Inventory Kardex (Wave 3)**; financial report reconciles bit-for-bit against the real `CashService.summary()` fold logic) | ✅ | ✅ (`pos_reports_screen.dart`, a tabbed per-area screen) | ✅ (`report.read`) | ✅ (17 backend + 12 Flutter tests) | 🟢 GREEN | **TASK 14.4 (Wave 2) built this for real**, extended in **TASK 14.5 (Wave 3)** — the first real metrics UI in the current platform, in addition to (not a replacement for) the still-real Sales History / Cash Session Summary / Refunds list / Inventory Balances screens the launch already relies on. Deliberately does NOT reproduce the legacy's own 2 admitted-fake fields (`prom_estancia`=95, always-0 occupancy). A consolidated "today at a glance" dashboard screen is now real too — see the new Dashboard row below |
+| Reports (Inteligencia/Sales/Financial/Inventory/Customers/Employees/Parties/Access/Promotions) | 1 | ✅ (`apps/api/src/modules/reports/` — 8 real server-side-aggregated report areas, **TASK 16.25** adding 4 new aggregations on the existing endpoints: `salesByHour`, `topProducts`, `paymentMethodTotals` (real, distinct from cash-drawer `movementTotals` — a transfer/card payment never posts one), and `averageStayMinutes` (real entry→exit pairing, replacing the legacy's own hardcoded `prom_estancia=95`); real date-range+branch scoping, CSV export on Sales/Financial/Inventory Kardex; financial report reconciles bit-for-bit against the real `CashService.summary()` fold logic) | ✅ | ✅ (`pos_reports_screen.dart` — **TASK 16.25** adds a real "Inteligencia" tab (first/default) composing the existing gateway's own sales/access/customers/inventory calls: real KPIs, a real vs-ayer trend, a real hourly chart, a real top-products ranking, real out-of-stock alerts; "Meta del día" honestly shows "No configurada" — no configurable daily-goal setting exists, never fabricated. Also added: 2 new dependency-free chart widgets (`pos_report_charts.dart`), a real "Imprimir / PDF" export reusing the existing browser-print mechanism (`pos_report_pdf.dart`), fast date-range presets, and a real payment-method breakdown on Financiero) | ✅ (`report.read`) | ✅ (28 backend + 23 Flutter tests in `pos_reports_test.dart` alone — grew from the prior 24/14 baseline with TASK 16.25's own new aggregation/Inteligencia coverage) | 🟢 GREEN | **TASK 14.4 (Wave 2) built this for real**, extended in **TASK 14.5 (Wave 3)** and **TASK 16.25** — the first real metrics UI in the current platform, in addition to (not a replacement for) the still-real Sales History / Cash Session Summary / Refunds list / Inventory Balances screens the launch already relies on. Deliberately does NOT reproduce the legacy's own admitted-fake fields (`prom_estancia`=95, always-0 occupancy, and Fiestas' own hardcoded "Ingresos"/"Anticipos" — all real now). A consolidated "today at a glance" dashboard screen is now real too — see the new Dashboard row below |
 | Dashboard ("today at a glance") | 3 (deliberately partial) | ✅ (`apps/api/src/modules/dashboard/` — `DashboardService.summary()`, real today's sales/occupancy/parties/open cash sessions/outstanding party balances/employee attendance, computed via the same real Wave 1/2 services the report endpoints use) | n/a (no new tables — reads existing ones) | ✅ (`pos_dashboard_gateway.dart`, wired to a real `PosModule.dashboard` screen in `pos_shell.dart`) | ✅ | ✅ | 🟢 GREEN (for what it covers) | **TASK 14.5 (Wave 3) built this for real**, replacing the prior context-only placeholder. Deliberately NOT ported: the legacy's real %-vs-yesterday sales trend (`vsAyer`) and active-membership count — both real, working legacy metrics, consciously scoped out this wave; no birthday-alerts metric either (only the raw `birth_date` field exists) |
 | AI assistant | 1 | ✅ (`apps/api/src/modules/assistant/` — a real, deterministic keyword/intent matcher over live SQL data, zero LLM/external calls) | n/a | ✅ (`pos_assistant_gateway.dart`/`pos_assistant_screen.dart`) | n/a | ✅ | 🟢 GREEN | **TASK 14.5 (Wave 3) built this for real**, a faithful port of the legacy's own local keyword-matcher approach (not an LLM), matching the legacy's own approach rather than exceeding it — a genuine real-LLM assistant remains a future, non-parity upgrade |
 | People / HR (employee roster, shift scheduling, time clock, payroll) | 1 | ✅ (`apps/api/src/modules/people/` — employees/schedules/time-clock/payroll routes+services+repository) | ✅ (`employees`/`employee_schedules`/`time_clock_punches`/`payroll_periods`/`payroll_period_lines`) | ✅ (`pos_people_screen.dart`) | ✅ (`employee.*`/`schedule.*`/`attendance.*`/`payroll.*`) | ✅ (20 backend + 16 Flutter tests) | 🟢 GREEN | **TASK 14.4 (Wave 2) built this for real** — a genuine, new domain (no prior current-platform equivalent existed beyond login `users`). Payroll calculation is a faithful port of the legacy's real `calcularNominaEmpleado()` formula, verified against a hand-computed example; a closed payroll period can never be recalculated |
