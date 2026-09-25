@@ -8139,7 +8139,7 @@ void main() {
       await _navigateToFiestas(tester);
       await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Cotizador'));
+      await tester.tap(find.text('Calendario'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8214,7 +8214,7 @@ void main() {
         await _navigateToFiestas(tester);
         await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Cotizador'));
+        await tester.tap(find.text('Calendario'));
         await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8259,6 +8259,15 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.widget<FilledButton>(convertFinder).onPressed, isNotNull);
 
+        // TASK 16.24 (Block A3) — the Cotizador now renders docked
+        // alongside the always-visible calendar (narrower column than
+        // its old full-width tab), so this button can legitimately sit
+        // below the fold on a real page; the page itself is genuinely
+        // scrollable (matches every other module's own scroll wrapper),
+        // so scrolling it into view here mirrors what a real operator
+        // would do, not a workaround for a layout bug.
+        await tester.ensureVisible(convertFinder);
+        await tester.pumpAndSettle();
         await tester.tap(convertFinder);
         await tester.pumpAndSettle();
 
@@ -8282,7 +8291,7 @@ void main() {
       await _navigateToFiestas(tester);
       await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Cotizador'));
+      await tester.tap(find.text('Calendario'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8310,7 +8319,7 @@ void main() {
         await _navigateToFiestas(tester);
         await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Cotizador'));
+        await tester.tap(find.text('Calendario'));
         await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-date')));
@@ -8702,9 +8711,13 @@ void main() {
       expect(find.byKey(const Key('pos-fiestas-detail-close')), findsOneWidget);
     });
 
-    // TASK 16.22 (Phase 40) — starting a reservation from the date an
-    // operator is already looking at, never re-entering it.
-    testWidgets('Calendario: the per-day "+" opens a new-reservation form with that date pre-filled', (tester) async {
+    // TASK 16.24 (Block A3/A4) — starting a reservation from the date an
+    // operator is already looking at, never re-entering it — and now
+    // never hiding the calendar to do it: the "+" hands the date to the
+    // docked Cotizador panel instead of opening a dialog over the
+    // calendar (superseding TASK 16.22's own version of this test, which
+    // asserted the old dialog-based handoff).
+    testWidgets('Calendario: the per-day "+" hands the date to the docked Cotizador panel, never hiding the calendar behind a dialog', (tester) async {
       final today = DateTime.now();
       final todayIso =
           '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
@@ -8735,13 +8748,14 @@ void main() {
       await tester.tap(find.byKey(Key('pos-fiestas-cal-new-for-date-$todayIso')));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('pos-fiestas-reservation-save')), findsOneWidget);
-      // The date button already shows the pre-filled date — never
-      // requiring the operator to pick it again (the calendar's own day
-      // header behind this dialog also shows the same ISO date string,
-      // hence scoping this to the date button specifically).
+      // No dialog opened — the calendar entry underneath is still real
+      // and visible, proving nothing replaced/hid it.
+      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsOneWidget);
+      // The docked Cotizador panel's own date field now shows the picked
+      // date — never requiring the operator to re-enter it, and never
+      // requiring them to navigate away from the calendar to see it.
       expect(
-        find.descendant(of: find.byKey(const Key('pos-fiestas-reservation-date')), matching: find.text(todayIso)),
+        find.descendant(of: find.byKey(const Key('pos-fiestas-quote-date')), matching: find.text(todayIso)),
         findsOneWidget,
       );
     });
