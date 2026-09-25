@@ -1754,6 +1754,97 @@ Future<void> _submitSaleForPayment(
   }
 }
 
+/// TASK 16.24 (Block B1): the transfer checkout path — creates a real,
+/// backend-priced sale exactly like [_submitSaleForPayment] does for the
+/// card path ("create/reuse authoritative Sale"), then records a real
+/// `transfer` payment via [PosPaymentsGateway.createTransferPayment].
+/// Unlike the card path, there is no terminal and no poll loop — a
+/// transfer has no physical device to wait on, so this settles in one
+/// round trip exactly the way [_submitCashSaleForPayment] does, just
+/// without that endpoint's own tendered-amount/change concept (a
+/// transfer's "amount received" and "amount applied" are always the
+/// same figure — there is no physical change to hand back).
+Future<void> _submitTransferSaleForPayment(
+  BuildContext context, {
+  required SaleSession saleSession,
+  required PosSalesGateway salesGateway,
+  required PosPaymentsGateway paymentsGateway,
+  required String? branchId,
+  PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
+}) async {
+  if (saleSession.isEmpty) {
+    _showNotice(context, 'Agrega al menos un producto al ticket.');
+    return;
+  }
+  if (branchId == null) {
+    _showNotice(context, 'Esta sesión no tiene una sucursal asignada.');
+    return;
+  }
+  final resumedHeldCartId = saleSession.resumedHeldCartId;
+  try {
+    final sale = await salesGateway.createSale(
+      branchId: branchId,
+      items: [
+        for (final line in saleSession.lines)
+          PosSaleLineRequest(productId: line.productId, quantity: line.quantityForApi),
+      ],
+      couponCodes: saleSession.couponCodes,
+      manualDiscount: saleSession.manualDiscount,
+      customerId: saleSession.customerId,
+      rewardEntitlementId: saleSession.rewardEntitlementId,
+      note: saleSession.note,
+      cashRegisterId: saleSession.cashRegisterId,
+    );
+    if (!context.mounted) return;
+    final result = await paymentsGateway.createTransferPayment(
+      saleId: sale.id,
+      amount: sale.total,
+      currencyCode: sale.currencyCode ?? saleSession.currencyCode,
+    );
+    if (!context.mounted) return;
+    if (resumedHeldCartId != null && result.status == 'captured') {
+      try {
+        await heldSalesGateway.linkSale(id: resumedHeldCartId, saleId: sale.id);
+      } on Object {
+        // Intentionally swallowed — see `_submitSaleForPayment`'s own
+        // identical comment.
+      }
+    }
+    if (!context.mounted) return;
+    final approved = result.status == 'captured';
+    _showNotice(
+      context,
+      approved
+          ? 'Pago por transferencia registrado — venta ${sale.saleNumber}.'
+          : 'El pago por transferencia no se completó (${result.status}).',
+    );
+    if (approved) {
+      unawaited(PosReadControllerScope.of(context).invalidateBalances());
+      try {
+        unawaited(
+          showPosPostSaleSuccessFeedback(
+            context,
+            PosPostSaleFeedbackData(
+              saleNumber: sale.saleNumber,
+              amount: Money.parse(sale.total, sale.currencyCode ?? saleSession.currencyCode),
+              paymentMethodLabel: 'Transferencia',
+              customerDisplayName: saleSession.customerDisplayName,
+            ),
+          ),
+        );
+      } on Object {
+        // Defensive — see `_submitSaleForPayment`'s own identical comment.
+      }
+    }
+  } on ApiException catch (error) {
+    if (!context.mounted) return;
+    _showNotice(context, error.failure.message);
+  } on Object {
+    if (!context.mounted) return;
+    _showNotice(context, 'No fue posible registrar el pago por transferencia.');
+  }
+}
+
 /// TASK 12.5A: the cash checkout path — creates a real, backend-priced
 /// sale exactly like [_submitSaleForPayment] does for the card path
 /// ("create/reuse authoritative Sale"), then opens [_CashPaymentDialog]
@@ -6857,13 +6948,14 @@ class _ClienteAppliedRewardBanner extends StatelessWidget {
   }
 }
 
-/// The one payable action CLIENTE mode shows — card payment only. TASK
-/// 12.4A.1 wires it exactly like Cobrar: it creates a real, backend-priced
-/// sale, honestly, then stops — real integrated-terminal processing is
-/// still TASK 12.4B (see docs/AS_POS_SALE_ENGINE.md), which must start
-/// from provider/device discovery and contract design, not from this
-/// button. No approved payment is simulated and no provider transaction id
-/// is fabricated here.
+/// The one payable action CLIENTE mode shows — card payment only. Wired
+/// exactly like Cobrar's own Tarjeta path (TASK 14.5A): a real,
+/// backend-priced sale, real terminal discovery, a real
+/// `card_terminal` payment, and the same bounded poll loop — see
+/// `_submitSaleForPayment`, the identical function CAJERO's own button
+/// calls (`kiosk: true` here only tunes the post-sale feedback's tone).
+/// No approved payment is simulated and no provider transaction id is
+/// fabricated here.
 class _ClienteCardPaymentButton extends StatefulWidget {
   const _ClienteCardPaymentButton({
     required this.saleSession,
@@ -9281,16 +9373,15 @@ class _TicketTotalRow extends StatelessWidget {
 }
 
 /// Matches `.pay-grid`: Efectivo/Tarjeta/Transfer, Efectivo selected by
-/// default (V1's own initial state, `#po-ef.active`) — no payment method
-/// is actually selectable here.
-/// TASK 12.5A: a real Efectivo/Tarjeta choice (Efectivo still V1's own
-/// default-active option) — Cobrar now honors [selectedMethod] instead of
-/// always running the card path (see `_PosCobrarButtonState._handleTap`).
-/// Transfer has no backend `payment_method` counterpart at all (see
-/// `packages/database/src/schema/payments.ts`) and stays exactly as
-/// inert as every V1-faithful control this shell has not implemented yet
-/// (TASK 12.2C) — selecting it is a no-op notice, never a silent switch
-/// to some other method.
+/// default (V1's own initial state, `#po-ef.active`).
+/// TASK 12.5A: a real Efectivo/Tarjeta choice — Cobrar honors
+/// [selectedMethod] instead of always running the card path (see
+/// `_PosCobrarButtonState._handleTap`).
+/// TASK 16.24 (Block B1): Transfer is now a real, selectable third
+/// method — `payments.ts`'s own `payments_method_ck` gained a real
+/// `transfer` value, additive per that table's own doc comment. Selecting
+/// it behaves exactly like Efectivo/Tarjeta: it becomes `selectedMethod`,
+/// never a no-op notice.
 class _PosPayGrid extends StatelessWidget {
   const _PosPayGrid({required this.selectedMethod, required this.onSelect});
   final String selectedMethod;
@@ -9321,9 +9412,11 @@ class _PosPayGrid extends StatelessWidget {
       const SizedBox(width: 4),
       Expanded(
         child: _PayOption(
+          key: const Key('pos-pay-transfer'),
           icon: Icons.swap_horiz_outlined,
           label: 'Transfer',
-          onTap: () => _showReadOnlyNotice(context),
+          active: selectedMethod == 'transfer',
+          onTap: () => onSelect('transfer'),
         ),
       ),
     ],
@@ -9536,6 +9629,17 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
           if (mounted) setState(() => _busy = false);
         },
         initialTendered: widget.cashTenderedAmount,
+      );
+    } else if (widget.selectedMethod == 'transfer') {
+      // TASK 16.24 (Block B1) — no terminal, no poll loop; see
+      // `_submitTransferSaleForPayment`'s own doc comment.
+      await _submitTransferSaleForPayment(
+        context,
+        saleSession: widget.saleSession,
+        salesGateway: widget.salesGateway,
+        paymentsGateway: widget.paymentsGateway,
+        branchId: widget.branchId,
+        heldSalesGateway: widget.heldSalesGateway,
       );
     } else {
       await _submitSaleForPayment(
@@ -22463,6 +22567,12 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
   bool _rewardsLoaded = false;
   List<PosRewardEntitlement> _rewards = const [];
   String? _rewardsError;
+  // TASK 16.24 (Block C2) — one presentation token per entitlement id,
+  // shown as selectable text exactly like `_qrToken` above (no QR-image
+  // package is a pre-existing dependency — see that field's own doc
+  // comment at its render site).
+  Map<String, PosRewardPresentationToken> _rewardTokensByEntitlementId = const {};
+  String? _rewardTokenBusyId;
 
   // Whether the caller's own list should reload (e.g. after an edit
   // changes this customer's `display_name`/`status`).
@@ -22635,9 +22745,30 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
     try {
       final rewards = await widget.rewardsGateway.entitlementsForCustomer(widget.customerId);
       if (!mounted) return;
+      // TASK 16.24 (Block C2) — pre-load any already-issued presentation
+      // token for each available entitlement, mirroring `_loadCustomer`'s
+      // own `activeQrToken` best-effort fetch above: a token that already
+      // exists shows immediately, never forcing a redundant "Generar
+      // código" tap. Best-effort per entitlement — one failed lookup
+      // never blocks the rest of the list from loading.
+      final availableIds = [for (final reward in rewards) if (reward.isAvailable) reward.id];
+      final tokenEntries = await Future.wait(
+        availableIds.map((id) async {
+          try {
+            return MapEntry(id, await widget.rewardsGateway.activePresentationToken(id));
+          } on Object {
+            return MapEntry(id, null);
+          }
+        }),
+      );
+      if (!mounted) return;
       setState(() {
         _rewards = rewards;
         _rewardsLoaded = true;
+        _rewardTokensByEntitlementId = {
+          for (final entry in tokenEntries)
+            if (entry.value != null) entry.key: entry.value!,
+        };
       });
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -22683,6 +22814,29 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
       if (!mounted) return;
       setState(() => _qrBusy = false);
       _showNotice(context, 'No fue posible generar el código QR.');
+    }
+  }
+
+  // TASK 16.24 (Block C2) — issues (or rotates) a real presentation
+  // token for one available entitlement, mirroring `_issueOrRotateQr`
+  // exactly.
+  Future<void> _issueRewardToken(String entitlementId) async {
+    setState(() => _rewardTokenBusyId = entitlementId);
+    try {
+      final token = await widget.rewardsGateway.issuePresentationToken(entitlementId);
+      if (!mounted) return;
+      setState(() {
+        _rewardTokensByEntitlementId = {..._rewardTokensByEntitlementId, entitlementId: token};
+        _rewardTokenBusyId = null;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _rewardTokenBusyId = null);
+      _showNotice(context, error.failure.message);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _rewardTokenBusyId = null);
+      _showNotice(context, 'No fue posible generar el código de la recompensa.');
     }
   }
 
@@ -23165,42 +23319,91 @@ class _CustomerDetailDialogState extends State<_CustomerDetailDialog> {
     }
     final available = _rewards.where((entitlement) => entitlement.isAvailable).toList(growable: false);
     final history = _rewards.where((entitlement) => !entitlement.isAvailable).toList(growable: false);
-    Widget rewardRow(PosRewardEntitlement entitlement, {bool showRevoke = false}) => Padding(
+    Widget rewardRow(PosRewardEntitlement entitlement, {bool showRevoke = false}) {
+      final token = _rewardTokensByEntitlementId[entitlement.id];
+      return Padding(
       key: Key('pos-customer-reward-${entitlement.id}'),
       padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _rewardTypeLabel(entitlement.rewardType),
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                    ),
+                    Text(
+                      entitlement.expiresAt == null
+                          ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
+                          : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              _RewardStatusChip(status: entitlement.effectiveStatus),
+            ],
+          ),
+          // TASK 16.24 (Block C2) — a real presentation code the customer
+          // can show at checkout, so a different cashier session can
+          // resolve+redeem it without searching for this customer by
+          // name/phone (see `_TicketRewardsDialog`'s own "Validar" code
+          // entry). Its own `Wrap` row (rather than cramming into the info
+          // row above) so a narrow Customer Detail panel wraps the action
+          // buttons onto a new line instead of overflowing.
+          if (showRevoke && (_canReadReward || _canRevokeReward)) ...[
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
               children: [
-                Text(
-                  _rewardTypeLabel(entitlement.rewardType),
-                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
-                ),
-                Text(
-                  entitlement.expiresAt == null
-                      ? 'Emitida ${_formatShortDate(entitlement.issuedAt)}'
-                      : 'Vence ${_formatShortDate(entitlement.expiresAt!)}',
-                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                ),
+                if (_canReadReward)
+                  _rewardTokenBusyId == entitlement.id
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : OutlinedButton(
+                          key: Key('pos-customer-reward-token-${entitlement.id}'),
+                          onPressed: () => unawaited(_issueRewardToken(entitlement.id)),
+                          style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                          child: Text(token == null ? 'Generar código' : 'Rotar código'),
+                        ),
+                if (_canRevokeReward)
+                  OutlinedButton(
+                    key: Key('pos-customer-reward-revoke-${entitlement.id}'),
+                    onPressed: () => unawaited(_openRevokeReward(entitlement)),
+                    style: OutlinedButton.styleFrom(foregroundColor: palette.error, side: BorderSide(color: palette.border)),
+                    child: const Text('Revocar'),
+                  ),
               ],
             ),
-          ),
-          _RewardStatusChip(status: entitlement.effectiveStatus),
-          if (showRevoke && _canRevokeReward) ...[
-            const SizedBox(width: 8),
-            OutlinedButton(
-              key: Key('pos-customer-reward-revoke-${entitlement.id}'),
-              onPressed: () => unawaited(_openRevokeReward(entitlement)),
-              style: OutlinedButton.styleFrom(foregroundColor: palette.error, side: BorderSide(color: palette.border)),
-              child: const Text('Revocar'),
+          ],
+          if (token != null) ...[
+            const SizedBox(height: 4),
+            // No QR-image-rendering package is a pre-existing dependency
+            // (matches `_qrToken`'s own identical precedent above) — the
+            // opaque token is shown as selectable text instead of a
+            // cosmetic QR image.
+            SelectableText(
+              token.token,
+              key: Key('pos-customer-reward-token-value-${entitlement.id}'),
+              style: TextStyle(color: palette.text, fontFamily: 'monospace', fontSize: 11),
+            ),
+            Text(
+              entitlement.expiresAt == null
+                  ? 'Código de la recompensa (texto seleccionable).'
+                  : 'Código de la recompensa (texto seleccionable). Vence ${_formatShortDate(entitlement.expiresAt!)}.',
+              style: TextStyle(color: palette.textMuted, fontSize: 10),
             ),
           ],
         ],
       ),
-    );
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -23661,6 +23864,60 @@ class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
   String? _error;
   bool _anyRedeemed = false;
 
+  // TASK 16.24 (Block C3) — resolving a real Rewards presentation-token
+  // code (Part L/X of the backend), never a second redemption protocol:
+  // `resolvePresentationToken` returns the exact same `PosRewardEntitlement`
+  // shape this dialog already lists and redeems through `_redeem` below —
+  // a resolved entitlement just joins `_entitlements` (or replaces its
+  // own already-listed row) so every existing available/permission/
+  // redeem rule applies to it unchanged, whether or not its customer was
+  // the one already attached to this sale.
+  final _tokenController = TextEditingController();
+  bool _resolving = false;
+  String? _resolveError;
+
+  @override
+  void dispose() {
+    _tokenController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _resolveCode() async {
+    final code = _tokenController.text.trim();
+    if (code.isEmpty) {
+      setState(() => _resolveError = 'Escribe o pega un código.');
+      return;
+    }
+    setState(() {
+      _resolving = true;
+      _resolveError = null;
+    });
+    try {
+      final resolved = await widget.rewardsGateway.resolvePresentationToken(code);
+      if (!mounted) return;
+      setState(() {
+        _resolving = false;
+        final alreadyListed = _entitlements.any((item) => item.id == resolved.id);
+        _entitlements = alreadyListed
+            ? [for (final item in _entitlements) if (item.id == resolved.id) resolved else item]
+            : [..._entitlements, resolved];
+        _tokenController.clear();
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _resolving = false;
+        _resolveError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _resolving = false;
+        _resolveError = 'No fue posible validar el código.';
+      });
+    }
+  }
+
   Future<void> _redeem(PosRewardEntitlement entitlement) async {
     setState(() {
       _redeemBusyId = entitlement.id;
@@ -23751,6 +24008,47 @@ class _TicketRewardsDialogState extends State<_TicketRewardsDialog> {
               if (_error != null) ...[
                 Text(_error!, style: TextStyle(color: palette.error, fontSize: 12)),
                 const SizedBox(height: 6),
+              ],
+              // TASK 16.24 (Block C3) — a real, honest way to pull up a
+              // reward by its presentation-token code (typed, pasted, or
+              // entered via a physical barcode-scanner peripheral acting
+              // as a keyboard) instead of only browsing the already-
+              // attached customer's own list — no camera-scanning UI is
+              // built here (matches `_CustomerDetailDialog`'s own QR
+              // section: no QR-image-rendering package is a pre-existing
+              // dependency, so the code stays a real, resolvable text
+              // value, never a fabricated scan surface).
+              if (widget.canRedeem) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const Key('pos-ticket-reward-token-input'),
+                        controller: _tokenController,
+                        decoration: const InputDecoration(isDense: true, labelText: 'Código de recompensa'),
+                        onSubmitted: (_) => unawaited(_resolveCode()),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _resolving
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : OutlinedButton(
+                            key: const Key('pos-ticket-reward-token-resolve'),
+                            onPressed: () => unawaited(_resolveCode()),
+                            style: OutlinedButton.styleFrom(foregroundColor: palette.action, side: BorderSide(color: palette.border)),
+                            child: const Text('Validar'),
+                          ),
+                  ],
+                ),
+                if (_resolveError != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    _resolveError!,
+                    key: const Key('pos-ticket-reward-token-error'),
+                    style: TextStyle(color: palette.error, fontSize: 12),
+                  ),
+                ],
+                const SizedBox(height: 10),
               ],
               Flexible(
                 child: SingleChildScrollView(

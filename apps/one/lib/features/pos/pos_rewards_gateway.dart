@@ -8,13 +8,15 @@ import '../../core/networking/api_client.dart';
 /// shape, same error-mapping convention, same model-class style) and
 /// `pos_memberships_gateway.dart` (issue/revoke pattern).
 ///
-/// The REWARD presentation-token/QR concept (Part L/X of the backend) is
-/// deliberately NOT exposed here — see the doc comment on
-/// `_CustomerDetailDialog`'s Recompensas section in `pos_shell.dart` for
-/// why that pass is deferred. Nothing here ever conflates a reward
-/// entitlement with `pos_customers_gateway.dart`'s customer-identity QR
-/// token; the two stay visually and conceptually distinct wherever both
-/// could appear.
+/// TASK 16.24 (Block C) — the REWARD presentation-token concept (Part
+/// L/X of the backend) is now real here too, mirroring
+/// `pos_customers_gateway.dart`'s own `PosCustomerQrToken`/
+/// `issueQrToken`/`activeQrToken`/`resolveQrToken` shape exactly. Nothing
+/// here ever conflates a reward entitlement's token with the customer-
+/// identity QR token; the two stay visually and conceptually distinct
+/// wherever both appear (`_CustomerDetailDialog`'s Recompensas section
+/// renders its own token separately from the customer QR section above
+/// it).
 
 /// A `reward_entitlements` row (`RewardEntitlementRow`/`entitlementHttp`)
 /// — the durable, historical fact. [status] is the RAW persisted state;
@@ -92,6 +94,38 @@ class PosRewardEntitlement {
   bool get isAvailable => effectiveStatus == 'available';
 }
 
+/// `reward_entitlement_tokens` row (`tokenHttp`) — [token] is an OPAQUE
+/// identifier, never derived from or containing the customer's name/
+/// email/phone (mirrors `PosCustomerQrToken`'s own security shape). This
+/// app never encodes it into a QR image itself (no QR-rendering package
+/// is a pre-existing dependency — see `pos_customers_gateway.dart`'s own
+/// identical note); it is shown as selectable/copyable text instead.
+class PosRewardPresentationToken {
+  const PosRewardPresentationToken({
+    required this.id,
+    required this.rewardEntitlementId,
+    required this.token,
+    required this.status,
+    required this.createdAt,
+  });
+
+  factory PosRewardPresentationToken.fromJson(Map<String, Object?> json) => PosRewardPresentationToken(
+    id: json['id']! as String,
+    rewardEntitlementId: json['reward_entitlement_id']! as String,
+    token: json['token']! as String,
+    status: json['status']! as String,
+    createdAt: DateTime.parse(json['created_at']! as String),
+  );
+
+  final String id;
+  final String rewardEntitlementId;
+  final String token;
+
+  /// `active` | `revoked` (`reward_entitlement_tokens_status_ck`).
+  final String status;
+  final DateTime createdAt;
+}
+
 abstract interface class PosRewardsGateway {
   /// `GET /api/v1/customers/{customerId}/reward-entitlements`
   /// (`reward.read`) — a plain array, not paginated, matching the backend
@@ -125,6 +159,24 @@ abstract interface class PosRewardsGateway {
   /// [version] is the entitlement's own already-fetched `version`, sent
   /// as the strong `If-Match` the backend requires.
   Future<PosRewardEntitlement> revoke(String id, {required String reason, required int version});
+
+  /// `POST /api/v1/reward-entitlements/{id}/presentation-token`
+  /// (`reward.read`) — issues/rotates a real presentation token for this
+  /// entitlement. Only `reward.read` is required (not `reward.redeem`):
+  /// generating a code to show is not itself a redemption.
+  Future<PosRewardPresentationToken> issuePresentationToken(String entitlementId);
+
+  /// `GET /api/v1/reward-entitlements/{id}/presentation-token/active`
+  /// (`reward.read`) — `null` when no active token has ever been issued
+  /// for this entitlement (never fabricated).
+  Future<PosRewardPresentationToken?> activePresentationToken(String entitlementId);
+
+  /// `POST /api/v1/reward-entitlements/resolve-token` (`reward.read`) —
+  /// resolves an opaque token to its real, full entitlement (Part L/X);
+  /// never itself a redemption — a caller still calls [redeem] separately
+  /// once the entitlement's own `effectiveStatus` is confirmed
+  /// `available`.
+  Future<PosRewardEntitlement> resolvePresentationToken(String token);
 }
 
 class ApiPosRewardsGateway implements PosRewardsGateway {
@@ -187,6 +239,36 @@ class ApiPosRewardsGateway implements PosRewardsGateway {
     return _decode(envelope);
   }
 
+  @override
+  Future<PosRewardPresentationToken> issuePresentationToken(String entitlementId) async {
+    final envelope = await _client.postJson('/api/v1/reward-entitlements/$entitlementId/presentation-token');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing reward presentation token data.');
+    }
+    return PosRewardPresentationToken.fromJson(data);
+  }
+
+  @override
+  Future<PosRewardPresentationToken?> activePresentationToken(String entitlementId) async {
+    final envelope = await _client.getJson('/api/v1/reward-entitlements/$entitlementId/presentation-token/active');
+    final data = envelope['data'];
+    if (data == null) return null;
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing reward presentation token data.');
+    }
+    return PosRewardPresentationToken.fromJson(data);
+  }
+
+  @override
+  Future<PosRewardEntitlement> resolvePresentationToken(String token) async {
+    final envelope = await _client.postJson(
+      '/api/v1/reward-entitlements/resolve-token',
+      body: {'token': token},
+    );
+    return _decode(envelope);
+  }
+
   static String _idempotencyKey(String kind) => 'one-$kind-${DateTime.now().toUtc().microsecondsSinceEpoch}';
 
   PosRewardEntitlement _decode(Map<String, Object?> envelope) {
@@ -222,5 +304,17 @@ class EmptyPosRewardsGateway implements PosRewardsGateway {
 
   @override
   Future<PosRewardEntitlement> revoke(String id, {required String reason, required int version}) =>
+      Future.error(StateError('No rewards gateway is configured.'));
+
+  @override
+  Future<PosRewardPresentationToken> issuePresentationToken(String entitlementId) =>
+      Future.error(StateError('No rewards gateway is configured.'));
+
+  @override
+  Future<PosRewardPresentationToken?> activePresentationToken(String entitlementId) =>
+      Future.error(StateError('No rewards gateway is configured.'));
+
+  @override
+  Future<PosRewardEntitlement> resolvePresentationToken(String token) =>
       Future.error(StateError('No rewards gateway is configured.'));
 }

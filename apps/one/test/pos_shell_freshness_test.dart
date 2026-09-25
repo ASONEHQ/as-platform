@@ -713,6 +713,10 @@ class _FixtureCashPaymentsGateway implements PosPaymentsGateway {
       saleStatus: 'completed',
     );
   }
+
+  @override
+  Future<PosPaymentStatus> createTransferPayment({required String saleId, required String amount, String? currencyCode}) =>
+      Future.error(StateError('not used'));
 }
 
 /// `_PosCobrarButton`'s own cash path checks for a real open cash-register

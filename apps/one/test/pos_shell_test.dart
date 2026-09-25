@@ -805,6 +805,87 @@ void main() {
         expect(tester.takeException(), isNull);
       });
 
+      // TASK 16.24 (Block B1) — Transfer is now a real, third selectable
+      // method: no terminal, no poll loop, settles in one round trip via
+      // `PosPaymentsGateway.createTransferPayment`.
+      testWidgets('Cobrar with Transfer selected records a real transfer payment and shows success feedback', (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-transfer-1',
+            saleNumber: 'SALE-transfer1',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          transferResult: const PosPaymentStatus(
+            id: 'transfer-payment-1',
+            status: 'captured',
+            attempts: [PosPaymentAttempt(id: 'transfer-attempt-1', status: 'approved')],
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-pay-transfer')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(paymentsGateway.transferCalls, hasLength(1));
+        expect(paymentsGateway.transferCalls.single.saleId, 'sale-transfer-1');
+        expect(paymentsGateway.transferCalls.single.amount, '58.0000');
+        expect(
+          find.text('Pago por transferencia registrado — venta SALE-transfer1.'),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a transfer payment failure surfaces the real backend error, never a fake success', (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-transfer-2',
+            saleNumber: 'SALE-transfer2',
+            status: 'pending_payment',
+            total: '58.0000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          transferFailure: const ApiException(
+            AppFailure(AppErrorKind.validation, 'El monto no coincide con el saldo pendiente.'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          salesGateway: salesGateway,
+          paymentsGateway: paymentsGateway,
+        );
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('pos-pay-transfer')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        expect(paymentsGateway.transferCalls, hasLength(1));
+        expect(find.text('El monto no coincide con el saldo pendiente.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-post-sale-feedback')), findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
       testWidgets('the CLIENTE card-payment button submits the same shared '
           'SaleSession and reports the same honest result', (tester) async {
         final gateway = _FakeSalesGateway(
@@ -7548,6 +7629,207 @@ void main() {
     );
 
     testWidgets(
+      'Customer Detail: issuing a presentation token for an available '
+      'entitlement shows the real, selectable token text (TASK 16.24 '
+      'Block C2)',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          issueTokenResult: PosRewardPresentationToken(
+            id: 'reward-token-1',
+            rewardEntitlementId: 'reward-1',
+            token: 'RWD-OPAQUE-CODE',
+            status: 'active',
+            createdAt: DateTime.utc(2026, 9, 5),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-customer-reward-token-value-reward-1')), findsNothing);
+        await tester.tap(find.byKey(const Key('pos-customer-reward-token-reward-1')));
+        await tester.pumpAndSettle();
+
+        expect(rewardsGateway.issueTokenCalls, ['reward-1']);
+        expect(find.text('RWD-OPAQUE-CODE'), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-reward-token-value-reward-1')), findsOneWidget);
+        // The button label flips to "Rotar código" now that a token exists.
+        expect(find.text('Rotar código'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: an already-issued presentation token loads '
+      "automatically on open, mirroring the QR section's own "
+      'active-token preload (TASK 16.24 Block C2)',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          activeTokenResult: PosRewardPresentationToken(
+            id: 'reward-token-1',
+            rewardEntitlementId: 'reward-1',
+            token: 'ALREADY-ISSUED-CODE',
+            status: 'active',
+            createdAt: DateTime.utc(2026, 9, 4),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('ALREADY-ISSUED-CODE'), findsOneWidget);
+        expect(find.text('Rotar código'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Customer Detail: a failed token issuance surfaces the honest '
+      'backend error, never a fabricated code',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          issueTokenFailure: const ApiException(
+            AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await navigateToCustomersAdmin(tester);
+        await tester.tap(find.text('Ana Pérez'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-customer-reward-token-reward-1')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('El servicio no está disponible.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-customer-reward-token-value-reward-1')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: resolving a presentation-token code in the rewards dialog '
+      "pulls in a different customer's entitlement and makes it "
+      'redeemable (TASK 16.24 Block C3)',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          resolveTokenResult: _fixtureRewardEntitlement(
+            id: 'reward-2',
+            customerId: 'customer-9',
+            status: 'available',
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-reward-reward-2')), findsNothing);
+        await tester.enterText(find.byKey(const Key('pos-ticket-reward-token-input')), 'RWD-OPAQUE-CODE');
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-token-resolve')));
+        await tester.pumpAndSettle();
+
+        expect(rewardsGateway.resolveTokenCalls, ['RWD-OPAQUE-CODE']);
+        expect(find.byKey(const Key('pos-ticket-reward-reward-2')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-2')), findsOneWidget);
+
+        // The resolved reward redeems through the exact same `_redeem`
+        // path as any other row — no second redemption protocol.
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-redeem-reward-2')));
+        await tester.pumpAndSettle();
+        expect(rewardsGateway.redeemCalls, ['reward-2']);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: an invalid/unknown presentation-token code surfaces the '
+      "backend's own honest error and adds nothing to the list",
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          resolveTokenFailure: ApiException(AppFailure.fromCode('reward_not_found')),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-ticket-reward-token-input')), 'BOGUS-CODE');
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-token-resolve')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-reward-token-error')), findsOneWidget);
+        // Only the original, already-attached entitlement is listed.
+        expect(find.byKey(const Key('pos-ticket-reward-reward-1')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'CAJERO: resolving a code for an already-redeemed reward shows it as '
+      'non-redeemable, never a fake "Canjear" action',
+      (tester) async {
+        final rewardsGateway = _FakeRewardsGateway(
+          entitlementsForCustomerResult: [_fixtureRewardEntitlement(id: 'reward-1', status: 'available')],
+          resolveTokenResult: _fixtureRewardEntitlement(
+            id: 'reward-3',
+            status: 'redeemed',
+            effectiveStatus: 'redeemed',
+            redeemedAt: DateTime.utc(2026, 9, 5),
+          ),
+        );
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithRewardPermissions,
+          customersGateway: attachableCustomersGateway(),
+          rewardsGateway: rewardsGateway,
+        );
+        await attachCustomerInCajero(tester);
+        await tester.tap(find.byKey(const Key('pos-ticket-rewards-open')));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-ticket-reward-token-input')), 'ALREADY-REDEEMED');
+        await tester.tap(find.byKey(const Key('pos-ticket-reward-token-resolve')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-ticket-reward-reward-3')), findsOneWidget);
+        expect(find.byKey(const Key('pos-ticket-reward-redeem-reward-3')), findsNothing);
+      },
+    );
+
+    testWidgets(
       'Customer Detail: "Agregar recompensa" is visible only with '
       'reward.issue',
       (tester) async {
@@ -10922,6 +11204,8 @@ class _FakePaymentsGateway implements PosPaymentsGateway {
     this.pollResults = const [],
     this.cashResult,
     this.cashFailure,
+    this.transferResult,
+    this.transferFailure,
   });
 
   final List<PosPaymentTerminal> terminals;
@@ -10934,6 +11218,11 @@ class _FakePaymentsGateway implements PosPaymentsGateway {
   final PosCashPaymentResult? cashResult;
   final ApiException? cashFailure;
   final List<({String saleId, String tenderedAmount})> cashCalls = [];
+
+  // TASK 16.24 (Block B1).
+  final PosPaymentStatus? transferResult;
+  final ApiException? transferFailure;
+  final List<({String saleId, String amount})> transferCalls = [];
 
   @override
   Future<List<PosPaymentTerminal>> terminalsForBranch(String branchId) async =>
@@ -10986,6 +11275,22 @@ class _FakePaymentsGateway implements PosPaymentsGateway {
           saleId: 'sale-id',
           saleNumber: 'SALE-fixture',
           saleStatus: 'completed',
+        );
+  }
+
+  @override
+  Future<PosPaymentStatus> createTransferPayment({
+    required String saleId,
+    required String amount,
+    String? currencyCode,
+  }) async {
+    transferCalls.add((saleId: saleId, amount: amount));
+    if (transferFailure != null) throw transferFailure!;
+    return transferResult ??
+        const PosPaymentStatus(
+          id: 'transfer-payment-id',
+          status: 'captured',
+          attempts: [PosPaymentAttempt(id: 'transfer-attempt-id', status: 'approved')],
         );
   }
 }
@@ -12970,6 +13275,11 @@ class _FakeRewardsGateway implements PosRewardsGateway {
     this.issueManualFailure,
     this.revokeResult,
     this.revokeFailure,
+    this.issueTokenResult,
+    this.issueTokenFailure,
+    this.activeTokenResult,
+    this.resolveTokenResult,
+    this.resolveTokenFailure,
   });
 
   final List<PosRewardEntitlement>? entitlementsForCustomerResult;
@@ -12990,6 +13300,15 @@ class _FakeRewardsGateway implements PosRewardsGateway {
   final PosRewardEntitlement? revokeResult;
   final ApiException? revokeFailure;
   final List<Map<String, Object?>> revokeCalls = [];
+
+  // TASK 16.24 (Block C).
+  final PosRewardPresentationToken? issueTokenResult;
+  final ApiException? issueTokenFailure;
+  final List<String> issueTokenCalls = [];
+  final PosRewardPresentationToken? activeTokenResult;
+  final PosRewardEntitlement? resolveTokenResult;
+  final ApiException? resolveTokenFailure;
+  final List<String> resolveTokenCalls = [];
 
   @override
   Future<List<PosRewardEntitlement>> entitlementsForCustomer(String customerId) async {
@@ -13041,6 +13360,30 @@ class _FakeRewardsGateway implements PosRewardsGateway {
     if (revokeFailure != null) throw revokeFailure!;
     return revokeResult ??
         _fixtureRewardEntitlement(id: id, status: 'revoked', effectiveStatus: 'revoked', revokedAt: DateTime.utc(2026, 9, 5));
+  }
+
+  @override
+  Future<PosRewardPresentationToken> issuePresentationToken(String entitlementId) async {
+    issueTokenCalls.add(entitlementId);
+    if (issueTokenFailure != null) throw issueTokenFailure!;
+    return issueTokenResult ??
+        PosRewardPresentationToken(
+          id: 'reward-token-1',
+          rewardEntitlementId: entitlementId,
+          token: 'RWD-TOKEN-1',
+          status: 'active',
+          createdAt: DateTime.utc(2026, 9, 5),
+        );
+  }
+
+  @override
+  Future<PosRewardPresentationToken?> activePresentationToken(String entitlementId) async => activeTokenResult;
+
+  @override
+  Future<PosRewardEntitlement> resolvePresentationToken(String token) async {
+    resolveTokenCalls.add(token);
+    if (resolveTokenFailure != null) throw resolveTokenFailure!;
+    return resolveTokenResult ?? _fixtureRewardEntitlement(id: 'reward-resolved-1');
   }
 }
 

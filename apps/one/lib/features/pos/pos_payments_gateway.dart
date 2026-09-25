@@ -132,6 +132,25 @@ abstract interface class PosPaymentsGateway {
     required String saleId,
     required String tenderedAmount,
   });
+
+  /// TASK 16.24 (Block B1) — a real bank-transfer payment. Reuses the
+  /// exact same generic `POST /sales/{sale_id}/payments` +
+  /// `POST /payment-attempts/{id}/transitions` routes `card_manual`/
+  /// `other` were always designed to use (see `payments.ts`'s own
+  /// `payments_method_ck` doc comment) — no new backend mechanism. There
+  /// is no terminal and no provider round-trip for a transfer, so the
+  /// immediate `'approved'` transition below is this app's own durable
+  /// record of the cashier's real-world attestation ("verified the
+  /// transfer arrived") — the same role a cash payment's dedicated
+  /// endpoint gives the cashier's physical cash count, just expressed
+  /// through the generic attempt-transition route instead of a
+  /// cash-specific one. [amount] is always the backend-authoritative
+  /// sale total, never a value Flutter computed itself.
+  Future<PosPaymentStatus> createTransferPayment({
+    required String saleId,
+    required String amount,
+    String? currencyCode,
+  });
 }
 
 class ApiPosPaymentsGateway implements PosPaymentsGateway {
@@ -185,6 +204,39 @@ class ApiPosPaymentsGateway implements PosPaymentsGateway {
   }
 
   @override
+  Future<PosPaymentStatus> createTransferPayment({
+    required String saleId,
+    required String amount,
+    String? currencyCode,
+  }) async {
+    final createEnvelope = await _client.postJson(
+      '/api/v1/sales/$saleId/payments',
+      idempotencyKey: createIdempotencyKey(),
+      body: {
+        'payment_method': 'transfer',
+        'amount': amount,
+        'currency_code': ?currencyCode,
+      },
+    );
+    final created = _decodePayment(createEnvelope);
+    final attemptId = created.latestAttempt?.id;
+    if (attemptId == null) {
+      throw const FormatException('Missing payment attempt id.');
+    }
+    // The transitions route's own response is only the attempt's shape —
+    // refetch the authoritative payment afterward (now `captured`, per
+    // the backend's own "reaching approved immediately captures the
+    // parent payment" rule), exactly like the card-terminal poll loop's
+    // own final read already does.
+    await _client.postJson(
+      '/api/v1/payment-attempts/$attemptId/transitions',
+      idempotencyKey: createIdempotencyKey(),
+      body: {'status': 'approved'},
+    );
+    return paymentStatus(created.id);
+  }
+
+  @override
   Future<PosCashPaymentResult> createCashPayment({
     required String saleId,
     required String tenderedAmount,
@@ -232,5 +284,12 @@ class EmptyPosPaymentsGateway implements PosPaymentsGateway {
   Future<PosCashPaymentResult> createCashPayment({
     required String saleId,
     required String tenderedAmount,
+  }) => Future.error(StateError('No payments gateway is configured.'));
+
+  @override
+  Future<PosPaymentStatus> createTransferPayment({
+    required String saleId,
+    required String amount,
+    String? currencyCode,
   }) => Future.error(StateError('No payments gateway is configured.'));
 }
