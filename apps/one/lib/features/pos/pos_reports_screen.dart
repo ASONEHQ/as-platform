@@ -23,11 +23,20 @@ import '../../app/app.dart';
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'money.dart';
+import 'pos_report_charts.dart';
+import 'pos_report_pdf.dart';
 import 'pos_reports_csv_download.dart';
 import 'pos_reports_gateway.dart';
 import 'pos_tokens.dart';
+import 'receipt_print.dart';
 
 enum _ReportArea {
+  // TASK 16.25 — the management-overview area, first/default per the
+  // owner's own "Centro de Reportes → Inteligencia" reference. Composes
+  // the SAME `PosReportsGateway` calls the other tabs already use
+  // (sales/access/customers/inventory) rather than a bespoke endpoint —
+  // see `_IntelligenceReportPanel`'s own doc comment.
+  intelligence('Inteligencia', Icons.insights_outlined),
   sales('Ventas', Icons.point_of_sale_outlined),
   financial('Financiero', Icons.account_balance_wallet_outlined),
   inventory('Inventario', Icons.inventory_2_outlined),
@@ -65,7 +74,7 @@ class PosReportsScreen extends StatefulWidget {
 }
 
 class _PosReportsScreenState extends State<PosReportsScreen> {
-  _ReportArea _area = _ReportArea.sales;
+  _ReportArea _area = _ReportArea.intelligence;
   late DateTime _dateFrom;
   late DateTime _dateTo;
   // TASK 16.23B (F-05) — the resolved BUSINESS "today", kept separate from
@@ -190,6 +199,35 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
     });
   }
 
+  // TASK 16.25 (Phase 4) — fast, real date-range presets, all computed
+  // from the resolved BUSINESS today (never device-local `DateTime.now()`
+  // — see `_businessToday`'s own doc comment), matching `_pickRange`'s
+  // own day-precision `DateTime(y,m,d)` construction exactly.
+  void _applyPreset(_ReportsDatePreset preset) {
+    final today = _businessToday;
+    final (from, to) = switch (preset) {
+      _ReportsDatePreset.today => (today, today),
+      _ReportsDatePreset.yesterday => (
+        today.subtract(const Duration(days: 1)),
+        today.subtract(const Duration(days: 1)),
+      ),
+      _ReportsDatePreset.thisWeek => (today.subtract(Duration(days: today.weekday - 1)), today),
+      _ReportsDatePreset.lastWeek => (
+        today.subtract(Duration(days: today.weekday - 1 + 7)),
+        today.subtract(Duration(days: today.weekday)),
+      ),
+      _ReportsDatePreset.thisMonth => (DateTime(today.year, today.month), today),
+      _ReportsDatePreset.lastMonth => (
+        DateTime(today.year, today.month - 1),
+        DateTime(today.year, today.month, 0),
+      ),
+    };
+    setState(() {
+      _dateFrom = from;
+      _dateTo = to;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final allowed = widget.context.permissions.contains('report.read');
@@ -203,6 +241,7 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
               ? 'Todas las sucursales'
               : (widget.context.currentBranch?.name ?? 'Sucursal actual'),
           onPickRange: _pickRange,
+          onPreset: _applyPreset,
         ),
         const SizedBox(height: 14),
         _ReportsAreaTabs(selected: _area, onSelected: (area) => setState(() => _area = area)),
@@ -216,15 +255,32 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
           const _ReportsLoadingState()
         else
           switch (_area) {
+            _ReportArea.intelligence => _IntelligenceReportPanel(
+              // Keyed by branch only (never the shared date range) — see
+              // this panel's own doc comment on why it's always "today,"
+              // independent of the other tabs' arbitrary period.
+              key: ValueKey('pos-reports-intelligence-${_filter.branchId ?? 'all'}'),
+              businessToday: _businessToday,
+              branchId: _branchId,
+              gateway: widget.reportsGateway,
+            ),
             _ReportArea.sales => _SalesReportPanel(
               key: ValueKey('pos-reports-sales-$_rangeKey'),
               filter: _filter,
               gateway: widget.reportsGateway,
+              companyName: widget.context.currentCompany?.name ?? 'AS ONE',
+              branchLabel: widget.context.companyWideAccess
+                  ? 'Todas las sucursales'
+                  : (widget.context.currentBranch?.name ?? 'Sucursal actual'),
             ),
             _ReportArea.financial => _FinancialReportPanel(
               key: ValueKey('pos-reports-financial-$_rangeKey'),
               filter: _filter,
               gateway: widget.reportsGateway,
+              companyName: widget.context.currentCompany?.name ?? 'AS ONE',
+              branchLabel: widget.context.companyWideAccess
+                  ? 'Todas las sucursales'
+                  : (widget.context.currentBranch?.name ?? 'Sucursal actual'),
             ),
             _ReportArea.inventory => _InventoryReportPanel(
               key: ValueKey('pos-reports-inventory-$_rangeKey'),
@@ -264,18 +320,35 @@ class _PosReportsScreenState extends State<PosReportsScreen> {
 
 // --- Header / tabs -----------------------------------------------------
 
+// TASK 16.25 (Phase 4) — real, fast date-range presets. Computed from
+// the resolved business today in `_applyPreset` above — this enum only
+// carries the label/ordering.
+enum _ReportsDatePreset {
+  today('Hoy'),
+  yesterday('Ayer'),
+  thisWeek('Esta semana'),
+  lastWeek('Semana pasada'),
+  thisMonth('Este mes'),
+  lastMonth('Mes pasado');
+
+  const _ReportsDatePreset(this.label);
+  final String label;
+}
+
 class _ReportsHeader extends StatelessWidget {
   const _ReportsHeader({
     required this.dateFrom,
     required this.dateTo,
     required this.branchLabel,
     required this.onPickRange,
+    required this.onPreset,
   });
 
   final DateTime dateFrom;
   final DateTime dateTo;
   final String branchLabel;
   final VoidCallback onPickRange;
+  final ValueChanged<_ReportsDatePreset> onPreset;
 
   @override
   Widget build(BuildContext context) {
@@ -302,22 +375,59 @@ class _ReportsHeader extends StatelessWidget {
                 children: [
                   Icon(Icons.store_outlined, size: 15, color: palette.textMuted),
                   const SizedBox(width: 5),
-                  Text(branchLabel, style: TextStyle(color: palette.textMuted, fontSize: 12.5)),
+                  Flexible(
+                    child: Text(
+                      branchLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: palette.textMuted, fontSize: 12.5),
+                    ),
+                  ),
                 ],
               ),
             ],
           ),
         ),
         const SizedBox(width: 12),
-        OutlinedButton.icon(
-          key: const Key('pos-reports-range-button'),
-          onPressed: onPickRange,
-          icon: const Icon(Icons.date_range_outlined, size: 17),
-          label: Text('${_isoDate(dateFrom)} → ${_isoDate(dateTo)}'),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: palette.blueDeep,
-            side: BorderSide(color: palette.border),
-          ),
+        // A `Wrap` (never a rigid `Row`) — at a narrower desktop width
+        // the preset menu and range buttons stack onto a second line
+        // instead of overflowing the header horizontally.
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            PopupMenuButton<_ReportsDatePreset>(
+              key: const Key('pos-reports-preset-menu'),
+              tooltip: 'Periodos rápidos',
+              onSelected: onPreset,
+              itemBuilder: (context) => [
+                for (final preset in _ReportsDatePreset.values)
+                  PopupMenuItem(
+                    key: Key('pos-reports-preset-${preset.name}'),
+                    value: preset,
+                    child: Text(preset.label),
+                  ),
+              ],
+              child: IgnorePointer(
+                child: OutlinedButton.icon(
+                  onPressed: () {},
+                  icon: const Icon(Icons.bolt_outlined, size: 16),
+                  label: const Text('Periodos'),
+                  style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                ),
+              ),
+            ),
+            OutlinedButton.icon(
+              key: const Key('pos-reports-range-button'),
+              onPressed: onPickRange,
+              icon: const Icon(Icons.date_range_outlined, size: 17),
+              label: Text('${_isoDate(dateFrom)} → ${_isoDate(dateTo)}'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: palette.blueDeep,
+                side: BorderSide(color: palette.border),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -440,10 +550,287 @@ class _ReportPanelState<T> extends State<_ReportPanel<T>> {
 
 // --- Per-area panels ------------------------------------------------------
 
+/// TASK 16.25 (Phase 5) — "Inteligencia," the management-overview area.
+/// Composes ONLY the same `PosReportsGateway` calls the other tabs
+/// already use (sales/access/customers/inventory) — no bespoke backend
+/// endpoint, no second rewards/dashboard protocol. Always scoped to
+/// TODAY (`businessToday`, the resolved BUSINESS date — never device-
+/// local `DateTime.now()`), independent of the other tabs' own
+/// arbitrary shared date range, matching the product intent of an "at a
+/// glance today" screen.
+///
+/// Two KPIs the owner's own reference named are DELIBERATELY not shown
+/// as real numbers here: "Meta del día" (no configurable daily-sales
+/// target exists anywhere in this platform — inventing one would
+/// violate this task's own "no fabricated business data" rule) renders
+/// an honest "no configurada" state instead, and "estancia promedio" is
+/// covered on the Accesos tab, not duplicated here to avoid two sources
+/// of the same figure disagreeing over rounding. Both `estancia
+/// promedio` and the legacy's own water-park "real-time occupancy"
+/// concept were themselves HARDCODED FAKE VALUES in the legacy product
+/// (`prom_estancia=95`, always-0 occupancy — see
+/// `docs/LEGACY_FUNCTIONAL_PARITY.md` §12) — this screen replaces both
+/// with the real, live `access.currentOccupancy`/`averageStayMinutes`
+/// this platform actually computes.
+class _IntelligenceReportPanel extends StatefulWidget {
+  const _IntelligenceReportPanel({required this.businessToday, required this.branchId, required this.gateway, super.key});
+  final DateTime businessToday;
+  final String? branchId;
+  final PosReportsGateway gateway;
+
+  @override
+  State<_IntelligenceReportPanel> createState() => _IntelligenceReportPanelState();
+}
+
+class _IntelligenceData {
+  const _IntelligenceData({
+    required this.today,
+    required this.yesterday,
+    required this.access,
+    required this.customers,
+    required this.inventory,
+  });
+  final PosSalesReport today;
+  final PosSalesReport yesterday;
+  final PosAccessReport access;
+  final PosCustomersReport customers;
+  final PosInventoryReport inventory;
+}
+
+class _IntelligenceReportPanelState extends State<_IntelligenceReportPanel> {
+  _ReportPhase _phase = _ReportPhase.loading;
+  _IntelligenceData? _data;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _phase = _ReportPhase.loading;
+      _errorMessage = null;
+    });
+    final todayIso = _isoDate(widget.businessToday);
+    final yesterdayIso = _isoDate(widget.businessToday.subtract(const Duration(days: 1)));
+    final todayFilter = PosReportFilter(dateFrom: todayIso, dateTo: todayIso, branchId: widget.branchId);
+    final yesterdayFilter = PosReportFilter(dateFrom: yesterdayIso, dateTo: yesterdayIso, branchId: widget.branchId);
+    try {
+      final results = await Future.wait([
+        widget.gateway.salesReport(filter: todayFilter),
+        widget.gateway.salesReport(filter: yesterdayFilter),
+        widget.gateway.accessReport(filter: todayFilter),
+        widget.gateway.customersReport(range: PosReportDateRange(dateFrom: todayIso, dateTo: todayIso)),
+        widget.gateway.inventoryReport(filter: todayFilter),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _data = _IntelligenceData(
+          today: results[0] as PosSalesReport,
+          yesterday: results[1] as PosSalesReport,
+          access: results[2] as PosAccessReport,
+          customers: results[3] as PosCustomersReport,
+          inventory: results[4] as PosInventoryReport,
+        );
+        _phase = _ReportPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ReportPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ReportPhase.failure;
+        _errorMessage = 'No fue posible cargar Inteligencia.';
+      });
+    }
+  }
+
+  /// `null` (never a fabricated 0%) when today or yesterday has no sales
+  /// in a common currency to compare — matches `PosTrendChip`'s own
+  /// "honest no-comparison" contract.
+  double? _percentChange(PosSalesReport today, PosSalesReport yesterday) {
+    if (today.grossSales.isEmpty) return null;
+    final todayAmount = today.grossSales.first;
+    final yesterdayEntry = yesterday.grossSales.where((entry) => entry.currencyCode == todayAmount.currencyCode).firstOrNull;
+    if (yesterdayEntry == null) return null;
+    final todayValue = double.tryParse(todayAmount.amount);
+    final yesterdayValue = double.tryParse(yesterdayEntry.amount);
+    if (todayValue == null || yesterdayValue == null || yesterdayValue == 0) return null;
+    return (todayValue - yesterdayValue) / yesterdayValue * 100;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    switch (_phase) {
+      case _ReportPhase.loading:
+        return const _ReportsLoadingState();
+      case _ReportPhase.failure:
+        return _ReportsFailureState(message: _errorMessage ?? 'No fue posible cargar Inteligencia.', onRetry: () => unawaited(_load()));
+      case _ReportPhase.ready:
+        final data = _data!;
+        final activeMemberships = data.customers.membershipsByStatus.where((entry) => entry.status == 'active').firstOrNull?.count ?? 0;
+        final alerts = <String>[
+          if (data.inventory.outOfStockVariantCount > 0) '${data.inventory.outOfStockVariantCount} variante(s) agotada(s) en inventario.',
+        ];
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _ReportSectionHeader(title: 'Inteligencia — hoy'),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _ReportsCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Ventas hoy', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+                        const SizedBox(height: 6),
+                        for (final amount in data.today.grossSales)
+                          Text(
+                            _formatAmountString(amount.amount, amount.currencyCode),
+                            style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800),
+                          ),
+                        if (data.today.grossSales.isEmpty)
+                          Text('0', style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 6),
+                        PosTrendChip(percentChange: _percentChange(data.today, data.yesterday)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _ReportsStatTile(label: 'Tickets hoy', value: '${data.today.transactionCount}'),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _ReportsCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Ticket promedio', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+                        const SizedBox(height: 6),
+                        for (final amount in data.today.averageTicket)
+                          Text(
+                            _formatAmountString(amount.amount, amount.currencyCode),
+                            style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800),
+                          ),
+                        if (data.today.averageTicket.isEmpty)
+                          Text('0', style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: _ReportsStatTile(label: 'Aforo actual', value: '${data.access.currentOccupancy}')),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _ReportsStatTile(label: 'Membresías activas', value: '$activeMemberships'),
+                ),
+                const SizedBox(width: 12),
+                // TASK 16.25 — "Meta del día": no real, configurable
+                // daily-sales-goal setting exists anywhere in this
+                // platform (verified — see this panel's own class doc
+                // comment). An honest "no configurada" state, never an
+                // invented number/percentage.
+                Expanded(
+                  child: _ReportsCard(
+                    key: const Key('pos-reports-intelligence-daily-goal'),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Meta del día', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+                        const SizedBox(height: 6),
+                        Text('No configurada', style: TextStyle(color: palette.textMuted, fontSize: 15, fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _ReportsCard(
+              title: 'Ventas por hora',
+              child: PosBarChart(
+                key: const Key('pos-reports-intelligence-hourly-chart'),
+                bars: [
+                  for (final hour in data.today.salesByHour)
+                    PosChartBar(
+                      label: '${hour.hour}h',
+                      value: double.tryParse(hour.grossSales) ?? 0,
+                      valueLabel: _formatAmountString(hour.grossSales, hour.currencyCode),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _ReportsCard(
+              title: 'Productos más vendidos (hoy)',
+              child: PosRankingBars(
+                key: const Key('pos-reports-intelligence-top-products'),
+                entries: [
+                  for (final product in data.today.topProducts)
+                    PosRankingEntry(
+                      label: product.name,
+                      value: double.tryParse(product.revenue) ?? 0,
+                      valueLabel: _formatAmountString(product.revenue, product.currencyCode),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _ReportsCard(
+              key: const Key('pos-reports-intelligence-alerts'),
+              title: 'Alertas del sistema',
+              child: alerts.isEmpty
+                  ? const _ReportsEmptyNote(message: 'Sin alertas activas.')
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final alert in alerts)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 3),
+                            child: Row(
+                              children: [
+                                Icon(Icons.warning_amber_outlined, size: 16, color: palette.warning),
+                                const SizedBox(width: 6),
+                                Expanded(child: Text(alert, style: TextStyle(color: palette.text, fontSize: 12.5))),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+          ],
+        );
+    }
+  }
+}
+
 class _SalesReportPanel extends StatelessWidget {
-  const _SalesReportPanel({required this.filter, required this.gateway, super.key});
+  const _SalesReportPanel({
+    required this.filter,
+    required this.gateway,
+    required this.companyName,
+    required this.branchLabel,
+    super.key,
+  });
   final PosReportFilter filter;
   final PosReportsGateway gateway;
+  final String companyName;
+  final String branchLabel;
 
   Future<void> _export(BuildContext context) => _exportCsv(
     context: context,
@@ -451,6 +838,56 @@ class _SalesReportPanel extends StatelessWidget {
     filter: filter,
     fetch: () => gateway.exportSalesCsv(filter: filter),
   );
+
+  // TASK 16.25 (Phase 17) — real KPIs + the same hourly/top-product data
+  // already on screen, never a re-derived summary; see
+  // `pos_report_pdf.dart`'s own doc comment for why this is the
+  // established browser-print mechanism, not a new PDF stack.
+  void _exportPdf(BuildContext context, PosSalesReport report) {
+    final html = buildReportPdfHtml(
+      companyName: companyName,
+      branchLabel: branchLabel,
+      areaLabel: 'Ventas',
+      dateFrom: filter.dateFrom,
+      dateTo: filter.dateTo,
+      generatedAt: DateTime.now(),
+      kpis: [
+        ReportPdfKpi('Transacciones completadas', '${report.transactionCount}'),
+        ReportPdfKpi('Devoluciones completadas', '${report.refundCount}'),
+        for (final amount in report.grossSales) ReportPdfKpi('Ventas brutas', _formatAmountString(amount.amount, amount.currencyCode)),
+        for (final amount in report.netSales) ReportPdfKpi('Ventas netas', _formatAmountString(amount.amount, amount.currencyCode)),
+        for (final amount in report.averageTicket) ReportPdfKpi('Ticket promedio', _formatAmountString(amount.amount, amount.currencyCode)),
+      ],
+      tables: [
+        ReportPdfTable(
+          title: 'Ventas por hora',
+          columns: const ['Hora', 'Moneda', 'Transacciones', 'Ventas brutas'],
+          rows: [
+            for (final hour in report.salesByHour)
+              ['${hour.hour}:00', hour.currencyCode, '${hour.transactionCount}', _formatAmountString(hour.grossSales, hour.currencyCode)],
+          ],
+        ),
+        ReportPdfTable(
+          title: 'Productos más vendidos',
+          columns: const ['Producto', 'Cantidad', 'Ingresos'],
+          rows: [
+            for (final product in report.topProducts)
+              [product.name, product.quantitySold, _formatAmountString(product.revenue, product.currencyCode)],
+          ],
+        ),
+      ],
+    );
+    final opened = openReceiptPrintWindow(html);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          opened
+              ? 'Se abrió la vista de impresión/PDF.'
+              : 'Este entorno no puede abrir la ventana de impresión.',
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) => _ReportPanel<PosSalesReport>(
@@ -460,9 +897,19 @@ class _SalesReportPanel extends StatelessWidget {
       children: [
         _ReportSectionHeader(
           title: 'Ventas',
-          action: _CsvExportButton(
-            reportsKey: 'pos-reports-sales-export-csv',
-            onPressed: () => unawaited(_export(context)),
+          action: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _PdfExportButton(
+                reportsKey: 'pos-reports-sales-export-pdf',
+                onPressed: () => _exportPdf(context, report),
+              ),
+              const SizedBox(width: 8),
+              _CsvExportButton(
+                reportsKey: 'pos-reports-sales-export-csv',
+                onPressed: () => unawaited(_export(context)),
+              ),
+            ],
           ),
         ),
         Row(
@@ -492,15 +939,53 @@ class _SalesReportPanel extends StatelessWidget {
             Expanded(child: _ReportsMoneySection(title: 'Ticket promedio', amounts: report.averageTicket)),
           ],
         ),
+        const SizedBox(height: 12),
+        _ReportsCard(
+          title: 'Ventas por hora',
+          child: PosBarChart(
+            key: const Key('pos-reports-sales-by-hour-chart'),
+            bars: [
+              for (final hour in report.salesByHour)
+                PosChartBar(
+                  label: '${hour.hour}h',
+                  value: double.tryParse(hour.grossSales) ?? 0,
+                  valueLabel: _formatAmountString(hour.grossSales, hour.currencyCode),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ReportsCard(
+          title: 'Productos más vendidos',
+          child: PosRankingBars(
+            key: const Key('pos-reports-top-products'),
+            entries: [
+              for (final product in report.topProducts)
+                PosRankingEntry(
+                  label: product.name,
+                  value: double.tryParse(product.revenue) ?? 0,
+                  valueLabel: _formatAmountString(product.revenue, product.currencyCode),
+                ),
+            ],
+          ),
+        ),
       ],
     ),
   );
 }
 
 class _FinancialReportPanel extends StatelessWidget {
-  const _FinancialReportPanel({required this.filter, required this.gateway, super.key});
+  const _FinancialReportPanel({
+    required this.filter,
+    required this.gateway,
+    required this.companyName,
+    required this.branchLabel,
+    super.key,
+  });
   final PosReportFilter filter;
   final PosReportsGateway gateway;
+  final String companyName;
+  final String branchLabel;
 
   Future<void> _export(BuildContext context) => _exportCsv(
     context: context,
@@ -508,6 +993,67 @@ class _FinancialReportPanel extends StatelessWidget {
     filter: filter,
     fetch: () => gateway.exportFinancialCsv(filter: filter),
   );
+
+  void _exportPdf(BuildContext context, PosFinancialReport report) {
+    final html = buildReportPdfHtml(
+      companyName: companyName,
+      branchLabel: branchLabel,
+      areaLabel: 'Financiero',
+      dateFrom: filter.dateFrom,
+      dateTo: filter.dateTo,
+      generatedAt: DateTime.now(),
+      kpis: [
+        ReportPdfKpi('Sesiones de caja abiertas', '${report.sessionsOpenedCount}'),
+        for (final amount in report.netCashMovement)
+          ReportPdfKpi('Movimiento neto de caja', _formatAmountString(amount.amount, amount.currencyCode)),
+      ],
+      tables: [
+        ReportPdfTable(
+          title: 'Movimientos por tipo (caja)',
+          columns: const ['Tipo', 'Moneda', 'Monto', 'Cantidad'],
+          rows: [
+            for (final entry in report.movementTotals)
+              [entry.movementType, entry.currencyCode, _formatAmountString(entry.amount, entry.currencyCode), '${entry.count}'],
+          ],
+        ),
+        ReportPdfTable(
+          title: 'Cómo pagó el cliente (método de pago)',
+          columns: const ['Método', 'Moneda', 'Monto', 'Cantidad'],
+          rows: [
+            for (final entry in report.paymentMethodTotals)
+              [entry.paymentMethod, entry.currencyCode, _formatAmountString(entry.amount, entry.currencyCode), '${entry.count}'],
+          ],
+        ),
+        ReportPdfTable(
+          title: 'Sesiones de caja cerradas',
+          columns: const ['Moneda', 'Sesiones', 'Declarado', 'Esperado', 'Diferencia'],
+          rows: [
+            for (final entry in report.closedSessions)
+              [
+                entry.currencyCode,
+                '${entry.sessionCount}',
+                _formatAmountString(entry.declaredClosingTotal, entry.currencyCode),
+                _formatAmountString(entry.expectedClosingTotal, entry.currencyCode),
+                _formatAmountString(entry.discrepancyTotal, entry.currencyCode),
+              ],
+          ],
+        ),
+      ],
+      note:
+          'El movimiento de caja (arriba) refleja lo que físicamente entra/sale del cajón — nunca incluye '
+          'transferencias ni pagos con tarjeta, que se liquidan fuera de la caja física.',
+    );
+    final opened = openReceiptPrintWindow(html);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(
+          opened
+              ? 'Se abrió la vista de impresión/PDF.'
+              : 'Este entorno no puede abrir la ventana de impresión.',
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) => _ReportPanel<PosFinancialReport>(
@@ -517,9 +1063,19 @@ class _FinancialReportPanel extends StatelessWidget {
       children: [
         _ReportSectionHeader(
           title: 'Financiero',
-          action: _CsvExportButton(
-            reportsKey: 'pos-reports-financial-export-csv',
-            onPressed: () => unawaited(_export(context)),
+          action: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _PdfExportButton(
+                reportsKey: 'pos-reports-financial-export-pdf',
+                onPressed: () => _exportPdf(context, report),
+              ),
+              const SizedBox(width: 8),
+              _CsvExportButton(
+                reportsKey: 'pos-reports-financial-export-csv',
+                onPressed: () => unawaited(_export(context)),
+              ),
+            ],
           ),
         ),
         Row(
@@ -533,7 +1089,7 @@ class _FinancialReportPanel extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         _ReportsCard(
-          title: 'Movimientos por tipo',
+          title: 'Movimientos por tipo (caja)',
           child: report.movementTotals.isEmpty
               ? const _ReportsEmptyNote(message: 'Sin movimientos de caja en este rango.')
               : _ReportsTable(
@@ -541,6 +1097,28 @@ class _FinancialReportPanel extends StatelessWidget {
                   rows: [
                     for (final entry in report.movementTotals)
                       [entry.movementType, entry.currencyCode, _formatAmountString(entry.amount, entry.currencyCode), '${entry.count}'],
+                  ],
+                ),
+        ),
+        const SizedBox(height: 12),
+        // TASK 16.25 (Phase 7) — deliberately a SEPARATE card from the
+        // cash-drawer movements above: this is how the CUSTOMER paid
+        // (cash/transfer/card), never conflated with what physically
+        // sits in the drawer — see `PosPaymentMethodTotal`'s own doc
+        // comment in `pos_reports_gateway.dart`.
+        _ReportsCard(
+          title: 'Cómo pagó el cliente (método de pago)',
+          child: report.paymentMethodTotals.isEmpty
+              ? const _ReportsEmptyNote(message: 'Sin pagos capturados en este rango.')
+              : PosRankingBars(
+                  key: const Key('pos-reports-payment-method-totals'),
+                  entries: [
+                    for (final entry in report.paymentMethodTotals)
+                      PosRankingEntry(
+                        label: _paymentMethodLabel(entry.paymentMethod),
+                        value: double.tryParse(entry.amount) ?? 0,
+                        valueLabel: _formatAmountString(entry.amount, entry.currencyCode),
+                      ),
                   ],
                 ),
         ),
@@ -567,6 +1145,15 @@ class _FinancialReportPanel extends StatelessWidget {
     ),
   );
 }
+
+String _paymentMethodLabel(String method) => switch (method) {
+  'cash' => 'Efectivo',
+  'card_terminal' => 'Tarjeta (terminal)',
+  'card_manual' => 'Tarjeta (manual)',
+  'transfer' => 'Transferencia',
+  'other' => 'Otro',
+  _ => method,
+};
 
 class _InventoryReportPanel extends StatelessWidget {
   const _InventoryReportPanel({required this.filter, required this.gateway, super.key});
@@ -811,9 +1398,18 @@ class _AccessReportPanel extends StatelessWidget {
             Expanded(child: _ReportsStatTile(label: 'Ocupación actual', value: '${report.currentOccupancy}')),
           ],
         ),
+        const SizedBox(height: 12),
+        // TASK 16.25 (Phase 12) — real average over completed entry→exit
+        // pairs only; `null` (never a fabricated 0 or the legacy's own
+        // hardcoded 95) renders an honest "sin datos suficientes" note.
+        _ReportsStatTile(
+          label: 'Estancia promedio',
+          value: report.averageStayMinutes == null ? 'Sin datos suficientes' : '${report.averageStayMinutes} min',
+        ),
         const SizedBox(height: 8),
         Text(
-          'La ocupación actual es una foto en tiempo real (no filtrada por fecha).',
+          'La ocupación actual es una foto en tiempo real (no filtrada por fecha). La estancia promedio solo '
+          'considera entradas con una salida registrada en este rango.',
           style: TextStyle(color: PosPalette.of(context).textMuted, fontSize: 12),
         ),
       ],
@@ -955,8 +1551,30 @@ class _CsvExportButton extends StatelessWidget {
   }
 }
 
+/// TASK 16.25 (Phase 17) — opens the browser's real print dialog over a
+/// real report document (see `pos_report_pdf.dart`); never a fake
+/// "Descargar PDF" that silently does nothing (the legacy's own
+/// documented naming defect this button deliberately avoids repeating).
+class _PdfExportButton extends StatelessWidget {
+  const _PdfExportButton({required this.reportsKey, required this.onPressed});
+  final String reportsKey;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return OutlinedButton.icon(
+      key: Key(reportsKey),
+      onPressed: onPressed,
+      icon: const Icon(Icons.picture_as_pdf_outlined, size: 16),
+      label: const Text('Imprimir / PDF'),
+      style: OutlinedButton.styleFrom(foregroundColor: palette.blueDeep, side: BorderSide(color: palette.border)),
+    );
+  }
+}
+
 class _ReportsCard extends StatelessWidget {
-  const _ReportsCard({required this.child, this.title});
+  const _ReportsCard({required this.child, this.title, super.key});
   final Widget child;
   final String? title;
 

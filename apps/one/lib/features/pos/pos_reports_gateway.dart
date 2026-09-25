@@ -81,8 +81,61 @@ List<PosReportStatusCount> _statusList(Map<String, Object?> json, String key) {
 int _int(Map<String, Object?> json, String key) => (json[key]! as num).toInt();
 String _string(Map<String, Object?> json, String key) => json[key]! as String;
 String? _stringOrNull(Map<String, Object?> json, String key) => json[key] as String?;
+int? _intOrNull(Map<String, Object?> json, String key) => (json[key] as num?)?.toInt();
 
 // --- Sales ---------------------------------------------------------------
+
+/// TASK 16.25 (Phase 6/Inteligencia+Ventas). Mirrors `HourlySales`
+/// (`reports.types.ts`) — `hour` is the real branch-local hour (0-23) the
+/// backend computed via SQL, never re-derived from a UTC timestamp here.
+class PosHourlySales {
+  const PosHourlySales({
+    required this.hour,
+    required this.currencyCode,
+    required this.transactionCount,
+    required this.grossSales,
+  });
+
+  factory PosHourlySales.fromJson(Map<String, Object?> json) => PosHourlySales(
+    hour: _int(json, 'hour'),
+    currencyCode: _string(json, 'currency_code'),
+    transactionCount: _int(json, 'transaction_count'),
+    grossSales: _string(json, 'gross_sales'),
+  );
+
+  final int hour;
+  final String currencyCode;
+  final int transactionCount;
+  final String grossSales;
+}
+
+/// TASK 16.25 (Phase 6/Inteligencia+Ventas). Mirrors `TopProduct`
+/// (`reports.types.ts`) — `productId` is `null` for a sale line whose
+/// product was never linked to the catalog (a legitimate, real state,
+/// never hidden).
+class PosTopProduct {
+  const PosTopProduct({
+    required this.productId,
+    required this.name,
+    required this.quantitySold,
+    required this.currencyCode,
+    required this.revenue,
+  });
+
+  factory PosTopProduct.fromJson(Map<String, Object?> json) => PosTopProduct(
+    productId: _stringOrNull(json, 'product_id'),
+    name: _string(json, 'name'),
+    quantitySold: _string(json, 'quantity_sold'),
+    currencyCode: _string(json, 'currency_code'),
+    revenue: _string(json, 'revenue'),
+  );
+
+  final String? productId;
+  final String name;
+  final String quantitySold;
+  final String currencyCode;
+  final String revenue;
+}
 
 /// Mirrors `SalesReport` (`reports.types.ts`) exactly.
 class PosSalesReport {
@@ -96,6 +149,8 @@ class PosSalesReport {
     required this.refundsTotal,
     required this.netSales,
     required this.averageTicket,
+    required this.salesByHour,
+    required this.topProducts,
   });
 
   factory PosSalesReport.fromJson(Map<String, Object?> json) => PosSalesReport(
@@ -108,6 +163,14 @@ class PosSalesReport {
     refundsTotal: _amountList(json, 'refunds_total'),
     netSales: _amountList(json, 'net_sales'),
     averageTicket: _amountList(json, 'average_ticket'),
+    salesByHour: (json['sales_by_hour'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map(PosHourlySales.fromJson)
+        .toList(growable: false),
+    topProducts: (json['top_products'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map(PosTopProduct.fromJson)
+        .toList(growable: false),
   );
 
   final String dateFrom;
@@ -119,6 +182,8 @@ class PosSalesReport {
   final List<PosReportCurrencyAmount> refundsTotal;
   final List<PosReportCurrencyAmount> netSales;
   final List<PosReportCurrencyAmount> averageTicket;
+  final List<PosHourlySales> salesByHour;
+  final List<PosTopProduct> topProducts;
 }
 
 // --- Financial -------------------------------------------------------------
@@ -170,6 +235,32 @@ class PosClosedSessionTotal {
   final String discrepancyTotal;
 }
 
+/// TASK 16.25 (Phase 7/Financiero). Mirrors `PaymentMethodTotal`
+/// (`reports.types.ts`) — deliberately NOT the same thing as
+/// `PosCashMovementTotal` above: this tracks how the CUSTOMER paid
+/// (cash/transfer/card_terminal/card_manual/other), never how much
+/// physically sits in the drawer.
+class PosPaymentMethodTotal {
+  const PosPaymentMethodTotal({
+    required this.paymentMethod,
+    required this.currencyCode,
+    required this.amount,
+    required this.count,
+  });
+
+  factory PosPaymentMethodTotal.fromJson(Map<String, Object?> json) => PosPaymentMethodTotal(
+    paymentMethod: _string(json, 'payment_method'),
+    currencyCode: _string(json, 'currency_code'),
+    amount: _string(json, 'amount'),
+    count: _int(json, 'count'),
+  );
+
+  final String paymentMethod;
+  final String currencyCode;
+  final String amount;
+  final int count;
+}
+
 /// Mirrors `FinancialReport` (`reports.types.ts`) exactly.
 class PosFinancialReport {
   const PosFinancialReport({
@@ -180,6 +271,7 @@ class PosFinancialReport {
     required this.netCashMovement,
     required this.closedSessions,
     required this.sessionsOpenedCount,
+    required this.paymentMethodTotals,
   });
 
   factory PosFinancialReport.fromJson(Map<String, Object?> json) => PosFinancialReport(
@@ -196,6 +288,10 @@ class PosFinancialReport {
         .map(PosClosedSessionTotal.fromJson)
         .toList(growable: false),
     sessionsOpenedCount: _int(json, 'sessions_opened_count'),
+    paymentMethodTotals: (json['payment_method_totals'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map(PosPaymentMethodTotal.fromJson)
+        .toList(growable: false),
   );
 
   final String dateFrom;
@@ -205,6 +301,7 @@ class PosFinancialReport {
   final List<PosReportCurrencyAmount> netCashMovement;
   final List<PosClosedSessionTotal> closedSessions;
   final int sessionsOpenedCount;
+  final List<PosPaymentMethodTotal> paymentMethodTotals;
 }
 
 // --- Inventory ---------------------------------------------------------------
@@ -397,6 +494,7 @@ class PosAccessReport {
     required this.entryCount,
     required this.exitCount,
     required this.currentOccupancy,
+    required this.averageStayMinutes,
   });
 
   factory PosAccessReport.fromJson(Map<String, Object?> json) => PosAccessReport(
@@ -406,6 +504,7 @@ class PosAccessReport {
     entryCount: _int(json, 'entry_count'),
     exitCount: _int(json, 'exit_count'),
     currentOccupancy: _int(json, 'current_occupancy'),
+    averageStayMinutes: _intOrNull(json, 'average_stay_minutes'),
   );
 
   final String dateFrom;
@@ -414,6 +513,13 @@ class PosAccessReport {
   final int entryCount;
   final int exitCount;
   final int currentOccupancy;
+  // TASK 16.25 (Phase 12/Accesos) — `null` (never 0 or a fabricated
+  // value) when zero completed entry→exit pairs exist in range. The
+  // legacy's own equivalent (`prom_estancia`) was permanently hardcoded
+  // to 95 — see `AccessReport.averageStayMinutes`'s own doc comment in
+  // `reports.types.ts` for why this is a genuine replacement, not a
+  // port of that fake value.
+  final int? averageStayMinutes;
 }
 
 // --- Promotions --------------------------------------------------------------
