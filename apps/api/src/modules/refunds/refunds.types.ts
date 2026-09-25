@@ -40,7 +40,7 @@ export interface RefundRow {
   paymentId: string | null;
   refundNumber: string;
   status: RefundStatus;
-  refundMethod: 'cash' | 'card_terminal' | 'card_manual' | 'other';
+  refundMethod: 'cash' | 'card_terminal' | 'card_manual' | 'other' | 'transfer';
   reasonCode: string;
   reasonNote: string | null;
   currencyCode: string;

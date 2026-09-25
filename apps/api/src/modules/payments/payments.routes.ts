@@ -347,7 +347,7 @@ export function registerPaymentRoutes(
             sale_id: { type: 'string', format: 'uuid' },
             payment_method: {
               type: 'string',
-              enum: ['cash', 'card_terminal', 'card_manual', 'other'],
+              enum: ['cash', 'card_terminal', 'card_manual', 'other', 'transfer'],
             },
             amount: { type: 'string', pattern: '^\\d{1,15}(\\.\\d{1,4})?$' },
             currency_code: { type: 'string', minLength: 3, maxLength: 3 },
@@ -424,7 +424,7 @@ export function registerPaymentRoutes(
             id: { type: 'string', format: 'uuid' },
             payment_method: {
               type: 'string',
-              enum: ['cash', 'card_terminal', 'card_manual', 'other'],
+              enum: ['cash', 'card_terminal', 'card_manual', 'other', 'transfer'],
             },
             amount: { type: 'string', pattern: '^\\d{1,15}(\\.\\d{1,4})?$' },
             currency_code: { type: 'string', minLength: 3, maxLength: 3 },

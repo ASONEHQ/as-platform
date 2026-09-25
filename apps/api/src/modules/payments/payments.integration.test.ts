@@ -1401,6 +1401,55 @@ integration(
         expect(cash.value.sale.status).toBe('completed');
       });
 
+      // TASK 16.24 (Block B1) — a real bank-transfer payment method,
+      // additive per `docs/API_CONTRACTS.md` §16 ("extensible via a
+      // future additive migration"). Uses the exact same generic
+      // create-then-approve path `card_manual`/`other` already use (see
+      // the sibling test above) — no new backend mechanism was invented.
+      it('accepts a real "transfer" payment via the generic attempt-approval path, never touches the cash drawer, and completes the sale', async () => {
+        const sale = await createSale();
+        const created = await payments.createPayment(context, branchIds, 'transfer-create-1', {
+          branchId,
+          saleId: sale.sale.id,
+          paymentMethod: 'transfer',
+          amount: sale.sale.total,
+          currencyCode: 'MXN',
+        });
+        expect(created.value.payment.paymentMethod).toBe('transfer');
+        expect(created.value.payment.status).toBe('pending');
+        expect(created.value.payment.terminalId).toBeNull();
+
+        // `dispatchAttemptToProvider` is a no-op for a non-`card_terminal`
+        // method — the payment stays pending/created until the operator's
+        // own explicit approval, exactly like card_manual/other.
+        const stillPending = await payments.payment(companyId, branchIds, created.value.payment.id);
+        expect(stillPending.payment.status).toBe('pending');
+
+        const approved = await payments.transitionAttempt(
+          context,
+          branchIds,
+          created.value.attempt.id,
+          'transfer-approve-1',
+          { status: 'approved' },
+        );
+        expect(approved.value.status).toBe('approved');
+
+        const settled = await sales.sale(companyId, branchIds, sale.sale.id);
+        expect(settled.sale.status).toBe('completed');
+
+        // The central Block B1 safety requirement: a transfer must never
+        // increase the cash drawer balance the way a real cash payment
+        // does (`postCashSaleMovement` is only ever called from
+        // `createCashPayment`, never from this generic path) — confirmed
+        // directly against the real ledger, not inferred from the
+        // absence of a thrown error.
+        const movements = await database.pool.query<{ count: number }>(
+          `select count(*)::int as count from cash_movements where company_id=$1 and reference_id=$2`,
+          [companyId, created.value.payment.id],
+        );
+        expect(movements.rows[0]?.count).toBe(0);
+      });
+
       it('commits audit and outbox events atomically for a cash payment creation, approval, and settlement', async () => {
         const sale = await createSale();
         const created = await payments.createCashPayment(context, branchIds, 'cash-audit-1', {

@@ -1,9 +1,15 @@
-export type PaymentMethod = 'cash' | 'card_terminal' | 'card_manual' | 'other';
+// TASK 16.24 (Block B1) — `transfer` (real bank transfer) added, additive
+// per docs/API_CONTRACTS.md §16's own "extensible via a future additive
+// migration" note. Behaves exactly like `card_manual`/`other`: no
+// terminal, no cash-drawer effect (see `payments.ts` schema's own
+// `payments_method_ck` comment).
+export type PaymentMethod = 'cash' | 'card_terminal' | 'card_manual' | 'other' | 'transfer';
 export const paymentMethods: readonly PaymentMethod[] = [
   'cash',
   'card_terminal',
   'card_manual',
   'other',
+  'transfer',
 ];
 
 /** The exact five states already defined by docs/API_CONTRACTS.md §21.3 —

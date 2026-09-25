@@ -187,9 +187,18 @@ export const payments = pgTable(
     index('payments_company_sale_idx').on(table.companyId, table.saleId),
     check('payments_amount_positive_ck', sql`${table.amount} > 0`),
     check('payments_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
+    // TASK 16.24 (Block B1) — `transfer` added: a real bank-transfer
+    // payment method, additive per this table's own doc comment/
+    // `docs/API_CONTRACTS.md` §16 ("extensible via a future additive
+    // migration, not a closed vendor list"). Behaves exactly like
+    // `card_manual`/`other` everywhere else in this module (no terminal
+    // required, no cash-drawer effect — see `payments.service.ts`'s
+    // `dispatchAttemptToProvider`, a no-op for every non-`card_terminal`
+    // method, and `createSaleCashPayment`, which is the ONLY path that
+    // ever posts to the cash drawer and is never reached by this route).
     check(
       'payments_method_ck',
-      sql`${table.paymentMethod} in ('cash', 'card_terminal', 'card_manual', 'other')`,
+      sql`${table.paymentMethod} in ('cash', 'card_terminal', 'card_manual', 'other', 'transfer')`,
     ),
     // §21.3's exact five states — never a project-invented name.
     check(

@@ -165,7 +165,7 @@ export interface CapturedPaymentRow {
   id: string;
   saleId: string;
   branchId: string;
-  paymentMethod: 'cash' | 'card_terminal' | 'card_manual' | 'other';
+  paymentMethod: 'cash' | 'card_terminal' | 'card_manual' | 'other' | 'transfer';
   amount: string;
   status: string;
   terminalId: string | null;

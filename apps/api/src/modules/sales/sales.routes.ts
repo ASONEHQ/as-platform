@@ -517,7 +517,7 @@ export function registerSaleRoutes(
             sale_number: { type: 'string', minLength: 1, maxLength: 64 },
             payment_method: {
               type: 'string',
-              enum: ['cash', 'card_terminal', 'card_manual', 'other'],
+              enum: ['cash', 'card_terminal', 'card_manual', 'other', 'transfer'],
             },
             customer_id: { type: 'string', format: 'uuid' },
           },

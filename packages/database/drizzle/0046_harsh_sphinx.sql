@@ -1,0 +1,2 @@
+ALTER TABLE "payments" DROP CONSTRAINT "payments_method_ck";--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_method_ck" CHECK ("payments"."payment_method" in ('cash', 'card_terminal', 'card_manual', 'other', 'transfer'));
