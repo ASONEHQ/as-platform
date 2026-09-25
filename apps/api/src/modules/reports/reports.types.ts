@@ -56,6 +56,29 @@ export interface StatusCount {
 
 // --- Sales ------------------------------------------------------------
 
+/** TASK 16.25 (Phase 6/Inteligencia) — completed sales grouped by the
+ * BRANCH-LOCAL hour of day (0-23) they were completed in, real
+ * `extract(hour from completed_at at time zone ...)` SQL, never a
+ * client-side bucketing of raw rows. */
+export interface HourlySales {
+  readonly hour: number;
+  readonly currencyCode: string;
+  readonly transactionCount: number;
+  readonly grossSales: string;
+}
+
+/** TASK 16.25 (Phase 6/Inteligencia) — the highest-revenue products in
+ * range, real `sale_items` rows joined to their sale's own
+ * company/branch/status/completed_at scope — never a client-side
+ * reduction over an unbounded row set. */
+export interface TopProduct {
+  readonly productId: string | null;
+  readonly name: string;
+  readonly quantitySold: string;
+  readonly currencyCode: string;
+  readonly revenue: string;
+}
+
 export interface SalesReport {
   readonly dateFrom: string;
   readonly dateTo: string;
@@ -72,6 +95,10 @@ export interface SalesReport {
   readonly refundsTotal: readonly CurrencyAmount[];
   readonly netSales: readonly CurrencyAmount[];
   readonly averageTicket: readonly CurrencyAmount[];
+  readonly salesByHour: readonly HourlySales[];
+  /** Never more than 10 rows — an "at a glance" ranking, not an export
+   * (mirrors `PromotionsReport.topCoupons`'s own established limit). */
+  readonly topProducts: readonly TopProduct[];
 }
 
 export interface SalesExportRow {
@@ -106,6 +133,22 @@ export interface ClosedSessionTotal {
   readonly discrepancyTotal: string;
 }
 
+/** TASK 16.25 (Phase 7/Financiero) — real `payments.payment_method`
+ * totals, `status='captured'` only (the terminal "money actually moved"
+ * state — mirrors `movementTotals`' own completed-only convention).
+ * Deliberately NOT the same thing as `movementTotals`: a cash-drawer
+ * movement tracks what physically sits in the drawer, while this tracks
+ * how the CUSTOMER paid — a `transfer`/`card_terminal`/`card_manual`
+ * payment never posts a cash-drawer movement at all (see TASK 16.24
+ * Block B1's own doc comment on `payments.ts`), so collapsing the two
+ * into one number would misrepresent both. */
+export interface PaymentMethodTotal {
+  readonly paymentMethod: string;
+  readonly currencyCode: string;
+  readonly amount: string;
+  readonly count: number;
+}
+
 export interface FinancialReport {
   readonly dateFrom: string;
   readonly dateTo: string;
@@ -131,6 +174,7 @@ export interface FinancialReport {
    * closing time. */
   readonly closedSessions: readonly ClosedSessionTotal[];
   readonly sessionsOpenedCount: number;
+  readonly paymentMethodTotals: readonly PaymentMethodTotal[];
 }
 
 export interface FinancialExportRow {
@@ -318,6 +362,16 @@ export interface AccessReport {
    * date-filtered, for the same "never fabricate history" reason
    * `InventoryReport`'s balances are not. */
   readonly currentOccupancy: number;
+  /** TASK 16.25 (Phase 12/Accesos) — real average minutes between a
+   * credential's own entry and its NEXT exit, over every such pair that
+   * completed inside this range. `null` (never `0` or a fabricated
+   * value) when zero pairs completed — matches this task's own
+   * "estancia promedio" instruction: only calculate it when entry/exit
+   * timestamps make it authoritatively derivable. The legacy's own
+   * equivalent (`prom_estancia`) was permanently hardcoded to `95` —
+   * this is a genuine, real replacement, not a port of that fake value
+   * (see `docs/LEGACY_FUNCTIONAL_PARITY.md` §12). */
+  readonly averageStayMinutes: number | null;
 }
 
 // --- Errors ------------------------------------------------------------

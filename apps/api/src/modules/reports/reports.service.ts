@@ -115,9 +115,11 @@ export class ReportsService {
     validateRange(filter);
     const timezone = await this.resolveTimezone(companyId, filter.branchId);
     const scoped = { ...filter, timezone };
-    const [salesTotals, refundsTotals] = await Promise.all([
+    const [salesTotals, refundsTotals, salesByHour, topProducts] = await Promise.all([
       this.repository.salesTotals(companyId, branchIds, scoped),
       this.repository.refundsTotals(companyId, branchIds, scoped),
+      this.repository.salesByHour(companyId, branchIds, scoped),
+      this.repository.topProducts(companyId, branchIds, scoped),
     ]);
     const grossSales = salesTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.grossSales }));
     const refundsTotal = refundsTotals.map((row) => ({ currencyCode: row.currencyCode, amount: row.refundsTotal }));
@@ -139,6 +141,8 @@ export class ReportsService {
       refundsTotal,
       netSales: subtractByCurrency(grossSales, refundsTotal),
       averageTicket,
+      salesByHour,
+      topProducts,
     };
   }
 
@@ -155,10 +159,11 @@ export class ReportsService {
     validateRange(filter);
     const timezone = await this.resolveTimezone(companyId, filter.branchId);
     const scoped = { ...filter, timezone };
-    const [movementTotals, closedSessions, sessionsOpenedCount] = await Promise.all([
+    const [movementTotals, closedSessions, sessionsOpenedCount, paymentMethodTotals] = await Promise.all([
       this.repository.cashMovementTotals(companyId, branchIds, scoped),
       this.repository.closedSessionTotals(companyId, branchIds, scoped),
       this.repository.sessionsOpenedCount(companyId, branchIds, scoped),
+      this.repository.paymentMethodTotals(companyId, branchIds, scoped),
     ]);
     return {
       dateFrom: filter.dateFrom,
@@ -168,6 +173,7 @@ export class ReportsService {
       netCashMovement: foldMovementTotalsByDirection(movementTotals),
       closedSessions,
       sessionsOpenedCount,
+      paymentMethodTotals,
     };
   }
 
@@ -354,9 +360,11 @@ export class ReportsService {
   public async accessReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<AccessReport> {
     validateRange(filter);
     const timezone = await this.resolveTimezone(companyId, filter.branchId);
-    const [eventTotals, currentOccupancy] = await Promise.all([
-      this.repository.accessEventTotals(companyId, branchIds, { ...filter, timezone }),
+    const scoped = { ...filter, timezone };
+    const [eventTotals, currentOccupancy, averageStayMinutes] = await Promise.all([
+      this.repository.accessEventTotals(companyId, branchIds, scoped),
       this.repository.currentOccupancy(companyId, branchIds, filter.branchId),
+      this.repository.averageStayMinutes(companyId, branchIds, scoped),
     ]);
     return {
       dateFrom: filter.dateFrom,
@@ -365,6 +373,7 @@ export class ReportsService {
       entryCount: eventTotals.find((row) => row.eventType === 'entry')?.count ?? 0,
       exitCount: eventTotals.find((row) => row.eventType === 'exit')?.count ?? 0,
       currentOccupancy,
+      averageStayMinutes,
     };
   }
 }

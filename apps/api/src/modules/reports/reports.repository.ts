@@ -6,10 +6,13 @@ import {
   type CashMovementTotal,
   type ClosedSessionTotal,
   type CurrencyAmount,
+  type HourlySales,
   type InventoryMovementVolume,
   type KardexExportRow,
+  type PaymentMethodTotal,
   type SalesExportRow,
   type StatusCount,
+  type TopProduct,
 } from './reports.types.js';
 
 /** Raw shape read off `cash_movements` for the financial CSV export —
@@ -243,6 +246,93 @@ export class ReportsRepository {
     }));
   }
 
+  // TASK 16.25 (Phase 6/Inteligencia) — real branch-local hour-of-day
+  // buckets, computed entirely in SQL (`extract(hour from ... at time
+  // zone $tz)`) — never fetched as raw rows and bucketed in Node, which
+  // this module's own class doc comment explicitly rules out.
+  public async salesByHour(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<HourlySales[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'completed'`);
+    appendTimestampRange(where, values, 'completed_at', input.dateFrom, input.dateTo, input.timezone);
+    values.push(input.timezone);
+    const tzParam = `$${String(values.length)}`;
+    // A bare (no `AS`) alias named `hour` trips Postgres's parser right
+    // after `extract(hour from ...)` — empirically confirmed against the
+    // real test database; `as hour_of_day` (explicit `AS`, a
+    // non-keyword-adjacent name) parses cleanly.
+    const rows = result<{ hour_of_day: string; currency_code: string; gross: string; tx_count: string }>(
+      await this.database.pool.query(
+        `select extract(hour from completed_at at time zone ${tzParam})::int::text as hour_of_day,
+                currency_code, coalesce(sum(total),0)::text gross, count(*)::text tx_count
+         from sales where ${where.join(' and ')}
+         group by hour_of_day, currency_code
+         order by min(extract(hour from completed_at at time zone ${tzParam})) asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      hour: Number(row.hour_of_day),
+      currencyCode: row.currency_code,
+      transactionCount: Number(row.tx_count),
+      grossSales: row.gross,
+    }));
+  }
+
+  // TASK 16.25 (Phase 6/Inteligencia) — real `sale_items` rows joined to
+  // their own sale's company/branch/status/completed_at scope (the same
+  // `appendBranchScope`/`appendTimestampRange` shape every other query in
+  // this class uses, applied through the join rather than directly —
+  // mirrors `inventoryMovementVolume`'s own `m.`-prefixed pattern for a
+  // joined query). `name_snapshot` (frozen at sale time, never the
+  // product's current, possibly-renamed name) is the display name —
+  // matches `sale_items`' own established "never re-read a mutable
+  // record later" convention.
+  public async topProducts(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<TopProduct[]> {
+    const where: string[] = ['s.company_id = $1', 's.branch_id = any($2::uuid[])', `s.status = 'completed'`];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`s.branch_id = $${String(values.length)}`);
+    }
+    appendTimestampRange(where, values, 's.completed_at', input.dateFrom, input.dateTo, input.timezone);
+    const rows = result<{
+      product_id: string | null;
+      name: string;
+      currency_code: string;
+      qty: string;
+      revenue: string;
+    }>(
+      await this.database.pool.query(
+        `select i.product_id, i.name_snapshot name, s.currency_code,
+                coalesce(sum(i.quantity),0)::text qty, coalesce(sum(i.line_total),0)::text revenue
+         from sale_items i
+         join sales s on s.company_id = i.company_id and s.id = i.sale_id
+         where ${where.join(' and ')}
+         group by i.product_id, i.name_snapshot, s.currency_code
+         order by revenue desc, name asc
+         limit 10`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      productId: row.product_id,
+      name: row.name,
+      quantitySold: row.qty,
+      currencyCode: row.currency_code,
+      revenue: row.revenue,
+    }));
+  }
+
   // --- Financial ------------------------------------------------------------
 
   public async cashMovementTotals(
@@ -264,6 +354,36 @@ export class ReportsRepository {
     ).rows;
     return rows.map((row) => ({
       movementType: row.movement_type,
+      currencyCode: row.currency_code,
+      amount: row.amount,
+      count: Number(row.cnt),
+    }));
+  }
+
+  // TASK 16.25 (Phase 7/Financiero) — real `payments.payment_method`
+  // totals, `status='captured'` only — see `reports.types.ts`'s own doc
+  // comment on `PaymentMethodTotal` for why this is deliberately NOT the
+  // same query as `cashMovementTotals` above.
+  public async paymentMethodTotals(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<PaymentMethodTotal[]> {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    appendBranchScope(where, values, companyId, branchIds, input.branchId);
+    where.push(`status = 'captured'`);
+    appendTimestampRange(where, values, 'captured_at', input.dateFrom, input.dateTo, input.timezone);
+    const rows = result<{ payment_method: string; currency_code: string; amount: string; cnt: string }>(
+      await this.database.pool.query(
+        `select payment_method, currency_code, coalesce(sum(amount),0)::text amount, count(*)::text cnt
+         from payments where ${where.join(' and ')}
+         group by payment_method, currency_code`,
+        values,
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      paymentMethod: row.payment_method,
       currencyCode: row.currency_code,
       amount: row.amount,
       count: Number(row.cnt),
@@ -951,6 +1071,44 @@ export class ReportsRepository {
       ),
     ).rows[0];
     return row === undefined ? 0 : Number(row.cnt);
+  }
+
+  // TASK 16.25 (Phase 12/Accesos) — real average minutes between an
+  // entry and its own credential's NEXT exit, restricted to entries that
+  // occurred in range AND genuinely have a later exit recorded (a
+  // `LATERAL` join finds, per entry row, the single nearest following
+  // exit for that same credential — the standard, correct SQL shape for
+  // "pair each entry with its own next exit," never a naive self-join
+  // that could cross-pair unrelated entries/exits). `null` when zero
+  // pairs completed — see `reports.types.ts`'s own doc comment on
+  // `AccessReport.averageStayMinutes`.
+  public async averageStayMinutes(
+    companyId: string,
+    branchIds: readonly string[],
+    input: ReportScopeInput,
+  ): Promise<number | null> {
+    const where: string[] = ['e.company_id = $1', 'e.branch_id = any($2::uuid[])', `e.event_type = 'entry'`];
+    const values: unknown[] = [companyId, branchIds];
+    if (input.branchId !== undefined) {
+      values.push(input.branchId);
+      where.push(`e.branch_id = $${String(values.length)}`);
+    }
+    appendTimestampRange(where, values, 'e.occurred_at', input.dateFrom, input.dateTo, input.timezone);
+    const row = result<{ avg_minutes: string | null }>(
+      await this.database.pool.query(
+        `select avg(extract(epoch from (x.exit_at - e.occurred_at)) / 60)::text avg_minutes
+         from access_events e
+         cross join lateral (
+           select min(occurred_at) exit_at from access_events x
+           where x.company_id = e.company_id and x.credential_id = e.credential_id
+             and x.event_type = 'exit' and x.occurred_at > e.occurred_at
+         ) x
+         where ${where.join(' and ')} and x.exit_at is not null`,
+        values,
+      ),
+    ).rows[0];
+    const avgMinutes = row?.avg_minutes ?? null;
+    return avgMinutes === null ? null : Number(avgMinutes);
   }
 }
 

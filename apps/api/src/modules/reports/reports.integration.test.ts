@@ -89,6 +89,11 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
   const IN_RANGE_DATE_TO = '2026-02-28';
   const OUT_OF_RANGE_TS = new Date('2026-01-05T12:00:00Z');
   const EMPTY_RANGE = { date_from: '2020-01-01', date_to: '2020-01-31' };
+  // TASK 16.25 — the disjoint window the sales_by_hour/top_products/
+  // payment_method_totals/average_stay_minutes fixtures live in (see
+  // `beforeAll` below); declared here, not inside `beforeAll`, so the
+  // `it()` blocks that reference it can actually see it.
+  const HOURLY_DATE = '2026-03-01';
 
   function inRange(hhmm = '10:00:00'): Date {
     return new Date(`2026-02-15T${hhmm}Z`);
@@ -287,6 +292,112 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
                             currency_code,subtotal,tax_total,total,occurred_at,completed_at,created_by)
        values($1,$2,$3,$4,$5,'RF-0001','completed','cash','customer_request','MXN','10.0000','1.6000','11.6000',$6,$6,$7)`,
       [randomUUID(), companyId, branchId, saleInRangeId, paymentId, inRange('12:00:00'), userId],
+    );
+
+    // TASK 16.25 (Phase 6/7/Inteligencia+Ventas+Financiero) — sales_by_hour/
+    // top_products/payment_method_totals fixtures, in a DELIBERATELY
+    // disjoint window (2026-03-01) from IN_RANGE_DATE_FROM/TO (February)
+    // so nothing here can affect any exact-total assertion already made
+    // above — a completely separate, self-contained "known fixture" for
+    // these three new aggregations only.
+    function onMarch1(hh: string): Date {
+      return new Date(`2026-03-01T${hh}:00:00Z`);
+    }
+    const saleHour9Id = randomUUID();
+    const saleHour14Id = randomUUID();
+    await insertSale({
+      id: saleHour9Id,
+      forCompanyId: companyId,
+      forBranchId: branchId,
+      number: 'HRM-0001',
+      status: 'completed',
+      subtotal: '80.0000',
+      taxTotal: '12.8000',
+      total: '92.8000',
+      completedAt: onMarch1('09'),
+      createdBy: userId,
+    });
+    await insertSale({
+      id: saleHour14Id,
+      forCompanyId: companyId,
+      forBranchId: branchId,
+      number: 'HRM-0002',
+      status: 'completed',
+      subtotal: '40.0000',
+      taxTotal: '6.4000',
+      total: '46.4000',
+      completedAt: onMarch1('14'),
+      createdBy: userId,
+    });
+    // "Producto Estrella": 3 units (69.6000) on HRM-0001 + 1 unit
+    // (23.2000) on HRM-0002 = 4 units / 92.8000 total — the top product.
+    // "Producto Secundario": 2 units / 23.2000 — ranks second.
+    await database.pool.query(
+      `insert into sale_items(id,company_id,branch_id,sale_id,line_number,name_snapshot,quantity,unit_price,subtotal,tax_total,line_total,created_at)
+       values($1,$2,$3,$4,1,'Producto Estrella','3.000000','20.0000','60.0000','9.6000','69.6000',$5)`,
+      [randomUUID(), companyId, branchId, saleHour9Id, onMarch1('09')],
+    );
+    await database.pool.query(
+      `insert into sale_items(id,company_id,branch_id,sale_id,line_number,name_snapshot,quantity,unit_price,subtotal,tax_total,line_total,created_at)
+       values($1,$2,$3,$4,2,'Producto Secundario','2.000000','10.0000','20.0000','3.2000','23.2000',$5)`,
+      [randomUUID(), companyId, branchId, saleHour9Id, onMarch1('09')],
+    );
+    await database.pool.query(
+      `insert into sale_items(id,company_id,branch_id,sale_id,line_number,name_snapshot,quantity,unit_price,subtotal,tax_total,line_total,created_at)
+       values($1,$2,$3,$4,1,'Producto Estrella','1.000000','20.0000','20.0000','3.2000','23.2000',$5)`,
+      [randomUUID(), companyId, branchId, saleHour14Id, onMarch1('14')],
+    );
+    // Two DIFFERENT non-cash payment methods, so the report can prove it
+    // never collapses transfer/card into the same bucket as cash (TASK
+    // 16.24's own transfer method must appear correctly here).
+    await database.pool.query(
+      `insert into payments(id,company_id,branch_id,sale_id,payment_method,amount,currency_code,status,captured_at,created_by)
+       values($1,$2,$3,$4,'transfer','92.8000','MXN','captured',$5,$6)`,
+      [randomUUID(), companyId, branchId, saleHour9Id, onMarch1('09'), userId],
+    );
+    await database.pool.query(
+      `insert into payments(id,company_id,branch_id,sale_id,payment_method,amount,currency_code,status,captured_at,created_by)
+       values($1,$2,$3,$4,'card_manual','46.4000','MXN','captured',$5,$6)`,
+      [randomUUID(), companyId, branchId, saleHour14Id, onMarch1('14'), userId],
+    );
+
+    // TASK 16.25 (Phase 12/Accesos) — a real, completed entry→exit pair
+    // (45 minutes apart) for average-stay, plus a second, EXIT-LESS entry
+    // that must be excluded from the average (never treated as a 0- or
+    // still-open stay).
+    const stayCredentialId = randomUUID();
+    await database.pool.query(
+      `insert into access_credentials(id,company_id,branch_id,code,status,currently_inside,issued_by)
+       values($1,$2,$3,$4,'issued','false',$5)`,
+      [stayCredentialId, companyId, branchId, `ACC-STAY-${randomUUID()}`, userId],
+    );
+    await database.pool.query(
+      `insert into access_events(id,company_id,branch_id,credential_id,event_type,occurred_at,created_by)
+       values($1,$2,$3,$4,'entry',$5,$6)`,
+      [randomUUID(), companyId, branchId, stayCredentialId, onMarch1('09'), userId],
+    );
+    await database.pool.query(
+      `insert into access_events(id,company_id,branch_id,credential_id,event_type,occurred_at,created_by)
+       values($1,$2,$3,$4,'exit',$5,$6)`,
+      [randomUUID(), companyId, branchId, stayCredentialId, new Date('2026-03-01T09:45:00Z'), userId],
+    );
+    // `currently_inside: false` here deliberately — this fixture is only
+    // exercising `average_stay_minutes`' own entry/exit-pairing SQL
+    // (which reads `access_events`, never `access_credentials.
+    // currently_inside`), not the LIVE occupancy snapshot the OTHER
+    // access-report test above already asserts an exact global count
+    // for; a `true` value here would silently inflate that unrelated,
+    // never-date-scoped assertion.
+    const openCredentialId = randomUUID();
+    await database.pool.query(
+      `insert into access_credentials(id,company_id,branch_id,code,status,currently_inside,issued_by)
+       values($1,$2,$3,$4,'issued','false',$5)`,
+      [openCredentialId, companyId, branchId, `ACC-OPEN-${randomUUID()}`, userId],
+    );
+    await database.pool.query(
+      `insert into access_events(id,company_id,branch_id,credential_id,event_type,occurred_at,created_by)
+       values($1,$2,$3,$4,'entry',$5,$6)`,
+      [randomUUID(), companyId, branchId, openCredentialId, onMarch1('14'), userId],
     );
 
     // --- Financial (real CashService flow) ------------------------------
@@ -655,6 +766,7 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     await database.pool.query('delete from sale_discounts where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from coupon_redemptions where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from coupons where company_id=any($1::uuid[])', [ids]);
+    await database.pool.query('delete from sale_items where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from sales where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from idempotency_keys where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from outbox_events where company_id=any($1::uuid[])', [ids]);
@@ -700,6 +812,34 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     expect(response.body).toContain('RM-0002');
     expect(response.body).not.toContain('RM-0003'); // out of range.
     expect(response.body).not.toContain('RM-0004'); // excluded branch.
+  });
+
+  // TASK 16.25 (Phase 6/Inteligencia+Ventas) — real branch-local hour-of-day
+  // buckets, computed in SQL (the branch's own timezone is 'UTC' in this
+  // fixture, so hour extraction matches the raw UTC hour directly).
+  it('sales report: sales_by_hour buckets the known fixture by real branch-local completed hour', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/reports/sales?date_from=${HOURLY_DATE}&date_to=${HOURLY_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<{
+      data: { sales_by_hour: { hour: number; currency_code: string; transaction_count: number; gross_sales: string }[] };
+    }>().data;
+    expect(data.sales_by_hour).toEqual([
+      { hour: 9, currency_code: 'MXN', transaction_count: 1, gross_sales: '92.8000' },
+      { hour: 14, currency_code: 'MXN', transaction_count: 1, gross_sales: '46.4000' },
+    ]);
+  });
+
+  it('sales report: top_products ranks by real revenue from sale_items, never a client-side reduction', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/reports/sales?date_from=${HOURLY_DATE}&date_to=${HOURLY_DATE}&branch_id=${branchId}`);
+    const data = response.json<{
+      data: { top_products: { product_id: string | null; name: string; quantity_sold: string; currency_code: string; revenue: string }[] };
+    }>().data;
+    expect(data.top_products).toEqual([
+      { product_id: null, name: 'Producto Estrella', quantity_sold: '4.000000', currency_code: 'MXN', revenue: '92.8000' },
+      { product_id: null, name: 'Producto Secundario', quantity_sold: '2.000000', currency_code: 'MXN', revenue: '23.2000' },
+    ]);
   });
 
   it('branch scoping: data in a same-company branch outside permittedBranchIds never appears, even with no branch_id filter', async () => {
@@ -806,6 +946,29 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     const service = new ReportsService(new ReportsRepository(database));
     const reportFold = await service.netCashMovementForSession(companyId, financialSessionId);
     expect(reportFold).toBe(persistedExpected); // bit-for-bit — never diverges.
+  });
+
+  // TASK 16.25 (Phase 7/Financiero) — real `payments.payment_method`
+  // totals, distinguishing transfer/card from cash — never collapsed
+  // into the cash-drawer movement figures above (see this module's own
+  // `PaymentMethodTotal` doc comment for why the two are deliberately
+  // different questions).
+  it('financial report: payment_method_totals distinguishes transfer/card_manual from cash, never merging them', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/reports/financial?date_from=${HOURLY_DATE}&date_to=${HOURLY_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<{
+      data: { payment_method_totals: { payment_method: string; currency_code: string; amount: string; count: number }[] };
+    }>().data;
+    expect(data.payment_method_totals).toEqual(
+      expect.arrayContaining([
+        { payment_method: 'transfer', currency_code: 'MXN', amount: '92.8000', count: 1 },
+        { payment_method: 'card_manual', currency_code: 'MXN', amount: '46.4000', count: 1 },
+      ]),
+    );
+    // The February-window cash payment never leaks into this disjoint
+    // March-window query.
+    expect(data.payment_method_totals).not.toContainEqual(expect.objectContaining({ payment_method: 'cash' }));
   });
 
   it('financial export.csv contains real movement rows with a correctly re-derived direction', async () => {
@@ -954,10 +1117,31 @@ integration('Report Center aggregation (TASK 14.4, Wave 2 Part D)', { concurrent
     authContext = baseContext(companyId, branchId, [branchId]);
     const response = await get(`/api/v1/reports/access?date_from=${IN_RANGE_DATE_FROM}&date_to=${IN_RANGE_DATE_TO}&branch_id=${branchId}`);
     expect(response.statusCode).toBe(200);
-    const data = response.json<{ data: { entry_count: number; exit_count: number; current_occupancy: number } }>().data;
+    const data = response.json<{
+      data: { entry_count: number; exit_count: number; current_occupancy: number; average_stay_minutes: number | null };
+    }>().data;
     expect(data.entry_count).toBe(1);
     expect(data.exit_count).toBe(0);
     expect(data.current_occupancy).toBe(1);
+    // Zero completed entry→exit pairs in THIS window (the one fixture
+    // entry above never exits) — an honest `null`, never a fabricated
+    // `0` (the legacy's own `prom_estancia` was a hardcoded `95`; this
+    // is a genuine, real replacement — see `reports.types.ts`'s own doc
+    // comment on `AccessReport.averageStayMinutes`).
+    expect(data.average_stay_minutes).toBeNull();
+  });
+
+  // TASK 16.25 (Phase 12/Accesos) — a real average over completed
+  // entry→exit pairs only; an exit-less entry (still "inside") is never
+  // counted as a 0-minute or fabricated stay.
+  it('access report: average_stay_minutes averages only completed entry→exit pairs, excluding a still-open entry', async () => {
+    authContext = baseContext(companyId, branchId, [branchId]);
+    const response = await get(`/api/v1/reports/access?date_from=${HOURLY_DATE}&date_to=${HOURLY_DATE}&branch_id=${branchId}`);
+    expect(response.statusCode).toBe(200);
+    const data = response.json<{ data: { entry_count: number; exit_count: number; average_stay_minutes: number | null } }>().data;
+    expect(data.entry_count).toBe(2); // the completed pair + the still-open one.
+    expect(data.exit_count).toBe(1);
+    expect(data.average_stay_minutes).toBe(45); // exactly the one completed pair's own duration.
   });
 
   // TASK 14.5 (Wave 3, Phase 7, Item 4).

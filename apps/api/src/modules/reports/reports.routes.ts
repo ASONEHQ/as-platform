@@ -11,13 +11,16 @@ import type {
   CustomersReport,
   EmployeesReport,
   FinancialReport,
+  HourlySales,
   InventoryReport,
   PartiesReport,
+  PaymentMethodTotal,
   PromotionsReport,
   ReportFilter,
   SalesReport,
   StatusCount,
   TopCoupon,
+  TopProduct,
 } from './reports.types.js';
 
 /**
@@ -94,6 +97,25 @@ function statusCountHttp(entry: StatusCount): Readonly<Record<string, unknown>> 
   return { status: entry.status, count: entry.count };
 }
 
+function hourlySalesHttp(entry: HourlySales): Readonly<Record<string, unknown>> {
+  return {
+    hour: entry.hour,
+    currency_code: entry.currencyCode,
+    transaction_count: entry.transactionCount,
+    gross_sales: entry.grossSales,
+  };
+}
+
+function topProductHttp(entry: TopProduct): Readonly<Record<string, unknown>> {
+  return {
+    product_id: entry.productId,
+    name: entry.name,
+    quantity_sold: entry.quantitySold,
+    currency_code: entry.currencyCode,
+    revenue: entry.revenue,
+  };
+}
+
 function salesReportHttp(report: SalesReport): Readonly<Record<string, unknown>> {
   return {
     date_from: report.dateFrom,
@@ -105,6 +127,17 @@ function salesReportHttp(report: SalesReport): Readonly<Record<string, unknown>>
     refunds_total: report.refundsTotal.map(currencyAmountHttp),
     net_sales: report.netSales.map(currencyAmountHttp),
     average_ticket: report.averageTicket.map(currencyAmountHttp),
+    sales_by_hour: report.salesByHour.map(hourlySalesHttp),
+    top_products: report.topProducts.map(topProductHttp),
+  };
+}
+
+function paymentMethodTotalHttp(entry: PaymentMethodTotal): Readonly<Record<string, unknown>> {
+  return {
+    payment_method: entry.paymentMethod,
+    currency_code: entry.currencyCode,
+    amount: entry.amount,
+    count: entry.count,
   };
 }
 
@@ -128,6 +161,7 @@ function financialReportHttp(report: FinancialReport): Readonly<Record<string, u
       discrepancy_total: entry.discrepancyTotal,
     })),
     sessions_opened_count: report.sessionsOpenedCount,
+    payment_method_totals: report.paymentMethodTotals.map(paymentMethodTotalHttp),
   };
 }
 
@@ -217,6 +251,7 @@ function accessReportHttp(report: AccessReport): Readonly<Record<string, unknown
     entry_count: report.entryCount,
     exit_count: report.exitCount,
     current_occupancy: report.currentOccupancy,
+    average_stay_minutes: report.averageStayMinutes,
   };
 }
 
