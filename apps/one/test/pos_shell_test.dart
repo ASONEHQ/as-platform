@@ -8286,6 +8286,58 @@ void main() {
       expect(find.text('No hay reservaciones registradas.'), findsOneWidget);
     });
 
+    // TASK 16.24.1 — the owner reviewed and rejected TASK 16.24's split
+    // Calendario+Cotizador workspace. Fiestas keeps 4 separate,
+    // full-width top-level tabs; Calendario and Cotizador must never
+    // render at the same time.
+    testWidgets('Fiestas has 4 top-level tabs — Lista/Calendario/Cotizador/Ajustes — and Calendario/Cotizador are never rendered simultaneously', (
+      tester,
+    ) async {
+      final partiesGateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        calendarResult: [
+          PosPartyCalendarEntry(
+            id: 'reservation-1',
+            roomId: 'room-1',
+            eventDate: '2026-10-10',
+            startTime: '11:00:00',
+            endTime: '13:00:00',
+            status: 'held',
+            celebrantName: 'Camila',
+            customerDisplayName: null,
+            sellerUserId: null,
+          ),
+        ],
+      );
+      await _pump(tester, const Size(1440, 900), context: _contextWithParties(), partiesGateway: partiesGateway);
+      await _navigateToFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Lista'), findsOneWidget);
+      expect(find.text('Calendario'), findsOneWidget);
+      expect(find.text('Cotizador'), findsOneWidget);
+      expect(find.text('Ajustes'), findsOneWidget);
+
+      // Calendario: its own real calendar content shows, and the
+      // Cotizador's own quote form does NOT — proving they don't share
+      // the screen.
+      await tester.tap(find.text('Calendario'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-quote-submit')), findsNothing);
+
+      // Cotizador: its own quote form shows, full-width, and the
+      // calendar's own entries do NOT — the reverse of the above.
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cotizador'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-fiestas-quote-submit')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsNothing);
+    });
+
     testWidgets('Lista renders real rows from the fake gateway', (tester) async {
       final populatedGateway = _FakePartiesGateway(
         roomsResult: [_fixturePartyRoom()],
@@ -8424,7 +8476,7 @@ void main() {
       await _navigateToFiestas(tester);
       await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Calendario'));
+      await tester.tap(find.text('Cotizador'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8499,7 +8551,7 @@ void main() {
         await _navigateToFiestas(tester);
         await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Calendario'));
+        await tester.tap(find.text('Cotizador'));
         await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8544,13 +8596,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.widget<FilledButton>(convertFinder).onPressed, isNotNull);
 
-        // TASK 16.24 (Block A3) — the Cotizador now renders docked
-        // alongside the always-visible calendar (narrower column than
-        // its old full-width tab), so this button can legitimately sit
-        // below the fold on a real page; the page itself is genuinely
-        // scrollable (matches every other module's own scroll wrapper),
-        // so scrolling it into view here mirrors what a real operator
-        // would do, not a workaround for a layout bug.
+        // The Cotizador page is genuinely scrollable (matches every
+        // other module's own scroll wrapper), so scrolling the convert
+        // button into view here mirrors what a real operator would do
+        // on a tall form, not a workaround for a layout bug.
         await tester.ensureVisible(convertFinder);
         await tester.pumpAndSettle();
         await tester.tap(convertFinder);
@@ -8576,7 +8625,7 @@ void main() {
       await _navigateToFiestas(tester);
       await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Calendario'));
+      await tester.tap(find.text('Cotizador'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
@@ -8604,7 +8653,7 @@ void main() {
         await _navigateToFiestas(tester);
         await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Calendario'));
+        await tester.tap(find.text('Cotizador'));
         await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-date')));
@@ -8996,13 +9045,13 @@ void main() {
       expect(find.byKey(const Key('pos-fiestas-detail-close')), findsOneWidget);
     });
 
-    // TASK 16.24 (Block A3/A4) — starting a reservation from the date an
-    // operator is already looking at, never re-entering it — and now
-    // never hiding the calendar to do it: the "+" hands the date to the
-    // docked Cotizador panel instead of opening a dialog over the
-    // calendar (superseding TASK 16.22's own version of this test, which
-    // asserted the old dialog-based handoff).
-    testWidgets('Calendario: the per-day "+" hands the date to the docked Cotizador panel, never hiding the calendar behind a dialog', (tester) async {
+    // TASK 16.24.1 — starting a reservation from the date an operator is
+    // already looking at, never re-entering it. Calendario and Cotizador
+    // are separate full-width tabs (the owner rejected TASK 16.24's
+    // docked-side-by-side layout), so the "+" now switches the Fiestas
+    // tab to Cotizador with the date pre-filled, rather than opening a
+    // dialog over the calendar OR keeping both panes visible at once.
+    testWidgets('Calendario: the per-day "+" switches to the Cotizador tab with the date pre-filled', (tester) async {
       final today = DateTime.now();
       final todayIso =
           '${today.year.toString().padLeft(4, '0')}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
@@ -9033,12 +9082,11 @@ void main() {
       await tester.tap(find.byKey(Key('pos-fiestas-cal-new-for-date-$todayIso')));
       await tester.pumpAndSettle();
 
-      // No dialog opened — the calendar entry underneath is still real
-      // and visible, proving nothing replaced/hid it.
-      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsOneWidget);
-      // The docked Cotizador panel's own date field now shows the picked
-      // date — never requiring the operator to re-enter it, and never
-      // requiring them to navigate away from the calendar to see it.
+      // The Fiestas tab switched to Cotizador — Calendario's own entry
+      // list is gone (a real tab switch, never a docked side panel).
+      expect(find.byKey(const Key('pos-fiestas-cal-entry-reservation-1')), findsNothing);
+      // Cotizador's own date field shows the picked date — never
+      // requiring the operator to re-enter it.
       expect(
         find.descendant(of: find.byKey(const Key('pos-fiestas-quote-date')), matching: find.text(todayIso)),
         findsOneWidget,

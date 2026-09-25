@@ -25384,7 +25384,7 @@ class _QuoteLine extends StatelessWidget {
   }
 }
 
-enum _FiestasTab { lista, calendario, ajustes }
+enum _FiestasTab { lista, calendario, cotizador, ajustes }
 
 /// `PosModule.events` ("Fiestas") — gated on `party.read`, matching every
 /// other admin section's own "permission-less actor never sees real data,
@@ -25420,7 +25420,23 @@ class _FiestasAdmin extends StatefulWidget {
 class _FiestasAdminState extends State<_FiestasAdmin> {
   _FiestasTab _tab = _FiestasTab.lista;
 
+  // TASK 16.24.1 — Calendario and Cotizador are separate, full-width
+  // workspaces (the owner explicitly rejected the split-screen layout
+  // TASK 16.24 shipped). This hint is the only state carried across that
+  // switch: the calendar's "quote/reserve this date" action stores the
+  // date here and jumps the tab to Cotizador, which reads it once as its
+  // own `initialDate` — never a live cross-widget bridge between two
+  // panes that no longer share the screen.
+  DateTime? _quoteDateHint;
+
   bool get _canRead => widget.context.permissions.contains('party.read');
+
+  void _openCotizadorForDate(DateTime date) {
+    setState(() {
+      _quoteDateHint = date;
+      _tab = _FiestasTab.cotizador;
+    });
+  }
 
   @override
   Widget build(BuildContext context) => Column(
@@ -25435,6 +25451,7 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
                 segments: const [
                   ButtonSegment(value: _FiestasTab.lista, label: Text('Lista')),
                   ButtonSegment(value: _FiestasTab.calendario, label: Text('Calendario')),
+                  ButtonSegment(value: _FiestasTab.cotizador, label: Text('Cotizador')),
                   ButtonSegment(value: _FiestasTab.ajustes, label: Text('Ajustes')),
                 ],
                 selected: {_tab},
@@ -25453,12 +25470,20 @@ class _FiestasAdminState extends State<_FiestasAdmin> {
             customersGateway: widget.customersGateway,
             cashGateway: widget.cashGateway,
           ),
-          _FiestasTab.calendario => _FiestasWorkspace(
+          _FiestasTab.calendario => _FiestasCalendario(
             context: widget.context,
             controller: widget.controller,
             partiesGateway: widget.partiesGateway,
             customersGateway: widget.customersGateway,
             cashGateway: widget.cashGateway,
+            onRequestQuoteForDate: _openCotizadorForDate,
+          ),
+          _FiestasTab.cotizador => _FiestasCotizador(
+            context: widget.context,
+            controller: widget.controller,
+            partiesGateway: widget.partiesGateway,
+            customersGateway: widget.customersGateway,
+            initialDate: _quoteDateHint,
           ),
           _FiestasTab.ajustes => _FiestasAjustes(
             context: widget.context,
@@ -25820,92 +25845,14 @@ class _PartyReservationRow extends StatelessWidget {
 
 enum _CalGranularity { month, week, day, list }
 
-/// Calendario — Mes/Semana/Día/Lista sub-views of the SAME real data via
-/// `GET /party-reservations/calendar`, grouped by day client-side (a
-/// grouped-list rendering rather than a bespoke grid-calendar widget —
-/// correctness/real-data over visual complexity, per task scope).
-/// TASK 16.24 (Block A3/A4 — "the calendar must be an always-visible
-/// primary operational surface") — merges the former standalone
-/// Calendario and Cotizador destinations into one persistent two-pane
-/// workspace: opening the quoting tool no longer replaces/hides the
-/// calendar, satisfying the acceptance criterion literally. Both panes
-/// below are the exact same, already-proven `_FiestasCalendario`/
-/// `_FiestasCotizador` widgets, unchanged internally — this widget only
-/// composes them side by side and bridges a calendar date-tap into the
-/// quote panel's own date field via `_cotizadorKey`, never duplicating
-/// either panel's own business logic (no second date/availability/quote
-/// state exists anywhere in this class).
-class _FiestasWorkspace extends StatefulWidget {
-  const _FiestasWorkspace({
-    required this.context,
-    required this.controller,
-    required this.partiesGateway,
-    required this.customersGateway,
-    required this.cashGateway,
-  });
-  final AuthenticatedContext context;
-  final PosReadController controller;
-  final PosPartiesGateway partiesGateway;
-  final PosCustomersGateway customersGateway;
-  final PosCashGateway cashGateway;
-
-  @override
-  State<_FiestasWorkspace> createState() => _FiestasWorkspaceState();
-}
-
-class _FiestasWorkspaceState extends State<_FiestasWorkspace> {
-  final _cotizadorKey = GlobalKey<_FiestasCotizadorState>();
-
-  void _focusQuoteOnDate(DateTime date) => _cotizadorKey.currentState?.prefillDate(date);
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    final calendar = _FiestasCalendario(
-      context: widget.context,
-      controller: widget.controller,
-      partiesGateway: widget.partiesGateway,
-      customersGateway: widget.customersGateway,
-      cashGateway: widget.cashGateway,
-      onRequestQuoteForDate: _focusQuoteOnDate,
-    );
-    final quotePanel = Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text('Cotizador', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 13)),
-        const SizedBox(height: 8),
-        _FiestasCotizador(
-          key: _cotizadorKey,
-          context: widget.context,
-          controller: widget.controller,
-          partiesGateway: widget.partiesGateway,
-          customersGateway: widget.customersGateway,
-        ),
-      ],
-    );
-    // Block A5 — desktop is the primary target (a persistent side-by-side
-    // workspace), but narrower widths still show BOTH panes stacked —
-    // never hiding the calendar behind a tab switch just to fit.
-    final narrow = MediaQuery.sizeOf(context).width < 980;
-    if (narrow) {
-      return Column(
-        key: const Key('pos-fiestas-workspace-stacked'),
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [calendar, const SizedBox(height: 20), quotePanel],
-      );
-    }
-    return Row(
-      key: const Key('pos-fiestas-workspace-split'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(flex: 5, child: calendar),
-        const SizedBox(width: 20),
-        Expanded(flex: 4, child: quotePanel),
-      ],
-    );
-  }
-}
-
+/// Calendario — its own full-width workspace (TASK 16.24.1 — the owner
+/// reviewed and rejected the earlier split-screen Calendario+Cotizador
+/// layout: Calendario and Cotizador are separate, full-size tabs, never
+/// rendered side by side). Mes/Semana/Día/Lista sub-views of the SAME
+/// real data via `GET /party-reservations/calendar`, grouped by day
+/// client-side (a grouped-list rendering rather than a bespoke
+/// grid-calendar widget — correctness/real-data over visual complexity,
+/// per task scope).
 class _FiestasCalendario extends StatefulWidget {
   const _FiestasCalendario({
     required this.context,
@@ -25920,14 +25867,15 @@ class _FiestasCalendario extends StatefulWidget {
   final PosPartiesGateway partiesGateway;
   final PosCustomersGateway customersGateway;
   final PosCashGateway cashGateway;
-  // TASK 16.24 (Block A4) — when set (always, from `_FiestasWorkspace`),
-  // the "new reservation for this date" action hands the date to the
-  // docked Cotizador panel instead of jumping straight to the creation
-  // dialog — a real quote/availability check now always precedes booking
-  // from the calendar, matching the legacy Cotizador's own "quote first"
-  // intent (see `docs/LEGACY_FIESTAS_RECOVERY.md` item 6). Nullable only
-  // so this widget still compiles/works standalone in isolation (e.g. a
-  // future reuse or a test harness that doesn't wire the workspace).
+  // TASK 16.24.1 — when set (always, from `_FiestasAdminState`), the
+  // "new reservation for this date" action switches the Fiestas tab to
+  // Cotizador (its own full workspace) with this date pre-filled,
+  // instead of jumping straight to the creation dialog — a real
+  // quote/availability check still always precedes booking from the
+  // calendar, matching the legacy Cotizador's own "quote first" intent
+  // (see `docs/LEGACY_FIESTAS_RECOVERY.md` item 6). Nullable only so
+  // this widget still compiles/works standalone in isolation (e.g. a
+  // test harness that doesn't wire tab switching).
   final ValueChanged<DateTime>? onRequestQuoteForDate;
 
   @override
@@ -26283,12 +26231,19 @@ class _FiestasCotizador extends StatefulWidget {
     required this.controller,
     required this.partiesGateway,
     required this.customersGateway,
-    super.key,
+    this.initialDate,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
   final PosPartiesGateway partiesGateway;
   final PosCustomersGateway customersGateway;
+  // TASK 16.24.1 — the date Calendario's own "Cotizar/reservar este
+  // día" action asked for, if any (`_FiestasAdminState` hands it in when
+  // it switches the Fiestas tab to Cotizador). Read once, in `initState`
+  // — Calendario and Cotizador are separate full-width tabs now, never
+  // simultaneously mounted, so there is no live cross-widget bridge to
+  // maintain here, unlike TASK 16.24's rejected split-screen version.
+  final DateTime? initialDate;
 
   @override
   State<_FiestasCotizador> createState() => _FiestasCotizadorState();
@@ -26320,6 +26275,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
   @override
   void initState() {
     super.initState();
+    _eventDate = widget.initialDate;
     unawaited(_load());
   }
 
@@ -26415,17 +26371,6 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
       _selectedRoomId = null;
       _availabilityError = null;
     });
-  }
-
-  /// TASK 16.24 (Block A4) — the external bridge `_FiestasWorkspaceState`
-  /// calls (via `GlobalKey`) when the operator taps "cotizar/reservar"
-  /// for a date on the always-visible calendar pane. Reuses the exact
-  /// same invalidation `_pickEventDate` itself already applies — no
-  /// second copy of that rule.
-  void prefillDate(DateTime date) {
-    if (!mounted) return;
-    setState(() => _eventDate = date);
-    _invalidateAvailability();
   }
 
   Future<void> _pickEventDate() async {
