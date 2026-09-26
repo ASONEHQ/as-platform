@@ -52,7 +52,7 @@ enum PosModule {
   ),
   dashboard('Dashboard', Icons.dashboard_outlined, 'Administración'),
   reports('Reportes', Icons.analytics_outlined, 'Administración'),
-  access('Control Acceso', Icons.qr_code_scanner_outlined, 'Administración'),
+  access('Control de Acceso', Icons.qr_code_scanner_outlined, 'Administración'),
   users('Usuarios', Icons.manage_accounts_outlined, 'Administración'),
   // TASK 15.1 Phase 2: role/permission administration lives inside the
   // same screen as Usuarios (tabs: Usuarios/Roles/Permisos) — see
@@ -80,7 +80,9 @@ enum PosModule {
   settings('Configuración', Icons.settings_outlined, 'Sistema'),
   // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer text —
   // see `pos_receipt_branding_screen.dart`.
-  receiptBranding('Marca del Ticket', Icons.receipt_long_outlined, 'Sistema'),
+  // TASK 16.26 — a distinct icon from `billing`'s `receipt_long_outlined`
+  // (this is ticket BRANDING config, not the CFDI invoice screen itself).
+  receiptBranding('Marca del Ticket', Icons.local_print_shop_outlined, 'Sistema'),
   // TASK 16.7B: real thermal-printer paper-width configuration + a
   // zero-side-effect "Imprimir ticket de prueba" — see
   // `pos_printer_settings_screen.dart`.

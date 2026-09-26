@@ -127,6 +127,92 @@ void main() {
     });
   });
 
+  // TASK 16.26 — `PosPeopleScreen`'s own roster/attendance data is only
+  // ever fetched in `initState` (`_branchId => widget.context.session
+  // .branchId`, read once). A live branch switch on the surrounding
+  // `pos_shell.dart` module switch now supplies a branch-keyed
+  // `ValueKey('employees-$branchId')` (mirroring `_Caja`/`_DashboardReady`'s
+  // own established convention) specifically so Flutter fully discards and
+  // rebuilds this widget's state on a branch change, rather than leaving
+  // the previous branch's roster on screen. This test proves that
+  // mechanism directly.
+  group('Cambio de sucursal (TASK 16.26) — un remount con clave nueva descarta el roster anterior', () {
+    testWidgets('un ValueKey distinto fuerza un remount real y una nueva consulta con el branchId de la sucursal nueva', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(1440, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      AuthenticatedContext contextFor(String branchId) => AuthenticatedContext(
+        session: SessionContext(
+          id: 'session-id',
+          userId: 'user-id',
+          companyId: 'company-id',
+          branchId: branchId,
+          permittedBranchIds: const ['branch-id', 'branch-other'],
+          companyWideAccess: false,
+          expiresAt: DateTime.utc(2099),
+        ),
+        user: _context.user,
+        companies: _context.companies,
+        branches: _context.branches,
+        companyWideAccess: false,
+        permissions: _context.permissions,
+      );
+
+      Widget buildFor(String branchId, PosEmployeesGateway gateway) => MaterialApp(
+        theme: PosTheme.light(),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: PosPeopleScreen(
+              key: ValueKey('employees-$branchId'),
+              context: contextFor(branchId),
+              employeesGateway: gateway,
+              schedulesGateway: const EmptyPosSchedulesGateway(),
+              timeClockGateway: const EmptyPosTimeClockGateway(),
+              payrollGateway: const EmptyPosPayrollGateway(),
+            ),
+          ),
+        ),
+      );
+
+      final branchAGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      await tester.pumpWidget(buildFor('branch-id', branchAGateway));
+      await tester.pumpAndSettle();
+      expect(find.text('Ana Torres'), findsOneWidget);
+
+      final otherBranchEmployee = PosEmployee(
+        id: 'employee-other',
+        branchId: 'branch-other',
+        code: 'EMP-9',
+        displayName: 'Luis Ramírez',
+        phone: null,
+        email: null,
+        jobTitle: 'Cajero',
+        status: 'active',
+        hireDate: '2024-02-01',
+        weeklySalary: '1500.0000',
+        currencyCode: 'MXN',
+        userId: 'user-other',
+        notes: null,
+        deactivatedAt: null,
+        deactivatedBy: null,
+        version: 1,
+        createdAt: DateTime.utc(2024, 2, 1),
+        updatedAt: DateTime.utc(2024, 2, 1),
+      );
+      final branchBGateway = _RecordingEmployeesGateway(seed: [otherBranchEmployee]);
+      await tester.pumpWidget(buildFor('branch-other', branchBGateway));
+      await tester.pumpAndSettle();
+
+      // The previous branch's employee never lingers after a real
+      // remount, and the new branch's own roster is fetched fresh.
+      expect(find.text('Ana Torres'), findsNothing);
+      expect(find.text('Luis Ramírez'), findsOneWidget);
+    });
+  });
+
   group('Horarios', () {
     testWidgets('a day off with a scheduled_start shows the real client-side validation error, never submits', (
       tester,

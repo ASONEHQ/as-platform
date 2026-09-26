@@ -139,6 +139,58 @@ void main() {
     );
   });
 
+  // TASK 16.26 — this screen's own occupancy/inside/events data is only
+  // ever fetched in `initState`, with no `didUpdateWidget` re-fetch. A
+  // live branch switch on the surrounding `pos_shell.dart` module switch
+  // now supplies a branch-keyed `ValueKey('access-$branchId')` (mirroring
+  // `_Caja`/`_DashboardReady`'s own established convention) specifically
+  // so Flutter fully discards and rebuilds this widget's state on a
+  // branch change, rather than leaving the previous branch's occupancy
+  // count on screen until a manual refresh. This test proves that
+  // mechanism directly: two different keys behave like two different
+  // branches, and the second pump must show fresh data from its own
+  // gateway, never the first gateway's stale result.
+  group('Cambio de sucursal (TASK 16.26) — un remount con clave nueva descarta el aforo anterior', () {
+    testWidgets('un ValueKey distinto fuerza un remount real y una nueva consulta al gateway de la sucursal nueva', (tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      Widget buildFor(String branchId, PosAccessGateway gateway) => MaterialApp(
+        theme: PosTheme.light(),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: PosAccessScreen(
+              key: ValueKey('access-$branchId'),
+              context: _context,
+              accessGateway: gateway,
+            ),
+          ),
+        ),
+      );
+
+      final branchAGateway = _FakeAccessGateway(occupancyCount: 7);
+      await tester.pumpWidget(buildFor('branch-id', branchAGateway));
+      await tester.pumpAndSettle();
+      expect(branchAGateway.occupancyCalls, 1);
+      expect(find.text('7'), findsOneWidget);
+
+      final branchBGateway = _FakeAccessGateway(occupancyCount: 0);
+      await tester.pumpWidget(buildFor('branch-other', branchBGateway));
+      await tester.pumpAndSettle();
+
+      // The new branch's own gateway was queried exactly once — a real
+      // remount, not an in-place update reusing the old element.
+      expect(branchBGateway.occupancyCalls, 1);
+      // The old branch's gateway was never queried again.
+      expect(branchAGateway.occupancyCalls, 1);
+      // The previous branch's occupancy count is gone — never shown
+      // stale alongside/instead of the new branch's real (zero) count.
+      expect(find.text('7'), findsNothing);
+      expect(find.byKey(const Key('pos-access-occupancy-count')), findsOneWidget);
+    });
+  });
+
   group('Anular — la regla real "no se puede anular estando dentro"', () {
     testWidgets(
       'anular un pase actualmente dentro muestra el rechazo honesto del backend, nunca un '

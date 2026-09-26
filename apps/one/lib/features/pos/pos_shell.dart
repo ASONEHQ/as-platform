@@ -3530,14 +3530,28 @@ class _Content extends StatelessWidget {
                   // `PosModule.access` slot ("Control Acceso") — real
                   // credential issue/scan/void and occupancy, replacing
                   // the legacy's own fake ticket scanner.
+                  //
+                  // TASK 16.26 — keyed by branch, matching `_Caja`/
+                  // `_DashboardReady`'s own established convention (see
+                  // `_Caja`'s doc comment above): without this, occupancy/
+                  // "actualmente dentro" kept showing the PREVIOUS branch's
+                  // data after a live branch switch until a manual refresh
+                  // — a real staleness risk for a live-headcount screen.
                   PosModule.access => PosAccessScreen(
+                    key: ValueKey('access-${this.context.session.branchId}'),
                     context: this.context,
                     accessGateway: accessGateway,
                   ),
                   // TASK 14.4 (Wave 2, Part B): the pre-reserved
                   // `PosModule.employees` slot ("Empleados") —
                   // Empleados/Horarios/Checador/Nómina.
+                  //
+                  // TASK 16.26 — keyed by branch for the same reason as
+                  // `PosAccessScreen` just above: the roster/attendance
+                  // data was only ever fetched in `initState`, so it kept
+                  // showing the previous branch after a live switch.
                   PosModule.employees => PosPeopleScreen(
+                    key: ValueKey('employees-${this.context.session.branchId}'),
                     context: this.context,
                     employeesGateway: employeesGateway,
                     schedulesGateway: schedulesGateway,

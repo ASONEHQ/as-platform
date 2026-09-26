@@ -2018,10 +2018,25 @@ class _ReportsLoadingState extends StatelessWidget {
   const _ReportsLoadingState();
 
   @override
-  Widget build(BuildContext context) => const SizedBox(
-    height: 220,
-    child: Center(child: CircularProgressIndicator(key: Key('pos-reports-loading'))),
-  );
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return SizedBox(
+      height: 220,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(key: Key('pos-reports-loading')),
+            const SizedBox(height: 12),
+            // TASK 16.26 — a bare spinner gives no context across 9
+            // report tabs; a short label costs nothing and removes the
+            // ambiguity during a live demo pause.
+            Text('Cargando reporte…', style: TextStyle(color: palette.textSecondary, fontSize: 12.5)),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ReportsFailureState extends StatelessWidget {
