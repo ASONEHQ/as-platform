@@ -361,7 +361,7 @@ void main() {
       expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
       expect(find.text('Efectivo'), findsOneWidget);
       expect(find.text('Tarjeta'), findsOneWidget);
-      expect(find.text('Transfer'), findsOneWidget);
+      expect(find.text('Transferencia'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -463,7 +463,7 @@ void main() {
       expect(find.byKey(const Key('pos-ticket-cash-input')), findsNothing);
       expect(find.text('Efectivo'), findsNothing);
       expect(find.text('Tarjeta'), findsNothing);
-      expect(find.text('Transfer'), findsNothing);
+      expect(find.text('Transferencia'), findsNothing);
 
       // The single card-payment action — TASK 12.4A.1: it really tries to
       // create a sale now, but this ticket is empty, so it must say so
@@ -853,6 +853,53 @@ void main() {
         expect(tester.takeException(), isNull);
       });
 
+      // TASK 16.27 — same completion-experience unification as the card
+      // path above: an approved transfer sale now also opens the staff
+      // receipt dialog, labeled "Transferencia", with no Cambio row (a
+      // transfer's "amount received" and "amount applied" are always the
+      // same figure — there is no physical change to hand back).
+      testWidgets(
+        'an approved transfer sale also opens the staff receipt dialog, labeled "Transferencia", with no Cambio row',
+        (tester) async {
+          final salesGateway = _FakeSalesGateway(
+            result: const PosSaleCreated(
+              id: 'sale-transfer-receipt',
+              saleNumber: 'SALE-transfer-receipt',
+              status: 'pending_payment',
+              total: '58.0000',
+            ),
+          );
+          final paymentsGateway = _FakePaymentsGateway(
+            transferResult: const PosPaymentStatus(
+              id: 'transfer-payment-receipt',
+              status: 'captured',
+              attempts: [PosPaymentAttempt(id: 'transfer-attempt-receipt', status: 'approved')],
+            ),
+          );
+          await _pump(tester, const Size(1440, 900), salesGateway: salesGateway, paymentsGateway: paymentsGateway);
+          await _navigateToPos(tester);
+          await tester.tap(find.byKey(const Key('pos-product-product-1')));
+          await tester.pump();
+          await tester.tap(find.byKey(const Key('pos-pay-transfer')));
+          await tester.pump();
+          await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+          await tester.pump();
+          await tester.pumpAndSettle();
+
+          final dialogFinder = find.byType(Dialog);
+          expect(dialogFinder, findsOneWidget);
+          expect(find.descendant(of: dialogFinder, matching: find.text('Venta completada')), findsOneWidget);
+          expect(find.descendant(of: dialogFinder, matching: find.text('Transferencia')), findsOneWidget);
+          expect(find.descendant(of: dialogFinder, matching: find.text('Cambio')), findsNothing);
+          expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+
+          await tester.tap(find.byKey(const Key('pos-receipt-new-sale')));
+          await tester.pumpAndSettle();
+          expect(find.byType(Dialog), findsNothing);
+        },
+      );
+
       testWidgets('a transfer payment failure surfaces the real backend error, never a fake success', (tester) async {
         final salesGateway = _FakeSalesGateway(
           result: const PosSaleCreated(
@@ -1040,6 +1087,63 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    // TASK 16.27 — unifies the checkout completion experience: an approved
+    // CAJERO Tarjeta sale now ALSO opens the same staff `_ReceiptSuccessDialog`
+    // the cash path already had (previously card/transfer only got the
+    // toast+overlay above). No physical "Cambio" concept exists for a card
+    // payment, so that row must be suppressed rather than showing a
+    // technically-true-but-meaningless "Cambio: $0.00".
+    testWidgets(
+      'an approved CAJERO Tarjeta sale also opens the staff receipt dialog, labeled "Tarjeta", with no Cambio row',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          result: const PosSaleCreated(
+            id: 'sale-mp-card-receipt',
+            saleNumber: 'SALE-mp-card-receipt',
+            status: 'pending_payment',
+            total: '46.4000',
+          ),
+        );
+        final paymentsGateway = _FakePaymentsGateway(
+          terminals: const [
+            PosPaymentTerminal(id: 'terminal-1', provider: 'mercado_pago', status: 'active'),
+          ],
+          createResult: const PosPaymentStatus(
+            id: 'payment-card-receipt',
+            status: 'captured',
+            attempts: [PosPaymentAttempt(id: 'attempt-card-receipt', status: 'approved')],
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), salesGateway: salesGateway, paymentsGateway: paymentsGateway);
+        await _navigateToPos(tester);
+        await tester.tap(find.byKey(const Key('pos-product-product-1')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-pay-card')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-ticket-cobrar')));
+        await tester.pump();
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        // Scoped to the dialog itself — "Tarjeta" is ALSO the still-visible
+        // (but barrier-obscured) pay-method button label behind it, so an
+        // unscoped `find.text('Tarjeta')` would over-match.
+        final dialogFinder = find.byType(Dialog);
+        expect(dialogFinder, findsOneWidget);
+        expect(find.descendant(of: dialogFinder, matching: find.text('Venta completada')), findsOneWidget);
+        expect(find.descendant(of: dialogFinder, matching: find.text('Tarjeta')), findsOneWidget);
+        expect(find.descendant(of: dialogFinder, matching: find.text('Cambio')), findsNothing);
+        // The ticket resets exactly like the cash path — the dialog stays
+        // up until the cashier explicitly taps "Nueva venta".
+        expect(find.textContaining(r'Cobrar — $0.00'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(find.byKey(const Key('pos-receipt-new-sale')));
+        await tester.pumpAndSettle();
+        expect(find.byType(Dialog), findsNothing);
+      },
+    );
+
     testWidgets('a declined payment is reported honestly, never as approved', (
       tester,
     ) async {
@@ -1153,6 +1257,12 @@ void main() {
       // real gateway call/ordering rule is identical).
       expect(find.byKey(const Key('pos-post-sale-feedback')), findsOneWidget);
       expect(find.text('¡Pago completado!'), findsOneWidget);
+      // TASK 16.27 — CAJERO's own Tarjeta approval now also opens the
+      // staff `_ReceiptSuccessDialog` (see the dedicated test below), but
+      // kiosk/self-checkout deliberately keeps its existing,
+      // celebratory-overlay-only completion — a self-checkout customer
+      // should never see the staff "Imprimir ticket" receipt dialog.
+      expect(find.byKey(const Key('pos-receipt-new-sale')), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
@@ -2321,6 +2431,27 @@ void main() {
         expect(find.text('Completada'), findsOneWidget);
         expect(find.text('Pendiente'), findsOneWidget);
         expect(tester.takeException(), isNull);
+      },
+    );
+
+    // TASK 16.27 — a transfer sale used to render as the raw, untranslated
+    // backend code "transfer" here (the label map only had cash/card_
+    // terminal/card_manual); it must show the same "Transferencia" label
+    // every other place this payment method appears already uses.
+    testWidgets(
+      'a transfer sale shows "Transferencia", never the raw backend code "transfer"',
+      (tester) async {
+        final salesGateway = _FakeSalesGateway(
+          listResult: PosSaleHistoryPage(
+            items: [summary(paymentMethods: const ['transfer'])],
+            nextCursor: null,
+          ),
+        );
+        await _pump(tester, const Size(1440, 900), context: _contextWithSaleRead, salesGateway: salesGateway);
+        await navigateToHistory(tester);
+
+        expect(find.text('Transferencia'), findsOneWidget);
+        expect(find.text('transfer'), findsNothing);
       },
     );
 

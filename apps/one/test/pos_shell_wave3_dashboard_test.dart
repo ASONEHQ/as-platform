@@ -116,6 +116,42 @@ void main() {
       expect(gateway.calls.last.branchId, 'branch-norte');
     });
 
+    // TASK 16.27 — dashboard cards were previously decorative dead ends;
+    // a card with an obvious logical destination is now a real navigation
+    // action, reusing the same `onNavigateToModule` callback every other
+    // module already gets (never a second, parallel navigation path).
+    testWidgets('tapping "Ventas de hoy" navigates to Historial de Ventas — never a decorative dead end', (
+      tester,
+    ) async {
+      final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+      await _pump(tester, dashboardGateway: gateway);
+
+      expect(find.byKey(const Key('pos-dashboard')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-dashboard-metric-sales')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-dashboard')), findsNothing);
+      expect(find.text('Historial de ventas'), findsOneWidget);
+    });
+
+    testWidgets('tapping the "Cajas abiertas" list card navigates to Corte de Caja', (tester) async {
+      final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+      await _pump(tester, dashboardGateway: gateway);
+
+      final cardFinder = find.byKey(const Key('pos-dashboard-cash-sessions-list'));
+      await tester.ensureVisible(cardFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(cardFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-dashboard')), findsNothing);
+      // `_Caja`'s own section description — always rendered regardless of
+      // `cash_session.read` (this fixture context doesn't carry it) — a
+      // real, distinct screen, never the Dashboard still showing
+      // underneath.
+      expect(find.text('Apertura, movimientos y cierre de caja — datos reales del backend.'), findsOneWidget);
+    });
+
     testWidgets('an actor without report.read sees the shared permission state, never a metric', (tester) async {
       final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
       await _pump(tester, dashboardGateway: gateway, context: _noPermissionContext);

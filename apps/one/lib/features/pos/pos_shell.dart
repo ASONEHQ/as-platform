@@ -1586,8 +1586,26 @@ Future<void> _submitSaleForPayment(
   // TASK 14.5A: `true` only from `_ClienteCardPaymentButton` (kiosk/
   // self-checkout) — tunes the post-sale success feedback's tone/duration
   // only (see `showPosPostSaleSuccessFeedback`); the checkout logic above
-  // and below this is byte-for-byte identical for both callers.
+  // and below this is byte-for-byte identical for both callers. TASK
+  // 16.27 also uses this same flag to skip the staff receipt dialog below
+  // for kiosk — a self-checkout customer keeps its existing celebratory-
+  // overlay-only completion, unchanged.
   bool kiosk = false,
+  // TASK 16.27 — threaded straight through to `_ReceiptSuccessDialog`,
+  // exactly like `_submitCashSaleForPayment`'s identical params; unused
+  // (and harmless to leave at their defaults) when `kiosk` is true, since
+  // the dialog itself is never opened in that case.
+  PosSettingsGateway settingsGateway = const EmptyPosSettingsGateway(),
+  String? companyId,
+  // TASK 16.27 — mirrors `_submitCashSaleForPayment`'s own
+  // `onDialogAboutToOpen`: the Cobrar button's busy/spinner state must
+  // never keep animating for however long the cashier leaves the new,
+  // blocking receipt dialog open (that dialog owns its own, separate
+  // "Nueva venta" dismissal) — an indeterminate spinner still animating
+  // under a modal dialog is exactly what makes a widget test's
+  // `pumpAndSettle` time out. Never called at all when `kiosk` is true,
+  // since no dialog opens there.
+  VoidCallback? onBeforeReceiptDialog,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1723,6 +1741,19 @@ Future<void> _submitSaleForPayment(
       // reload it. `unawaited`: this must never block or delay the
       // already-approved payment's own success feedback below.
       unawaited(PosReadControllerScope.of(context).invalidateBalances());
+      final currency = sale.currencyCode ?? saleSession.currencyCode;
+      // TASK 16.27 — captured before any cart reset below, exactly like
+      // `_submitCashSaleForPayment`'s own identical capture, so the toast
+      // and receipt dialog still know who was attached after the ticket
+      // resets.
+      final customerDisplayName = saleSession.customerDisplayName;
+      final note = saleSession.note;
+      // TASK 16.27 — kiosk/self-checkout keeps its exact pre-existing
+      // behavior (cart left as-is, no staff receipt dialog — see this
+      // function's own `kiosk` doc comment); only the normal CAJERO path
+      // now resets the ticket and shows the same completed-sale/receipt
+      // experience the cash path already has.
+      if (!kiosk) saleSession.clearAll();
       // A malformed `sale.total` (never actually observed — the backend's
       // own response) must never turn an already-approved payment into an
       // apparent failure; the feedback layer is purely additive.
@@ -1732,15 +1763,38 @@ Future<void> _submitSaleForPayment(
             context,
             PosPostSaleFeedbackData(
               saleNumber: sale.saleNumber,
-              amount: Money.parse(sale.total, sale.currencyCode ?? saleSession.currencyCode),
+              amount: Money.parse(sale.total, currency),
               paymentMethodLabel: 'Tarjeta',
-              customerDisplayName: saleSession.customerDisplayName,
+              customerDisplayName: customerDisplayName,
             ),
             kiosk: kiosk,
           ),
         );
       } on Object {
         // Defensive — see comment above.
+      }
+      if (!kiosk) {
+        onBeforeReceiptDialog?.call();
+        if (!context.mounted) return;
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => _ReceiptSuccessDialog(
+            saleId: sale.id,
+            saleNumber: sale.saleNumber,
+            total: Money.parse(sale.total, currency),
+            // No physical change concept on a card payment — see
+            // `_ReceiptSuccessDialog.showChange`'s own doc comment.
+            change: Money.zero(currency),
+            paymentMethodLabel: 'Tarjeta',
+            showChange: false,
+            salesGateway: salesGateway,
+            settingsGateway: settingsGateway,
+            companyId: companyId,
+            customerDisplayName: customerDisplayName,
+            note: note,
+          ),
+        );
       }
     }
   } on ApiException catch (error) {
@@ -1771,6 +1825,14 @@ Future<void> _submitTransferSaleForPayment(
   required PosPaymentsGateway paymentsGateway,
   required String? branchId,
   PosHeldSalesGateway heldSalesGateway = const EmptyPosHeldSalesGateway(),
+  // TASK 16.27 — threaded straight through to `_ReceiptSuccessDialog`,
+  // exactly like `_submitCashSaleForPayment`'s identical params. This
+  // path has no kiosk caller (kiosk restricts self-checkout to card
+  // only), so the receipt dialog below always opens on approval.
+  PosSettingsGateway settingsGateway = const EmptyPosSettingsGateway(),
+  String? companyId,
+  // TASK 16.27 — see `_submitSaleForPayment`'s own identical doc comment.
+  VoidCallback? onBeforeReceiptDialog,
 }) async {
   if (saleSession.isEmpty) {
     _showNotice(context, 'Agrega al menos un producto al ticket.');
@@ -1820,21 +1882,48 @@ Future<void> _submitTransferSaleForPayment(
     );
     if (approved) {
       unawaited(PosReadControllerScope.of(context).invalidateBalances());
+      final currency = sale.currencyCode ?? saleSession.currencyCode;
+      // TASK 16.27 — captured before `clearAll()` below, exactly like
+      // `_submitCashSaleForPayment`'s own identical capture.
+      final customerDisplayName = saleSession.customerDisplayName;
+      final note = saleSession.note;
+      saleSession.clearAll();
       try {
         unawaited(
           showPosPostSaleSuccessFeedback(
             context,
             PosPostSaleFeedbackData(
               saleNumber: sale.saleNumber,
-              amount: Money.parse(sale.total, sale.currencyCode ?? saleSession.currencyCode),
+              amount: Money.parse(sale.total, currency),
               paymentMethodLabel: 'Transferencia',
-              customerDisplayName: saleSession.customerDisplayName,
+              customerDisplayName: customerDisplayName,
             ),
           ),
         );
       } on Object {
         // Defensive — see `_submitSaleForPayment`'s own identical comment.
       }
+      onBeforeReceiptDialog?.call();
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => _ReceiptSuccessDialog(
+          saleId: sale.id,
+          saleNumber: sale.saleNumber,
+          total: Money.parse(sale.total, currency),
+          // No physical change concept on a transfer — see
+          // `_ReceiptSuccessDialog.showChange`'s own doc comment.
+          change: Money.zero(currency),
+          paymentMethodLabel: 'Transferencia',
+          showChange: false,
+          salesGateway: salesGateway,
+          settingsGateway: settingsGateway,
+          companyId: companyId,
+          customerDisplayName: customerDisplayName,
+          note: note,
+        ),
+      );
     }
   } on ApiException catch (error) {
     if (!context.mounted) return;
@@ -2020,6 +2109,7 @@ Future<void> _submitCashSaleForPayment(
       saleNumber: sale.saleNumber,
       total: total,
       change: change,
+      paymentMethodLabel: 'Efectivo',
       salesGateway: salesGateway,
       settingsGateway: settingsGateway,
       companyId: companyId,
@@ -2168,6 +2258,7 @@ Future<void> _submitZeroTotalSale(
       saleNumber: completed.saleNumber,
       total: total,
       change: Money.zero(completed.currencyCode ?? saleSession.currencyCode),
+      paymentMethodLabel: 'Recompensa — sin cargo',
       salesGateway: salesGateway,
       settingsGateway: settingsGateway,
       companyId: companyId,
@@ -2293,6 +2384,15 @@ class _ReceiptSuccessDialog extends StatefulWidget {
     required this.total,
     required this.change,
     required this.salesGateway,
+    // TASK 16.27 — every payment method now reaches this same dialog
+    // (previously cash/zero-total only); shown right under the folio so
+    // "Venta completada" never reads as cash-only.
+    required this.paymentMethodLabel,
+    // TASK 16.27 — a physical "Cambio" concept only exists for a cash
+    // tender; card/transfer always pass `false` here rather than a
+    // technically-true-but-meaningless "Cambio: $0.00" row (there is no
+    // change to hand back on those methods at all, not just a zero one).
+    this.showChange = true,
     this.settingsGateway = const EmptyPosSettingsGateway(),
     this.companyId,
     this.customerDisplayName,
@@ -2302,6 +2402,8 @@ class _ReceiptSuccessDialog extends StatefulWidget {
   final String saleNumber;
   final Money total;
   final Money change;
+  final String paymentMethodLabel;
+  final bool showChange;
   final PosSalesGateway salesGateway;
   // TASK 14.5A: real per-tenant receipt header/footer branding — see
   // `_ReceiptSuccessDialogState._loadBranding`.
@@ -2449,6 +2551,8 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
                   value: widget.saleNumber,
                   big: true,
                 ),
+                const SizedBox(height: 4),
+                _CashSummaryRow(label: 'Método de pago', value: widget.paymentMethodLabel),
                 // TASK 13.0: a name only — never phone/email/birth date
                 // (Part AB). Only shown when a customer was actually
                 // attached; a walk-in sale renders exactly as before.
@@ -2467,12 +2571,14 @@ class _ReceiptSuccessDialogState extends State<_ReceiptSuccessDialog> {
                 ],
                 const SizedBox(height: 6),
                 _CashSummaryRow(label: 'Total', value: _money(widget.total)),
-                const SizedBox(height: 4),
-                _CashSummaryRow(
-                  label: 'Cambio',
-                  value: _money(widget.change),
-                  emphasis: true,
-                ),
+                if (widget.showChange) ...[
+                  const SizedBox(height: 4),
+                  _CashSummaryRow(
+                    label: 'Cambio',
+                    value: _money(widget.change),
+                    emphasis: true,
+                  ),
+                ],
                 const SizedBox(height: 14),
                 if (_loadingReceipt)
                   Row(
@@ -3360,6 +3466,7 @@ class _Content extends StatelessWidget {
                   PosModule.dashboard => _Dashboard(
                     context: this.context,
                     dashboardGateway: dashboardGateway,
+                    onNavigateToModule: onNavigateToModule,
                   ),
                   PosModule.products => _Products(
                     state: controller.products,
@@ -3762,9 +3869,16 @@ enum _DashboardPhase { loading, ready, failure }
 /// new key just tears down and rebuilds the body from scratch, the same
 /// structural guarantee `_Caja` uses when keyed by branch).
 class _Dashboard extends StatefulWidget {
-  const _Dashboard({required this.context, required this.dashboardGateway});
+  const _Dashboard({required this.context, required this.dashboardGateway, required this.onNavigateToModule});
   final AuthenticatedContext context;
   final PosDashboardGateway dashboardGateway;
+  // TASK 16.27 — threaded down to `_DashboardReady`'s own KPI/list cards
+  // so a card with an obvious logical destination (e.g. "Aforo actual" →
+  // Control de Acceso) is a real navigation action, not a decorative
+  // dead end. Reuses the exact same callback every other module already
+  // gets from `_Content` (see `_Caja`'s own `onNavigateToCaja` for the
+  // established precedent) — never a second, parallel navigation path.
+  final ValueChanged<PosModule> onNavigateToModule;
 
   @override
   State<_Dashboard> createState() => _DashboardState();
@@ -3904,6 +4018,7 @@ class _DashboardState extends State<_Dashboard> {
             date: today,
             branchId: _branchId,
             dashboardGateway: widget.dashboardGateway,
+            onNavigateToModule: widget.onNavigateToModule,
           ),
       ],
     );
@@ -3915,11 +4030,13 @@ class _DashboardBody extends StatefulWidget {
     required this.date,
     required this.branchId,
     required this.dashboardGateway,
+    required this.onNavigateToModule,
     super.key,
   });
   final String date;
   final String? branchId;
   final PosDashboardGateway dashboardGateway;
+  final ValueChanged<PosModule> onNavigateToModule;
 
   @override
   State<_DashboardBody> createState() => _DashboardBodyState();
@@ -3987,7 +4104,7 @@ class _DashboardBodyState extends State<_DashboardBody> {
             onRetry: () => unawaited(_load()),
           ),
         ),
-        _DashboardPhase.ready => _DashboardReady(summary: _summary!),
+        _DashboardPhase.ready => _DashboardReady(summary: _summary!, onNavigateToModule: widget.onNavigateToModule),
       },
     ],
   );
@@ -4012,8 +4129,9 @@ String _formatDashboardMoney(String amount, String currencyCode) {
 }
 
 class _DashboardReady extends StatelessWidget {
-  const _DashboardReady({required this.summary});
+  const _DashboardReady({required this.summary, required this.onNavigateToModule});
   final PosDashboardSummary summary;
+  final ValueChanged<PosModule> onNavigateToModule;
 
   @override
   Widget build(BuildContext context) {
@@ -4070,6 +4188,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Ventas de hoy',
                   value: salesTotal,
                   caption: '${summary.salesTransactionCount} transacción(es)',
+                  onTap: () => onNavigateToModule(PosModule.history),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-occupancy'),
@@ -4077,6 +4196,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Ocupación actual',
                   value: '${summary.currentOccupancy}',
                   caption: 'personas dentro (en vivo)',
+                  onTap: () => onNavigateToModule(PosModule.access),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-parties'),
@@ -4084,6 +4204,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Fiestas de hoy',
                   value: '${summary.partyReservationCount}',
                   caption: 'reservación(es)',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 // TASK 16.19 (Phase 30 "Event KPIs" — upcoming events,
                 // revenue, deposits collected, completed/cancelled).
@@ -4093,6 +4214,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Fiestas próximas',
                   value: '${summary.upcomingPartyReservationCount}',
                   caption: 'reservación(es) por venir',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-parties-revenue'),
@@ -4100,6 +4222,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Ingreso de fiestas de hoy',
                   value: eventRevenueTotal,
                   caption: 'contratado hoy, no cancelado',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-parties-deposits'),
@@ -4107,6 +4230,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Anticipos cobrados hoy',
                   value: depositsCollectedTotal,
                   caption: 'depósitos de fiestas',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-parties-completed'),
@@ -4114,6 +4238,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Fiestas completadas hoy',
                   value: '${summary.completedPartyReservationsToday}',
                   caption: '${summary.cancelledPartyReservationsToday} cancelada(s) hoy',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-cash-sessions'),
@@ -4121,6 +4246,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Cajas abiertas',
                   value: '${summary.openCashSessionCount}',
                   caption: 'sesión(es) de caja',
+                  onTap: () => onNavigateToModule(PosModule.cash),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-outstanding-balance'),
@@ -4128,6 +4254,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Saldo pendiente de fiestas',
                   value: outstandingTotal,
                   caption: 'reservaciones activas, no canceladas',
+                  onTap: () => onNavigateToModule(PosModule.events),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-attendance'),
@@ -4135,6 +4262,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Empleados en turno',
                   value: '${summary.clockedInEmployeeCount}',
                   caption: 'con entrada registrada hoy',
+                  onTap: () => onNavigateToModule(PosModule.employees),
                 ),
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-inventory-alerts'),
@@ -4142,6 +4270,7 @@ class _DashboardReady extends StatelessWidget {
                   label: 'Variantes agotadas',
                   value: '${summary.outOfStockVariantCount}',
                   caption: 'inventario en vivo',
+                  onTap: () => onNavigateToModule(PosModule.inventory),
                 ),
               ],
             );
@@ -4154,6 +4283,7 @@ class _DashboardReady extends StatelessWidget {
             final partiesCard = _DashboardListCard(
               key: const Key('pos-dashboard-parties-list'),
               title: 'Fiestas de hoy',
+              onTap: () => onNavigateToModule(PosModule.events),
               child: summary.partyReservations.isEmpty
                   ? const _DashboardEmptyNote(
                       key: Key('pos-dashboard-parties-empty'),
@@ -4169,6 +4299,7 @@ class _DashboardReady extends StatelessWidget {
             final sessionsCard = _DashboardListCard(
               key: const Key('pos-dashboard-cash-sessions-list'),
               title: 'Cajas abiertas',
+              onTap: () => onNavigateToModule(PosModule.cash),
               child: summary.openCashSessions.isEmpty
                   ? const _DashboardEmptyNote(
                       key: Key('pos-dashboard-cash-sessions-empty'),
@@ -4215,63 +4346,91 @@ class _DashboardMetricCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.caption,
+    this.onTap,
     super.key,
   });
   final IconData icon;
   final String label;
   final String value;
   final String caption;
+  // TASK 16.27 — `null` for a card with no obvious logical destination
+  // (kept purely informational, exactly as before); every other card is
+  // a real navigation action, never a decorative dead end.
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    return _PosCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: palette.blueDeep),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700),
-                ),
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 18, color: palette.blueDeep),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 2),
-          Text(caption, style: TextStyle(color: palette.textMuted, fontSize: 11)),
-        ],
+            ),
+            if (onTap != null) Icon(Icons.chevron_right, size: 16, color: palette.textMuted),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 2),
+        Text(caption, style: TextStyle(color: palette.textMuted, fontSize: 11)),
+      ],
+    );
+    if (onTap == null) return _PosCard(child: content);
+    return _PosCard(
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(padding: const EdgeInsets.all(14), child: content),
       ),
     );
   }
 }
 
 class _DashboardListCard extends StatelessWidget {
-  const _DashboardListCard({required this.title, required this.child, super.key});
+  const _DashboardListCard({required this.title, required this.child, this.onTap, super.key});
   final String title;
   final Widget child;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15)),
+            ),
+            if (onTap != null) Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+          ],
+        ),
+        const SizedBox(height: 10),
+        child,
+      ],
+    );
+    if (onTap == null) return _PosCard(child: content);
     return _PosCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15)),
-          const SizedBox(height: 10),
-          child,
-        ],
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(padding: const EdgeInsets.all(14), child: content),
       ),
     );
   }
@@ -9428,7 +9587,10 @@ class _PosPayGrid extends StatelessWidget {
         child: _PayOption(
           key: const Key('pos-pay-transfer'),
           icon: Icons.swap_horiz_outlined,
-          label: 'Transfer',
+          // TASK 16.27 — was "Transfer" (an English fragment leaking into
+          // otherwise all-Spanish UI); every other place this payment
+          // method is shown already says "Transferencia".
+          label: 'Transferencia',
           active: selectedMethod == 'transfer',
           onTap: () => onSelect('transfer'),
         ),
@@ -9654,6 +9816,11 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         paymentsGateway: widget.paymentsGateway,
         branchId: widget.branchId,
         heldSalesGateway: widget.heldSalesGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.companyId,
+        onBeforeReceiptDialog: () {
+          if (mounted) setState(() => _busy = false);
+        },
       );
     } else {
       await _submitSaleForPayment(
@@ -9663,8 +9830,13 @@ class _PosCobrarButtonState extends State<_PosCobrarButton> {
         paymentsGateway: widget.paymentsGateway,
         branchId: widget.branchId,
         heldSalesGateway: widget.heldSalesGateway,
+        settingsGateway: widget.settingsGateway,
+        companyId: widget.companyId,
         onStatusUpdate: (message) {
           if (mounted) setState(() => _statusMessage = message);
+        },
+        onBeforeReceiptDialog: () {
+          if (mounted) setState(() => _busy = false);
         },
       );
     }
@@ -15008,6 +15180,9 @@ class _SalesHistoryTable extends StatelessWidget {
       'cash': 'Efectivo',
       'card_terminal': 'Tarjeta',
       'card_manual': 'Tarjeta (manual)',
+      // TASK 16.27 — was missing; a transfer sale rendered the raw,
+      // untranslated backend code "transfer" here instead of a real label.
+      'transfer': 'Transferencia',
     };
     return methods.map((method) => labels[method] ?? method).join(', ');
   }
@@ -15594,6 +15769,9 @@ class _SaleDetailBody extends StatelessWidget {
                 'cash' => 'Efectivo',
                 'card_terminal' => 'Tarjeta',
                 'card_manual' => 'Tarjeta (manual)',
+                // TASK 16.27 — was missing; fell through to the raw,
+                // untranslated backend code "transfer".
+                'transfer' => 'Transferencia',
                 _ => payment.paymentMethod,
               },
             ),
@@ -16540,6 +16718,9 @@ class _DevolucionesTable extends StatelessWidget {
     'cash' => 'Efectivo',
     'card_terminal' => 'Tarjeta',
     'card_manual' => 'Tarjeta (manual)',
+    // TASK 16.27 — was missing; fell through to the raw, untranslated
+    // backend code "transfer".
+    'transfer' => 'Transferencia',
     _ => method,
   };
 
