@@ -65,10 +65,10 @@ These are real, verified gaps — not guesses — that were judged out of scope 
 | Memberships/Rewards | COMPLETE | per TASK 16.26 audit |
 | Access Control | COMPLETE | branch-switch bug fixed in TASK 16.26 |
 | Administration | COMPLETE WITH P2 GAP | bare loading spinners, cosmetic (TASK 16.26) |
-| Empleados — Plantilla | COMPLETE | full CRUD, search, status filter — already existed |
-| Empleados — Horarios | COMPLETE WITH P2 GAP | week quick-nav added (TASK 16.28); per-employee day-list, not a matrix — deliberate |
-| Empleados — Checador | COMPLETE | punch method/source field added (TASK 16.28); real device integration deferred by design |
-| Empleados — Nómina | COMPLETE | lateness/overtime already real, exact-arithmetic backend logic — already existed |
+| Empleados — Plantilla | COMPLETE | full CRUD, search, status filter, responsive grid (TASK 16.29) |
+| Empleados — Horarios | COMPLETE | full employee-rows × Mon-Sun matrix (TASK 16.29), replacing TASK 16.28's per-employee day-list |
+| Empleados — Checador | COMPLETE | "Checadas de hoy" + branch-wide "Historial de asistencia" panels added (TASK 16.29); real device integration deferred by design |
+| Empleados — Nómina | COMPLETE | lateness/overtime already real, exact-arithmetic backend logic — already existed; lines now show the real employee name (TASK 16.29) |
 | CFDI / Facturación | OUT OF V1 | explicitly excluded, honest "not yet enabled" state shown |
 | Offline POS | OUT OF V1 | explicitly excluded |
 | CFDI Nómina (SAT payroll) | OUT OF V1 | explicitly excluded — this system is operational payroll only |
@@ -83,18 +83,26 @@ Nothing here should surprise the owner during the Monday presentation.
 1. `time_clock_punches.method` — a new, real, stored column (`'manual'`/`'device'`/`'biometric'`) via migration `0047_stiff_joshua_kane.sql`, threaded through the repository/service/routes/gateway/UI. Every punch today is honestly `'manual'` (no device exists) — this is the concrete readiness step for a future attendance terminal, without implementing any hardware.
 2. Horarios week quick-navigation (Semana anterior/actual/siguiente), computed from the resolved branch business date, never device-local time.
 
-**Deliberately not changed** (documented, not overlooked): the payroll lateness-tolerance constant stays hardcoded per an already-recorded product decision in the code itself; Horarios stays a per-employee day-list rather than a full weekday matrix; no PDF export was added for Horarios/Nómina.
+**Deliberately not changed** (documented, not overlooked): the payroll lateness-tolerance constant stays hardcoded per an already-recorded product decision in the code itself; no PDF export was added for Horarios/Nómina.
+
+## TASK 16.29 — Workforce UX v2 / presentation parity
+
+Built directly on TASK 16.28's architecture, per its own explicit instruction not to rebuild the backend unnecessarily — see `docs/WORKFORCE_SYSTEM.md`'s "TASK 16.29 — what changed" section for the full writeup. In short: Horarios became a real employee × Mon-Sun matrix (closing the P2 gap TASK 16.28 had deliberately left open); Checador gained branch-wide "Checadas de hoy" and "Historial de asistencia" panels reachable with `attendance.read` alone (the "Corregir" action stays `attendance.manage`-gated); Nómina's payroll lines now resolve the real employee name instead of a raw id; a real employee-list pagination bug (never following `next_cursor`) was fixed everywhere the roster is paginated; two small, additive branch-wide backend endpoints (`GET /api/v1/schedules/branch`, `GET /api/v1/time-clock/punches/branch`) were added to avoid an N+1 per-employee fetch pattern for the matrix and the attendance panels. No fake employees, attendance, payroll figures, or device/biometric status were introduced anywhere in this pass.
 
 ## Backend
 
 TASK 16.26/16.27: no backend changes.
 TASK 16.28: one additive migration (`packages/database/drizzle/0047_stiff_joshua_kane.sql`, adds `time_clock_punches.method`), applied only to the local test database — never production. No table dropped/renamed, no existing column changed, no data migrated.
+TASK 16.29: no migration — two new, additive read-only routes/service/repository methods only (see above), applied to the local test database's existing schema. No table dropped/renamed, no existing column changed, no data migrated.
 
 ## Tests
 
+TASK 16.28:
 - Flutter targeted: `pos_shell_test.dart`, `pos_shell_wave3_dashboard_test.dart`, `pos_people_test.dart` — all green.
 - Flutter full suite: **1160/1160 passing**.
 - Flutter analyze: 0 errors, no new lint issues (172 pre-existing info/warnings unchanged).
 - Flutter web release build: succeeds.
 - Backend targeted: `src/modules/people` 22/22, `src/modules/dashboard` + `src/modules/reports` (both read `time_clock_punches`) 42/42 — all against the local test database.
+
+TASK 16.29 — see this task's own final report (and `docs/WORKFORCE_SYSTEM.md`'s "Tests" section) for the complete gate results: targeted `pos_people_test.dart` (23/23), full Flutter suite, `flutter analyze`, `flutter build web --release`, and backend `src/modules/people` (24/24) + `dashboard` regression check.
 - Backend typecheck/lint: `@asone/database` and `@asone/api` both clean.

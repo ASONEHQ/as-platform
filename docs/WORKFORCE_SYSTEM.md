@@ -1,6 +1,19 @@
 # Workforce System — Employees · Schedules · Attendance · Payroll
 
-TASK 16.28. Administración → Empleados: Plantilla / Horarios / Checador / Nómina.
+TASK 16.28 (foundation) + TASK 16.29 (UX v2 / presentation parity). Administración → Empleados: Plantilla / Horarios / Checador / Nómina.
+
+## TASK 16.29 — what changed
+
+TASK 16.29's own brief was explicit: reuse TASK 16.28's architecture, do not rebuild the backend unnecessarily, and close this system's remaining UX gaps for a presentation-ready experience. Concretely:
+
+1. **Horarios is now a real employee-rows × Monday–Sunday-columns matrix** (`_ScheduleMatrix`/`_ScheduleCell` in `pos_people_screen.dart`), replacing the per-employee day-list TASK 16.28 deliberately kept. Editing a cell reuses the exact same, unmodified `_ScheduleFormDialog`/upsert validation — only the surrounding navigation/rendering changed. Week navigation (Semana anterior/actual/siguiente) still resolves the real business date, never device-local time. Zero employees preserves the matrix header/week-nav chrome with an honest inline message; an employee with no schedule for a given day renders that cell honestly as "Sin turno" rather than a blank cell.
+2. **A new backend pair, additive only**: `GET /api/v1/schedules/branch` and `GET /api/v1/time-clock/punches/branch` (repository methods `listSchedulesForBranch`/`listPunchesForBranch`, same `schedule.read`/`attendance.read` permissions as the existing per-employee endpoints, same branch-ownership validation convention as `PayrollService.createPeriod`). This was a deliberate, narrow addition — the matrix needs one branch-wide fetch per week, not one HTTP call per employee per week; the alternative (N+1 calls) was audited and rejected as a real, repeated performance problem before writing any code.
+3. **A real pagination bug fixed**: the Flutter employees gateway/screens never followed the API's own `next_cursor` — any branch with more than 50 (default) or 100 (max page size) active employees silently lost the rest from every list that paginates over employees (Horarios' roster, Nómina's employee-name lookup, Checador's self-service picker). Fixed with a `do { … } while (cursor != null)` loop wherever the full roster is needed for a client-side join or a matrix's rows.
+4. **Checador is now a real operational workspace**: "Registrar entrada/salida" (self-service, unchanged logic) plus two new, always-visible, branch-wide panels — "Checadas de hoy" (auto-loaded for the resolved business date, columns Empleado/Tipo/Hora/Método) and "Historial de asistencia" (an optional employee filter over one `listPunchesForBranch` fetch, replacing the old "pick an employee, then load" flow). Both panels are reachable with `attendance.read` alone; "Corregir" only ever renders when `attendance.manage` is present, and is omitted entirely (not disabled) for a read-only viewer — the same read/manage split TASK 16.28 already established for hiding dangerous actions. A punch made today can legitimately appear in both panels at once; `_PunchRow` takes a `keyPrefix` so the two renderings of the same punch never collide as widget keys.
+5. **Nómina's payroll lines now show the real employee display name**, not a raw UUID — a client-side join (`_NominaTabState._loadEmployeeNames`, paginated with the same cursor-following fix) against the already-fetched branch roster, resolved by `_PayrollPeriodDetailDialog.employeeNames[line.employeeId]`. Falls back to the raw id only when `employee.read` is unavailable — never a fabricated name.
+6. **Device/biometric UX stays documentation-and-copy only** (Phase 5, explicit instruction): no device registry, no fake "Conectado"/serial/online-status UI was added. The only change is one neutral, honestly-worded line in the entrada/salida panel ("Conecta un lector compatible para registro automático (próximamente).") — it never claims a device exists or is connected. See "Future attendance device integration" below, unchanged in substance from TASK 16.28.
+
+**Not touched this task**: Users vs. Employees separation (already correct, see below), the RBAC permission catalogue (no new permission was invented), the payroll calculation engine itself (only its lines' display now resolves a name), the lateness-tolerance/overtime constants.
 
 **Important finding from this task's own audit, stated up front**: this system was NOT built from scratch. All four workspaces already existed, fully backed by real backend modules and a real Postgres schema, before this task started (`apps/api/src/modules/people/`, `packages/database/src/schema/people.ts`, migration `0025_worried_the_captain.sql`, frontend `apps/one/lib/features/pos/pos_people_screen.dart` + `pos_people_gateway.dart`). This task's own job was to audit that existing system against the original product reference, find genuine gaps, and close only those — never to rebuild working, tested code. What follows documents the system as it now stands, including what was already there and what this task added.
 
@@ -29,11 +42,11 @@ Every punch previously carried only a free-text `station` field — no honest wa
 
 The Checador UI now shows this honestly on every punch row ("Método: Manual" today; "Dispositivo"/"Biométrico" only once a real integration exists and actually reports one of those values).
 
-### 2. Horarios week-quick-navigation
+### 2. Horarios week-quick-navigation (TASK 16.28) → full matrix (TASK 16.29)
 
-The existing Horarios workspace lets a manager pick one employee and a date range, and edit each day's schedule individually — a real, working, validated UI, just not styled as an all-employees × Mon-Sun matrix. This task added "Semana anterior / Semana actual / Semana siguiente" buttons that jump the same date-range fields to real Monday-Sunday week boundaries, computed from the resolved **business date** (the same `GET /api/v1/context/business-date` primitive `_Dashboard`/Reports already use — never `DateTime.now()`, preserving TASK 16.23B's timezone semantics). The initial date range still shows a provisional device-local guess for one frame, exactly like `_Dashboard`'s own documented pattern, then corrects itself the instant the real business date resolves.
+TASK 16.28 added "Semana anterior / Semana actual / Semana siguiente" buttons to the then-existing per-employee day-editor, jumping its date-range fields to real Monday-Sunday week boundaries computed from the resolved **business date** (the same `GET /api/v1/context/business-date` primitive `_Dashboard`/Reports already use — never `DateTime.now()`, preserving TASK 16.23B's timezone semantics).
 
-A true employee-rows × weekday-columns matrix view was considered and explicitly **not** built this task — it would be a much larger UI rewrite of an already-working, already-tested screen, and the per-employee day-editor shape already covers the same real capability (define/edit any employee's schedule for any day, validated identically). Documented here as a known, deliberate scope decision, not an oversight.
+TASK 16.29 replaced that day-editor entirely with the full employee-rows × weekday-columns matrix originally deferred in TASK 16.28 (see that task's note below, kept for history) — see "TASK 16.29 — what changed" above for the details. The business-date resolution and week-navigation logic carried over unchanged; only the surrounding rendering (a table of real employees × real days instead of one employee's date-range list) changed.
 
 ## Attendance model
 
@@ -84,13 +97,13 @@ Existing catalogue (`packages/database/src/seeds/technical-permissions.ts`), unc
 
 ## Known, deliberate deferrals
 
-- Horarios remains a per-employee day-list, not a full employee × weekday matrix (see above).
+- No device registry/management UI exists — there is no real device to register (see "Future attendance device integration" below); TASK 16.29 confirmed this and deliberately did not build one for appearance.
 - No PDF export exists for Horarios or Nómina — no request to add one was safely scoped this task; the existing PDF infrastructure (`openReceiptPrintWindow`) could support it in a future task.
 - Lateness tolerance and overtime rate remain fixed, not tenant-configurable (see above) — a deliberate decision, not an oversight.
-- No standalone attendance-history/aggregation report endpoint beyond what Nómina's own calculation already produces.
+- No standalone attendance-history/aggregation report endpoint beyond what Nómina's own calculation and the Checador history panel already produce.
 
 ## Tests
 
-Backend: `time-clock.integration.test.ts` (9, incl. 1 new for `method`), `employees.integration.test.ts`, `payroll.integration.test.ts` — 22/22 passing. `dashboard`/`reports` module tests (which also read `time_clock_punches`) re-verified unaffected — 42/42 passing.
-Frontend: `pos_people_test.dart` — 19/19 passing (2 new: method-label honesty, week-navigation).
-Full Flutter suite: 1160/1160. `flutter analyze`: 0 errors. `flutter build web --release`: succeeds.
+TASK 16.28 — Backend: `time-clock.integration.test.ts` (9, incl. 1 new for `method`), `employees.integration.test.ts`, `payroll.integration.test.ts` — 22/22 passing. `dashboard`/`reports` module tests (which also read `time_clock_punches`) re-verified unaffected — 42/42 passing. Frontend: `pos_people_test.dart` — 19/19 passing. Full Flutter suite: 1160/1160. `flutter analyze`: 0 errors. `flutter build web --release`: succeeds.
+
+TASK 16.29 — Backend: `src/modules/people` 24/24 passing (22 prior + 2 new: branch-wide schedules, branch-wide punches, both incl. an unauthorized-branch-id rejection case). `dashboard` module re-verified unaffected. Frontend: `pos_people_test.dart` — 23/23 passing (4 rewritten + 2 new for Horarios' matrix; 1 rewritten + 2 new for Checador's branch-wide panels). See the end of this task's own final report for the full/whole-suite and `flutter analyze`/`flutter build web` gate results.
