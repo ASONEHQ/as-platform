@@ -428,7 +428,35 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(timeClockGateway.clockInCalls, ['employee-1']);
-      expect(find.textContaining('Entrada registrada a las'), findsOneWidget);
+      // TASK 16.29.3 — a successful punch now shows the terminal's own
+      // polished confirmation dialog, with the real employee/hora/método
+      // fields the backend returned, instead of an inline message.
+      expect(find.byKey(const Key('pos-timeclock-confirmation-title')), findsOneWidget);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-timeclock-confirmation-title'))).data,
+        'Entrada registrada',
+      );
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-timeclock-confirmation-employee'))).data,
+        'Ana Torres (EMP-1)',
+      );
+      // Computed the same way `_formatTime` itself converts — never a
+      // hardcoded local-time string, which would be flaky across test
+      // runners in different timezones.
+      final localOccurred = DateTime.utc(2026, 9, 7, 15, 30).toLocal();
+      final expectedTime =
+          '${localOccurred.hour.toString().padLeft(2, '0')}:${localOccurred.minute.toString().padLeft(2, '0')}';
+      expect(tester.widget<Text>(find.byKey(const Key('pos-timeclock-confirmation-time'))).data, expectedTime);
+      expect(tester.widget<Text>(find.byKey(const Key('pos-timeclock-confirmation-method'))).data, 'Manual');
+
+      await tester.tap(find.byKey(const Key('pos-timeclock-confirmation-close')));
+      await tester.pumpAndSettle();
+      // Dismissing clears the identification field, ready for the next
+      // employee at a shared terminal.
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-timeclock-self-employee-id'))).controller!.text,
+        '',
+      );
     });
 
     testWidgets('a duplicate clock-in shows the real, honest backend rejection message', (tester) async {
@@ -617,6 +645,93 @@ void main() {
         'Método: Dispositivo',
       );
       expect(find.textContaining('Biométrico'), findsNothing);
+    });
+
+    // TASK 16.29.3 — the terminal-style upper Checador panel.
+    group('Terminal', () {
+      testWidgets('the title, live clock/date, and employee identification field all render', (tester) async {
+        await _pump(tester, employeesGateway: _RecordingEmployeesGateway());
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        expect(find.text('CHECADOR'), findsOneWidget);
+        expect(find.byKey(const Key('pos-timeclock-terminal-clock')), findsOneWidget);
+        expect(find.byKey(const Key('pos-timeclock-terminal-date')), findsOneWidget);
+        expect(find.byKey(const Key('pos-timeclock-self-employee-id')), findsOneWidget);
+      });
+
+      testWidgets('Entrada and Salida stay disabled until an employee is identified, then enable', (tester) async {
+        await _pump(tester, employeesGateway: _RecordingEmployeesGateway());
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        FilledButton entradaButton() => tester.widget<FilledButton>(find.byKey(const Key('pos-timeclock-clock-in')));
+        FilledButton salidaButton() => tester.widget<FilledButton>(find.byKey(const Key('pos-timeclock-clock-out')));
+        expect(entradaButton().onPressed, isNull);
+        expect(salidaButton().onPressed, isNull);
+
+        await tester.enterText(find.byKey(const Key('pos-timeclock-self-employee-id')), 'EMP-1');
+        await tester.pump();
+
+        expect(entradaButton().onPressed, isNotNull);
+        expect(salidaButton().onPressed, isNotNull);
+      });
+
+      testWidgets('typing a real employee code (case-insensitive) resolves it to the real employee id on punch', (
+        tester,
+      ) async {
+        final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+        final timeClockGateway = _RecordingTimeClockGateway();
+        // Exercises the CODE lookup path against the real,
+        // already-fetched branch roster — never a fabricated backend
+        // "lookup by name/code" capability. Lowercase, unlike the
+        // employee's real stored code ("EMP-1"), to prove the match is
+        // case-insensitive.
+        await _pump(tester, employeesGateway: employeesGateway, timeClockGateway: timeClockGateway);
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        await tester.enterText(find.byKey(const Key('pos-timeclock-self-employee-id')), 'emp-1');
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-timeclock-clock-in')));
+        await tester.pumpAndSettle();
+
+        expect(timeClockGateway.clockInCalls, ['employee-1']);
+      });
+
+      testWidgets('the automatic-device area says Próximamente and never claims a connected device', (tester) async {
+        await _pump(tester, employeesGateway: _RecordingEmployeesGateway());
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-timeclock-device-placeholder')), findsOneWidget);
+        expect(find.textContaining('Próximamente'), findsOneWidget);
+        expect(find.textContaining('Conectado'), findsNothing);
+      });
+
+      testWidgets('the terminal renders without overflow at a desktop presentation size', (tester) async {
+        await _pump(tester, employeesGateway: _RecordingEmployeesGateway());
+        // `_pump` itself already sizes at 1440x1000; re-assert at the
+        // task's own named 1365x768 presentation target too.
+        tester.view.physicalSize = const Size(1365, 768);
+        tester.view.devicePixelRatio = 1;
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-timeclock-terminal')), findsOneWidget);
+      });
+
+      testWidgets('the terminal renders without overflow at a narrow width', (tester) async {
+        await _pump(tester, employeesGateway: _RecordingEmployeesGateway());
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        await _navigateToTab(tester, 'Checador');
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-timeclock-terminal')), findsOneWidget);
+      });
     });
   });
 

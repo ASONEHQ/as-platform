@@ -1,6 +1,6 @@
 # Workforce System — Employees · Schedules · Attendance · Payroll
 
-TASK 16.28 (foundation) + TASK 16.29 (UX v2 / presentation parity). Administración → Empleados: Plantilla / Horarios / Checador / Nómina.
+TASK 16.28 (foundation) + TASK 16.29 (UX v2 / presentation parity) + TASK 16.29.3 (Checador terminal UX). Administración → Empleados: Plantilla / Horarios / Checador / Nómina.
 
 ## TASK 16.29 — what changed
 
@@ -14,6 +14,22 @@ TASK 16.29's own brief was explicit: reuse TASK 16.28's architecture, do not reb
 6. **Device/biometric UX stays documentation-and-copy only** (Phase 5, explicit instruction): no device registry, no fake "Conectado"/serial/online-status UI was added. The only change is one neutral, honestly-worded line in the entrada/salida panel ("Conecta un lector compatible para registro automático (próximamente).") — it never claims a device exists or is connected. See "Future attendance device integration" below, unchanged in substance from TASK 16.28.
 
 **Not touched this task**: Users vs. Employees separation (already correct, see below), the RBAC permission catalogue (no new permission was invented), the payroll calculation engine itself (only its lines' display now resolves a name), the lateness-tolerance/overtime constants.
+
+## TASK 16.29.3 — Checador terminal UX
+
+A frontend-only presentation pass on top of TASK 16.29's Checador (no backend change; no migration; the real `clockIn`/`clockOut`/`correctPunch`/`listPunches(ForBranch)` endpoints are unchanged). The upper "Registrar entrada/salida" panel became a terminal-style panel (`pos-timeclock-terminal` in `pos_people_screen.dart`):
+
+- **Title + live clock + business date.** "CHECADOR", a ticking `HH:MM:SS a.m./p.m.` clock (`_TerminalClock`, its own 1s `Timer`, device-local wall-clock time — deliberately the same convention `pos_shell.dart`'s own topbar clock already uses, so a shared terminal never shows a second, competing time source), and the resolved BUSINESS date in long Spanish form ("sábado, 26 septiembre 2026", via the new `_longSpanishDate` helper) — the same `_businessToday` every other timezone-aware panel in this file already resolves, not `DateTime.now()`.
+- **Employee identification.** One always-visible field, "Código o ID del empleado". Typed text first resolves against the real, already-fetched branch roster by `code` (case-insensitive) — a genuine client-side match against real data, never an invented backend "lookup by name" endpoint (the backend's `employee_id` fields are still, and only ever, the real UUID `employees.id`). No match in the roster (a deactivated employee, `employee.read` unavailable, a raw id) forwards the typed text unchanged, exactly as the prior manual-entry field already did — the real endpoint remains the sole authority on validity. If the session's own linked employee resolves, the field is prefilled with their code as a convenience (never hidden, never auto-submitted) so a shared terminal still lets anyone override it.
+- **Entrada/Salida stay a client-side "is something typed" gate only** — never an inference of which action is currently legal; that sequencing (duplicate clock-in, clock-out with no open clock-in, etc.) remains entirely server-owned and is surfaced from the real rejection message, unchanged from TASK 16.28/16.29.
+- **Success confirmation.** A dialog (`_PunchConfirmationDialog`) shows "Entrada registrada"/"Salida registrada" with the real employee label (resolved from the branch roster, falling back to the raw id — never a fabricated name), the real server `occurred_at`, and the real stored `method` — all straight off the `PosTimeClockPunch` the backend returned. Dismissing it clears the identification field for the next employee at a shared terminal.
+- **Device/biometric placeholder** stays copy-only ("Checador automático · Lector / biométrico" / "Conecta un lector compatible para registro automático. Próximamente.") — still no registry, no fake connected/online state, no hardware.
+- "Checadas de hoy" and "Historial de asistencia" (below the terminal) are unchanged in substance from TASK 16.29 — same branch-wide data, same RBAC split.
+
+**Available now vs. future**, stated explicitly per this task's own instruction:
+
+- **AVAILABLE NOW**: manual employee attendance (typed code or id, resolved against real data); real entry/exit records via the unchanged `clockIn`/`clockOut` endpoints; today's punches and attendance history (branch-wide, real); corrections under `attendance.manage` RBAC; payroll consumption of this same real attendance data (unchanged).
+- **FUTURE, not built**: a physical attendance reader, a biometric reader, NFC/QR or any other device-based identification — none exist in this codebase; the `method` column and the adapter boundary documented above are the only readiness step taken, and the terminal's own placeholder text never claims otherwise.
 
 **Important finding from this task's own audit, stated up front**: this system was NOT built from scratch. All four workspaces already existed, fully backed by real backend modules and a real Postgres schema, before this task started (`apps/api/src/modules/people/`, `packages/database/src/schema/people.ts`, migration `0025_worried_the_captain.sql`, frontend `apps/one/lib/features/pos/pos_people_screen.dart` + `pos_people_gateway.dart`). This task's own job was to audit that existing system against the original product reference, find genuine gaps, and close only those — never to rebuild working, tested code. What follows documents the system as it now stands, including what was already there and what this task added.
 
@@ -106,4 +122,6 @@ Existing catalogue (`packages/database/src/seeds/technical-permissions.ts`), unc
 
 TASK 16.28 — Backend: `time-clock.integration.test.ts` (9, incl. 1 new for `method`), `employees.integration.test.ts`, `payroll.integration.test.ts` — 22/22 passing. `dashboard`/`reports` module tests (which also read `time_clock_punches`) re-verified unaffected — 42/42 passing. Frontend: `pos_people_test.dart` — 19/19 passing. Full Flutter suite: 1160/1160. `flutter analyze`: 0 errors. `flutter build web --release`: succeeds.
 
-TASK 16.29 — Backend: `src/modules/people` 24/24 passing (22 prior + 2 new: branch-wide schedules, branch-wide punches, both incl. an unauthorized-branch-id rejection case). `dashboard` module re-verified unaffected. Frontend: `pos_people_test.dart` — 23/23 passing (4 rewritten + 2 new for Horarios' matrix; 1 rewritten + 2 new for Checador's branch-wide panels). See the end of this task's own final report for the full/whole-suite and `flutter analyze`/`flutter build web` gate results.
+TASK 16.29 — Backend: `src/modules/people` 24/24 passing (22 prior + 2 new: branch-wide schedules, branch-wide punches, both incl. an unauthorized-branch-id rejection case). `dashboard` module re-verified unaffected. Frontend: `pos_people_test.dart` — 23/23 passing (4 rewritten + 2 new for Horarios' matrix; 1 rewritten + 2 new for Checador's branch-wide panels).
+
+TASK 16.29.3 — Frontend-only; backend untouched (no re-run needed, confirmed by an empty `git diff` under `apps/api`). Frontend: `pos_people_test.dart` — 29/29 passing (1 rewritten success-confirmation assertion + 6 new: terminal title/clock/date/field, disabled-until-identified, code-resolution, device-placeholder honesty, desktop/narrow no-overflow). See this task's own final report for the full/whole-suite and `flutter analyze`/`flutter build web` gate results.

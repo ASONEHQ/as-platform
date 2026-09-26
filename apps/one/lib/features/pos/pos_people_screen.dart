@@ -1386,6 +1386,33 @@ String _weekdayDateLabel(DateTime date, {required bool short}) {
   return short ? '$name $dayMonth' : dayMonth;
 }
 
+const _weekdayLongNames = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+const _monthLongNames = [
+  'enero',
+  'febrero',
+  'marzo',
+  'abril',
+  'mayo',
+  'junio',
+  'julio',
+  'agosto',
+  'septiembre',
+  'octubre',
+  'noviembre',
+  'diciembre',
+];
+
+// TASK 16.29.3 — Checador terminal's own date line, e.g. "sábado, 26
+// septiembre 2026". Deliberately the resolved BUSINESS date (the same
+// `_businessToday` every other timezone-aware panel in this file already
+// uses), never `DateTime.now()` — a shared terminal must show the
+// branch's own operating day, not the device's.
+String _longSpanishDate(DateTime date) {
+  final weekday = _weekdayLongNames[date.weekday - 1];
+  final month = _monthLongNames[date.month - 1];
+  return '$weekday, ${date.day} $month ${date.year}';
+}
+
 /// TASK 16.29 (Phase 3) — the matrix body. Horizontally scrolls at
 /// narrow widths (never crushes a cell illegibly) via the outer
 /// `SingleChildScrollView`; the employee-name column and 7 day columns
@@ -1738,10 +1765,63 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
 // Checador — gated by `attendance.read`/`attendance.manage`.
 // ---------------------------------------------------------------------
 
-/// TASK 16.29 (Phase 4) — the operational Checador: "Mi checador"
-/// (self-service, unchanged), "Checadas de hoy" (real, branch-wide,
-/// auto-loaded today list — NEW), and "Historial de asistencia" (now
-/// branch-wide with an optional employee filter, reachable to any
+/// TASK 16.29.3 — the terminal's own ticking time-of-day text
+/// ("10:52:34 a.m."), driven by its own 1s `Timer`. Deliberately
+/// `DateTime.now()` (device-local), matching the exact same convention
+/// `_LiveClockText` already establishes for the topbar clock elsewhere
+/// in this app (`pos_shell.dart`) — a shared terminal should read the
+/// same wall-clock time as the rest of the screen it sits in, never a
+/// second, competing time source. The terminal's own DATE line is a
+/// separate concern (see `_longSpanishDate`), sourced from the resolved
+/// BUSINESS date instead, exactly like every other timezone-aware panel
+/// in this file.
+class _TerminalClock extends StatefulWidget {
+  const _TerminalClock({required this.style});
+  final TextStyle style;
+
+  @override
+  State<_TerminalClock> createState() => _TerminalClockState();
+}
+
+class _TerminalClockState extends State<_TerminalClock> {
+  Timer? _timer;
+  DateTime _now = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final local = _now.toLocal();
+    var hour12 = local.hour % 12;
+    if (hour12 == 0) hour12 = 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    final second = local.second.toString().padLeft(2, '0');
+    final period = local.hour < 12 ? 'a.m.' : 'p.m.';
+    return Text(
+      '$hour12:$minute:$second $period',
+      key: const Key('pos-timeclock-terminal-clock'),
+      style: widget.style,
+    );
+  }
+}
+
+/// TASK 16.28/16.29/16.29.3 — the operational Checador: a terminal-style
+/// "Registrar entrada/salida" panel (self-service, real backend,
+/// upgraded presentation this task), "Checadas de hoy" (real,
+/// branch-wide, auto-loaded today list), and "Historial de asistencia"
+/// (branch-wide with an optional employee filter, reachable to any
 /// `attendance.read` actor — the correction action alone stays gated
 /// behind `attendance.manage`, per Phase 8's own "viewers should see
 /// allowed data without dangerous enabled mutation actions" rule).
@@ -1850,20 +1930,61 @@ class _ChecadorTabState extends State<_ChecadorTab> {
       setState(() {
         _employees = all;
         _selfEmployee = all.where((employee) => employee.userId == widget.context.session.userId).firstOrNull;
+        // TASK 16.29.3 — a shared terminal always shows an editable
+        // identification field (see `build()`), but a session whose own
+        // linked employee just resolved gets it prefilled with their
+        // real code as a convenience — never silently substituted, and
+        // never overwriting whatever the person at the terminal already
+        // typed.
+        final self = _selfEmployee;
+        if (self != null && _selfEmployeeIdController.text.trim().isEmpty) {
+          _selfEmployeeIdController.text = self.code;
+        }
       });
     } on Object {
       // Honest fallback — no `employee.read` means no auto-detected self
-      // employee and no employee picker; manual employee id entry still
-      // lets self-service work, and branch-wide lists still show raw
-      // employee ids via `_employeeLabel`'s own fallback.
+      // employee and no employee picker prefill; manual employee id/code
+      // entry still lets self-service work, and branch-wide lists still
+      // show raw employee ids via `_employeeLabel`'s own fallback.
     }
   }
 
-  String? get _selfEmployeeId =>
-      _selfEmployee?.id ?? (_selfEmployeeIdController.text.trim().isEmpty ? null : _selfEmployeeIdController.text.trim());
+  /// TASK 16.29.3 — resolves whatever was typed against the real,
+  /// already-fetched branch roster by CODE first (the human-memorable
+  /// identifier a shared terminal is meant to accept), then by raw id
+  /// (preserves the prior manual-UUID-entry escape hatch). No match in
+  /// the roster (a deactivated employee, a roster unavailable without
+  /// `employee.read`, or simply a typo) forwards the raw text unchanged
+  /// — the real endpoint stays the only authority on whether it is a
+  /// valid employee, exactly as before this task. Never a fabricated
+  /// lookup-by-name: the roster is real, already-fetched data, not an
+  /// invented backend capability.
+  String? get _identifiedEmployeeId {
+    final raw = _selfEmployeeIdController.text.trim();
+    if (raw.isEmpty) return null;
+    for (final employee in _employees) {
+      if (employee.code.toLowerCase() == raw.toLowerCase() || employee.id == raw) return employee.id;
+    }
+    return raw;
+  }
+
+  Future<void> _showPunchConfirmation(bool clockIn, PosTimeClockPunch punch) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _PunchConfirmationDialog(
+        clockIn: clockIn,
+        employeeLabel: _employeeLabel(punch.employeeId),
+        occurredAt: punch.occurredAt,
+        method: punch.method,
+      ),
+    );
+    if (!mounted) return;
+    // Ready for the next employee at a shared terminal.
+    setState(() => _selfEmployeeIdController.clear());
+  }
 
   Future<void> _punch(bool clockIn) async {
-    final employeeId = _selfEmployeeId;
+    final employeeId = _identifiedEmployeeId;
     if (employeeId == null) return;
     setState(() {
       _selfBusy = true;
@@ -1877,14 +1998,13 @@ class _ChecadorTabState extends State<_ChecadorTab> {
       setState(() {
         _selfBusy = false;
         _selfMessageIsError = false;
-        _selfMessage = clockIn
-            ? 'Entrada registrada a las ${_formatTime(punch.occurredAt)}.'
-            : 'Salida registrada a las ${_formatTime(punch.occurredAt)}.';
+        _selfMessage = null;
       });
       // A real punch just landed — the branch-wide lists below must
       // reflect it without a manual refresh.
       unawaited(_loadToday());
       unawaited(_loadHistory());
+      await _showPunchConfirmation(clockIn, punch);
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -1995,63 +2115,130 @@ class _ChecadorTabState extends State<_ChecadorTab> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _Card(
+          key: const Key('pos-timeclock-terminal'),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Registrar entrada / salida', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
-              const SizedBox(height: 8),
-              if (_selfEmployee != null)
-                Text(
-                  '${_selfEmployee!.displayName} (${_selfEmployee!.code})',
-                  style: TextStyle(color: palette.textSecondary, fontSize: 12),
-                )
-              else
-                TextField(
-                  key: const Key('pos-timeclock-self-employee-id'),
-                  controller: _selfEmployeeIdController,
-                  onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(isDense: true, labelText: 'Id de tu empleado'),
+              Center(
+                child: Column(
+                  children: [
+                    Text(
+                      'CHECADOR',
+                      key: const Key('pos-timeclock-terminal-title'),
+                      style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 13, letterSpacing: 3),
+                    ),
+                    const SizedBox(height: 10),
+                    _TerminalClock(style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 34)),
+                    const SizedBox(height: 2),
+                    Text(
+                      _longSpanishDate(_businessToday ?? DateTime.now()),
+                      key: const Key('pos-timeclock-terminal-date'),
+                      style: TextStyle(color: palette.textSecondary, fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ],
                 ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      key: const Key('pos-timeclock-clock-in'),
-                      onPressed: _selfBusy || _selfEmployeeId == null ? null : () => unawaited(_punch(true)),
-                      style: FilledButton.styleFrom(backgroundColor: palette.success),
-                      icon: const Icon(Icons.login, size: 16),
-                      label: const Text('Entrada'),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Identifica al empleado',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 340),
+                child: Center(
+                  child: TextField(
+                    key: const Key('pos-timeclock-self-employee-id'),
+                    controller: _selfEmployeeIdController,
+                    onChanged: (_) => setState(() {}),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 16),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      hintText: 'Código o ID del empleado',
+                      border: OutlineInputBorder(),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      key: const Key('pos-timeclock-clock-out'),
-                      onPressed: _selfBusy || _selfEmployeeId == null ? null : () => unawaited(_punch(false)),
-                      style: FilledButton.styleFrom(backgroundColor: palette.warning),
-                      icon: const Icon(Icons.logout, size: 16),
-                      label: const Text('Salida'),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Center(
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    SizedBox(
+                      width: 220,
+                      height: 48,
+                      child: FilledButton.icon(
+                        key: const Key('pos-timeclock-clock-in'),
+                        onPressed: _selfBusy || _identifiedEmployeeId == null ? null : () => unawaited(_punch(true)),
+                        style: FilledButton.styleFrom(backgroundColor: palette.success),
+                        icon: const Icon(Icons.login, size: 18),
+                        label: const Text('REGISTRAR ENTRADA', style: TextStyle(fontWeight: FontWeight.w800)),
+                      ),
                     ),
-                  ),
-                ],
+                    SizedBox(
+                      width: 220,
+                      height: 48,
+                      child: FilledButton.icon(
+                        key: const Key('pos-timeclock-clock-out'),
+                        onPressed: _selfBusy || _identifiedEmployeeId == null ? null : () => unawaited(_punch(false)),
+                        style: FilledButton.styleFrom(backgroundColor: palette.warning),
+                        icon: const Icon(Icons.logout, size: 18),
+                        label: const Text('REGISTRAR SALIDA', style: TextStyle(fontWeight: FontWeight.w800)),
+                      ),
+                    ),
+                  ],
+                ),
               ),
               if (_selfMessage != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  _selfMessage!,
-                  key: const Key('pos-timeclock-status-message'),
-                  style: TextStyle(color: _selfMessageIsError ? palette.error : palette.success, fontSize: 12),
+                const SizedBox(height: 12),
+                Center(
+                  child: Text(
+                    _selfMessage!,
+                    key: const Key('pos-timeclock-status-message'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: _selfMessageIsError ? palette.error : palette.success, fontSize: 12),
+                  ),
                 ),
               ],
-              const SizedBox(height: 10),
-              // TASK 16.29 (Phase 5) — informational only; never claims a
-              // device is actually connected (none exists — see
-              // docs/WORKFORCE_SYSTEM.md's "Future attendance device
-              // integration" section).
-              Text(
-                'Conecta un lector compatible para registro automático (próximamente).',
-                style: TextStyle(color: palette.textMuted, fontSize: 11, fontStyle: FontStyle.italic),
+              const SizedBox(height: 20),
+              Container(
+                key: const Key('pos-timeclock-device-placeholder'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: palette.background,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: palette.border),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.sensors_outlined, size: 20, color: palette.textMuted),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Checador automático · Lector / biométrico',
+                            style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
+                          const SizedBox(height: 2),
+                          // TASK 16.29/16.29.3 — informational only; NEVER
+                          // claims a device is actually connected (none
+                          // exists — see docs/WORKFORCE_SYSTEM.md's "Future
+                          // attendance device integration" section).
+                          Text(
+                            'Conecta un lector compatible para registro automático. Próximamente.',
+                            style: TextStyle(color: palette.textMuted, fontSize: 11, fontStyle: FontStyle.italic),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -2242,6 +2429,99 @@ class _PunchRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// TASK 16.29.3 (Phase 3) — the terminal's own success confirmation.
+/// Every field is exactly what the real punch response carried
+/// ([employeeLabel] resolved from the already-fetched branch roster via
+/// `_ChecadorTabState._employeeLabel`, falling back to the raw employee
+/// id — never a fabricated name; [occurredAt]/[method] straight off the
+/// [PosTimeClockPunch] the backend returned). Dismissing it clears the
+/// identification field, ready for the next employee at a shared
+/// terminal — a presentation touch, not new data.
+class _PunchConfirmationDialog extends StatelessWidget {
+  const _PunchConfirmationDialog({
+    required this.clockIn,
+    required this.employeeLabel,
+    required this.occurredAt,
+    required this.method,
+  });
+  final bool clockIn;
+  final String employeeLabel;
+  final DateTime occurredAt;
+  final String method;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final accent = clockIn ? palette.success : palette.warning;
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Icon(clockIn ? Icons.check_circle : Icons.logout, color: accent, size: 48),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                clockIn ? 'Entrada registrada' : 'Salida registrada',
+                key: const Key('pos-timeclock-confirmation-title'),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 18),
+              ),
+              const SizedBox(height: 18),
+              _ConfirmationRow(label: 'Empleado', value: employeeLabel, valueKey: 'pos-timeclock-confirmation-employee'),
+              const SizedBox(height: 10),
+              _ConfirmationRow(label: 'Hora', value: _formatTime(occurredAt), valueKey: 'pos-timeclock-confirmation-time'),
+              const SizedBox(height: 10),
+              _ConfirmationRow(
+                label: 'Método',
+                value: _punchMethodLabel(method),
+                valueKey: 'pos-timeclock-confirmation-method',
+              ),
+              const SizedBox(height: 22),
+              FilledButton(
+                key: const Key('pos-timeclock-confirmation-close'),
+                onPressed: () => Navigator.of(context).pop(),
+                style: FilledButton.styleFrom(backgroundColor: accent),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConfirmationRow extends StatelessWidget {
+  const _ConfirmationRow({required this.label, required this.value, required this.valueKey});
+  final String label;
+  final String value;
+  final String valueKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(color: palette.textMuted, fontSize: 12, fontWeight: FontWeight.w600)),
+        Text(
+          value,
+          key: Key(valueKey),
+          style: TextStyle(color: palette.text, fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+      ],
     );
   }
 }

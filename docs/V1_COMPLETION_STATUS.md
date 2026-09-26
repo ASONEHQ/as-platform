@@ -67,7 +67,7 @@ These are real, verified gaps — not guesses — that were judged out of scope 
 | Administration | COMPLETE WITH P2 GAP | bare loading spinners, cosmetic (TASK 16.26) |
 | Empleados — Plantilla | COMPLETE | full CRUD, search, status filter, responsive grid (TASK 16.29) |
 | Empleados — Horarios | COMPLETE | full employee-rows × Mon-Sun matrix (TASK 16.29), replacing TASK 16.28's per-employee day-list |
-| Empleados — Checador | COMPLETE | "Checadas de hoy" + branch-wide "Historial de asistencia" panels added (TASK 16.29); real device integration deferred by design |
+| Empleados — Checador | COMPLETE | terminal-style panel (live clock, business date, code/id identification, confirmation dialog — TASK 16.29.3) + branch-wide "Checadas de hoy"/"Historial de asistencia" panels (TASK 16.29); real device integration deferred by design |
 | Empleados — Nómina | COMPLETE | lateness/overtime already real, exact-arithmetic backend logic — already existed; lines now show the real employee name (TASK 16.29) |
 | CFDI / Facturación | OUT OF V1 | explicitly excluded, honest "not yet enabled" state shown |
 | Offline POS | OUT OF V1 | explicitly excluded |
@@ -89,11 +89,16 @@ Nothing here should surprise the owner during the Monday presentation.
 
 Built directly on TASK 16.28's architecture, per its own explicit instruction not to rebuild the backend unnecessarily — see `docs/WORKFORCE_SYSTEM.md`'s "TASK 16.29 — what changed" section for the full writeup. In short: Horarios became a real employee × Mon-Sun matrix (closing the P2 gap TASK 16.28 had deliberately left open); Checador gained branch-wide "Checadas de hoy" and "Historial de asistencia" panels reachable with `attendance.read` alone (the "Corregir" action stays `attendance.manage`-gated); Nómina's payroll lines now resolve the real employee name instead of a raw id; a real employee-list pagination bug (never following `next_cursor`) was fixed everywhere the roster is paginated; two small, additive branch-wide backend endpoints (`GET /api/v1/schedules/branch`, `GET /api/v1/time-clock/punches/branch`) were added to avoid an N+1 per-employee fetch pattern for the matrix and the attendance panels. No fake employees, attendance, payroll figures, or device/biometric status were introduced anywhere in this pass.
 
+## TASK 16.29.3 — Checador terminal UX
+
+Frontend-only, on top of TASK 16.29 — see `docs/WORKFORCE_SYSTEM.md`'s "TASK 16.29.3" section for the full writeup. The upper Checador panel became a terminal-style experience: a live device-local clock (matching `pos_shell.dart`'s own established topbar-clock convention), the resolved business date in long Spanish form, an always-visible "Código o ID del empleado" field that resolves against the real, already-fetched branch roster by code (never an invented lookup-by-name backend capability — unmatched input still forwards to the real endpoint unchanged), and a polished success-confirmation dialog showing the real employee/hora/método the backend returned. The device/biometric placeholder stays copy-only, unchanged in substance. No backend file was touched this task.
+
 ## Backend
 
 TASK 16.26/16.27: no backend changes.
 TASK 16.28: one additive migration (`packages/database/drizzle/0047_stiff_joshua_kane.sql`, adds `time_clock_punches.method`), applied only to the local test database — never production. No table dropped/renamed, no existing column changed, no data migrated.
 TASK 16.29: no migration — two new, additive read-only routes/service/repository methods only (see above), applied to the local test database's existing schema. No table dropped/renamed, no existing column changed, no data migrated.
+TASK 16.29.3: no backend changes at all — frontend-only (confirmed by an empty `git diff` under `apps/api`).
 
 ## Tests
 
