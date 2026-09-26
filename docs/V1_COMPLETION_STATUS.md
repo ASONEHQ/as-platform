@@ -65,19 +65,36 @@ These are real, verified gaps — not guesses — that were judged out of scope 
 | Memberships/Rewards | COMPLETE | per TASK 16.26 audit |
 | Access Control | COMPLETE | branch-switch bug fixed in TASK 16.26 |
 | Administration | COMPLETE WITH P2 GAP | bare loading spinners, cosmetic (TASK 16.26) |
+| Empleados — Plantilla | COMPLETE | full CRUD, search, status filter — already existed |
+| Empleados — Horarios | COMPLETE WITH P2 GAP | week quick-nav added (TASK 16.28); per-employee day-list, not a matrix — deliberate |
+| Empleados — Checador | COMPLETE | punch method/source field added (TASK 16.28); real device integration deferred by design |
+| Empleados — Nómina | COMPLETE | lateness/overtime already real, exact-arithmetic backend logic — already existed |
 | CFDI / Facturación | OUT OF V1 | explicitly excluded, honest "not yet enabled" state shown |
 | Offline POS | OUT OF V1 | explicitly excluded |
+| CFDI Nómina (SAT payroll) | OUT OF V1 | explicitly excluded — this system is operational payroll only |
 
 Nothing here should surprise the owner during the Monday presentation.
 
+## TASK 16.28 — Workforce System (Employees/Schedules/Attendance/Payroll)
+
+**Critical audit finding**: the entire 4-tab workforce system (Plantilla/Horarios/Checador/Nómina) already existed, fully backed by a real Postgres schema, real backend services, and a real Flutter UI, before this task began. This task's own scope was therefore an audit-then-close-real-gaps pass, not a build — see `docs/WORKFORCE_SYSTEM.md` for the full architecture writeup, the future-hardware-adapter contract, and the deliberate scope decisions (why Horarios stays a day-list rather than a full matrix, why the lateness tolerance stays a hardcoded constant).
+
+**Implemented this task**:
+1. `time_clock_punches.method` — a new, real, stored column (`'manual'`/`'device'`/`'biometric'`) via migration `0047_stiff_joshua_kane.sql`, threaded through the repository/service/routes/gateway/UI. Every punch today is honestly `'manual'` (no device exists) — this is the concrete readiness step for a future attendance terminal, without implementing any hardware.
+2. Horarios week quick-navigation (Semana anterior/actual/siguiente), computed from the resolved branch business date, never device-local time.
+
+**Deliberately not changed** (documented, not overlooked): the payroll lateness-tolerance constant stays hardcoded per an already-recorded product decision in the code itself; Horarios stays a per-employee day-list rather than a full weekday matrix; no PDF export was added for Horarios/Nómina.
+
 ## Backend
 
-No backend changes. No new endpoints, no migrations, no schema changes.
+TASK 16.26/16.27: no backend changes.
+TASK 16.28: one additive migration (`packages/database/drizzle/0047_stiff_joshua_kane.sql`, adds `time_clock_punches.method`), applied only to the local test database — never production. No table dropped/renamed, no existing column changed, no data migrated.
 
 ## Tests
 
-- Flutter targeted: `pos_shell_test.dart` full file, `pos_shell_wave3_dashboard_test.dart` full file — all green.
-- Flutter full suite: **1158/1158 passing** (1153 prior baseline + 5 new tests this task).
+- Flutter targeted: `pos_shell_test.dart`, `pos_shell_wave3_dashboard_test.dart`, `pos_people_test.dart` — all green.
+- Flutter full suite: **1160/1160 passing**.
 - Flutter analyze: 0 errors, no new lint issues (172 pre-existing info/warnings unchanged).
 - Flutter web release build: succeeds.
-- Backend: not applicable — no backend files touched.
+- Backend targeted: `src/modules/people` 22/22, `src/modules/dashboard` + `src/modules/reports` (both read `time_clock_punches`) 42/42 — all against the local test database.
+- Backend typecheck/lint: `@asone/database` and `@asone/api` both clean.
