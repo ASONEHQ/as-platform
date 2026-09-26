@@ -46,9 +46,11 @@ Real KPIs from a real, live `GET /api/v1/dashboard/summary` endpoint (ventas de 
 
 **Known, accepted overlap (not a bug)**: 3 of the Dashboard's 10 tiles (ventas de hoy, ocupación actual, variantes agotadas) also appear on Reports → Inteligencia. This is normal "quick pulse vs. analysis" overlap for an executive dashboard, not a duplication of the whole Inteligencia screen (7 of 10 Dashboard tiles plus both list cards are unique operational content Inteligencia doesn't show at all). No change made; flagging here as a reviewed, accepted design choice, not a gap.
 
+**TASK 16.27 update**: every dashboard KPI card and both list cards (Fiestas de hoy, Cajas abiertas) are now real navigation actions — tapping "Ventas de hoy" opens Historial de Ventas, "Ocupación actual" opens Control de Acceso, any Fiestas-related tile opens Fiestas, "Cajas abiertas" opens Corte de Caja, "Empleados en turno" opens Empleados, "Variantes agotadas" opens Inventario. Reuses the exact same `onNavigateToModule` callback every other module already used — no second navigation path, no duplicated screen.
+
 ## POS core sale flow
 
-Cash, Tarjeta, and Transferencia are three distinct, correctly labeled buttons; TASK 16.24's transfer support is intact and visually separate from cash. A cash sale gets a full real receipt dialog (fetches actual configured branding); card and transfer sales currently finish with a toast + success overlay rather than the same persistent receipt dialog. All three payment failures surface through a generic (but message-specific, backend-driven) SnackBar rather than a dedicated failure widget. **Neither is a blocker** — every payment method completes a real sale through the identical `SaleSession`/`createSale` path, and this is a real, pre-existing UX inconsistency, not a regression from this task. Documented as a known P2 for a future pass; not touched here to avoid destabilizing checkout two days before the demo. **Recommendation for the demo**: prefer a **cash** sale when you want to show the full receipt experience.
+Cash, Tarjeta, and Transferencia are three distinct, correctly labeled buttons; TASK 16.24's transfer support is intact and visually separate from cash. **TASK 16.27 update**: card and transfer sales now ALSO open the same staff `_ReceiptSuccessDialog` cash already had (previously toast-only) — labeled "Tarjeta"/"Transferencia", with the "Cambio" row correctly suppressed (no physical change concept on those methods). Kiosk/self-checkout deliberately keeps its own, simpler celebratory-overlay-only completion — a self-checkout customer never sees the staff receipt/print dialog. All three payment failures still surface through a generic (but message-specific, backend-driven) SnackBar rather than a dedicated failure widget — left as-is, a P2. **Every payment method now has the same coherent post-sale completion experience.**
 
 ## Catálogo / Inventario
 
@@ -133,14 +135,16 @@ Both `1440×900` and `1365×768`-equivalent widths are exercised by many existin
 
 ## Remaining non-blocking gaps (P2)
 
-1. POS checkout: card/transfer sales finish with a toast instead of the same persistent receipt dialog cash gets (pre-existing, not a regression; prefer cash for the full-receipt demo moment).
+1. ~~POS checkout: card/transfer sales finish with a toast instead of the same persistent receipt dialog cash gets~~ — **fixed in TASK 16.27.**
 2. ~12 admin screens still show a bare, unlabeled loading spinner (functionally harmless, cosmetic only).
 3. 3 of 7 sidebar groups have a primary-item icon that doesn't match their own group icon (cosmetic only).
+4. All payment methods still funnel checkout failures through a generic (message-specific) SnackBar rather than a dedicated failure widget — cosmetic, not misleading, low priority.
 
 None of these block a Monday presentation.
 
 ## Files / commits
 
-Flutter-only change set (no backend files): `pos_shell.dart`, `pos_navigation.dart`, `pos_reports_screen.dart`, `pos_access_test.dart`, `pos_people_test.dart`, plus this document. See the branch's commit log for the exact commit boundary of this task's work.
+TASK 16.26: `pos_shell.dart`, `pos_navigation.dart`, `pos_reports_screen.dart`, `pos_access_test.dart`, `pos_people_test.dart`.
+TASK 16.27: `pos_shell.dart` (checkout unification, payment-label fixes, dashboard navigation), `pos_shell_test.dart`, `pos_shell_wave3_dashboard_test.dart`. See `docs/V1_COMPLETION_STATUS.md` for the full TASK 16.27 gap audit and completion matrix. No backend files touched in either task.
 
 **PUSH: NO. DEPLOY: NO. PRODUCTION WRITES: ZERO.**
