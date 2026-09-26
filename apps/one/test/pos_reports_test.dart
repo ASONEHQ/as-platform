@@ -84,8 +84,9 @@ void main() {
       expect(find.text('160'), findsOneWidget); // customersByStatus count
       expect(find.text('40'), findsOneWidget); // membershipsByStatus count
       // Both tables genuinely have their own real "active" row — not a
-      // fabricated duplicate.
-      expect(find.text('active'), findsNWidgets(2));
+      // fabricated duplicate. TASK 16.30 — `_ReportsStatusTable` now
+      // translates the real, raw status to Spanish for display only.
+      expect(find.text('Activo'), findsNWidgets(2));
     });
 
     testWidgets('Empleados: attendance and payroll totals render', (tester) async {

@@ -108,7 +108,9 @@ void main() {
 
       expect(find.byKey(const Key('pos-movement-row-movement-1')), findsOneWidget);
       expect(find.text('IMV-DRAFT-1'), findsOneWidget);
-      expect(find.text('draft'), findsOneWidget);
+      // TASK 16.30 — `_StatusPill` now translates the real, raw status
+      // to Spanish for display only.
+      expect(find.text('Borrador'), findsOneWidget);
     });
 
     testWidgets('creating an adjustment without a reason is rejected client-side, never calls the gateway', (tester) async {
@@ -153,7 +155,7 @@ void main() {
 
       expect(find.byKey(const Key('pos-transfer-row-transfer-1')), findsOneWidget);
       expect(find.text('TRF-1'), findsOneWidget);
-      expect(find.text('requested'), findsOneWidget);
+      expect(find.text('Solicitado'), findsOneWidget);
     });
 
     testWidgets('creating a transfer calls the real endpoint with source/destination branches, locations and quantity', (tester) async {
@@ -215,7 +217,7 @@ void main() {
 
       expect(find.byKey(const Key('pos-count-row-count-1')), findsOneWidget);
       expect(find.text('CNT-1'), findsOneWidget);
-      expect(find.text('counting'), findsOneWidget);
+      expect(find.text('En conteo'), findsOneWidget);
     });
 
     testWidgets('a count moves counting → submitted → approved through the real endpoints', (tester) async {
@@ -229,12 +231,16 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-count-detail-submit')));
       await tester.pumpAndSettle();
       expect(gateway.submitCountCalls, [(id: 'count-1', version: 2)]);
-      expect(find.text('submitted'), findsOneWidget);
+      // TASK 16.30 — the status pill now shows the same real Spanish
+      // word ("Enviado") this dialog's own "Enviado: <fecha>" detail row
+      // already used for `submittedAt` — a legitimate, pre-existing
+      // second match, not a duplicate the fix introduced.
+      expect(find.text('Enviado'), findsAtLeastNWidgets(1));
 
       await tester.tap(find.byKey(const Key('pos-count-detail-approve')));
       await tester.pumpAndSettle();
       expect(gateway.approveCountCalls, [(id: 'count-1', version: 3)]);
-      expect(find.text('approved'), findsOneWidget);
+      expect(find.text('Aprobado'), findsAtLeastNWidgets(1));
     });
   });
 
@@ -246,7 +252,7 @@ void main() {
 
       expect(find.byKey(const Key('pos-reservation-row-reservation-1')), findsOneWidget);
       expect(find.text('RES-1'), findsOneWidget);
-      expect(find.text('active'), findsOneWidget);
+      expect(find.text('Activo'), findsOneWidget);
     });
   });
 
@@ -258,7 +264,7 @@ void main() {
 
       expect(find.byKey(const Key('pos-finding-row-finding-1')), findsOneWidget);
       expect(find.text('balance_on_hand_drift'), findsOneWidget);
-      expect(find.text('open'), findsOneWidget);
+      expect(find.text('Abierto'), findsOneWidget);
     });
   });
 
@@ -270,7 +276,7 @@ void main() {
 
       expect(find.byKey(const Key('pos-location-row-location-main')), findsOneWidget);
       expect(find.text('Almacén Principal'), findsOneWidget);
-      expect(find.text('active'), findsOneWidget);
+      expect(find.text('Activo'), findsOneWidget);
     });
   });
 

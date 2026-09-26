@@ -18422,6 +18422,37 @@ class _VisualDialogButton extends StatelessWidget {
   }
 }
 
+// TASK 16.30 — `_StatusChip` is shared across Productos/Promociones/
+// Cupones/Corte de Caja/Clientes/Membresías/Planes/Paquetes de Fiestas,
+// each passing its own model's real, raw status value. Before this fix
+// the raw value (English words like 'active'/'inactive', or a raw
+// backend enum like 'expired'/'cancelled') rendered verbatim — this
+// translates it to Spanish for display only; the color/positivity
+// check still keys off the ORIGINAL raw value, so behavior is
+// unchanged for every existing caller. An unrecognized value still
+// renders (never hidden), just untranslated — never worse than before.
+// 'open' is a second, deliberately distinct key from 'active' (Corte de
+// Caja passes it explicitly) so "Abierta" (a cash session) is never
+// confused with "Activo" (a product/customer/plan/etc.) — the two
+// concepts already use different Spanish words elsewhere in this same
+// screen (see the "Cortes de caja" status filter's own 'Abierta'/
+// 'Cerrada' dropdown).
+String _statusChipLabel(String raw) => switch (raw) {
+  'active' => 'Activo',
+  'inactive' => 'Inactivo',
+  'pending' => 'Pendiente',
+  'expired' => 'Expirado',
+  'cancelled' => 'Cancelado',
+  'archived' => 'Archivado',
+  'retired' => 'Retirado',
+  'draft' => 'Borrador',
+  'maintenance' => 'En mantenimiento',
+  'out_of_service' => 'Fuera de servicio',
+  'open' => 'Abierta',
+  'closed' => 'Cerrada',
+  _ => raw,
+};
+
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.label});
   final String label;
@@ -18429,7 +18460,7 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final active = label == 'active';
+    final active = label == 'active' || label == 'open';
     final color = active ? palette.success : palette.warning;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -18438,7 +18469,7 @@ class _StatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
-        label,
+        _statusChipLabel(label),
         style: TextStyle(
           color: color,
           fontSize: 10,
@@ -19341,7 +19372,7 @@ class _CajaOpenView extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
                   ),
-                  const _StatusChip(label: 'active'),
+                  const _StatusChip(label: 'open'),
                   if (canReadAuditLog)
                     IconButton(
                       key: const Key('pos-caja-audit-log-button'),
@@ -21564,7 +21595,7 @@ class _CutHistoryState extends State<_CutHistory> {
                       ),
                     const SizedBox(width: 8),
                     _StatusChip(
-                      label: session.status == 'closed' ? 'closed' : 'active',
+                      label: session.status == 'closed' ? 'closed' : 'open',
                     ),
                   ],
                 ),
@@ -27855,7 +27886,10 @@ class _RoomFormDialogState extends State<_RoomFormDialog> {
                     key: const Key('pos-fiestas-room-status'),
                     initialValue: _status,
                     decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
-                    items: [for (final status in partyRoomStatuses) DropdownMenuItem(value: status, child: Text(status))],
+                    items: [
+                      for (final status in partyRoomStatuses)
+                        DropdownMenuItem(value: status, child: Text(_statusChipLabel(status))),
+                    ],
                     onChanged: (value) => setState(() => _status = value ?? _status),
                   ),
                 ],
@@ -29123,7 +29157,10 @@ class _PackageFormDialogState extends State<_PackageFormDialog> {
                     key: const Key('pos-fiestas-package-status'),
                     initialValue: _status,
                     decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
-                    items: [for (final status in partyPackageStatuses) DropdownMenuItem(value: status, child: Text(status))],
+                    items: [
+                      for (final status in partyPackageStatuses)
+                        DropdownMenuItem(value: status, child: Text(_statusChipLabel(status))),
+                    ],
                     onChanged: (value) => setState(() => _status = value ?? _status),
                   ),
                 ],

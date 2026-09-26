@@ -263,12 +263,74 @@ class _Failure extends StatelessWidget {
   );
 }
 
+// TASK 16.30 — these three raw backend enums (movement type, count
+// scope, reservation owner type) previously rendered verbatim in list
+// rows and detail views. Display only — an unrecognized value still
+// renders (never hidden), just untranslated.
+String _movementTypeLabel(String raw) => switch (raw) {
+  'opening_balance' => 'Saldo inicial',
+  'adjustment' => 'Ajuste',
+  'transfer_shipment' => 'Traspaso (envío)',
+  'transfer_receipt' => 'Traspaso (recepción)',
+  'reversal' => 'Reversión',
+  'receipt' => 'Entrada',
+  'issue' => 'Salida',
+  'return' => 'Devolución',
+  _ => raw,
+};
+
+// Reuses the exact same Spanish wording the "Nuevo conteo" dialog
+// already shows for these two values (see `_scopeType` dropdown items
+// below), so a count's list row/detail never disagrees with the label
+// the person who created it actually picked.
+String _countScopeLabel(String raw) => switch (raw) {
+  'all_balanced_variants' => 'Todos los productos con saldo',
+  'explicit_variants' => 'Productos específicos (elegidos al iniciar)',
+  _ => raw,
+};
+
+String _reservationOwnerTypeLabel(String raw) => switch (raw) {
+  'pos_cart' => 'Carrito de venta',
+  'event' => 'Fiesta',
+  'booking' => 'Reservación',
+  'order' => 'Pedido',
+  _ => raw,
+};
+
 class _StatusPill extends StatelessWidget {
   const _StatusPill({required this.label});
   final String label;
 
   static const _positive = {'active', 'draft', 'posted', 'applied', 'confirmed', 'received', 'resolved'};
   static const _negative = {'cancelled', 'rejected', 'expired', 'dismissed'};
+
+  // TASK 16.30 — the real, raw status shared by movements/transfers/
+  // counts/reservations/findings/locations on this screen (every value
+  // above, plus a few only reached via a nested detail dialog). Display
+  // only — the color classification above still keys off the ORIGINAL
+  // raw `label`, unchanged. An unrecognized value still renders (never
+  // hidden), just untranslated — never worse than before this fix.
+  static const _labels = {
+    'active': 'Activo',
+    'draft': 'Borrador',
+    'pending': 'Pendiente',
+    'posted': 'Contabilizado',
+    'applied': 'Aplicado',
+    'confirmed': 'Confirmado',
+    'received': 'Recibido',
+    'resolved': 'Resuelto',
+    'cancelled': 'Cancelado',
+    'rejected': 'Rechazado',
+    'expired': 'Expirado',
+    'dismissed': 'Descartado',
+    'approved': 'Aprobado',
+    'requested': 'Solicitado',
+    'shipped': 'Enviado',
+    'submitted': 'Enviado',
+    'counting': 'En conteo',
+    'open': 'Abierto',
+    'acknowledged': 'Reconocido',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -281,7 +343,7 @@ class _StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
-      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+      child: Text(_labels[label] ?? label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
     );
   }
 }
@@ -985,7 +1047,7 @@ class _MovementRow extends StatelessWidget {
                     Text(movement.movementNumber, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
                     const SizedBox(height: 2),
                     Text(
-                      '${movement.movementType} · ${_formatDateTime(movement.occurredAt)}${movement.reasonCode == null ? '' : ' · ${movement.reasonCode}'}',
+                      '${_movementTypeLabel(movement.movementType)} · ${_formatDateTime(movement.occurredAt)}${movement.reasonCode == null ? '' : ' · ${movement.reasonCode}'}',
                       style: TextStyle(color: palette.textSecondary, fontSize: 11),
                     ),
                   ],
@@ -1434,7 +1496,7 @@ class _MovementDetailDialogState extends State<_MovementDetailDialog> {
                   ],
                 ),
                 const SizedBox(height: 10),
-                _DetailRow(label: 'Tipo', value: _movement.movementType),
+                _DetailRow(label: 'Tipo', value: _movementTypeLabel(_movement.movementType)),
                 _DetailRow(label: 'Motivo', value: _movement.reasonCode ?? '—'),
                 _DetailRow(label: 'Notas', value: _movement.notes ?? '—'),
                 _DetailRow(label: 'Ocurrido', value: _formatDateTime(_movement.occurredAt)),
@@ -2516,7 +2578,10 @@ class _CountRow extends StatelessWidget {
                   children: [
                     Text(count.countNumber, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
                     const SizedBox(height: 2),
-                    Text('${count.scopeType} · ${count.reasonCode}', style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+                    Text(
+                      '${_countScopeLabel(count.scopeType)} · ${count.reasonCode}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
                   ],
                 ),
               ),
@@ -2806,7 +2871,7 @@ class _CountDetailDialogState extends State<_CountDetailDialog> {
                 ),
                 const SizedBox(height: 10),
                 _DetailRow(label: 'Motivo', value: _count.reasonCode),
-                _DetailRow(label: 'Alcance', value: _count.scopeType),
+                _DetailRow(label: 'Alcance', value: _countScopeLabel(_count.scopeType)),
                 _DetailRow(label: 'Iniciado', value: _formatOptionalDateTime(_count.startedAt)),
                 _DetailRow(label: 'Enviado', value: _formatOptionalDateTime(_count.submittedAt)),
                 _DetailRow(label: 'Aprobado', value: _formatOptionalDateTime(_count.approvedAt)),
@@ -3107,7 +3172,10 @@ class _ReservationRow extends StatelessWidget {
                   children: [
                     Text(reservation.reservationNumber, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
                     const SizedBox(height: 2),
-                    Text('${reservation.ownerType} · ${reservation.ownerId}', style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+                    Text(
+                      '${_reservationOwnerTypeLabel(reservation.ownerType)} · ${reservation.ownerId}',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
                   ],
                 ),
               ),
@@ -3375,7 +3443,10 @@ class _ReservationDetailDialogState extends State<_ReservationDetailDialog> {
                   ],
                 ),
                 const SizedBox(height: 10),
-                _DetailRow(label: 'Propietario', value: '${_reservation.ownerType} · ${_reservation.ownerId}'),
+                _DetailRow(
+                  label: 'Propietario',
+                  value: '${_reservationOwnerTypeLabel(_reservation.ownerType)} · ${_reservation.ownerId}',
+                ),
                 _DetailRow(label: 'Creada', value: _formatDateTime(_reservation.createdAt)),
                 _DetailRow(label: 'Expira', value: _formatOptionalDateTime(_reservation.expiresAt)),
                 _DetailRow(label: 'Confirmada', value: _formatOptionalDateTime(_reservation.confirmedAt)),

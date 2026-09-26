@@ -4445,6 +4445,31 @@ void main() {
         expect(find.byKey(const Key('pos-caja-open-button')), findsOneWidget);
         expect(find.byKey(const Key('pos-caja-cash-in')), findsNothing);
         expect(find.byKey(const Key('pos-caja-close-button')), findsNothing);
+        // TASK 16.30 — the register's own status chip shows the real
+        // Spanish label ("Cerrada"), never the raw 'closed' value, and
+        // is never confused with a generic "Activo"/"Inactivo" chip.
+        expect(find.text('Cerrada'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'an open register shows "Abierta", never confused with the generic Activo/Inactivo chip (TASK 16.30)',
+      (tester) async {
+        final cashGateway = _FakeCashGateway();
+        await _pump(
+          tester,
+          const Size(1440, 900),
+          context: _contextWithCashPermissions,
+          cashGateway: cashGateway,
+        );
+        await _navigateToCaja(tester);
+        // Two legitimate matches — the status pill, and this same view's
+        // own pre-existing "Abierta: <hora>" row for `session.openedAt`
+        // (`_CajaInfoRow(label: 'Abierta', ...)`) — not a duplicate the
+        // fix introduced.
+        expect(find.text('Abierta'), findsAtLeastNWidgets(1));
+        expect(find.text('Activo'), findsNothing);
+        expect(find.text('open'), findsNothing);
       },
     );
 

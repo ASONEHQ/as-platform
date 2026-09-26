@@ -1934,6 +1934,21 @@ class _ReportsMoneyList extends StatelessWidget {
   }
 }
 
+// TASK 16.30 — `report.customersByStatus`/`membershipsByStatus` carry the
+// real, raw backend status value; this table is the only place that
+// renders it, so the Spanish label lives here rather than in a shared
+// cross-screen helper. Unrecognized values still render (never hidden),
+// just untranslated — never worse than before this fix.
+String _reportStatusLabel(String raw) => switch (raw) {
+  'active' => 'Activo',
+  'inactive' => 'Inactivo',
+  'pending' => 'Pendiente',
+  'expired' => 'Expirado',
+  'cancelled' => 'Cancelado',
+  'archived' => 'Archivado',
+  _ => raw,
+};
+
 class _ReportsStatusTable extends StatelessWidget {
   const _ReportsStatusTable({required this.items});
   final List<PosReportStatusCount> items;
@@ -1951,7 +1966,7 @@ class _ReportsStatusTable extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
-                Expanded(child: Text(item.status, style: TextStyle(color: palette.text))),
+                Expanded(child: Text(_reportStatusLabel(item.status), style: TextStyle(color: palette.text))),
                 Text(
                   '${item.count}',
                   style: TextStyle(color: palette.text, fontWeight: FontWeight.w800),
