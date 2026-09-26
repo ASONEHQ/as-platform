@@ -90,6 +90,11 @@ export interface UpsertScheduleInput {
 export const timeClockPunchTypes = ['clock_in', 'clock_out'] as const;
 export type TimeClockPunchType = (typeof timeClockPunchTypes)[number];
 
+// TASK 16.28 — see `timeClockPunchMethods`'s own doc comment in
+// `packages/database/src/schema/people.ts`.
+export const timeClockPunchMethods = ['manual', 'device', 'biometric'] as const;
+export type TimeClockPunchMethod = (typeof timeClockPunchMethods)[number];
+
 export interface TimeClockPunchRow {
   id: string;
   companyId: string;
@@ -98,6 +103,7 @@ export interface TimeClockPunchRow {
   punchType: TimeClockPunchType;
   occurredAt: Date;
   station: string | null;
+  method: TimeClockPunchMethod;
   isCorrection: boolean;
   correctionReason: string | null;
   correctedPunchId: string | null;

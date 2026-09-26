@@ -38,6 +38,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/app.dart' show PlatformScope;
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'money.dart';
@@ -1062,8 +1063,17 @@ class _HorariosTabState extends State<_HorariosTab> {
   List<PosEmployee> _employees = const [];
   PosEmployee? _selectedEmployee;
   final _manualEmployeeIdController = TextEditingController();
+  // TASK 16.23B (F-05) — a provisional device-local guess only, exactly
+  // like `_Dashboard`'s own identical "provisional-then-corrected"
+  // pattern (see `didChangeDependencies` below): never the authoritative
+  // range a real week-navigation action computes from.
   late final _dateFromController = TextEditingController(text: _isoDate(DateTime.now().subtract(const Duration(days: 7))));
   late final _dateToController = TextEditingController(text: _isoDate(DateTime.now().add(const Duration(days: 7))));
+  // TASK 16.28 (Phase 9) — the resolved BUSINESS "today" (never
+  // device-local), used only to compute the Monday-Sunday week the
+  // quick-navigation buttons jump between. `null` until resolved.
+  DateTime? _businessToday;
+  DateTime? _weekAnchor;
 
   _ListPhase _phase = _ListPhase.empty;
   List<PosEmployeeSchedule> _schedules = const [];
@@ -1073,6 +1083,54 @@ class _HorariosTabState extends State<_HorariosTab> {
   void initState() {
     super.initState();
     unawaited(_loadEmployees());
+  }
+
+  bool _businessTodayRequested = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_businessTodayRequested) return;
+    _businessTodayRequested = true;
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) return; // Keep the provisional device-local range — best-effort, never blocks the tab.
+    PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone).then((today) {
+      if (!mounted) return;
+      final parsed = DateTime.tryParse(today);
+      if (parsed == null) return;
+      setState(() {
+        _businessToday = parsed;
+        _setWeek(parsed);
+      });
+    }).catchError((Object _) {
+      // Keep the provisional range on failure — best-effort, never blocks the tab.
+    });
+  }
+
+  DateTime _mondayOf(DateTime date) => DateTime(date.year, date.month, date.day).subtract(Duration(days: date.weekday - 1));
+
+  /// Sets the visible date range to the real Monday-Sunday week containing
+  /// [anchor] — the only place either controller's text is ever assigned
+  /// after the initial provisional guess.
+  void _setWeek(DateTime anchor) {
+    final monday = _mondayOf(anchor);
+    _weekAnchor = monday;
+    _dateFromController.text = _isoDate(monday);
+    _dateToController.text = _isoDate(monday.add(const Duration(days: 6)));
+  }
+
+  void _shiftWeek(int days) {
+    final anchor = _weekAnchor;
+    if (anchor == null) return;
+    setState(() => _setWeek(anchor.add(Duration(days: days))));
+    if (_employeeId != null) unawaited(_load());
+  }
+
+  void _goToCurrentWeek() {
+    final today = _businessToday;
+    if (today == null) return;
+    setState(() => _setWeek(today));
+    if (_employeeId != null) unawaited(_load());
   }
 
   @override
@@ -1196,6 +1254,36 @@ class _HorariosTabState extends State<_HorariosTab> {
                       controller: _dateToController,
                       decoration: const InputDecoration(isDense: true, labelText: 'Hasta (YYYY-MM-DD)'),
                     ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // TASK 16.28 (Phase 9) — quick week navigation, computed from
+              // the resolved BUSINESS today (never device-local), matching
+              // TASK 16.23B's own timezone semantics. Disabled until that
+              // resolution completes — never jumps against a provisional
+              // guess.
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  OutlinedButton.icon(
+                    key: const Key('pos-schedule-week-prev'),
+                    onPressed: _weekAnchor == null ? null : () => _shiftWeek(-7),
+                    icon: const Icon(Icons.chevron_left, size: 16),
+                    label: const Text('Semana anterior'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const Key('pos-schedule-week-current'),
+                    onPressed: _businessToday == null ? null : _goToCurrentWeek,
+                    icon: const Icon(Icons.today_outlined, size: 16),
+                    label: const Text('Semana actual'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const Key('pos-schedule-week-next'),
+                    onPressed: _weekAnchor == null ? null : () => _shiftWeek(7),
+                    icon: const Icon(Icons.chevron_right, size: 16),
+                    label: const Text('Semana siguiente'),
                   ),
                 ],
               ),
@@ -1769,6 +1857,19 @@ class _ChecadorTabState extends State<_ChecadorTab> {
   }
 }
 
+// TASK 16.28 — honestly reflects the punch's own real, stored `method`
+// column (`timeClockPunchMethods`) — never fabricated, never a manual
+// punch relabeled as automated. Every punch today is 'manual' (no
+// attendance terminal/fingerprint reader exists yet); the other two
+// labels exist only so a future device adapter's own punches render
+// correctly the moment they start arriving — see
+// docs/WORKFORCE_SYSTEM.md.
+String _punchMethodLabel(String method) => switch (method) {
+  'device' => 'Dispositivo',
+  'biometric' => 'Biométrico',
+  _ => 'Manual',
+};
+
 class _PunchRow extends StatelessWidget {
   const _PunchRow({required this.punch, required this.onCorrect});
   final PosTimeClockPunch punch;
@@ -1794,6 +1895,11 @@ class _PunchRow extends StatelessWidget {
                   Text(
                     '${isClockIn ? 'Entrada' : 'Salida'} · ${_formatDateTime(punch.occurredAt)}',
                     style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  Text(
+                    'Método: ${_punchMethodLabel(punch.method)}',
+                    key: Key('pos-timeclock-punch-method-${punch.id}'),
+                    style: TextStyle(color: palette.textMuted, fontSize: 10.5),
                   ),
                   if (punch.isCorrection)
                     Text(

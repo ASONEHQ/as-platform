@@ -235,6 +235,28 @@ integration('PostgreSQL time-clock operations (TASK 14.4, Wave 2)', { concurrent
     expect(out1.json<{ data: { punch_type: string } }>().data.punch_type).toBe('clock_out');
   });
 
+  // TASK 16.28 — every punch recorded through these ordinary routes is
+  // honestly labeled 'manual' (no attendance terminal/fingerprint reader
+  // exists yet — see docs/WORKFORCE_SYSTEM.md); this is the real, stored
+  // column, never a value the client can influence.
+  it('records every ordinary punch and correction with method "manual"', async () => {
+    authContext = contextFor(companyId, branchId, managerUserId, ['attendance.read', 'attendance.manage']);
+    const in1 = await punch('/api/v1/time-clock/clock-in', `tc-method-in-${randomUUID()}`, { employee_id: employeeId });
+    expect(in1.json<{ data: { method: string } }>().data.method).toBe('manual');
+
+    const out1 = await punch('/api/v1/time-clock/clock-out', `tc-method-out-${randomUUID()}`, { employee_id: employeeId });
+    expect(out1.json<{ data: { method: string } }>().data.method).toBe('manual');
+
+    const correction = await punch('/api/v1/time-clock/corrections', `tc-method-corr-${randomUUID()}`, {
+      employee_id: employeeId,
+      punch_type: 'clock_out',
+      occurred_at: '2026-04-01T18:00:00.000Z',
+      correction_reason: 'Testing method labeling on a correction row.',
+      corrected_punch_id: out1.json<{ data: { id: string } }>().data.id,
+    });
+    expect(correction.json<{ data: { method: string } }>().data.method).toBe('manual');
+  });
+
   it('rejects a clock-out with no open clock-in', async () => {
     authContext = contextFor(companyId, branchId, managerUserId, ['attendance.read', 'attendance.manage']);
     // employeeId already clocked out at the end of the previous test — no open clock-in remains.

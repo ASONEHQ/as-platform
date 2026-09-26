@@ -54,7 +54,7 @@ const EMPLOYEE_COLUMNS =
 const SCHEDULE_COLUMNS =
   'id,company_id,branch_id,employee_id,work_date,scheduled_start,scheduled_end,is_day_off,notes,created_by,created_at,updated_at';
 const PUNCH_COLUMNS =
-  'id,company_id,branch_id,employee_id,punch_type,occurred_at,station,is_correction,correction_reason,corrected_punch_id,created_by,created_at';
+  'id,company_id,branch_id,employee_id,punch_type,occurred_at,station,method,is_correction,correction_reason,corrected_punch_id,created_by,created_at';
 const PERIOD_COLUMNS =
   'id,company_id,branch_id,period_start,period_end,status,closed_at,closed_by,created_by,created_at,updated_at';
 const LINE_COLUMNS =
@@ -105,6 +105,7 @@ interface PunchDb {
   punch_type: string;
   occurred_at: Date | string;
   station: string | null;
+  method: string;
   is_correction: string;
   correction_reason: string | null;
   corrected_punch_id: string | null;
@@ -196,6 +197,7 @@ function punch(row: PunchDb): TimeClockPunchRow {
     punchType: row.punch_type as TimeClockPunchRow['punchType'],
     occurredAt: new Date(row.occurred_at),
     station: row.station,
+    method: row.method as TimeClockPunchRow['method'],
     isCorrection: row.is_correction === 'true',
     correctionReason: row.correction_reason,
     correctedPunchId: row.corrected_punch_id,
@@ -678,6 +680,7 @@ export class PeopleRepository {
       punchType: string;
       occurredAt: Date;
       station: string | null;
+      method: string;
       isCorrection: boolean;
       correctionReason: string | null;
       correctedPunchId: string | null;
@@ -688,9 +691,9 @@ export class PeopleRepository {
     const row = result<PunchDb>(
       await client.query(
         `insert into time_clock_punches
-         (id,company_id,branch_id,employee_id,punch_type,occurred_at,station,is_correction,correction_reason,
+         (id,company_id,branch_id,employee_id,punch_type,occurred_at,station,method,is_correction,correction_reason,
           corrected_punch_id,created_by,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          returning ${PUNCH_COLUMNS}`,
         [
           input.id,
@@ -700,6 +703,7 @@ export class PeopleRepository {
           input.punchType,
           input.occurredAt,
           input.station,
+          input.method,
           input.isCorrection ? 'true' : 'false',
           input.correctionReason,
           input.correctedPunchId,

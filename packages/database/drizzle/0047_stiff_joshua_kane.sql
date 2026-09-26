@@ -1,0 +1,2 @@
+ALTER TABLE "time_clock_punches" ADD COLUMN "method" text DEFAULT 'manual' NOT NULL;--> statement-breakpoint
+ALTER TABLE "time_clock_punches" ADD CONSTRAINT "time_clock_punches_method_ck" CHECK ("time_clock_punches"."method" in ('manual', 'device', 'biometric'));

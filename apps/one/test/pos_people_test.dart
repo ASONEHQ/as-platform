@@ -7,11 +7,14 @@
 /// convention).
 library;
 
+import 'package:as_one/app/app.dart' show PlatformScope;
 import 'package:as_one/core/errors/app_error.dart';
 import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
+import 'package:as_one/features/pos/pos_models.dart';
 import 'package:as_one/features/pos/pos_people_gateway.dart';
 import 'package:as_one/features/pos/pos_people_screen.dart';
+import 'package:as_one/features/pos/pos_read_gateway.dart';
 import 'package:as_one/features/pos/pos_tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -314,6 +317,46 @@ void main() {
       expect(call.scheduledStart, '09:00');
       expect(call.scheduledEnd, '18:00');
     });
+
+    // TASK 16.28 (Phase 9) — quick week navigation, computed from the
+    // resolved BUSINESS today (never device-local), matching TASK
+    // 16.23B's own timezone semantics.
+    testWidgets('week navigation jumps to real Monday-Sunday ranges around the resolved business today', (
+      tester,
+    ) async {
+      final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      await _pump(tester, employeesGateway: employeesGateway, readGateway: const _FixtureBusinessDateGateway());
+      await _navigateToTab(tester, 'Horarios');
+      await tester.pumpAndSettle();
+
+      String iso(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      final today = DateTime.utc(2026, 9, 9); // matches _FixtureBusinessDateGateway.
+      final monday = today.subtract(Duration(days: today.weekday - 1));
+
+      // Business-today resolution corrects the initial provisional range
+      // to the CURRENT real week — never left at a device-local guess.
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(monday));
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-to'))).controller!.text,
+        iso(monday.add(const Duration(days: 6))),
+      );
+
+      await tester.tap(find.byKey(const Key('pos-schedule-week-next')));
+      await tester.pumpAndSettle();
+      final nextMonday = monday.add(const Duration(days: 7));
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(nextMonday));
+
+      await tester.tap(find.byKey(const Key('pos-schedule-week-prev')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-schedule-week-prev')));
+      await tester.pumpAndSettle();
+      final prevMonday = monday.subtract(const Duration(days: 7));
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(prevMonday));
+
+      await tester.tap(find.byKey(const Key('pos-schedule-week-current')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(monday));
+    });
   });
 
   group('Checador', () {
@@ -327,6 +370,7 @@ void main() {
           punchType: 'clock_in',
           occurredAt: DateTime.utc(2026, 9, 7, 15, 30),
           station: null,
+          method: 'manual',
           isCorrection: false,
           correctionReason: null,
           correctedPunchId: null,
@@ -388,6 +432,7 @@ void main() {
         punchType: 'clock_in',
         occurredAt: DateTime.utc(2026, 9, 7, 9),
         station: null,
+        method: 'manual',
         isCorrection: false,
         correctionReason: null,
         correctedPunchId: null,
@@ -426,6 +471,67 @@ void main() {
       expect(call.correctedPunchId, 'punch-1');
       expect(call.correctionReason, 'Se olvidó marcar a tiempo');
       expect(call.employeeId, 'employee-1');
+    });
+
+    // TASK 16.28 — the punch row must show the REAL, stored `method`
+    // honestly (never fabricate 'Biométrico' for a manual entry, and
+    // never hide a real device-sourced punch as manual either). No real
+    // device exists yet, but the field/label plumbing is exercised here
+    // ahead of one — see docs/WORKFORCE_SYSTEM.md.
+    testWidgets('the punch method is shown honestly — Manual vs. Dispositivo, never fabricated', (tester) async {
+      final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      final manualPunch = PosTimeClockPunch(
+        id: 'punch-manual',
+        branchId: 'branch-id',
+        employeeId: 'employee-1',
+        punchType: 'clock_in',
+        occurredAt: DateTime.utc(2026, 9, 7, 9),
+        station: null,
+        method: 'manual',
+        isCorrection: false,
+        correctionReason: null,
+        correctedPunchId: null,
+        createdAt: DateTime.utc(2026, 9, 7, 9),
+      );
+      final devicePunch = PosTimeClockPunch(
+        id: 'punch-device',
+        branchId: 'branch-id',
+        employeeId: 'employee-1',
+        punchType: 'clock_out',
+        occurredAt: DateTime.utc(2026, 9, 7, 18),
+        station: 'Terminal 1',
+        method: 'device',
+        isCorrection: false,
+        correctionReason: null,
+        correctedPunchId: null,
+        createdAt: DateTime.utc(2026, 9, 7, 18),
+      );
+      final timeClockGateway = _RecordingTimeClockGateway(listPunchesResult: [manualPunch, devicePunch]);
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        timeClockGateway: timeClockGateway,
+        permissions: const ['employee.read', 'employee.manage', 'attendance.read', 'attendance.manage'],
+      );
+      await _navigateToTab(tester, 'Checador');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-timeclock-manage-employee-select')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ana Torres (EMP-1)').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-timeclock-manage-load')));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-timeclock-punch-method-punch-manual'))).data,
+        'Método: Manual',
+      );
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-timeclock-punch-method-punch-device'))).data,
+        'Método: Dispositivo',
+      );
+      expect(find.textContaining('Biométrico'), findsNothing);
     });
   });
 
@@ -645,6 +751,33 @@ final _closedPeriod = PosPayrollPeriod(
   updatedAt: DateTime.utc(2026, 9, 8),
 );
 
+// TASK 16.28 (Phase 9) — a fixed, real business date so the Horarios
+// week-navigation test can assert exact Monday-Sunday boundaries,
+// mirroring `pos_shell_wave3_dashboard_test.dart`'s own
+// `_FixtureReadGateway` pattern. Every other `PosReadGateway` method is
+// unused by `PosPeopleScreen` and throws if ever called.
+class _FixtureBusinessDateGateway implements PosReadGateway {
+  const _FixtureBusinessDateGateway();
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-09-09';
+
+  @override
+  Future<List<PosCategory>> categories() => throw UnimplementedError();
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) => throw UnimplementedError();
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) => throw UnimplementedError();
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) => throw UnimplementedError();
+
+  @override
+  Future<List<PosUser>> users() => throw UnimplementedError();
+}
+
 class _RecordingEmployeesGateway implements PosEmployeesGateway {
   _RecordingEmployeesGateway({List<PosEmployee> seed = const []}) : _items = [...seed];
   final List<PosEmployee> _items;
@@ -843,6 +976,7 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
           punchType: 'clock_in',
           occurredAt: DateTime.utc(2026, 9, 7, 9),
           station: station,
+          method: 'manual',
           isCorrection: false,
           correctionReason: null,
           correctedPunchId: null,
@@ -862,6 +996,7 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
           punchType: 'clock_out',
           occurredAt: DateTime.utc(2026, 9, 7, 18),
           station: station,
+          method: 'manual',
           isCorrection: false,
           correctionReason: null,
           correctedPunchId: null,
@@ -879,6 +1014,7 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
       punchType: input.punchType,
       occurredAt: DateTime.parse(input.occurredAt),
       station: input.station,
+      method: 'manual',
       isCorrection: true,
       correctionReason: input.correctionReason,
       correctedPunchId: input.correctedPunchId,
@@ -974,6 +1110,7 @@ Future<void> _pump(
   PosSchedulesGateway? schedulesGateway,
   PosTimeClockGateway? timeClockGateway,
   PosPayrollGateway? payrollGateway,
+  PosReadGateway? readGateway,
   List<String>? permissions,
 }) async {
   tester.view.physicalSize = const Size(1440, 1000);
@@ -990,16 +1127,25 @@ Future<void> _pump(
           permissions: permissions,
         );
   await tester.pumpWidget(
-    MaterialApp(
-      theme: PosTheme.light(),
-      home: Scaffold(
-        body: SingleChildScrollView(
-          child: PosPeopleScreen(
-            context: effectiveContext,
-            employeesGateway: employeesGateway ?? const EmptyPosEmployeesGateway(),
-            schedulesGateway: schedulesGateway ?? const EmptyPosSchedulesGateway(),
-            timeClockGateway: timeClockGateway ?? const EmptyPosTimeClockGateway(),
-            payrollGateway: payrollGateway ?? const EmptyPosPayrollGateway(),
+    // TASK 16.28 (Phase 9) — mirrors the real app's own tree (`AsOneApp`'s
+    // `MaterialApp.builder` wraps every route in `PlatformScope`, see
+    // `app.dart`): Horarios now resolves "business today" via
+    // `PlatformScope.of(context).posReadGateway`, which throws with no
+    // such ancestor — same convention `pos_shell_wave3_dashboard_test.dart`
+    // already established for `_Dashboard`.
+    PlatformScope(
+      posReadGateway: readGateway ?? const EmptyPosReadGateway(),
+      child: MaterialApp(
+        theme: PosTheme.light(),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: PosPeopleScreen(
+              context: effectiveContext,
+              employeesGateway: employeesGateway ?? const EmptyPosEmployeesGateway(),
+              schedulesGateway: schedulesGateway ?? const EmptyPosSchedulesGateway(),
+              timeClockGateway: timeClockGateway ?? const EmptyPosTimeClockGateway(),
+              payrollGateway: payrollGateway ?? const EmptyPosPayrollGateway(),
+            ),
           ),
         ),
       ),

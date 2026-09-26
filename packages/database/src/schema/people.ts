@@ -168,6 +168,18 @@ export const employeeSchedules = pgTable(
 
 export const timeClockPunchTypes = ['clock_in', 'clock_out'] as const;
 
+// TASK 16.28 — the source that recorded a punch. Every punch recorded
+// today goes through the ordinary self-service/manager-manual routes,
+// so `'manual'` is the only value any code path actually produces right
+// now (there is no attendance terminal/fingerprint reader integration —
+// see `docs/WORKFORCE_SYSTEM.md`'s "Future attendance device
+// integration" section). `'device'`/`'biometric'` exist so that a
+// FUTURE hardware adapter can honestly say where a punch really came
+// from, without ever mislabeling a manual entry — this column is added
+// now, ahead of any real device, so the attendance/payroll model never
+// needs a breaking change when one arrives.
+export const timeClockPunchMethods = ['manual', 'device', 'biometric'] as const;
+
 /** "Checador" — server-timestamp-authoritative (`occurredAt` is always
  * set from the server clock at the moment the request is processed,
  * never trusted from a client-submitted value — see
@@ -185,6 +197,8 @@ export const timeClockPunches = pgTable(
     punchType: text('punch_type').notNull(),
     occurredAt: timestamp('occurred_at', { withTimezone: true, mode: 'date' }).notNull(),
     station: text('station'),
+    // TASK 16.28 — see `timeClockPunchMethods`'s own doc comment above.
+    method: text('method').notNull().default('manual'),
     isCorrection: text('is_correction').notNull().default('false'),
     correctionReason: text('correction_reason'),
     correctedPunchId: uuid('corrected_punch_id'),
@@ -216,6 +230,7 @@ export const timeClockPunches = pgTable(
     index('time_clock_punches_company_employee_idx').on(table.companyId, table.employeeId, table.occurredAt),
     index('time_clock_punches_company_branch_idx').on(table.companyId, table.branchId),
     check('time_clock_punches_type_ck', sql`${table.punchType} in ('clock_in', 'clock_out')`),
+    check('time_clock_punches_method_ck', sql`${table.method} in ('manual', 'device', 'biometric')`),
     check('time_clock_punches_is_correction_ck', sql`${table.isCorrection} in ('true', 'false')`),
     check(
       'time_clock_punches_correction_fields_ck',

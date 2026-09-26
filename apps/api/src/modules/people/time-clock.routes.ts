@@ -42,6 +42,7 @@ function punchHttp(value: TimeClockPunchRow): Readonly<Record<string, unknown>> 
     punch_type: value.punchType,
     occurred_at: value.occurredAt.toISOString(),
     station: value.station,
+    method: value.method,
     is_correction: value.isCorrection,
     correction_reason: value.correctionReason,
     corrected_punch_id: value.correctedPunchId,

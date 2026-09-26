@@ -487,6 +487,7 @@ class PosTimeClockPunch {
     required this.punchType,
     required this.occurredAt,
     required this.station,
+    required this.method,
     required this.isCorrection,
     required this.correctionReason,
     required this.correctedPunchId,
@@ -500,6 +501,12 @@ class PosTimeClockPunch {
     punchType: json['punch_type']! as String,
     occurredAt: DateTime.parse(json['occurred_at']! as String),
     station: json['station'] as String?,
+    // TASK 16.28 — the real, stored source of this punch
+    // (`timeClockPunchMethods`); every punch today is 'manual' (no
+    // attendance terminal exists yet) — falls back to 'manual' only if
+    // an older cached/test response predates this field, never invents
+    // 'device'/'biometric'.
+    method: (json['method'] as String?) ?? 'manual',
     isCorrection: json['is_correction']! as bool,
     correctionReason: json['correction_reason'] as String?,
     correctedPunchId: json['corrected_punch_id'] as String?,
@@ -514,6 +521,9 @@ class PosTimeClockPunch {
   final String punchType;
   final DateTime occurredAt;
   final String? station;
+
+  /// `manual` | `device` | `biometric` (`timeClockPunchMethods`).
+  final String method;
   final bool isCorrection;
   final String? correctionReason;
   final String? correctedPunchId;

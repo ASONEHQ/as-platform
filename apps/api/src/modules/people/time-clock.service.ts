@@ -29,6 +29,7 @@ function punchPayload(value: TimeClockPunchRow): Readonly<Record<string, unknown
     branch_id: value.branchId,
     punch_type: value.punchType,
     occurred_at: value.occurredAt.toISOString(),
+    method: value.method,
     is_correction: value.isCorrection,
     corrected_punch_id: value.correctedPunchId,
   };
@@ -117,6 +118,15 @@ export class TimeClockService {
             punchType,
             occurredAt: context.timestamp,
             station,
+            // TASK 16.28 — 'manual' is hardcoded here, never accepted from
+            // the request body: this route is the ordinary self-service/
+            // manager-recorded punch, and there is no attendance
+            // terminal/fingerprint reader integrated yet (see
+            // `docs/WORKFORCE_SYSTEM.md`). A future device adapter records
+            // its own punches through a SEPARATE, device-authenticated
+            // entry point that can honestly pass 'device'/'biometric' —
+            // never by trusting an arbitrary client-supplied method here.
+            method: 'manual',
             isCorrection: false,
             correctionReason: null,
             correctedPunchId: null,
@@ -208,6 +218,9 @@ export class TimeClockService {
             punchType: input.punchType,
             occurredAt,
             station,
+            // TASK 16.28 — a correction is always a human (attendance.manage)
+            // fixing a record; see `recordPunch`'s own identical comment.
+            method: 'manual',
             isCorrection: true,
             correctionReason,
             correctedPunchId: input.correctedPunchId,

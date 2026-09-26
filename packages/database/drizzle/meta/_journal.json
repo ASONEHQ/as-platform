@@ -330,6 +330,13 @@
       "when": 1790315438491,
       "tag": "0046_harsh_sphinx",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1790411770322,
+      "tag": "0047_stiff_joshua_kane",
+      "breakpoints": true
     }
   ]
 }
