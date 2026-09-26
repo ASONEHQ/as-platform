@@ -150,4 +150,41 @@ export function registerScheduleRoutes(app: FastifyInstance, authentication: Aut
         return reply.send({ data: items.map(scheduleHttp), meta: responseMeta(request.requestContext) });
       }),
   );
+
+  // TASK 16.29 — the weekly schedule MATRIX (Horarios): every employee's
+  // schedule for one branch, one week, in a single call — see
+  // `SchedulesService.listSchedulesForBranch`'s own doc comment for why
+  // this exists as a separate route rather than an N+1 client loop over
+  // the per-employee route above.
+  app.get<{ Querystring: { branch_id: string; date_from: string; date_to: string } }>(
+    '/api/v1/schedules/branch',
+    {
+      schema: {
+        tags: ['people'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['branch_id', 'date_from', 'date_to'],
+          properties: {
+            branch_id: { type: 'string', format: 'uuid' },
+            date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'schedule.read');
+        const query = request.query;
+        const items = await service.listSchedulesForBranch(auth.companyId, auth.permittedBranchIds, {
+          branchId: query.branch_id,
+          dateFrom: query.date_from,
+          dateTo: query.date_to,
+        });
+        return reply.send({ data: items.map(scheduleHttp), meta: responseMeta(request.requestContext) });
+      }),
+  );
 }

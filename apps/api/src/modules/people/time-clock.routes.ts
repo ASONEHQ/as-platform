@@ -214,4 +214,43 @@ export function registerTimeClockRoutes(app: FastifyInstance, authentication: Au
         return reply.send({ data: items.map(punchHttp), meta: responseMeta(request.requestContext) });
       }),
   );
+
+  // TASK 16.29 — "Checadas de hoy"/"Historial de asistencia" (Checador):
+  // every punch for the WHOLE branch, one call — see
+  // `TimeClockService.listPunchesForBranch`'s own doc comment for why
+  // this exists as a separate route rather than an N+1 client loop over
+  // the per-employee route above.
+  app.get<{ Querystring: { branch_id: string; date_from?: string; date_to?: string; limit?: number } }>(
+    '/api/v1/time-clock/punches/branch',
+    {
+      schema: {
+        tags: ['people'],
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['branch_id'],
+          properties: {
+            branch_id: { type: 'string', format: 'uuid' },
+            date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+            limit: { type: 'integer', minimum: 1, maximum: 200 },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'attendance.read');
+        const query = request.query;
+        const items = await service.listPunchesForBranch(auth.companyId, auth.permittedBranchIds, {
+          branchId: query.branch_id,
+          ...(query.date_from === undefined ? {} : { dateFrom: query.date_from }),
+          ...(query.date_to === undefined ? {} : { dateTo: query.date_to }),
+          limit: query.limit ?? 100,
+        });
+        return reply.send({ data: items.map(punchHttp), meta: responseMeta(request.requestContext) });
+      }),
+  );
 }

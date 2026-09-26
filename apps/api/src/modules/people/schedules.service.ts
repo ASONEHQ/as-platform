@@ -149,4 +149,18 @@ export class SchedulesService {
     if (employee === null) throw new PeopleError('resource_not_found', 'The employee was not found.');
     return this.repository.listSchedules(companyId, branchIds, input);
   }
+
+  /** TASK 16.29 — see `PeopleRepository.listSchedulesForBranch`'s own doc
+   * comment. [branchId] must be one of the caller's own authorized
+   * branches — never trusted merely because it looks like a UUID. */
+  public async listSchedulesForBranch(
+    companyId: string,
+    branchIds: readonly string[],
+    input: { branchId: string; dateFrom: string; dateTo: string },
+  ): Promise<EmployeeScheduleRow[]> {
+    if (!DATE_PATTERN.test(input.dateFrom) || !DATE_PATTERN.test(input.dateTo))
+      throw new PeopleError('validation_error', 'date_from/date_to must be YYYY-MM-DD dates.');
+    if (!branchIds.includes(input.branchId)) throw new PeopleError('resource_not_found', 'The branch was not found.');
+    return this.repository.listSchedulesForBranch(companyId, input.branchId, input.dateFrom, input.dateTo);
+  }
 }

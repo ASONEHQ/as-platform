@@ -243,7 +243,19 @@ class _Failure extends StatelessWidget {
 
 class _StatusPill extends StatelessWidget {
   const _StatusPill({required this.label});
+  // The real, backend-returned status value ('active'/'inactive' for an
+  // employee, 'draft'/'closed' for a payroll period) — never a display
+  // string. TASK 16.29 — was previously shown raw/untranslated; every
+  // other status pill in this app is Spanish, so this one now is too.
   final String label;
+
+  String get _displayLabel => switch (label) {
+    'active' => 'Activo',
+    'inactive' => 'Inactivo',
+    'draft' => 'Borrador',
+    'closed' => 'Cerrada',
+    _ => label,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -253,7 +265,7 @@ class _StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
-      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+      child: Text(_displayLabel, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
     );
   }
 }
@@ -547,7 +559,7 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
         const SizedBox(height: 12),
         switch (_phase) {
           _ListPhase.loading => const _Loading(),
-          _ListPhase.empty => const _Empty(message: 'No hay empleados registrados.'),
+          _ListPhase.empty => const _Empty(message: 'No hay empleados registrados en esta sucursal.'),
           _ListPhase.failure => _Failure(
             message: _errorMessage ?? 'No fue posible cargar los empleados.',
             onRetry: () => unawaited(_load()),
@@ -555,8 +567,36 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
           _ListPhase.ready => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final employee in _visibleItems)
-                _EmployeeRow(employee: employee, onTap: () => unawaited(_openDetail(employee))),
+              // TASK 16.29 (Phase 2) — a responsive card grid (multi-column
+              // on desktop, fewer columns/stacked on narrow widths), never
+              // a single full-width list row.
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final columns = constraints.maxWidth >= 900
+                      ? 3
+                      : constraints.maxWidth >= 560
+                      ? 2
+                      : 1;
+                  return GridView.count(
+                    key: const Key('pos-employees-grid'),
+                    crossAxisCount: columns,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: columns == 1 ? 2.8 : 1.9,
+                    children: [
+                      for (final employee in _visibleItems)
+                        _EmployeeCard(
+                          key: Key('pos-employee-row-${employee.id}'),
+                          employee: employee,
+                          showSalary: _canManage,
+                          onTap: () => unawaited(_openDetail(employee)),
+                        ),
+                    ],
+                  );
+                },
+              ),
               if (_nextCursor != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
@@ -579,43 +619,94 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
   }
 }
 
-class _EmployeeRow extends StatelessWidget {
-  const _EmployeeRow({required this.employee, required this.onTap});
+/// TASK 16.29 (Phase 2) — the Plantilla card. Every field shown comes
+/// straight off the real `PosEmployee` the backend returned — never a
+/// fabricated avatar, phone, employment type, or schedule (none of
+/// those exist on this model; see `pos_people_gateway.dart`'s own
+/// `PosEmployee` field list — showing them would mean inventing data
+/// this app has no source for). [showSalary] gates the weekly-salary
+/// line to `employee.manage` actors only — a read-only viewer can still
+/// open the full detail dialog, which controls its own visibility.
+class _EmployeeCard extends StatelessWidget {
+  const _EmployeeCard({required this.employee, required this.showSalary, required this.onTap, super.key});
   final PosEmployee employee;
+  final bool showSalary;
   final VoidCallback onTap;
+
+  String get _initials {
+    final parts = employee.displayName.trim().split(RegExp(r'\s+')).where((part) => part.isNotEmpty).toList();
+    if (parts.isEmpty) return '?';
+    final first = parts.first.characters.first;
+    final last = parts.length > 1 ? parts.last.characters.first : '';
+    return (first + last).toUpperCase();
+  }
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     return _Card(
-      key: Key('pos-employee-row-${employee.id}'),
       padding: EdgeInsets.zero,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      employee.displayName,
-                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: palette.actionTint,
+                    child: Text(_initials, style: TextStyle(color: palette.blueDeep, fontWeight: FontWeight.w800, fontSize: 13)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          employee.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13.5),
+                        ),
+                        Text(
+                          employee.jobTitle ?? 'Sin puesto asignado',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11.5),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      employee.jobTitle == null ? employee.code : '${employee.code} · ${employee.jobTitle}',
-                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                    ),
-                  ],
-                ),
+                  ),
+                  _StatusPill(label: employee.status),
+                ],
               ),
-              _StatusPill(label: employee.status),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(Icons.badge_outlined, size: 14, color: palette.textMuted),
+                  const SizedBox(width: 4),
+                  Text(employee.code, style: TextStyle(color: palette.textMuted, fontSize: 11.5)),
+                  if (showSalary) ...[
+                    const SizedBox(width: 14),
+                    Icon(Icons.payments_outlined, size: 14, color: palette.textMuted),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '${_formatMoney(employee.weeklySalary, employee.currencyCode)} ${employee.currencyCode}/sem',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: palette.textMuted, fontSize: 11.5),
+                      ),
+                    ),
+                  ] else
+                    const Spacer(),
+                  Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+                ],
+              ),
             ],
           ),
         ),
@@ -1046,6 +1137,13 @@ class _EmployeeDetailDialogState extends State<_EmployeeDetailDialog> {
 // Horarios — gated by `schedule.read`/`schedule.manage`.
 // ---------------------------------------------------------------------
 
+/// TASK 16.29 (Phase 3) — the Horarios weekly MATRIX: rows = every real
+/// active employee in the branch, columns = Monday-Sunday of one
+/// selected week. Replaces the previous per-employee day-list workspace
+/// entirely (see `docs/WORKFORCE_SYSTEM.md`'s own record of that prior,
+/// deliberate scope decision — this task supersedes it with real
+/// evidence the matrix is now safely buildable in ONE call via
+/// `listSchedulesForBranch`, never an N+1 loop over employees).
 class _HorariosTab extends StatefulWidget {
   const _HorariosTab({required this.context, required this.employeesGateway, required this.schedulesGateway});
   final AuthenticatedContext context;
@@ -1059,24 +1157,22 @@ class _HorariosTab extends StatefulWidget {
 class _HorariosTabState extends State<_HorariosTab> {
   bool get _canRead => widget.context.permissions.contains('schedule.read');
   bool get _canManage => widget.context.permissions.contains('schedule.manage');
+  String? get _branchId => widget.context.session.branchId;
 
   List<PosEmployee> _employees = const [];
-  PosEmployee? _selectedEmployee;
-  final _manualEmployeeIdController = TextEditingController();
-  // TASK 16.23B (F-05) — a provisional device-local guess only, exactly
-  // like `_Dashboard`'s own identical "provisional-then-corrected"
-  // pattern (see `didChangeDependencies` below): never the authoritative
-  // range a real week-navigation action computes from.
-  late final _dateFromController = TextEditingController(text: _isoDate(DateTime.now().subtract(const Duration(days: 7))));
-  late final _dateToController = TextEditingController(text: _isoDate(DateTime.now().add(const Duration(days: 7))));
-  // TASK 16.28 (Phase 9) — the resolved BUSINESS "today" (never
-  // device-local), used only to compute the Monday-Sunday week the
-  // quick-navigation buttons jump between. `null` until resolved.
+  // Keyed `'employeeId|work_date'` — O(1) cell lookup, never a synthetic
+  // row for a day with no schedule defined (see `_ScheduleMatrix`'s own
+  // doc comment on that honest distinction).
+  Map<String, PosEmployeeSchedule> _schedulesByKey = const {};
+
+  // TASK 16.23B (F-05) — the resolved BUSINESS "today" (never
+  // device-local), used to compute the Monday-Sunday week the
+  // quick-navigation buttons jump between, and as the initial week shown.
   DateTime? _businessToday;
   DateTime? _weekAnchor;
+  bool _businessTodayRequested = false;
 
-  _ListPhase _phase = _ListPhase.empty;
-  List<PosEmployeeSchedule> _schedules = const [];
+  _ListPhase _phase = _ListPhase.loading;
   String? _errorMessage;
 
   @override
@@ -1085,93 +1181,78 @@ class _HorariosTabState extends State<_HorariosTab> {
     unawaited(_loadEmployees());
   }
 
-  bool _businessTodayRequested = false;
-
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_businessTodayRequested) return;
     _businessTodayRequested = true;
     final timezone = widget.context.businessTimezone;
-    if (timezone == null) return; // Keep the provisional device-local range — best-effort, never blocks the tab.
+    if (timezone == null) {
+      _applyWeekAnchor(DateTime.now());
+      return;
+    }
     PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone).then((today) {
-      if (!mounted) return;
-      final parsed = DateTime.tryParse(today);
-      if (parsed == null) return;
-      setState(() {
-        _businessToday = parsed;
-        _setWeek(parsed);
-      });
+      _applyWeekAnchor(DateTime.tryParse(today) ?? DateTime.now());
     }).catchError((Object _) {
-      // Keep the provisional range on failure — best-effort, never blocks the tab.
+      // Best-effort — a device-local fallback week still lets the tab
+      // render and work, never blocks it.
+      _applyWeekAnchor(DateTime.now());
     });
   }
 
   DateTime _mondayOf(DateTime date) => DateTime(date.year, date.month, date.day).subtract(Duration(days: date.weekday - 1));
 
-  /// Sets the visible date range to the real Monday-Sunday week containing
-  /// [anchor] — the only place either controller's text is ever assigned
-  /// after the initial provisional guess.
-  void _setWeek(DateTime anchor) {
-    final monday = _mondayOf(anchor);
-    _weekAnchor = monday;
-    _dateFromController.text = _isoDate(monday);
-    _dateToController.text = _isoDate(monday.add(const Duration(days: 6)));
-  }
-
-  void _shiftWeek(int days) {
-    final anchor = _weekAnchor;
-    if (anchor == null) return;
-    setState(() => _setWeek(anchor.add(Duration(days: days))));
-    if (_employeeId != null) unawaited(_load());
-  }
-
-  void _goToCurrentWeek() {
-    final today = _businessToday;
-    if (today == null) return;
-    setState(() => _setWeek(today));
-    if (_employeeId != null) unawaited(_load());
-  }
-
-  @override
-  void dispose() {
-    _manualEmployeeIdController.dispose();
-    _dateFromController.dispose();
-    _dateToController.dispose();
-    super.dispose();
+  void _applyWeekAnchor(DateTime today) {
+    if (!mounted) return;
+    setState(() {
+      _businessToday = today;
+      _weekAnchor = _mondayOf(today);
+    });
+    unawaited(_loadSchedules());
   }
 
   Future<void> _loadEmployees() async {
+    if (!_canRead) return;
+    final branchId = _branchId;
+    if (branchId == null) return; // Nothing to load — the build() below shows the honest reason.
     try {
-      final page = await widget.employeesGateway.listEmployees(branchId: widget.context.session.branchId, status: 'active');
+      // TASK 16.29 — follows `next_cursor` to completion: the matrix must
+      // show EVERY active employee, never silently truncate at one
+      // page's default/max limit (a real, verified gap in the prior
+      // per-employee-only workspace — see `docs/WORKFORCE_SYSTEM.md`).
+      final all = <PosEmployee>[];
+      String? cursor;
+      do {
+        final page = await widget.employeesGateway.listEmployees(branchId: branchId, status: 'active', limit: 100, cursor: cursor);
+        all.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
       if (!mounted) return;
-      setState(() => _employees = page.items);
+      setState(() => _employees = all);
     } on Object {
-      // Honest fallback — no `employee.read` means no picker, but a
-      // `schedule.manage` actor can still type an employee id manually.
+      // Honest fallback — the matrix still renders with whatever it has
+      // (possibly zero rows); it never blocks the tab from working.
     }
   }
 
-  String? get _employeeId =>
-      _selectedEmployee?.id ?? (_manualEmployeeIdController.text.trim().isEmpty ? null : _manualEmployeeIdController.text.trim());
-
-  Future<void> _load() async {
-    final employeeId = _employeeId;
-    if (employeeId == null || !_canRead) return;
+  Future<void> _loadSchedules() async {
+    final branchId = _branchId;
+    final monday = _weekAnchor;
+    if (branchId == null || monday == null || !_canRead) return;
     setState(() {
       _phase = _ListPhase.loading;
       _errorMessage = null;
     });
     try {
-      final items = await widget.schedulesGateway.listSchedules(
-        employeeId: employeeId,
-        dateFrom: _dateFromController.text.trim(),
-        dateTo: _dateToController.text.trim(),
+      final items = await widget.schedulesGateway.listSchedulesForBranch(
+        branchId: branchId,
+        dateFrom: _isoDate(monday),
+        dateTo: _isoDate(monday.add(const Duration(days: 6))),
       );
       if (!mounted) return;
       setState(() {
-        _schedules = items;
-        _phase = items.isEmpty ? _ListPhase.empty : _ListPhase.ready;
+        _schedulesByKey = {for (final item in items) '${item.employeeId}|${item.workDate}': item};
+        _phase = _ListPhase.ready;
       });
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -1188,29 +1269,46 @@ class _HorariosTabState extends State<_HorariosTab> {
     }
   }
 
-  Future<void> _openDayEditor([PosEmployeeSchedule? existing]) async {
-    final employeeId = _employeeId;
-    if (employeeId == null) return;
+  void _shiftWeek(int days) {
+    final anchor = _weekAnchor;
+    if (anchor == null) return;
+    setState(() => _weekAnchor = _mondayOf(anchor.add(Duration(days: days))));
+    unawaited(_loadSchedules());
+  }
+
+  void _goToCurrentWeek() {
+    final today = _businessToday;
+    if (today == null) return;
+    setState(() => _weekAnchor = _mondayOf(today));
+    unawaited(_loadSchedules());
+  }
+
+  /// Opens the existing (unmodified) single-day editor for one
+  /// employee+day cell — reuses its established validation/save path
+  /// exactly; never a separate bulk-save action (a cell edit persists
+  /// immediately via the same real upsert endpoint every other schedule
+  /// edit already used, and navigating the week alone saves nothing).
+  Future<void> _openCell(PosEmployee employee, DateTime day) async {
+    final workDate = _isoDate(day);
+    final existing = _schedulesByKey['${employee.id}|$workDate'];
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => _ScheduleFormDialog(
         gateway: widget.schedulesGateway,
-        employeeId: employeeId,
+        employeeId: employee.id,
         canManage: _canManage,
         existing: existing,
+        initialWorkDate: workDate,
       ),
     );
-    if (saved == true) unawaited(_load());
+    if (saved == true) unawaited(_loadSchedules());
   }
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     if (!_canRead) return const _PermissionDenied();
-    final employeeId = _employeeId;
-    final newDisabledReason = employeeId == null
-        ? 'Selecciona un empleado.'
-        : (!_canManage ? 'Se requiere el permiso schedule.manage.' : '');
+    final monday = _weekAnchor;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1218,58 +1316,25 @@ class _HorariosTabState extends State<_HorariosTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_employees.isNotEmpty)
-                DropdownButtonFormField<PosEmployee>(
-                  key: const Key('pos-schedule-employee-select'),
-                  initialValue: _selectedEmployee,
-                  isExpanded: true,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Empleado'),
-                  items: [
-                    for (final employee in _employees)
-                      DropdownMenuItem(value: employee, child: Text('${employee.displayName} (${employee.code})')),
-                  ],
-                  onChanged: (value) => setState(() => _selectedEmployee = value),
-                )
-              else
-                TextField(
-                  key: const Key('pos-schedule-employee-id'),
-                  controller: _manualEmployeeIdController,
-                  onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(isDense: true, labelText: 'Id del empleado'),
-                ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      key: const Key('pos-schedule-date-from'),
-                      controller: _dateFromController,
-                      decoration: const InputDecoration(isDense: true, labelText: 'Desde (YYYY-MM-DD)'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextField(
-                      key: const Key('pos-schedule-date-to'),
-                      controller: _dateToController,
-                      decoration: const InputDecoration(isDense: true, labelText: 'Hasta (YYYY-MM-DD)'),
-                    ),
-                  ),
-                ],
+              Text(
+                monday == null
+                    ? 'Cargando semana…'
+                    : '${_weekdayDateLabel(monday, short: false)} → ${_weekdayDateLabel(monday.add(const Duration(days: 6)), short: false)}',
+                key: const Key('pos-schedule-week-range'),
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 14),
               ),
               const SizedBox(height: 8),
-              // TASK 16.28 (Phase 9) — quick week navigation, computed from
-              // the resolved BUSINESS today (never device-local), matching
-              // TASK 16.23B's own timezone semantics. Disabled until that
-              // resolution completes — never jumps against a provisional
-              // guess.
+              // TASK 16.28/16.29 (Phase 3/9) — quick week navigation,
+              // computed from the resolved BUSINESS today (never
+              // device-local), matching TASK 16.23B's own timezone
+              // semantics.
               Wrap(
                 spacing: 8,
                 runSpacing: 4,
                 children: [
                   OutlinedButton.icon(
                     key: const Key('pos-schedule-week-prev'),
-                    onPressed: _weekAnchor == null ? null : () => _shiftWeek(-7),
+                    onPressed: monday == null ? null : () => _shiftWeek(-7),
                     icon: const Icon(Icons.chevron_left, size: 16),
                     label: const Text('Semana anterior'),
                   ),
@@ -1281,31 +1346,9 @@ class _HorariosTabState extends State<_HorariosTab> {
                   ),
                   OutlinedButton.icon(
                     key: const Key('pos-schedule-week-next'),
-                    onPressed: _weekAnchor == null ? null : () => _shiftWeek(7),
+                    onPressed: monday == null ? null : () => _shiftWeek(7),
                     icon: const Icon(Icons.chevron_right, size: 16),
                     label: const Text('Semana siguiente'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  OutlinedButton.icon(
-                    key: const Key('pos-schedule-load'),
-                    onPressed: employeeId == null ? null : () => unawaited(_load()),
-                    icon: const Icon(Icons.search, size: 16),
-                    label: const Text('Cargar horarios'),
-                  ),
-                  const Spacer(),
-                  Tooltip(
-                    message: newDisabledReason,
-                    child: FilledButton.icon(
-                      key: const Key('pos-schedule-new'),
-                      onPressed: newDisabledReason.isEmpty ? () => unawaited(_openDayEditor()) : null,
-                      style: FilledButton.styleFrom(backgroundColor: palette.action),
-                      icon: const Icon(Icons.add, size: 16),
-                      label: const Text('Definir turno'),
-                    ),
                   ),
                 ],
               ),
@@ -1315,59 +1358,174 @@ class _HorariosTabState extends State<_HorariosTab> {
         const SizedBox(height: 12),
         switch (_phase) {
           _ListPhase.loading => const _Loading(),
-          _ListPhase.empty => const _Empty(message: 'No hay turnos definidos en ese rango de fechas.'),
+          _ListPhase.empty => const SizedBox.shrink(), // Never reached — this tab has no distinct "empty" phase; see class doc comment.
           _ListPhase.failure => _Failure(
             message: _errorMessage ?? 'No fue posible cargar los horarios.',
-            onRetry: () => unawaited(_load()),
+            onRetry: () => unawaited(_loadSchedules()),
           ),
-          _ListPhase.ready => Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final schedule in _schedules)
-                _ScheduleRow(schedule: schedule, onTap: () => unawaited(_openDayEditor(schedule))),
-            ],
-          ),
+          _ListPhase.ready => monday == null
+              ? const _Loading()
+              : _ScheduleMatrix(
+                  employees: _employees,
+                  weekStart: monday,
+                  schedulesByKey: _schedulesByKey,
+                  canManage: _canManage,
+                  onCellTap: _openCell,
+                ),
         },
       ],
     );
   }
 }
 
-class _ScheduleRow extends StatelessWidget {
-  const _ScheduleRow({required this.schedule, required this.onTap});
-  final PosEmployeeSchedule schedule;
-  final VoidCallback onTap;
+const _weekdayShortNames = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+String _weekdayDateLabel(DateTime date, {required bool short}) {
+  final name = _weekdayShortNames[date.weekday - 1];
+  final dayMonth = '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}';
+  return short ? '$name $dayMonth' : dayMonth;
+}
+
+/// TASK 16.29 (Phase 3) — the matrix body. Horizontally scrolls at
+/// narrow widths (never crushes a cell illegibly) via the outer
+/// `SingleChildScrollView`; the employee-name column and 7 day columns
+/// all use fixed widths so alignment between the header row and every
+/// employee row stays exact regardless of scroll position.
+class _ScheduleMatrix extends StatelessWidget {
+  const _ScheduleMatrix({
+    required this.employees,
+    required this.weekStart,
+    required this.schedulesByKey,
+    required this.canManage,
+    required this.onCellTap,
+  });
+  final List<PosEmployee> employees;
+  final DateTime weekStart;
+  final Map<String, PosEmployeeSchedule> schedulesByKey;
+  final bool canManage;
+  final void Function(PosEmployee employee, DateTime day) onCellTap;
+
+  static const _nameColumnWidth = 176.0;
+  static const _dayColumnWidth = 128.0;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final days = [for (var i = 0; i < 7; i++) weekStart.add(Duration(days: i))];
     return _Card(
-      key: Key('pos-schedule-day-${schedule.workDate}'),
+      key: const Key('pos-schedule-matrix'),
       padding: EdgeInsets.zero,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: _nameColumnWidth + _dayColumnWidth * 7,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              // Header row.
+              Container(
+                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border))),
+                child: Row(
                   children: [
-                    Text(schedule.workDate, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
-                    const SizedBox(height: 2),
-                    Text(
-                      schedule.isDayOff ? 'Día de descanso' : '${schedule.scheduledStart} – ${schedule.scheduledEnd}',
-                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    SizedBox(
+                      width: _nameColumnWidth,
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Text('Empleado', style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                      ),
                     ),
+                    for (final day in days)
+                      SizedBox(
+                        width: _dayColumnWidth,
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Text(
+                            _weekdayDateLabel(day, short: true),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+              if (employees.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: SizedBox(
+                    width: _nameColumnWidth + _dayColumnWidth * 7 - 40,
+                    child: const _Empty(message: 'No hay empleados registrados en esta sucursal.'),
+                  ),
+                )
+              else
+                for (final employee in employees)
+                  Container(
+                    key: Key('pos-schedule-row-${employee.id}'),
+                    decoration: BoxDecoration(border: Border(bottom: BorderSide(color: palette.border.withValues(alpha: .5)))),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: _nameColumnWidth,
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Text(
+                              employee.displayName,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: palette.text, fontSize: 12.5, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                        for (final day in days)
+                          SizedBox(
+                            width: _dayColumnWidth,
+                            child: _ScheduleCell(
+                              key: Key('pos-schedule-cell-${employee.id}-${_isoDate(day)}'),
+                              schedule: schedulesByKey['${employee.id}|${_isoDate(day)}'],
+                              onTap: canManage ? () => onCellTap(employee, day) : null,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// One employee/day cell. [schedule] is `null` for a day with genuinely
+/// no schedule row yet — rendered as an honest "Sin turno", NEVER
+/// silently treated as a rest day (a real, distinct backend state: see
+/// `docs/WORKFORCE_SYSTEM.md`'s own note on this).
+class _ScheduleCell extends StatelessWidget {
+  const _ScheduleCell({required this.schedule, required this.onTap, super.key});
+  final PosEmployeeSchedule? schedule;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final schedule = this.schedule;
+    final Widget content;
+    if (schedule == null) {
+      content = Text('Sin turno', style: TextStyle(color: palette.textMuted, fontSize: 11, fontStyle: FontStyle.italic));
+    } else if (schedule.isDayOff) {
+      content = Text('Descanso', style: TextStyle(color: palette.warning, fontSize: 11.5, fontWeight: FontWeight.w700));
+    } else {
+      content = Text(
+        '${schedule.scheduledStart} – ${schedule.scheduledEnd}',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: palette.text, fontSize: 11.5, fontWeight: FontWeight.w700),
+      );
+    }
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 6),
+        child: Center(child: content),
       ),
     );
   }
@@ -1386,18 +1544,27 @@ class _ScheduleFormDialog extends StatefulWidget {
     required this.employeeId,
     required this.canManage,
     this.existing,
+    this.initialWorkDate,
   });
   final PosSchedulesGateway gateway;
   final String employeeId;
   final bool canManage;
   final PosEmployeeSchedule? existing;
 
+  /// TASK 16.29 — the Horarios weekly MATRIX opens this dialog for a
+  /// SPECIFIC employee+day cell; when that cell has no existing schedule
+  /// row yet ([existing] is null), the date field must start on the
+  /// exact day the manager tapped, never today's date.
+  final String? initialWorkDate;
+
   @override
   State<_ScheduleFormDialog> createState() => _ScheduleFormDialogState();
 }
 
 class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
-  late final _dateController = TextEditingController(text: widget.existing?.workDate ?? _isoDate(DateTime.now()));
+  late final _dateController = TextEditingController(
+    text: widget.existing?.workDate ?? widget.initialWorkDate ?? _isoDate(DateTime.now()),
+  );
   late bool _isDayOff = widget.existing?.isDayOff ?? false;
   late final _startController = TextEditingController(text: widget.existing?.scheduledStart ?? '');
   late final _endController = TextEditingController(text: widget.existing?.scheduledEnd ?? '');
@@ -1571,6 +1738,13 @@ class _ScheduleFormDialogState extends State<_ScheduleFormDialog> {
 // Checador — gated by `attendance.read`/`attendance.manage`.
 // ---------------------------------------------------------------------
 
+/// TASK 16.29 (Phase 4) — the operational Checador: "Mi checador"
+/// (self-service, unchanged), "Checadas de hoy" (real, branch-wide,
+/// auto-loaded today list — NEW), and "Historial de asistencia" (now
+/// branch-wide with an optional employee filter, reachable to any
+/// `attendance.read` actor — the correction action alone stays gated
+/// behind `attendance.manage`, per Phase 8's own "viewers should see
+/// allowed data without dangerous enabled mutation actions" rule).
 class _ChecadorTab extends StatefulWidget {
   const _ChecadorTab({required this.context, required this.employeesGateway, required this.timeClockGateway});
   final AuthenticatedContext context;
@@ -1584,21 +1758,42 @@ class _ChecadorTab extends StatefulWidget {
 class _ChecadorTabState extends State<_ChecadorTab> {
   bool get _canReadAttendance => widget.context.permissions.contains('attendance.read');
   bool get _canManageAttendance => widget.context.permissions.contains('attendance.manage');
+  String? get _branchId => widget.context.session.branchId;
 
   List<PosEmployee> _employees = const [];
+  Map<String, PosEmployee> get _employeesById => {for (final employee in _employees) employee.id: employee};
+  String _employeeLabel(String employeeId) {
+    final employee = _employeesById[employeeId];
+    return employee == null ? employeeId : '${employee.displayName} (${employee.code})';
+  }
+
   PosEmployee? _selfEmployee;
   final _selfEmployeeIdController = TextEditingController();
   bool _selfBusy = false;
   String? _selfMessage;
   bool _selfMessageIsError = false;
 
-  PosEmployee? _managedEmployee;
-  final _manageEmployeeIdController = TextEditingController();
-  late final _manageDateFromController = TextEditingController(text: _isoDate(DateTime.now().subtract(const Duration(days: 7))));
-  late final _manageDateToController = TextEditingController(text: _isoDate(DateTime.now()));
-  _ListPhase _managePhase = _ListPhase.empty;
-  List<PosTimeClockPunch> _punches = const [];
-  String? _manageErrorMessage;
+  // TASK 16.23B (F-05) — the resolved BUSINESS "today" (never
+  // device-local), gating when "Checadas de hoy" is safe to load.
+  DateTime? _businessToday;
+  bool _businessTodayRequested = false;
+
+  _ListPhase _todayPhase = _ListPhase.loading;
+  List<PosTimeClockPunch> _todayPunches = const [];
+  String? _todayErrorMessage;
+
+  PosEmployee? _historyEmployeeFilter;
+  late final _historyDateFromController = TextEditingController(text: _isoDate(DateTime.now().subtract(const Duration(days: 7))));
+  late final _historyDateToController = TextEditingController(text: _isoDate(DateTime.now()));
+  _ListPhase _historyPhase = _ListPhase.loading;
+  List<PosTimeClockPunch> _historyPunches = const [];
+  String? _historyErrorMessage;
+
+  List<PosTimeClockPunch> get _visibleHistory {
+    final employeeId = _historyEmployeeFilter?.id;
+    if (employeeId == null) return _historyPunches;
+    return _historyPunches.where((punch) => punch.employeeId == employeeId).toList(growable: false);
+  }
 
   @override
   void initState() {
@@ -1607,33 +1802,65 @@ class _ChecadorTabState extends State<_ChecadorTab> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_businessTodayRequested) return;
+    _businessTodayRequested = true;
+    final timezone = widget.context.businessTimezone;
+    if (timezone == null) {
+      _applyBusinessToday(DateTime.now());
+      return;
+    }
+    PlatformScope.of(context).posReadGateway.businessDate(timezone: timezone).then((today) {
+      _applyBusinessToday(DateTime.tryParse(today) ?? DateTime.now());
+    }).catchError((Object _) {
+      _applyBusinessToday(DateTime.now()); // Best-effort — never blocks the tab.
+    });
+  }
+
+  void _applyBusinessToday(DateTime today) {
+    if (!mounted) return;
+    setState(() => _businessToday = today);
+    unawaited(_loadToday());
+    unawaited(_loadHistory());
+  }
+
+  @override
   void dispose() {
     _selfEmployeeIdController.dispose();
-    _manageEmployeeIdController.dispose();
-    _manageDateFromController.dispose();
-    _manageDateToController.dispose();
+    _historyDateFromController.dispose();
+    _historyDateToController.dispose();
     super.dispose();
   }
 
   Future<void> _loadEmployees() async {
+    final branchId = _branchId;
+    if (branchId == null) return;
     try {
-      final page = await widget.employeesGateway.listEmployees(branchId: widget.context.session.branchId, status: 'active');
+      // TASK 16.29 — follows `next_cursor` to completion; see
+      // `_HorariosTabState._loadEmployees`'s own identical doc comment.
+      final all = <PosEmployee>[];
+      String? cursor;
+      do {
+        final page = await widget.employeesGateway.listEmployees(branchId: branchId, status: 'active', limit: 100, cursor: cursor);
+        all.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
       if (!mounted) return;
       setState(() {
-        _employees = page.items;
-        _selfEmployee = page.items.where((employee) => employee.userId == widget.context.session.userId).firstOrNull;
+        _employees = all;
+        _selfEmployee = all.where((employee) => employee.userId == widget.context.session.userId).firstOrNull;
       });
     } on Object {
       // Honest fallback — no `employee.read` means no auto-detected self
       // employee and no employee picker; manual employee id entry still
-      // lets both sections below work.
+      // lets self-service work, and branch-wide lists still show raw
+      // employee ids via `_employeeLabel`'s own fallback.
     }
   }
 
   String? get _selfEmployeeId =>
       _selfEmployee?.id ?? (_selfEmployeeIdController.text.trim().isEmpty ? null : _selfEmployeeIdController.text.trim());
-  String? get _manageEmployeeId =>
-      _managedEmployee?.id ?? (_manageEmployeeIdController.text.trim().isEmpty ? null : _manageEmployeeIdController.text.trim());
 
   Future<void> _punch(bool clockIn) async {
     final employeeId = _selfEmployeeId;
@@ -1654,6 +1881,10 @@ class _ChecadorTabState extends State<_ChecadorTab> {
             ? 'Entrada registrada a las ${_formatTime(punch.occurredAt)}.'
             : 'Salida registrada a las ${_formatTime(punch.occurredAt)}.';
       });
+      // A real punch just landed — the branch-wide lists below must
+      // reflect it without a manual refresh.
+      unawaited(_loadToday());
+      unawaited(_loadHistory());
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -1671,52 +1902,89 @@ class _ChecadorTabState extends State<_ChecadorTab> {
     }
   }
 
-  Future<void> _loadPunches() async {
-    final employeeId = _manageEmployeeId;
-    if (employeeId == null) return;
+  Future<void> _loadToday() async {
+    final branchId = _branchId;
+    final today = _businessToday;
+    if (branchId == null || today == null || !_canReadAttendance) return;
     setState(() {
-      _managePhase = _ListPhase.loading;
-      _manageErrorMessage = null;
+      _todayPhase = _ListPhase.loading;
+      _todayErrorMessage = null;
     });
     try {
-      final items = await widget.timeClockGateway.listPunches(
-        employeeId: employeeId,
-        dateFrom: _manageDateFromController.text.trim().isEmpty ? null : _manageDateFromController.text.trim(),
-        dateTo: _manageDateToController.text.trim().isEmpty ? null : _manageDateToController.text.trim(),
+      final items = await widget.timeClockGateway.listPunchesForBranch(
+        branchId: branchId,
+        dateFrom: _isoDate(today),
+        dateTo: _isoDate(today),
+        limit: 200,
       );
       if (!mounted) return;
       setState(() {
-        _punches = items;
-        _managePhase = items.isEmpty ? _ListPhase.empty : _ListPhase.ready;
+        _todayPunches = items;
+        _todayPhase = _ListPhase.ready;
       });
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
-        _managePhase = _ListPhase.failure;
-        _manageErrorMessage = error.failure.message;
+        _todayPhase = _ListPhase.failure;
+        _todayErrorMessage = error.failure.message;
       });
     } on Object {
       if (!mounted) return;
       setState(() {
-        _managePhase = _ListPhase.failure;
-        _manageErrorMessage = 'No fue posible cargar las marcaciones.';
+        _todayPhase = _ListPhase.failure;
+        _todayErrorMessage = 'No fue posible cargar las checadas de hoy.';
+      });
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    final branchId = _branchId;
+    if (branchId == null || !_canReadAttendance) return;
+    setState(() {
+      _historyPhase = _ListPhase.loading;
+      _historyErrorMessage = null;
+    });
+    try {
+      final items = await widget.timeClockGateway.listPunchesForBranch(
+        branchId: branchId,
+        dateFrom: _historyDateFromController.text.trim().isEmpty ? null : _historyDateFromController.text.trim(),
+        dateTo: _historyDateToController.text.trim().isEmpty ? null : _historyDateToController.text.trim(),
+        limit: 200,
+      );
+      if (!mounted) return;
+      setState(() {
+        _historyPunches = items;
+        _historyPhase = _ListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _historyPhase = _ListPhase.failure;
+        _historyErrorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _historyPhase = _ListPhase.failure;
+        _historyErrorMessage = 'No fue posible cargar las marcaciones.';
       });
     }
   }
 
   Future<void> _openCorrection(PosTimeClockPunch punch) async {
-    final employeeId = _manageEmployeeId;
-    if (employeeId == null) return;
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => _CorrectionDialog(
         gateway: widget.timeClockGateway,
-        employeeId: employeeId,
+        employeeId: punch.employeeId,
         original: punch,
         canManage: _canManageAttendance,
       ),
     );
-    if (saved == true) unawaited(_loadPunches());
+    if (saved == true) {
+      unawaited(_loadToday());
+      unawaited(_loadHistory());
+    }
   }
 
   @override
@@ -1730,7 +1998,7 @@ class _ChecadorTabState extends State<_ChecadorTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Mi checador', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              Text('Registrar entrada / salida', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
               const SizedBox(height: 8),
               if (_selfEmployee != null)
                 Text(
@@ -1753,7 +2021,7 @@ class _ChecadorTabState extends State<_ChecadorTab> {
                       onPressed: _selfBusy || _selfEmployeeId == null ? null : () => unawaited(_punch(true)),
                       style: FilledButton.styleFrom(backgroundColor: palette.success),
                       icon: const Icon(Icons.login, size: 16),
-                      label: const Text('Registrar entrada'),
+                      label: const Text('Entrada'),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1763,7 +2031,7 @@ class _ChecadorTabState extends State<_ChecadorTab> {
                       onPressed: _selfBusy || _selfEmployeeId == null ? null : () => unawaited(_punch(false)),
                       style: FilledButton.styleFrom(backgroundColor: palette.warning),
                       icon: const Icon(Icons.logout, size: 16),
-                      label: const Text('Registrar salida'),
+                      label: const Text('Salida'),
                     ),
                   ),
                 ],
@@ -1776,82 +2044,118 @@ class _ChecadorTabState extends State<_ChecadorTab> {
                   style: TextStyle(color: _selfMessageIsError ? palette.error : palette.success, fontSize: 12),
                 ),
               ],
+              const SizedBox(height: 10),
+              // TASK 16.29 (Phase 5) — informational only; never claims a
+              // device is actually connected (none exists — see
+              // docs/WORKFORCE_SYSTEM.md's "Future attendance device
+              // integration" section).
+              Text(
+                'Conecta un lector compatible para registro automático (próximamente).',
+                style: TextStyle(color: palette.textMuted, fontSize: 11, fontStyle: FontStyle.italic),
+              ),
             ],
           ),
         ),
         const SizedBox(height: 12),
-        if (!_canManageAttendance)
-          const _PermissionDenied()
-        else ...[
-          _Card(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text('Marcaciones por empleado', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
-                const SizedBox(height: 8),
-                if (_employees.isNotEmpty)
-                  DropdownButtonFormField<PosEmployee>(
-                    key: const Key('pos-timeclock-manage-employee-select'),
-                    initialValue: _managedEmployee,
-                    isExpanded: true,
-                    decoration: const InputDecoration(isDense: true, labelText: 'Empleado'),
-                    items: [
-                      for (final employee in _employees)
-                        DropdownMenuItem(value: employee, child: Text('${employee.displayName} (${employee.code})')),
-                    ],
-                    onChanged: (value) => setState(() => _managedEmployee = value),
-                  )
-                else
-                  TextField(
-                    key: const Key('pos-timeclock-manage-employee-id'),
-                    controller: _manageEmployeeIdController,
-                    onChanged: (_) => setState(() {}),
-                    decoration: const InputDecoration(isDense: true, labelText: 'Id del empleado'),
+        _Card(
+          key: const Key('pos-timeclock-today-card'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Checadas de hoy', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              const SizedBox(height: 8),
+              switch (_todayPhase) {
+                _ListPhase.loading => const _Loading(),
+                _ListPhase.empty => const _Empty(message: 'Sin checadas hoy.'),
+                _ListPhase.failure => _Failure(
+                  message: _todayErrorMessage ?? 'No fue posible cargar las checadas de hoy.',
+                  onRetry: () => unawaited(_loadToday()),
+                ),
+                _ListPhase.ready => _todayPunches.isEmpty
+                    ? const _Empty(message: 'Sin checadas hoy.')
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final punch in _todayPunches)
+                            _PunchRow(punch: punch, employeeLabel: _employeeLabel(punch.employeeId), keyPrefix: 'today-'),
+                        ],
+                      ),
+              },
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Historial de asistencia', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              const SizedBox(height: 8),
+              if (_employees.isNotEmpty)
+                DropdownButtonFormField<PosEmployee?>(
+                  key: const Key('pos-timeclock-history-employee-filter'),
+                  initialValue: _historyEmployeeFilter,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Empleado'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Todos')),
+                    for (final employee in _employees)
+                      DropdownMenuItem(value: employee, child: Text('${employee.displayName} (${employee.code})')),
+                  ],
+                  onChanged: (value) => setState(() => _historyEmployeeFilter = value),
+                ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('pos-timeclock-manage-date-from'),
+                      controller: _historyDateFromController,
+                      decoration: const InputDecoration(isDense: true, labelText: 'Desde (YYYY-MM-DD)'),
+                    ),
                   ),
-                const SizedBox(height: 10),
-                Row(
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      key: const Key('pos-timeclock-manage-date-to'),
+                      controller: _historyDateToController,
+                      decoration: const InputDecoration(isDense: true, labelText: 'Hasta (YYYY-MM-DD)'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    key: const Key('pos-timeclock-manage-load'),
+                    onPressed: () => unawaited(_loadHistory()),
+                    icon: const Icon(Icons.search, size: 16),
+                    label: const Text('Buscar'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        switch (_historyPhase) {
+          _ListPhase.loading => const _Loading(),
+          _ListPhase.empty => const _Empty(message: 'No hay marcaciones en este rango.'),
+          _ListPhase.failure => _Failure(
+            message: _historyErrorMessage ?? 'No fue posible cargar las marcaciones.',
+            onRetry: () => unawaited(_loadHistory()),
+          ),
+          _ListPhase.ready => _visibleHistory.isEmpty
+              ? const _Empty(message: 'No hay marcaciones en este rango.')
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: TextField(
-                        key: const Key('pos-timeclock-manage-date-from'),
-                        controller: _manageDateFromController,
-                        decoration: const InputDecoration(isDense: true, labelText: 'Desde (YYYY-MM-DD)'),
+                    for (final punch in _visibleHistory)
+                      _PunchRow(
+                        punch: punch,
+                        employeeLabel: _employeeLabel(punch.employeeId),
+                        onCorrect: _canManageAttendance ? () => unawaited(_openCorrection(punch)) : null,
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        key: const Key('pos-timeclock-manage-date-to'),
-                        controller: _manageDateToController,
-                        decoration: const InputDecoration(isDense: true, labelText: 'Hasta (YYYY-MM-DD)'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    OutlinedButton.icon(
-                      key: const Key('pos-timeclock-manage-load'),
-                      onPressed: _manageEmployeeId == null ? null : () => unawaited(_loadPunches()),
-                      icon: const Icon(Icons.search, size: 16),
-                      label: const Text('Buscar'),
-                    ),
                   ],
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          switch (_managePhase) {
-            _ListPhase.loading => const _Loading(),
-            _ListPhase.empty => const _Empty(message: 'No hay marcaciones en ese rango.'),
-            _ListPhase.failure => _Failure(
-              message: _manageErrorMessage ?? 'No fue posible cargar las marcaciones.',
-              onRetry: () => unawaited(_loadPunches()),
-            ),
-            _ListPhase.ready => Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [for (final punch in _punches) _PunchRow(punch: punch, onCorrect: () => unawaited(_openCorrection(punch)))],
-            ),
-          },
-        ],
+        },
       ],
     );
   }
@@ -1871,9 +2175,22 @@ String _punchMethodLabel(String method) => switch (method) {
 };
 
 class _PunchRow extends StatelessWidget {
-  const _PunchRow({required this.punch, required this.onCorrect});
+  const _PunchRow({required this.punch, this.employeeLabel, this.onCorrect, this.keyPrefix = ''});
   final PosTimeClockPunch punch;
-  final VoidCallback onCorrect;
+  // TASK 16.29 — shown only in branch-wide lists (Checadas de hoy /
+  // Historial de asistencia), where more than one employee can appear;
+  // `null` in "Mi checador"-scoped contexts where it would be redundant.
+  final String? employeeLabel;
+  // TASK 16.29 — a punch made today legitimately appears in BOTH
+  // "Checadas de hoy" and "Historial de asistencia" (its default range
+  // includes today), so the two panels must not render the same widget
+  // keys. "Historial de asistencia" keeps the original, unprefixed keys.
+  final String keyPrefix;
+  // TASK 16.29 (Phase 8) — `null` hides the action entirely rather than
+  // showing a disabled button: a viewer with only `attendance.read` (the
+  // real backend requirement for VIEWING this list) never even sees a
+  // mutation affordance that would just 403.
+  final VoidCallback? onCorrect;
 
   @override
   Widget build(BuildContext context) {
@@ -1882,7 +2199,7 @@ class _PunchRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: _Card(
-        key: Key('pos-timeclock-punch-row-${punch.id}'),
+        key: Key('pos-timeclock-punch-row-$keyPrefix${punch.id}'),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
@@ -1892,13 +2209,19 @@ class _PunchRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (employeeLabel != null)
+                    Text(
+                      employeeLabel!,
+                      key: Key('pos-timeclock-punch-employee-$keyPrefix${punch.id}'),
+                      style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12),
+                    ),
                   Text(
                     '${isClockIn ? 'Entrada' : 'Salida'} · ${_formatDateTime(punch.occurredAt)}',
                     style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
                   ),
                   Text(
                     'Método: ${_punchMethodLabel(punch.method)}',
-                    key: Key('pos-timeclock-punch-method-${punch.id}'),
+                    key: Key('pos-timeclock-punch-method-$keyPrefix${punch.id}'),
                     style: TextStyle(color: palette.textMuted, fontSize: 10.5),
                   ),
                   if (punch.isCorrection)
@@ -1909,12 +2232,13 @@ class _PunchRow extends StatelessWidget {
                 ],
               ),
             ),
-            TextButton.icon(
-              key: Key('pos-timeclock-correction-open-${punch.id}'),
-              onPressed: onCorrect,
-              icon: const Icon(Icons.edit_note, size: 16),
-              label: const Text('Corregir'),
-            ),
+            if (onCorrect != null)
+              TextButton.icon(
+                key: Key('pos-timeclock-correction-open-$keyPrefix${punch.id}'),
+                onPressed: onCorrect,
+                icon: const Icon(Icons.edit_note, size: 16),
+                label: const Text('Corregir'),
+              ),
           ],
         ),
       ),
@@ -2122,9 +2446,21 @@ class _NominaTabState extends State<_NominaTab> {
 
   Future<void> _loadEmployeeNames() async {
     try {
-      final page = await widget.employeesGateway.listEmployees(branchId: widget.context.session.branchId, limit: 100);
+      // TASK 16.29 — follows `next_cursor` to completion; see
+      // `_HorariosTabState._loadEmployees`'s own identical doc comment.
+      final all = <PosEmployee>[];
+      String? cursor;
+      do {
+        final page = await widget.employeesGateway.listEmployees(
+          branchId: widget.context.session.branchId,
+          limit: 100,
+          cursor: cursor,
+        );
+        all.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
       if (!mounted) return;
-      setState(() => _employeeNames = {for (final employee in page.items) employee.id: employee.displayName});
+      setState(() => _employeeNames = {for (final employee in all) employee.id: employee.displayName});
     } on Object {
       // Honest fallback — no `employee.read` means payroll lines show the
       // real employee id instead of a resolved name; never fabricated.

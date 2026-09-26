@@ -248,4 +248,16 @@ export class TimeClockService {
   ): Promise<TimeClockPunchRow[]> {
     return this.repository.listPunches(companyId, branchIds, input);
   }
+
+  /** TASK 16.29 — see `PeopleRepository.listPunchesForBranch`'s own doc
+   * comment. [branchId] must be one of the caller's own authorized
+   * branches — never trusted merely because it looks like a UUID. */
+  public listPunchesForBranch(
+    companyId: string,
+    branchIds: readonly string[],
+    input: { branchId: string; dateFrom?: string; dateTo?: string; limit: number },
+  ): Promise<TimeClockPunchRow[]> {
+    if (!branchIds.includes(input.branchId)) throw new PeopleError('resource_not_found', 'The branch was not found.');
+    return this.repository.listPunchesForBranch(companyId, input.branchId, input);
+  }
 }

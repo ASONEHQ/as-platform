@@ -410,6 +410,16 @@ abstract interface class PosSchedulesGateway {
     required String dateFrom,
     required String dateTo,
   });
+
+  /// TASK 16.29 — `GET /api/v1/schedules/branch` (`schedule.read`) —
+  /// every employee's schedule for one branch within `[dateFrom, dateTo]`
+  /// in a single call, for the Horarios weekly MATRIX. Never a synthetic
+  /// row for an employee/date with no schedule defined yet.
+  Future<List<PosEmployeeSchedule>> listSchedulesForBranch({
+    required String branchId,
+    required String dateFrom,
+    required String dateTo,
+  });
 }
 
 class ApiPosSchedulesGateway implements PosSchedulesGateway {
@@ -449,6 +459,22 @@ class ApiPosSchedulesGateway implements PosSchedulesGateway {
     return data.whereType<Map<String, Object?>>().map(PosEmployeeSchedule.fromJson).toList(growable: false);
   }
 
+  @override
+  Future<List<PosEmployeeSchedule>> listSchedulesForBranch({
+    required String branchId,
+    required String dateFrom,
+    required String dateTo,
+  }) async {
+    final query = <String, String>{'branch_id': branchId, 'date_from': dateFrom, 'date_to': dateTo};
+    final path = Uri(path: '/api/v1/schedules/branch', queryParameters: query).toString();
+    final envelope = await _client.getJson(path);
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing schedules list data.');
+    }
+    return data.whereType<Map<String, Object?>>().map(PosEmployeeSchedule.fromJson).toList(growable: false);
+  }
+
   PosEmployeeSchedule _decode(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -468,6 +494,13 @@ class EmptyPosSchedulesGateway implements PosSchedulesGateway {
   @override
   Future<List<PosEmployeeSchedule>> listSchedules({
     required String employeeId,
+    required String dateFrom,
+    required String dateTo,
+  }) async => const [];
+
+  @override
+  Future<List<PosEmployeeSchedule>> listSchedulesForBranch({
+    required String branchId,
     required String dateFrom,
     required String dateTo,
   }) async => const [];
@@ -586,6 +619,17 @@ abstract interface class PosTimeClockGateway {
     String? dateTo,
     int limit = 100,
   });
+
+  /// TASK 16.29 — `GET /api/v1/time-clock/punches/branch`
+  /// (`attendance.read`) — every employee's punches for one branch in a
+  /// single call, for Checador's "Checadas de hoy"/"Historial de
+  /// asistencia" panels.
+  Future<List<PosTimeClockPunch>> listPunchesForBranch({
+    required String branchId,
+    String? dateFrom,
+    String? dateTo,
+    int limit = 100,
+  });
 }
 
 class ApiPosTimeClockGateway implements PosTimeClockGateway {
@@ -646,6 +690,28 @@ class ApiPosTimeClockGateway implements PosTimeClockGateway {
     return data.whereType<Map<String, Object?>>().map(PosTimeClockPunch.fromJson).toList(growable: false);
   }
 
+  @override
+  Future<List<PosTimeClockPunch>> listPunchesForBranch({
+    required String branchId,
+    String? dateFrom,
+    String? dateTo,
+    int limit = 100,
+  }) async {
+    final query = <String, String>{
+      'branch_id': branchId,
+      'limit': '$limit',
+      if (dateFrom != null) 'date_from': dateFrom,
+      if (dateTo != null) 'date_to': dateTo,
+    };
+    final path = Uri(path: '/api/v1/time-clock/punches/branch', queryParameters: query).toString();
+    final envelope = await _client.getJson(path);
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing time-clock punches list data.');
+    }
+    return data.whereType<Map<String, Object?>>().map(PosTimeClockPunch.fromJson).toList(growable: false);
+  }
+
   PosTimeClockPunch _decode(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -673,6 +739,14 @@ class EmptyPosTimeClockGateway implements PosTimeClockGateway {
   @override
   Future<List<PosTimeClockPunch>> listPunches({
     required String employeeId,
+    String? dateFrom,
+    String? dateTo,
+    int limit = 100,
+  }) async => const [];
+
+  @override
+  Future<List<PosTimeClockPunch>> listPunchesForBranch({
+    required String branchId,
     String? dateFrom,
     String? dateTo,
     int limit = 100,

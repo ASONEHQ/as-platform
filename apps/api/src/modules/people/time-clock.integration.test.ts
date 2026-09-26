@@ -372,4 +372,37 @@ integration('PostgreSQL time-clock operations (TASK 14.4, Wave 2)', { concurrent
     expect(read.statusCode).toBe(200);
     expect(read.json<{ data: unknown[] }>().data).toHaveLength(0);
   });
+
+  // TASK 16.29 — the Checador "Checadas de hoy"/"Historial de asistencia"
+  // panels need every employee's punches for the branch in ONE call — see
+  // `PeopleRepository.listPunchesForBranch`'s own doc comment. Placed
+  // last in this file deliberately: every earlier test's own
+  // open/closed-punch invariants for `employeeId`/`selfServiceEmployeeId`
+  // are irrelevant here (this test only asserts on employee_id presence,
+  // never punch counts), so it cannot disturb any prior test's ordering
+  // assumptions.
+  it('lists every employee\'s punches for the branch in one call, and rejects an unauthorized branch_id', async () => {
+    authContext = contextFor(companyId, branchId, managerUserId, ['attendance.read', 'attendance.manage']);
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/time-clock/punches/branch?branch_id=${branchId}`,
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(listed.statusCode).toBe(200);
+    // Both employees this describe block created punched at least once in
+    // earlier tests — a real, multi-employee, single-call aggregation.
+    const employeeIds = listed.json<{ data: { employee_id: string }[] }>().data.map((row) => row.employee_id);
+    expect(employeeIds).toContain(employeeId);
+    expect(employeeIds).toContain(selfServiceEmployeeId);
+
+    // A branch outside this actor's own permittedBranchIds is honestly
+    // rejected, never silently scoped down to something else.
+    const denied = await app.inject({
+      method: 'GET',
+      url: `/api/v1/time-clock/punches/branch?branch_id=${otherCompanyBranchId}`,
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(denied.statusCode).toBe(404);
+  });
 });

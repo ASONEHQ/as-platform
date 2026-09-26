@@ -419,6 +419,63 @@ integration('PostgreSQL employee/schedule operations (TASK 14.4, Wave 2)', { con
     expect(validDayOff.statusCode).toBe(200);
   });
 
+  // TASK 16.29 — the Horarios weekly MATRIX needs every employee's
+  // schedule for one branch, one week, in ONE call — see
+  // `PeopleRepository.listSchedulesForBranch`'s own doc comment for why
+  // this exists as a separate route rather than an N+1 client loop over
+  // the per-employee `/api/v1/schedules` route.
+  it('lists every employee\'s schedule for the branch in one call, and rejects an unauthorized branch_id', async () => {
+    authContext = baseContext(companyId, branchId);
+    const employeeA = await post('/api/v1/employees', `emp-sched-branch-a-${randomUUID()}`, {
+      branch_id: branchId,
+      code: `emp-${randomUUID().slice(0, 8)}`,
+      display_name: 'Matrix Row A',
+      weekly_salary: '500.0000',
+      currency_code: 'MXN',
+    });
+    const employeeAId = employeeA.json<{ data: { id: string } }>().data.id;
+    const employeeB = await post('/api/v1/employees', `emp-sched-branch-b-${randomUUID()}`, {
+      branch_id: branchId,
+      code: `emp-${randomUUID().slice(0, 8)}`,
+      display_name: 'Matrix Row B',
+      weekly_salary: '500.0000',
+      currency_code: 'MXN',
+    });
+    const employeeBId = employeeB.json<{ data: { id: string } }>().data.id;
+
+    await put('/api/v1/schedules', `sched-branch-a-${randomUUID()}`, undefined, {
+      employee_id: employeeAId,
+      work_date: '2026-03-09',
+      is_day_off: false,
+      scheduled_start: '09:00',
+      scheduled_end: '17:00',
+    });
+    await put('/api/v1/schedules', `sched-branch-b-${randomUUID()}`, undefined, {
+      employee_id: employeeBId,
+      work_date: '2026-03-09',
+      is_day_off: true,
+    });
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/schedules/branch?branch_id=${branchId}&date_from=2026-03-09&date_to=2026-03-09`,
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(listed.statusCode).toBe(200);
+    const rows = listed.json<{ data: { employee_id: string; is_day_off: boolean }[] }>().data;
+    expect(rows.find((row) => row.employee_id === employeeAId)?.is_day_off).toBe(false);
+    expect(rows.find((row) => row.employee_id === employeeBId)?.is_day_off).toBe(true);
+
+    // A branch outside this actor's own permittedBranchIds is honestly
+    // rejected, never silently scoped down to something else.
+    const denied = await app.inject({
+      method: 'GET',
+      url: `/api/v1/schedules/branch?branch_id=${otherCompanyBranchId}&date_from=2026-03-09&date_to=2026-03-09`,
+      headers: { authorization: 'Bearer x' },
+    });
+    expect(denied.statusCode).toBe(404);
+  });
+
   it('an actor without employee.manage cannot create/update/deactivate an employee', async () => {
     authContext = { ...baseContext(companyId, branchId), permissions: ['employee.read'] };
     const created = await post('/api/v1/employees', `emp-noperm-${randomUUID()}`, {

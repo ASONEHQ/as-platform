@@ -656,6 +656,33 @@ export class PeopleRepository {
     return rows.map(schedule);
   }
 
+  /** TASK 16.29 — the weekly schedule MATRIX (all employees for one
+   * branch, one week) needs every schedule row for that branch in ONE
+   * call, never one `listSchedules` round trip per employee (a real,
+   * user-facing N+1 the prior per-employee-only query would otherwise
+   * force on every matrix render/week change). [branchId] is a single,
+   * already-authorized branch (the caller validates it against the
+   * actor's own `permittedBranchIds` before this is ever called — see
+   * `SchedulesService.listSchedulesForBranch`), never the whole
+   * `branchIds` scope at once. */
+  public async listSchedulesForBranch(
+    companyId: string,
+    branchId: string,
+    dateFrom: string,
+    dateTo: string,
+  ): Promise<EmployeeScheduleRow[]> {
+    const rows = result<ScheduleDb>(
+      await this.database.pool.query(
+        `select ${SCHEDULE_COLUMNS} from employee_schedules
+         where company_id=$1 and branch_id=$2
+           and work_date between $3 and $4
+         order by work_date asc`,
+        [companyId, branchId, dateFrom, dateTo],
+      ),
+    ).rows;
+    return rows.map(schedule);
+  }
+
   // ---- Time clock -----------------------------------------------------
 
   public async latestPunch(companyId: string, employeeId: string): Promise<TimeClockPunchRow | null> {
@@ -734,6 +761,37 @@ export class PeopleRepository {
   ): Promise<TimeClockPunchRow[]> {
     const values: unknown[] = [companyId, input.employeeId, branchIds];
     const where = ['company_id=$1', 'employee_id=$2', 'branch_id=any($3::uuid[])'];
+    if (input.dateFrom !== undefined) {
+      values.push(input.dateFrom);
+      where.push(`occurred_at>=$${String(values.length)}::date`);
+    }
+    if (input.dateTo !== undefined) {
+      values.push(input.dateTo);
+      where.push(`occurred_at<($${String(values.length)}::date + interval '1 day')`);
+    }
+    values.push(input.limit);
+    const rows = result<PunchDb>(
+      await this.database.pool.query(
+        `select ${PUNCH_COLUMNS} from time_clock_punches where ${where.join(' and ')}
+         order by occurred_at desc limit $${String(values.length)}`,
+        values,
+      ),
+    ).rows;
+    return rows.map(punch);
+  }
+
+  /** TASK 16.29 — "Checadas de hoy"/"Historial de asistencia" for the
+   * WHOLE branch (every employee), never one `listPunches` round trip
+   * per employee. [branchId] is a single, already-authorized branch (the
+   * caller validates it against the actor's own `permittedBranchIds`
+   * before this is ever called — see `TimeClockService.listPunchesForBranch`). */
+  public async listPunchesForBranch(
+    companyId: string,
+    branchId: string,
+    input: { dateFrom?: string; dateTo?: string; limit: number },
+  ): Promise<TimeClockPunchRow[]> {
+    const values: unknown[] = [companyId, branchId];
+    const where = ['company_id=$1', 'branch_id=$2'];
     if (input.dateFrom !== undefined) {
       values.push(input.dateFrom);
       where.push(`occurred_at>=$${String(values.length)}::date`);

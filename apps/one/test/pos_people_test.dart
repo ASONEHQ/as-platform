@@ -238,20 +238,21 @@ void main() {
         createdAt: DateTime.utc(2026, 9, 1),
         updatedAt: DateTime.utc(2026, 9, 1),
       );
-      final schedulesGateway = _RecordingSchedulesGateway(listResult: [corrupted]);
+      final schedulesGateway = _RecordingSchedulesGateway(branchResult: [corrupted]);
       final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
-      await _pump(tester, employeesGateway: employeesGateway, schedulesGateway: schedulesGateway);
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        schedulesGateway: schedulesGateway,
+        readGateway: const _FixtureBusinessDateGateway(),
+      );
       await _navigateToTab(tester, 'Horarios');
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('pos-schedule-employee-select')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Ana Torres (EMP-1)').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pos-schedule-load')));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-schedule-day-2026-09-10')));
+      // TASK 16.29 — the matrix shows every employee as a row automatically;
+      // no employee picker/"Cargar" step exists anymore. `2026-09-10` falls
+      // inside `_FixtureBusinessDateGateway`'s own resolved week.
+      await tester.tap(find.byKey(const Key('pos-schedule-cell-employee-1-2026-09-10')));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-schedule-form-save')));
@@ -267,16 +268,18 @@ void main() {
     testWidgets('end time not after start time is rejected client-side before ever submitting', (tester) async {
       final schedulesGateway = _RecordingSchedulesGateway();
       final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
-      await _pump(tester, employeesGateway: employeesGateway, schedulesGateway: schedulesGateway);
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        schedulesGateway: schedulesGateway,
+        readGateway: const _FixtureBusinessDateGateway(),
+      );
       await _navigateToTab(tester, 'Horarios');
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('pos-schedule-employee-select')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Ana Torres (EMP-1)').last);
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-schedule-new')));
+      // A cell with no existing schedule yet — opens the editor pre-filled
+      // on that exact day (TASK 16.29's own `initialWorkDate` behavior).
+      await tester.tap(find.byKey(const Key('pos-schedule-cell-employee-1-2026-09-10')));
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byKey(const Key('pos-schedule-form-start')), '18:00');
@@ -291,19 +294,25 @@ void main() {
     testWidgets('a valid shift calls the real upsert endpoint with the exact entered values', (tester) async {
       final schedulesGateway = _RecordingSchedulesGateway();
       final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
-      await _pump(tester, employeesGateway: employeesGateway, schedulesGateway: schedulesGateway);
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        schedulesGateway: schedulesGateway,
+        readGateway: const _FixtureBusinessDateGateway(),
+      );
       await _navigateToTab(tester, 'Horarios');
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('pos-schedule-employee-select')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Ana Torres (EMP-1)').last);
+      await tester.tap(find.byKey(const Key('pos-schedule-cell-employee-1-2026-09-10')));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('pos-schedule-new')));
-      await tester.pumpAndSettle();
-
-      await tester.enterText(find.byKey(const Key('pos-schedule-form-date')), '2026-09-10');
+      // The date field is already pre-filled with the tapped cell's own
+      // day — never touched here, proving the cell-driven prefill, not a
+      // manually-typed date.
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-schedule-form-date'))).controller!.text,
+        '2026-09-10',
+      );
       await tester.enterText(find.byKey(const Key('pos-schedule-form-start')), '09:00');
       await tester.enterText(find.byKey(const Key('pos-schedule-form-end')), '18:00');
       await tester.tap(find.byKey(const Key('pos-schedule-form-save')));
@@ -318,14 +327,20 @@ void main() {
       expect(call.scheduledEnd, '18:00');
     });
 
-    // TASK 16.28 (Phase 9) — quick week navigation, computed from the
-    // resolved BUSINESS today (never device-local), matching TASK
+    // TASK 16.28/16.29 (Phase 3/9) — quick week navigation, computed from
+    // the resolved BUSINESS today (never device-local), matching TASK
     // 16.23B's own timezone semantics.
     testWidgets('week navigation jumps to real Monday-Sunday ranges around the resolved business today', (
       tester,
     ) async {
+      final schedulesGateway = _RecordingSchedulesGateway();
       final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
-      await _pump(tester, employeesGateway: employeesGateway, readGateway: const _FixtureBusinessDateGateway());
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        schedulesGateway: schedulesGateway,
+        readGateway: const _FixtureBusinessDateGateway(),
+      );
       await _navigateToTab(tester, 'Horarios');
       await tester.pumpAndSettle();
 
@@ -333,29 +348,57 @@ void main() {
       final today = DateTime.utc(2026, 9, 9); // matches _FixtureBusinessDateGateway.
       final monday = today.subtract(Duration(days: today.weekday - 1));
 
-      // Business-today resolution corrects the initial provisional range
-      // to the CURRENT real week — never left at a device-local guess.
-      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(monday));
-      expect(
-        tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-to'))).controller!.text,
-        iso(monday.add(const Duration(days: 6))),
-      );
+      // Business-today resolution corrects the initial provisional guess
+      // to the CURRENT real week — never left at a device-local guess —
+      // proven via the real gateway call the matrix actually issued.
+      expect(schedulesGateway.listBranchCalls.last.dateFrom, iso(monday));
+      expect(schedulesGateway.listBranchCalls.last.dateTo, iso(monday.add(const Duration(days: 6))));
 
       await tester.tap(find.byKey(const Key('pos-schedule-week-next')));
       await tester.pumpAndSettle();
       final nextMonday = monday.add(const Duration(days: 7));
-      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(nextMonday));
+      expect(schedulesGateway.listBranchCalls.last.dateFrom, iso(nextMonday));
 
       await tester.tap(find.byKey(const Key('pos-schedule-week-prev')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-schedule-week-prev')));
       await tester.pumpAndSettle();
       final prevMonday = monday.subtract(const Duration(days: 7));
-      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(prevMonday));
+      expect(schedulesGateway.listBranchCalls.last.dateFrom, iso(prevMonday));
 
       await tester.tap(find.byKey(const Key('pos-schedule-week-current')));
       await tester.pumpAndSettle();
-      expect(tester.widget<TextField>(find.byKey(const Key('pos-schedule-date-from'))).controller!.text, iso(monday));
+      expect(schedulesGateway.listBranchCalls.last.dateFrom, iso(monday));
+    });
+
+    testWidgets('zero employees preserves the matrix header/week-nav structure with an honest inline message', (
+      tester,
+    ) async {
+      final employeesGateway = _RecordingEmployeesGateway();
+      await _pump(tester, employeesGateway: employeesGateway, readGateway: const _FixtureBusinessDateGateway());
+      await _navigateToTab(tester, 'Horarios');
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-schedule-matrix')), findsOneWidget);
+      expect(find.byKey(const Key('pos-schedule-week-range')), findsOneWidget);
+      expect(find.byKey(const Key('pos-schedule-week-current')), findsOneWidget);
+      expect(find.text('No hay empleados registrados en esta sucursal.'), findsOneWidget);
+    });
+
+    testWidgets('an employee with no schedule for a day renders that cell honestly as "Sin turno"', (tester) async {
+      final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      final schedulesGateway = _RecordingSchedulesGateway(); // no schedules at all.
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        schedulesGateway: schedulesGateway,
+        readGateway: const _FixtureBusinessDateGateway(),
+      );
+      await _navigateToTab(tester, 'Horarios');
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-schedule-row-employee-1')), findsOneWidget);
+      expect(find.text('Sin turno'), findsWidgets);
     });
   });
 
@@ -424,6 +467,11 @@ void main() {
     testWidgets('a correction inserts a new punch referencing the original — the original is never edited/deleted', (
       tester,
     ) async {
+      // TASK 16.29 — "Historial de asistencia" is now branch-wide and
+      // auto-loads (no employee picker/"Buscar" required to see data);
+      // the "Corregir" action reaches this same, unmodified backend
+      // contract (insert-only correction) via `punch.employeeId` now
+      // instead of a separately-selected "managed employee".
       final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
       final punch = PosTimeClockPunch(
         id: 'punch-1',
@@ -453,13 +501,6 @@ void main() {
       await _navigateToTab(tester, 'Checador');
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('pos-timeclock-manage-employee-select')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Ana Torres (EMP-1)').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pos-timeclock-manage-load')));
-      await tester.pumpAndSettle();
-
       await tester.tap(find.byKey(const Key('pos-timeclock-correction-open-punch-1')));
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('pos-timeclock-correction-reason')), 'Se olvidó marcar a tiempo');
@@ -471,6 +512,57 @@ void main() {
       expect(call.correctedPunchId, 'punch-1');
       expect(call.correctionReason, 'Se olvidó marcar a tiempo');
       expect(call.employeeId, 'employee-1');
+    });
+
+    testWidgets('a viewer with only attendance.read sees the branch-wide history but never a Corregir action', (
+      tester,
+    ) async {
+      final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      final punch = PosTimeClockPunch(
+        id: 'punch-1',
+        branchId: 'branch-id',
+        employeeId: 'employee-1',
+        punchType: 'clock_in',
+        occurredAt: DateTime.utc(2026, 9, 7, 9),
+        station: null,
+        method: 'manual',
+        isCorrection: false,
+        correctionReason: null,
+        correctedPunchId: null,
+        createdAt: DateTime.utc(2026, 9, 7, 9),
+      );
+      final timeClockGateway = _RecordingTimeClockGateway(listPunchesResult: [punch]);
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        timeClockGateway: timeClockGateway,
+        permissions: const ['employee.read', 'attendance.read'],
+      );
+      await _navigateToTab(tester, 'Checador');
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-timeclock-punch-row-punch-1')), findsOneWidget);
+      expect(find.byKey(const Key('pos-timeclock-correction-open-punch-1')), findsNothing);
+    });
+
+    testWidgets('zero punches preserves both the today and history panels with an honest inline message', (
+      tester,
+    ) async {
+      final employeesGateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      final timeClockGateway = _RecordingTimeClockGateway();
+      await _pump(
+        tester,
+        employeesGateway: employeesGateway,
+        timeClockGateway: timeClockGateway,
+        permissions: const ['employee.read', 'attendance.read', 'attendance.manage'],
+      );
+      await _navigateToTab(tester, 'Checador');
+      await tester.pumpAndSettle();
+
+      expect(find.text('Checadas de hoy'), findsOneWidget);
+      expect(find.text('Historial de asistencia'), findsOneWidget);
+      expect(find.text('Sin checadas hoy.'), findsOneWidget);
+      expect(find.text('No hay marcaciones en este rango.'), findsOneWidget);
     });
 
     // TASK 16.28 — the punch row must show the REAL, stored `method`
@@ -514,13 +606,6 @@ void main() {
         permissions: const ['employee.read', 'employee.manage', 'attendance.read', 'attendance.manage'],
       );
       await _navigateToTab(tester, 'Checador');
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-timeclock-manage-employee-select')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Ana Torres (EMP-1)').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pos-timeclock-manage-load')));
       await tester.pumpAndSettle();
 
       expect(
@@ -916,9 +1001,15 @@ class _RecordingEmployeesGateway implements PosEmployeesGateway {
 }
 
 class _RecordingSchedulesGateway implements PosSchedulesGateway {
-  _RecordingSchedulesGateway({this.listResult = const []});
+  _RecordingSchedulesGateway({this.listResult = const [], List<PosEmployeeSchedule>? branchResult})
+    : branchResult = branchResult ?? listResult;
   final List<PosEmployeeSchedule> listResult;
+  // TASK 16.29 — the Horarios weekly matrix's own branch-wide fixture;
+  // defaults to `listResult` so pre-16.29 tests that never set either
+  // keep working unchanged.
+  final List<PosEmployeeSchedule> branchResult;
   final List<PosScheduleUpsertInput> upsertCalls = [];
+  final List<({String branchId, String dateFrom, String dateTo})> listBranchCalls = [];
 
   @override
   Future<PosEmployeeSchedule> upsertSchedule(PosScheduleUpsertInput input) async {
@@ -943,6 +1034,16 @@ class _RecordingSchedulesGateway implements PosSchedulesGateway {
     required String dateFrom,
     required String dateTo,
   }) async => listResult;
+
+  @override
+  Future<List<PosEmployeeSchedule>> listSchedulesForBranch({
+    required String branchId,
+    required String dateFrom,
+    required String dateTo,
+  }) async {
+    listBranchCalls.add((branchId: branchId, dateFrom: dateFrom, dateTo: dateTo));
+    return branchResult;
+  }
 }
 
 class _RecordingTimeClockGateway implements PosTimeClockGateway {
@@ -952,17 +1053,22 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
     this.clockInError,
     this.clockOutError,
     this.listPunchesResult = const [],
-  });
+    List<PosTimeClockPunch>? branchResult,
+  }) : branchResult = branchResult ?? listPunchesResult;
 
   final PosTimeClockPunch? clockInResult;
   final PosTimeClockPunch? clockOutResult;
   final ApiException? clockInError;
   final ApiException? clockOutError;
   final List<PosTimeClockPunch> listPunchesResult;
+  // TASK 16.29 — Checador's own branch-wide fixture; defaults to
+  // `listPunchesResult` so pre-16.29 tests keep working unchanged.
+  final List<PosTimeClockPunch> branchResult;
 
   final List<String> clockInCalls = [];
   final List<String> clockOutCalls = [];
   final List<PosTimeClockCorrectionInput> correctCalls = [];
+  final List<({String branchId, String? dateFrom, String? dateTo})> listBranchCalls = [];
 
   @override
   Future<PosTimeClockPunch> clockIn({required String employeeId, String? station}) async {
@@ -1029,6 +1135,17 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
     String? dateTo,
     int limit = 100,
   }) async => listPunchesResult;
+
+  @override
+  Future<List<PosTimeClockPunch>> listPunchesForBranch({
+    required String branchId,
+    String? dateFrom,
+    String? dateTo,
+    int limit = 100,
+  }) async {
+    listBranchCalls.add((branchId: branchId, dateFrom: dateFrom, dateTo: dateTo));
+    return branchResult;
+  }
 }
 
 class _RecordingPayrollGateway implements PosPayrollGateway {
