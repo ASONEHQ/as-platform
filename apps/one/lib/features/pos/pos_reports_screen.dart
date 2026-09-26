@@ -44,7 +44,16 @@ enum _ReportArea {
   employees('Empleados', Icons.badge_outlined),
   parties('Fiestas', Icons.celebration_outlined),
   access('Accesos', Icons.qr_code_scanner_outlined),
-  // TASK 14.5 (Wave 3, Phase 7, Item 4): the 8th real report area.
+  // TASK 14.5 (Wave 3, Phase 7, Item 4) — a 9TH real report area, added
+  // to this product after (and beyond) the owner's original 8-area
+  // reference (Inteligencia/Ventas/Financiero/Inventario/Clientes/
+  // Empleados/Fiestas/Accesos). TASK 16.25.2's own audit confirmed it is
+  // NOT inherited navigation or visual clutter: it is backed by a real
+  // backend endpoint (`GET /api/v1/reports/promotions`,
+  // `ReportsService.promotionsReport`) computing real coupon/promotion
+  // discount counts and totals — see `_PromotionsReportPanel` below.
+  // Kept for that reason; it is simply not part of the legacy's own
+  // 8-tab list because it didn't exist as a reporting concept there.
   promotions('Promociones', Icons.local_offer_outlined);
 
   const _ReportArea(this.label, this.icon);
@@ -559,19 +568,33 @@ class _ReportPanelState<T> extends State<_ReportPanel<T>> {
 /// arbitrary shared date range, matching the product intent of an "at a
 /// glance today" screen.
 ///
-/// Two KPIs the owner's own reference named are DELIBERATELY not shown
-/// as real numbers here: "Meta del día" (no configurable daily-sales
-/// target exists anywhere in this platform — inventing one would
-/// violate this task's own "no fabricated business data" rule) renders
-/// an honest "no configurada" state instead, and "estancia promedio" is
-/// covered on the Accesos tab, not duplicated here to avoid two sources
-/// of the same figure disagreeing over rounding. Both `estancia
-/// promedio` and the legacy's own water-park "real-time occupancy"
-/// concept were themselves HARDCODED FAKE VALUES in the legacy product
-/// (`prom_estancia=95`, always-0 occupancy — see
-/// `docs/LEGACY_FUNCTIONAL_PARITY.md` §12) — this screen replaces both
-/// with the real, live `access.currentOccupancy`/`averageStayMinutes`
-/// this platform actually computes.
+/// TASK 16.25.2 — production visual review found this panel had drifted
+/// into a generic 3-column KPI-card dashboard, losing the owner's
+/// original "management command center" hierarchy (hero → compact KPI
+/// row → dense two-column operations grid). This rebuild restores that
+/// composition using ONLY the same real data this panel already loaded
+/// — no new gateway call, no new metric.
+///
+/// "Meta del día" (no configurable daily-sales target exists anywhere
+/// in this platform — inventing one would violate this task's own "no
+/// fabricated business data" rule) renders as a prominent hero panel
+/// that gracefully shows "No configurada" and suppresses any percentage
+/// — never an invented target or completion ratio. "Estancia promedio"
+/// IS now shown here too (per this correction's own explicit
+/// composition), sourced from the exact same `access.averageStayMinutes`
+/// the Accesos tab shows — never a second, independently-rounded
+/// computation. Both `estancia promedio` and the legacy's own
+/// water-park "real-time occupancy" concept were themselves HARDCODED
+/// FAKE VALUES in the legacy product (`prom_estancia=95`, always-0
+/// occupancy — see `docs/LEGACY_FUNCTIONAL_PARITY.md` §12) — this
+/// screen replaces both with the real, live
+/// `access.currentOccupancy`/`averageStayMinutes` this platform
+/// actually computes. There is deliberately no per-area occupancy
+/// breakdown ("Area X: n personas") — no such concept exists anywhere
+/// in the backend, and inventing area names/counts would itself be
+/// fabricated data; the occupancy panel shows the one real, live count
+/// this platform has, honestly, rather than a plausible-looking table
+/// of made-up rows.
 class _IntelligenceReportPanel extends StatefulWidget {
   const _IntelligenceReportPanel({required this.businessToday, required this.branchId, required this.gateway, super.key});
   final DateTime businessToday;
@@ -679,143 +702,369 @@ class _IntelligenceReportPanelState extends State<_IntelligenceReportPanel> {
         final alerts = <String>[
           if (data.inventory.outOfStockVariantCount > 0) '${data.inventory.outOfStockVariantCount} variante(s) agotada(s) en inventario.',
         ];
+        // TASK 16.25.2 — "Ventas / hora": the mean of the SAME real
+        // per-hour buckets the chart below already renders (one line per
+        // currency actually present — never a new aggregation, never a
+        // silently-summed cross-currency total).
+        final hourlyByCurrency = <String, List<double>>{};
+        for (final hour in data.today.salesByHour) {
+          (hourlyByCurrency[hour.currencyCode] ??= <double>[]).add(double.tryParse(hour.grossSales) ?? 0);
+        }
+        final salesPerHour = <MapEntry<String, double>>[
+          for (final entry in hourlyByCurrency.entries) MapEntry(entry.key, entry.value.reduce((a, b) => a + b) / entry.value.length),
+        ];
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _ReportSectionHeader(title: 'Inteligencia — hoy'),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            _MetaDelDiaHero(
+              grossToday: data.today.grossSales,
+              averageTicket: data.today.averageTicket,
+              transactionCount: data.today.transactionCount,
+              percentChange: _percentChange(data.today, data.yesterday),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
               children: [
-                Expanded(
-                  child: _ReportsCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Ventas hoy', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
-                        const SizedBox(height: 6),
-                        for (final amount in data.today.grossSales)
-                          Text(
-                            _formatAmountString(amount.amount, amount.currencyCode),
-                            style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800),
-                          ),
-                        if (data.today.grossSales.isEmpty)
-                          Text('0', style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800)),
-                        const SizedBox(height: 6),
-                        PosTrendChip(percentChange: _percentChange(data.today, data.yesterday)),
-                      ],
-                    ),
+                SizedBox(width: 170, child: _ReportsStatTile(label: 'Aforo actual', value: '${data.access.currentOccupancy}')),
+                SizedBox(
+                  width: 170,
+                  child: _ReportsStatTile(
+                    label: 'Ventas / hora',
+                    value: salesPerHour.isEmpty
+                        ? 'Sin datos'
+                        : salesPerHour.map((entry) => _formatAmountString(entry.value.toStringAsFixed(2), entry.key)).join('\n'),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _ReportsStatTile(label: 'Tickets hoy', value: '${data.today.transactionCount}'),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _ReportsCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Ticket promedio', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
-                        const SizedBox(height: 6),
-                        for (final amount in data.today.averageTicket)
-                          Text(
-                            _formatAmountString(amount.amount, amount.currencyCode),
-                            style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800),
-                          ),
-                        if (data.today.averageTicket.isEmpty)
-                          Text('0', style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w800)),
-                      ],
-                    ),
+                SizedBox(
+                  width: 170,
+                  child: _ReportsStatTile(
+                    label: 'Estancia promedio',
+                    value: data.access.averageStayMinutes == null ? 'Sin datos suficientes' : '${data.access.averageStayMinutes}',
+                    unit: data.access.averageStayMinutes == null ? null : 'min',
                   ),
                 ),
+                SizedBox(width: 170, child: _ReportsStatTile(label: 'Membresías activas', value: '$activeMemberships')),
               ],
             ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(child: _ReportsStatTile(label: 'Aforo actual', value: '${data.access.currentOccupancy}')),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _ReportsStatTile(label: 'Membresías activas', value: '$activeMemberships'),
+            _ReportsTwoColumnRow(
+              rowKey: const Key('pos-reports-intelligence-ops-row-1'),
+              left: _OccupancyPanel(
+                currentOccupancy: data.access.currentOccupancy,
+                entryCount: data.access.entryCount,
+                exitCount: data.access.exitCount,
+              ),
+              right: _ReportsCard(
+                title: 'Top productos del día',
+                child: PosRankingBars(
+                  key: const Key('pos-reports-intelligence-top-products'),
+                  entries: [
+                    for (final product in data.today.topProducts)
+                      PosRankingEntry(
+                        label: product.name,
+                        value: double.tryParse(product.revenue) ?? 0,
+                        valueLabel: _formatAmountString(product.revenue, product.currencyCode),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                // TASK 16.25 — "Meta del día": no real, configurable
-                // daily-sales-goal setting exists anywhere in this
-                // platform (verified — see this panel's own class doc
-                // comment). An honest "no configurada" state, never an
-                // invented number/percentage.
-                Expanded(
-                  child: _ReportsCard(
-                    key: const Key('pos-reports-intelligence-daily-goal'),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Meta del día', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
-                        const SizedBox(height: 6),
-                        Text('No configurada', style: TextStyle(color: palette.textMuted, fontSize: 15, fontWeight: FontWeight.w700)),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _ReportsCard(
-              title: 'Ventas por hora',
-              child: PosBarChart(
-                key: const Key('pos-reports-intelligence-hourly-chart'),
-                bars: [
-                  for (final hour in data.today.salesByHour)
-                    PosChartBar(
-                      label: '${hour.hour}h',
-                      value: double.tryParse(hour.grossSales) ?? 0,
-                      valueLabel: _formatAmountString(hour.grossSales, hour.currencyCode),
-                    ),
-                ],
               ),
             ),
             const SizedBox(height: 12),
-            _ReportsCard(
-              title: 'Productos más vendidos (hoy)',
-              child: PosRankingBars(
-                key: const Key('pos-reports-intelligence-top-products'),
-                entries: [
-                  for (final product in data.today.topProducts)
-                    PosRankingEntry(
-                      label: product.name,
-                      value: double.tryParse(product.revenue) ?? 0,
-                      valueLabel: _formatAmountString(product.revenue, product.currencyCode),
-                    ),
-                ],
+            _ReportsTwoColumnRow(
+              rowKey: const Key('pos-reports-intelligence-ops-row-2'),
+              left: _ReportsCard(
+                title: 'Ventas por hora (hoy)',
+                child: PosBarChart(
+                  key: const Key('pos-reports-intelligence-hourly-chart'),
+                  bars: [
+                    for (final hour in data.today.salesByHour)
+                      PosChartBar(
+                        label: '${hour.hour}h',
+                        value: double.tryParse(hour.grossSales) ?? 0,
+                        valueLabel: _formatAmountString(hour.grossSales, hour.currencyCode),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            _ReportsCard(
-              key: const Key('pos-reports-intelligence-alerts'),
-              title: 'Alertas del sistema',
-              child: alerts.isEmpty
-                  ? const _ReportsEmptyNote(message: 'Sin alertas activas.')
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        for (final alert in alerts)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 3),
-                            child: Row(
-                              children: [
-                                Icon(Icons.warning_amber_outlined, size: 16, color: palette.warning),
-                                const SizedBox(width: 6),
-                                Expanded(child: Text(alert, style: TextStyle(color: palette.text, fontSize: 12.5))),
-                              ],
+              right: _ReportsCard(
+                key: const Key('pos-reports-intelligence-alerts'),
+                title: 'Alertas del sistema',
+                child: alerts.isEmpty
+                    ? const _ReportsEmptyNote(message: 'Sin alertas activas.')
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final alert in alerts)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.warning_amber_outlined, size: 16, color: palette.warning),
+                                  const SizedBox(width: 6),
+                                  Expanded(child: Text(alert, style: TextStyle(color: palette.text, fontSize: 12.5))),
+                                ],
+                              ),
                             ),
-                          ),
-                      ],
-                    ),
+                        ],
+                      ),
+              ),
             ),
           ],
         );
     }
+  }
+}
+
+/// TASK 16.25.2 — the "Meta del día" management hero: production visual
+/// review requires a prominent full-width band (the original product's
+/// own blue-gradient composition — see `pos_shell.dart`'s established
+/// `LinearGradient(colors: [palette.action, palette.blue])` convention,
+/// reused here rather than inventing a new hero color), NOT the small
+/// ordinary KPI card this had regressed into. No configurable daily-sales
+/// target exists anywhere in this platform (verified — see
+/// `_IntelligenceReportPanel`'s own class doc comment) — the center
+/// completion indicator therefore ALWAYS renders as a neutral dash, never
+/// a percentage computed against an invented denominator.
+class _MetaDelDiaHero extends StatelessWidget {
+  const _MetaDelDiaHero({
+    required this.grossToday,
+    required this.averageTicket,
+    required this.transactionCount,
+    required this.percentChange,
+  });
+
+  final List<PosReportCurrencyAmount> grossToday;
+  final List<PosReportCurrencyAmount> averageTicket;
+  final int transactionCount;
+  final double? percentChange;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    const labelStyle = TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: .4);
+    const valueStyle = TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w800);
+
+    final left = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Text('META DEL DÍA', style: labelStyle),
+        const SizedBox(height: 6),
+        const Text(
+          'No configurada',
+          key: Key('pos-reports-intelligence-daily-goal'),
+          style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 6),
+        const Text('Ventas de hoy', style: TextStyle(color: Colors.white70, fontSize: 11.5)),
+        const SizedBox(height: 2),
+        if (grossToday.isEmpty)
+          const Text('0', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700))
+        else
+          for (final amount in grossToday)
+            Text(
+              _formatAmountString(amount.amount, amount.currencyCode),
+              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700),
+            ),
+      ],
+    );
+
+    final center = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          key: const Key('pos-reports-intelligence-hero-progress'),
+          width: 72,
+          height: 72,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white38, width: 3)),
+          child: const Text('—', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800)),
+        ),
+        const SizedBox(height: 6),
+        const Text('Sin meta configurada', style: TextStyle(color: Colors.white70, fontSize: 10.5)),
+      ],
+    );
+
+    final right = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (percentChange == null)
+              const Text('Sin datos de ayer', style: TextStyle(color: Colors.white70, fontSize: 12))
+            else ...[
+              Icon(
+                percentChange! >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                size: 14,
+                color: percentChange! >= 0 ? Colors.greenAccent.shade200 : Colors.redAccent.shade100,
+              ),
+              const SizedBox(width: 3),
+              Text('${percentChange!.abs().toStringAsFixed(1)}% vs. ayer', style: valueStyle.copyWith(fontSize: 12.5)),
+            ],
+          ],
+        ),
+        const SizedBox(height: 10),
+        const Text('TICKETS HOY', style: labelStyle),
+        const SizedBox(height: 2),
+        Text('$transactionCount', style: valueStyle),
+        const SizedBox(height: 8),
+        const Text('TICKET PROMEDIO', style: labelStyle),
+        const SizedBox(height: 2),
+        Text(
+          averageTicket.isEmpty
+              ? '0'
+              : averageTicket.map((amount) => _formatAmountString(amount.amount, amount.currencyCode)).join(' · '),
+          style: valueStyle,
+        ),
+      ],
+    );
+
+    return Container(
+      key: const Key('pos-reports-intelligence-hero'),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [palette.action, palette.blue]),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 640) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [left, const SizedBox(height: 16), center, const SizedBox(height: 16), right],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(flex: 2, child: left),
+              Container(width: 1, height: 64, color: Colors.white24, margin: const EdgeInsets.symmetric(horizontal: 16)),
+              center,
+              Container(width: 1, height: 64, color: Colors.white24, margin: const EdgeInsets.symmetric(horizontal: 16)),
+              Expanded(flex: 2, child: right),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// TASK 16.25.2 — the dense two-column "operations grid" the original
+/// Reports product used: a large left panel paired with a narrower right
+/// panel, stacking gracefully at narrower widths (never a horizontal
+/// overflow). The breakpoint (900px) sits above this screen's own widget
+/// test harness content width (~760px, see `pos_reports_test.dart`'s
+/// `_pump` doc comment) so ordinary tests exercise the stacked/narrow
+/// form, and a dedicated wide-surface test exercises the two-column form
+/// — see that test file's own "Desktop density" group.
+class _ReportsTwoColumnRow extends StatelessWidget {
+  const _ReportsTwoColumnRow({required this.left, required this.right, this.rowKey});
+  final Widget left;
+  final Widget right;
+  // Applied to the actually-built `Row`/`Column` (never to this wrapper's
+  // own `key`) — a widget-test can then find that single element and
+  // check its `runtimeType` to prove which layout actually rendered. Using
+  // this wrapper's own `key` instead would put the SAME key on two
+  // elements at once (this `StatelessWidget` and its child), which is
+  // exactly the "Too many elements" bug this comment now documents.
+  final Key? rowKey;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (constraints.maxWidth < 900) {
+        return Column(
+          key: rowKey,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [left, const SizedBox(height: 12), right],
+        );
+      }
+      return Row(
+        key: rowKey,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(flex: 2, child: left),
+          const SizedBox(width: 12),
+          Expanded(child: right),
+        ],
+      );
+    },
+  );
+}
+
+/// TASK 16.25.2 — "Ocupación en tiempo real": there is deliberately no
+/// per-area breakdown table (no "Alberca: 12, Toboganes: 4" style rows) —
+/// no such concept exists anywhere in the backend (`PosAccessReport` has
+/// exactly one real, live count: `currentOccupancy`), and inventing area
+/// names/counts would itself be fabricated business data. The panel
+/// structure always renders — a genuinely idle branch shows the real `0`
+/// plus an honest inline note, never a giant generic empty-state card
+/// replacing the whole panel.
+class _OccupancyPanel extends StatelessWidget {
+  const _OccupancyPanel({required this.currentOccupancy, required this.entryCount, required this.exitCount});
+  final int currentOccupancy;
+  final int entryCount;
+  final int exitCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _ReportsCard(
+      key: const Key('pos-reports-intelligence-occupancy'),
+      title: 'Ocupación en tiempo real',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.groups_outlined, size: 26, color: palette.action),
+              const SizedBox(width: 10),
+              Text('$currentOccupancy', style: TextStyle(color: palette.text, fontSize: 28, fontWeight: FontWeight.w800)),
+              const SizedBox(width: 8),
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('personas dentro', style: TextStyle(color: palette.textSecondary, fontSize: 12.5)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Entradas hoy', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+                    const SizedBox(height: 3),
+                    Text('$entryCount', style: TextStyle(color: palette.text, fontSize: 15, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Salidas hoy', style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+                    const SizedBox(height: 3),
+                    Text('$exitCount', style: TextStyle(color: palette.text, fontSize: 15, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (currentOccupancy == 0 && entryCount == 0 && exitCount == 0) ...[
+            const SizedBox(height: 8),
+            const _ReportsEmptyNote(message: 'Sin movimientos de acceso registrados en el rango.'),
+          ],
+        ],
+      ),
+    );
   }
 }
 

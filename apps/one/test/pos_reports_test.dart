@@ -252,6 +252,134 @@ void main() {
     });
   });
 
+  // TASK 16.25.2 — production visual review found Inteligencia had drifted
+  // into a generic 3-column KPI-card dashboard, losing the original
+  // "management command center" hierarchy (hero → compact KPI row → dense
+  // two-column operations grid). These tests prove that hierarchy is back,
+  // and that every panel in it survives real zero data structurally intact.
+  group('Inteligencia — hero & operations grid (TASK 16.25.2)', () {
+    testWidgets('Meta del día hero renders even though no target is configured', (tester) async {
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-hero')), findsOneWidget);
+      expect(find.byKey(const Key('pos-reports-intelligence-daily-goal')), findsOneWidget);
+      expect(find.text('No configurada'), findsOneWidget);
+    });
+
+    testWidgets('the hero suppresses a completion percentage — no fake target amount ever appears', (tester) async {
+      // Deliberately forces the "no comparison data" path (empty
+      // yesterday) so the ONLY possible '%' text would be a fabricated
+      // completion ratio against the unconfigured daily goal — proving
+      // none exists. (The default fixture's own real "vs. ayer" trend can
+      // legitimately contain a '%', which is a different, honest number —
+      // see the dedicated trend tests above.)
+      final gateway = _RecordingReportsGateway(yesterdaySalesReport: _emptySalesReport);
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-hero-progress')), findsOneWidget);
+      // A neutral dash — never a percentage computed against an invented
+      // denominator (there is no real daily-goal setting to compare against).
+      expect(find.text('—'), findsOneWidget);
+      expect(find.text('Sin meta configurada'), findsOneWidget);
+      expect(find.text('Sin datos de ayer'), findsOneWidget);
+      expect(find.textContaining('%'), findsNothing);
+    });
+
+    testWidgets('tickets hoy and ticket promedio remain available inside the hero', (tester) async {
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway);
+
+      final hero = find.byKey(const Key('pos-reports-intelligence-hero'));
+      expect(find.descendant(of: hero, matching: find.text('TICKETS HOY')), findsOneWidget);
+      expect(find.descendant(of: hero, matching: find.text('TICKET PROMEDIO')), findsOneWidget);
+      expect(find.descendant(of: hero, matching: find.text('${_fixtureSalesReport.transactionCount}')), findsOneWidget);
+    });
+
+    testWidgets('the four compact operational KPIs render with zero data, each with its own honest state', (tester) async {
+      final gateway = _RecordingReportsGateway(
+        salesReport: _emptySalesReport,
+        yesterdaySalesReport: _emptySalesReport,
+        accessReportResult: _emptyAccessReport,
+        customersReportResult: _emptyCustomersReport,
+        inventoryReportResult: _emptyInventoryReport,
+      );
+      await _pump(tester, gateway: gateway);
+
+      expect(find.text('Aforo actual'), findsOneWidget);
+      expect(find.text('Ventas / hora'), findsOneWidget);
+      expect(find.text('Estancia promedio'), findsOneWidget);
+      expect(find.text('Membresías activas'), findsOneWidget);
+      expect(find.text('Sin datos'), findsOneWidget); // Ventas / hora — no hourly buckets today
+      expect(find.text('Sin datos suficientes'), findsOneWidget); // Estancia promedio — no completed stay pairs
+    });
+
+    testWidgets('Ocupación en tiempo real keeps its panel structure with zero occupancy — never a giant empty card', (tester) async {
+      final gateway = _RecordingReportsGateway(accessReportResult: _emptyAccessReport);
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-occupancy')), findsOneWidget);
+      expect(find.text('Ocupación en tiempo real'), findsOneWidget);
+      expect(find.text('Entradas hoy'), findsOneWidget);
+      expect(find.text('Salidas hoy'), findsOneWidget);
+      expect(find.text('Sin movimientos de acceso registrados en el rango.'), findsOneWidget);
+    });
+
+    testWidgets('Top productos del día keeps its panel structure with zero sales', (tester) async {
+      final gateway = _RecordingReportsGateway(salesReport: _emptySalesReport, yesterdaySalesReport: _emptySalesReport);
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-top-products')), findsOneWidget);
+      expect(find.text('Top productos del día'), findsOneWidget);
+      expect(find.text('Sin datos para este rango.'), findsOneWidget);
+    });
+
+    testWidgets('Ventas por hora (hoy) keeps its panel structure with zero sales', (tester) async {
+      final gateway = _RecordingReportsGateway(salesReport: _emptySalesReport, yesterdaySalesReport: _emptySalesReport);
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-hourly-chart')), findsOneWidget);
+      expect(find.text('Ventas por hora (hoy)'), findsOneWidget);
+      expect(find.text('Sin datos para graficar.'), findsOneWidget);
+    });
+
+    testWidgets('Alertas del sistema keeps its panel structure with zero alerts', (tester) async {
+      final gateway = _RecordingReportsGateway(inventoryReportResult: _emptyInventoryReport);
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-reports-intelligence-alerts')), findsOneWidget);
+      expect(find.text('Alertas del sistema'), findsOneWidget);
+      expect(find.text('Sin alertas activas.'), findsOneWidget);
+    });
+
+    testWidgets('at desktop width the operations grid uses a real two-column Row, not a stacked Column', (tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway);
+
+      final row1 = find.byKey(const Key('pos-reports-intelligence-ops-row-1'));
+      final row2 = find.byKey(const Key('pos-reports-intelligence-ops-row-2'));
+      expect(tester.widget(row1).runtimeType, Row);
+      expect(tester.widget(row2).runtimeType, Row);
+      // Both panels of each row are genuinely on screen side by side —
+      // not scrolled away by an accidental full-height stack.
+      expect(find.byKey(const Key('pos-reports-intelligence-occupancy')), findsOneWidget);
+      expect(find.byKey(const Key('pos-reports-intelligence-top-products')), findsOneWidget);
+    });
+
+    testWidgets('at narrow widths the operations grid stacks into a Column — no horizontal overflow', (tester) async {
+      final gateway = _RecordingReportsGateway();
+      await _pump(tester, gateway: gateway); // default 800×600 test surface → narrow content width.
+
+      final row1 = find.byKey(const Key('pos-reports-intelligence-ops-row-1'));
+      expect(tester.widget(row1).runtimeType, Column);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('Date-range presets', () {
     testWidgets('selecting "Hoy" applies a single-day range and re-fetches', (tester) async {
       final gateway = _RecordingReportsGateway();
