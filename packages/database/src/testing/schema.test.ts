@@ -88,25 +88,26 @@ const tableNames = [
 ].map((table) => getTableConfig(table).name);
 
 describe('database foundation schema', () => {
-  // TASK 16.13 — updated from a stale 34-entry snapshot: migration 0034
-  // (`product_categories.operational_group` + `cash_session_partial_
-  // closes.operational_summary`, backing the partial cut's operational
-  // summary) landed without updating this tracker. Verified independently
-  // (`_journal.json` really does have 39 sequential entries 0-38 ending at
-  // `0038_melted_lady_mastermind`) before bumping the numbers — same
-  // precedent as TASK 15.0's/16.10B's/16.11's/16.14's/16.14A's own prior
-  // updates to this exact test. The test's actual intent — the journal is
-  // sequential, contiguous, and its last entry matches the newest real
-  // migration file — is unchanged.
+  // TASK 16.32 — updated from a stale 39-entry snapshot: this tracker had
+  // silently drifted for several tasks (migrations 0039-0047 each landed
+  // without bumping it — the same drift TASK 16.13's own comment here
+  // already once described and fixed). Verified independently
+  // (`_journal.json` really does have 49 sequential entries 0-48 ending at
+  // `0048_add_product_recipes`, the product-recipes migration this task
+  // added) before bumping the numbers — same precedent as TASK 16.13's/
+  // 15.0's/16.10B's/16.11's/16.14's/16.14A's own prior updates to this
+  // exact test. The test's actual intent — the journal is sequential,
+  // contiguous, and its last entry matches the newest real migration file
+  // — is unchanged.
   it('records a sequential, contiguous journal ending at the current newest migration', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(39);
+    expect(journal.entries).toHaveLength(49);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 39 }, (_, index) => index),
+      Array.from({ length: 49 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0038_melted_lady_mastermind');
+    expect(journal.entries.at(-1)?.tag).toBe('0048_add_product_recipes');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {

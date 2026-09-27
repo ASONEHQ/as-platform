@@ -13,6 +13,7 @@ export * from './organizations.js';
 export * from './parties.js';
 export * from './payments.js';
 export * from './people.js';
+export * from './product-recipes.js';
 export * from './promotions.js';
 export * from './purchasing.js';
 export * from './refunds.js';
