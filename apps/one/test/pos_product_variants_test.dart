@@ -8,6 +8,8 @@
 /// `_Recording*Gateway` fixture convention.
 library;
 
+import 'package:as_one/core/errors/app_error.dart';
+import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_product_variants_gateway.dart';
 import 'package:as_one/features/pos/pos_product_variants_screen.dart';
@@ -214,6 +216,255 @@ void main() {
     });
   });
 
+  group('TASK 16.32.7 — tracks_inventory control', () {
+    testWidgets('Nueva variante defaults the toggle to ON', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-tracks-inventory')),
+      );
+      expect(checkbox.value, isTrue);
+      expect(find.text('El stock se descuenta directamente de esta variante.'), findsOneWidget);
+    });
+
+    testWidgets('create with the toggle ON sends tracks_inventory=true', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'PLA-ROJ-M');
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls, hasLength(1));
+      expect(gateway.createCalls.single.input.tracksInventory, isTrue);
+    });
+
+    testWidgets('create with the toggle OFF sends tracks_inventory=false', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'PIZZA-1');
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.pumpAndSettle();
+      expect(find.text('Esta variante podrá utilizar una receta de ingredientes.'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls, hasLength(1));
+      expect(gateway.createCalls.single.input.tracksInventory, isFalse);
+    });
+
+    testWidgets('Editar variante whose backend value is true shows the toggle ON', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PLA-ROJ-S', tracksInventory: true)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-tracks-inventory')),
+      );
+      expect(checkbox.value, isTrue);
+    });
+
+    testWidgets('Editar variante whose backend value is false shows the toggle OFF', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PIZZA-1', tracksInventory: false)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-tracks-inventory')),
+      );
+      expect(checkbox.value, isFalse);
+    });
+
+    testWidgets('edit ON → OFF sends false, and reopening the form after reload reflects it', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PLA-ROJ-S', tracksInventory: true, version: 1)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.updateCalls, hasLength(1));
+      expect(gateway.updateCalls.single.input.tracksInventory, isFalse);
+
+      // Reopen the (now real, updated) variant — the list already
+      // reflects the reload this screen's own _openEditVariantForm
+      // triggers on a successful save.
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-tracks-inventory')),
+      );
+      expect(checkbox.value, isFalse);
+    });
+
+    testWidgets('edit OFF → ON without an active recipe succeeds', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PIZZA-1', tracksInventory: false, version: 1)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.updateCalls, hasLength(1));
+      expect(gateway.updateCalls.single.input.tracksInventory, isTrue);
+      expect(find.byKey(const Key('pos-product-variants-form-error')), findsNothing);
+    });
+
+    testWidgets(
+      'edit OFF → ON with an active recipe surfaces the real, specific backend conflict — never a silent revert',
+      (tester) async {
+        final gateway = _RecordingProductVariantsGateway(
+          products: [_product(id: 'p-1', name: 'Playera Roja')],
+          variantsByProduct: {
+            'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PIZZA-1', tracksInventory: false, version: 1)],
+          },
+          updateVariantError: const ApiException(
+            AppFailure(
+              AppErrorKind.validation,
+              'Este producto ya tiene una receta activa. Elimina la receta antes de activar el control de inventario directo.',
+              code: 'variant_active_recipe_conflict',
+            ),
+            statusCode: 409,
+          ),
+        );
+        await _pump(tester, gateway: gateway, permissions: _readWrite);
+        await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+        await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.updateCalls, hasLength(1));
+        expect(
+          find.text(
+            'Este producto ya tiene una receta activa. Elimina la receta antes de activar el control de inventario directo.',
+          ),
+          findsOneWidget,
+        );
+        // The dialog stays open on a real rejection — never a silent
+        // success, never a pop as if the save had gone through.
+        expect(find.byKey(const Key('pos-product-variants-form-save')), findsOneWidget);
+      },
+    );
+
+    testWidgets('no automatic recipe deletion/mutation occurs during any create/edit/toggle flow', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PIZZA-1', tracksInventory: true, version: 1)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.getRecipeCallCount, 0);
+      expect(gateway.replaceRecipeCallCount, 0);
+      expect(gateway.deleteRecipeCallCount, 0);
+    });
+
+    for (final size in const [Size(1440, 900), Size(1365, 768)]) {
+      testWidgets(
+        'the variant form with the new toggle fits without overflow at ${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+          final gateway = _RecordingProductVariantsGateway(
+            products: [_product(id: 'p-1', name: 'Playera Roja')],
+            variantsByProduct: {
+              'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'PLA-ROJ-S', tracksInventory: true)],
+            },
+          );
+          tester.view.physicalSize = size;
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: SingleChildScrollView(
+                  child: PosProductVariantsScreen(context: _context(_readWrite), gateway: gateway),
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+          await tester.pumpAndSettle();
+
+          expect(find.byKey(const Key('pos-product-variants-form-tracks-inventory')), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  });
+
   group('TASK 12.2 — permission gating', () {
     testWidgets('no catalog.read at all shows the honest permission state, no search/list', (tester) async {
       final gateway = _RecordingProductVariantsGateway(products: [_product(id: 'p-1', name: 'Playera Roja')]);
@@ -300,6 +551,7 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   _RecordingProductVariantsGateway({
     List<PosVariantProduct>? products,
     Map<String, List<PosProductVariant>>? variantsByProduct,
+    this.updateVariantError,
   }) : products = List.of(products ?? const []),
        variantsByProduct = {
          for (final entry in (variantsByProduct ?? const {}).entries) entry.key: List.of(entry.value),
@@ -311,6 +563,21 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   final List<String> listVariantsCalls = [];
   final List<({String productId, PosProductVariantInput input})> createCalls = [];
   final List<({String id, int version, PosProductVariantInput input})> updateCalls = [];
+
+  /// TASK 16.32.7 — when set, `updateVariant` throws this instead of
+  /// succeeding, letting a test inject a real backend rejection (e.g. the
+  /// recipe-invariant's own `variant_active_recipe_conflict`) without a
+  /// second, divergent fake-gateway shape.
+  final ApiException? updateVariantError;
+
+  /// TASK 16.32.7 — proves the variant form never touches the recipe
+  /// endpoints under any circumstance (Phase I: "no automatic recipe
+  /// deletion/mutation occurs") — tracked as call counts rather than
+  /// always throwing, so a genuine accidental call surfaces as a clear
+  /// assertion failure instead of an opaque `StateError`.
+  int getRecipeCallCount = 0;
+  int replaceRecipeCallCount = 0;
+  int deleteRecipeCallCount = 0;
   int _autoId = 100;
 
   @override
@@ -368,6 +635,7 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   @override
   Future<PosProductVariant> updateVariant(String id, int version, PosProductVariantInput input) async {
     updateCalls.add((id: id, version: version, input: input));
+    if (updateVariantError != null) throw updateVariantError!;
     for (final entry in variantsByProduct.entries) {
       final index = entry.value.indexWhere((variant) => variant.id == id);
       if (index == -1) continue;
@@ -395,19 +663,26 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   }
 
   @override
-  Future<PosProductRecipe?> getRecipe(String variantId) =>
-      Future.error(StateError('not used in this fixture'));
+  Future<PosProductRecipe?> getRecipe(String variantId) async {
+    getRecipeCallCount++;
+    return Future.error(StateError('not used in this fixture'));
+  }
 
   @override
   Future<PosProductRecipe> replaceRecipe(
     String variantId, {
     bool? isActive,
     required List<PosProductRecipeComponentInput> components,
-  }) => Future.error(StateError('not used in this fixture'));
+  }) async {
+    replaceRecipeCallCount++;
+    return Future.error(StateError('not used in this fixture'));
+  }
 
   @override
-  Future<void> deleteRecipe(String variantId, int expectedVersion) =>
-      Future.error(StateError('not used in this fixture'));
+  Future<void> deleteRecipe(String variantId, int expectedVersion) async {
+    deleteRecipeCallCount++;
+    return Future.error(StateError('not used in this fixture'));
+  }
 }
 
 Future<void> _pump(

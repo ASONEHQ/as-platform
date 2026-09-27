@@ -515,6 +515,20 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
   late final _currencyController = TextEditingController(text: widget.existing?.currencyCode ?? '');
   late bool _isDefault = widget.existing?.isDefault ?? false;
   late String _status = widget.existing?.status ?? 'active';
+
+  /// TASK 16.32.7 — the missing UI for `product_variants.tracks_inventory`
+  /// (see `docs/PRODUCT_RECIPES.md` §3 for the invariant this respects: a
+  /// variant tracks its own inventory directly OR uses a recipe, never
+  /// both). Create defaults to `true` (this app's existing historical
+  /// behavior for a normal stocked product — see `PosNewProductInput`'s
+  /// own identical default); edit always reflects the real backend value,
+  /// never re-defaulted. The backend (`product-catalog.service.ts`'s
+  /// `patchVariant`) remains the sole authority on whether enabling this
+  /// is actually allowed — see `_submit`'s error handling below, which
+  /// already surfaces a real `variant_active_recipe_conflict` rejection
+  /// through the exact same generic path every other backend error here
+  /// already uses, with zero special-casing needed.
+  late bool _tracksInventory = widget.existing?.tracksInventory ?? true;
   bool _busy = false;
   String? _error;
 
@@ -573,6 +587,7 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
       quantityScale: quantityScale,
       standardCost: cost.isEmpty ? null : cost,
       currencyCode: currency.isEmpty ? null : currency,
+      tracksInventory: _tracksInventory,
       isDefault: _isDefault,
       status: _isEdit ? _status : null,
     );
@@ -657,6 +672,20 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
                   decoration: const InputDecoration(isDense: true, labelText: 'Moneda (opcional, ej. MXN)'),
                 ),
                 const SizedBox(height: 6),
+                CheckboxListTile(
+                  key: const Key('pos-product-variants-form-tracks-inventory'),
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _tracksInventory,
+                  onChanged: (value) => setState(() => _tracksInventory = value ?? true),
+                  title: const Text('Controlar inventario directamente'),
+                  subtitle: Text(
+                    _tracksInventory
+                        ? 'El stock se descuenta directamente de esta variante.'
+                        : 'Esta variante podrá utilizar una receta de ingredientes.',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                ),
                 CheckboxListTile(
                   key: const Key('pos-product-variants-form-default'),
                   contentPadding: EdgeInsets.zero,
