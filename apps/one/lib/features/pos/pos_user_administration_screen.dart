@@ -812,7 +812,12 @@ class _UsersTabState extends State<_UsersTab> {
                 physics: const NeverScrollableScrollPhysics(),
                 crossAxisSpacing: 12,
                 mainAxisSpacing: 12,
-                childAspectRatio: columns == 1 ? 2.4 : 1.55,
+                // TASK 16.31.3 (Phase 13) — shorter cards: the real
+                // content (avatar row + one chip row) never needed the
+                // taller box the old ratio reserved, which is exactly
+                // the "large empty lower portion" the reference
+                // screenshot showed.
+                childAspectRatio: columns == 1 ? 3.4 : 2.6,
                 children: [
                   for (final user in _visibleItems)
                     _UserCard(
@@ -2394,12 +2399,15 @@ class _RolesTabState extends State<_RolesTab> {
             ],
           );
         }
+        // TASK 16.31.3 (Phase 2) — a proportional ~26/74 split (not a
+        // fixed pixel width) so the role rail stays compact rather than
+        // wide, at any desktop width.
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(width: 320, child: leftPane),
+            Expanded(flex: 26, child: leftPane),
             const SizedBox(width: 16),
-            Expanded(child: rightPane),
+            Expanded(flex: 74, child: rightPane),
           ],
         );
       },
@@ -2407,14 +2415,18 @@ class _RolesTabState extends State<_RolesTab> {
   }
 }
 
-/// TASK 16.31 (Phase 9/10) — the left-pane role card: icon/color (see
-/// `_roleIcon`/`_roleColor`), name, "Rol protegido" badge for
-/// `is_system`, status pill, selection highlight. Deliberately still no
-/// "N usuarios" count (see this file's own pre-existing doc comment on
-/// the reasoning — computing that here would mean an aggregate the real
-/// backend has no endpoint for at all, worse than the N+1 the old
-/// `_RoleRow` doc comment already declined; see
-/// docs/USERS_EMPLOYEES_UX.md).
+/// TASK 16.31 (Phase 9/10) + TASK 16.31.3 (Phase 3) — the left-pane role
+/// card: icon/color (see `_roleIcon`/`_roleColor`), name as the PRIMARY
+/// information, "Protegido" badge for `is_system`, selection highlight.
+/// Status is deliberately visually secondary now — `active` (the
+/// overwhelming majority case) renders no pill at all; only a real,
+/// non-default status (`inactive`/`retired`) shows a small muted label,
+/// since a status pill on every single row added little scannable
+/// information for the common case. Deliberately still no "N usuarios"
+/// count (see this file's own pre-existing doc comment on the reasoning
+/// — computing that here would mean an aggregate the real backend has
+/// no endpoint for at all, worse than the N+1 the old `_RoleRow` doc
+/// comment already declined; see docs/USERS_EMPLOYEES_UX.md).
 class _RoleCard extends StatelessWidget {
   const _RoleCard({required this.role, required this.selected, required this.onTap});
   final PosRole role;
@@ -2426,67 +2438,57 @@ class _RoleCard extends StatelessWidget {
     final palette = PosPalette.of(context);
     final accent = _roleColor(palette, role);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 6),
       child: Material(
         key: Key('pos-role-row-${role.id}'),
         color: selected ? palette.actionTint : palette.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: selected ? accent : palette.border),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: selected ? accent : palette.border, width: selected ? 1.5 : 1),
             ),
             child: Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(7),
+                  padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(color: accent.withValues(alpha: .14), shape: BoxShape.circle),
-                  child: Icon(_roleIcon(role), size: 16, color: accent),
+                  child: Icon(_roleIcon(role), size: 14, color: accent),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              role.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
-                            ),
-                          ),
-                          if (role.isSystem) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(color: palette.blueTint, borderRadius: BorderRadius.circular(20)),
-                              child: Text(
-                                'Protegido',
-                                style: TextStyle(color: palette.blueDeep, fontSize: 9, fontWeight: FontWeight.w800),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                      if (role.description != null && role.description!.isNotEmpty)
-                        Text(
-                          role.description!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                        ),
-                    ],
+                  child: Text(
+                    role.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: palette.text,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w700,
+                      fontSize: 13,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 6),
-                _StatusPill(label: role.status),
+                if (role.isSystem) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: palette.blueTint, borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      'Protegido',
+                      style: TextStyle(color: palette.blueDeep, fontSize: 9, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ] else if (role.status != 'active') ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    _statusPillLabel(role.status),
+                    style: TextStyle(color: palette.textMuted, fontSize: 9.5, fontWeight: FontWeight.w700),
+                  ),
+                ],
               ],
             ),
           ),
@@ -2929,13 +2931,31 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final headerAccent = _roleColor(palette, _role);
     final content = Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // TASK 16.31.3 (Phase 4) — compact selected-role header: icon +
+        // name + "Protegido" badge on one line, real description (when
+        // present) directly beneath — never a fabricated one.
         Row(
           children: [
-            Expanded(child: Text(_role.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: headerAccent.withValues(alpha: .14), shape: BoxShape.circle),
+              child: Icon(_roleIcon(_role), size: 18, color: headerAccent),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(_role.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+            ),
+            if (_role.isSystem)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: palette.blueTint, borderRadius: BorderRadius.circular(20)),
+                child: Text('Protegido', style: TextStyle(color: palette.blueDeep, fontSize: 10.5, fontWeight: FontWeight.w800)),
+              ),
             // TASK 16.31 — embedded in the master/detail right pane,
             // there is no dialog route to close back to (the left pane
             // stays visible the whole time) — omit the button entirely
@@ -2949,63 +2969,85 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
               ),
           ],
         ),
-                // TASK 16.16A Phase 7 — "Cajero / 12 permisos" style
-                // summary, computed from the SAME `rolePermissions()` call
-                // `_loadPermissions` already makes to feed the picker below
-                // (never a new/extra network call — see `_RoleRow`'s own
-                // doc comment for why that summary does NOT live in the
-                // list row instead). Reflects the currently SAVED grant
-                // count (`_initialPermissionIds`), not unsaved in-progress
-                // checkbox edits, so it never claims a save that hasn't
-                // happened yet.
-                Padding(
-                  padding: const EdgeInsets.only(top: 2, bottom: 8),
-                  child: Text(
-                    _permissionsPhase == _ListPhase.ready
-                        ? '${_role.code} · ${_initialPermissionIds.length} '
-                              '${_initialPermissionIds.length == 1 ? 'permiso' : 'permisos'}'
-                        : _role.code,
-                    key: const Key('pos-role-detail-summary'),
-                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+        if (_role.description != null && _role.description!.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(_role.description!, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+          ),
+        // TASK 16.16A Phase 7 — "Cajero / 12 permisos" style summary,
+        // computed from the SAME `rolePermissions()` call
+        // `_loadPermissions` already makes to feed the picker below
+        // (never a new/extra network call — see `_RoleRow`'s own doc
+        // comment for why that summary does NOT live in the list row
+        // instead). Reflects the currently SAVED grant count
+        // (`_initialPermissionIds`), not unsaved in-progress checkbox
+        // edits, so it never claims a save that hasn't happened yet.
+        Padding(
+          padding: const EdgeInsets.only(top: 6, bottom: 8),
+          child: Text(
+            _permissionsPhase == _ListPhase.ready
+                ? '${_role.code} · ${_initialPermissionIds.length} '
+                      '${_initialPermissionIds.length == 1 ? 'permiso' : 'permisos'}'
+                : _role.code,
+            key: const Key('pos-role-detail-summary'),
+            style: TextStyle(color: palette.textSecondary, fontSize: 11),
+          ),
+        ),
+        if (_role.isSystem)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(_systemTooltip, style: TextStyle(color: palette.warning, fontSize: 11)),
+          ),
+        // TASK 16.31.3 (Phase 4/10) — kept always visible (never behind
+        // an accordion) per this task's own explicit "keep the save
+        // action clearly visible" instruction — Name/Status share a row
+        // instead of stacking, which is where the real compaction here
+        // comes from.
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+                Expanded(
+                  flex: 3,
+                  child: TextField(
+                    key: const Key('pos-role-detail-name'),
+                    controller: _nameController,
+                    enabled: _editable,
+                    style: const TextStyle(fontSize: 13),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
                   ),
                 ),
-                if (_role.isSystem)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(_systemTooltip, style: TextStyle(color: palette.warning, fontSize: 11)),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: DropdownButtonFormField<String>(
+                    key: const Key('pos-role-detail-status'),
+                    initialValue: _statusValue,
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
+                    items: const [
+                      DropdownMenuItem(value: 'active', child: Text('Activo')),
+                      DropdownMenuItem(value: 'inactive', child: Text('Inactivo')),
+                      DropdownMenuItem(value: 'retired', child: Text('Retirado')),
+                    ],
+                    onChanged: _editable ? (value) => setState(() => _statusValue = value ?? _statusValue) : null,
                   ),
-                TextField(
-                  key: const Key('pos-role-detail-name'),
-                  controller: _nameController,
-                  enabled: _editable,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Nombre'),
                 ),
-                const SizedBox(height: 10),
-                TextField(
-                  key: const Key('pos-role-detail-description'),
-                  controller: _descriptionController,
-                  enabled: _editable,
-                  maxLines: 2,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Descripción'),
-                ),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  key: const Key('pos-role-detail-status'),
-                  initialValue: _statusValue,
-                  isExpanded: true,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Estado'),
-                  items: const [
-                    DropdownMenuItem(value: 'active', child: Text('Activo')),
-                    DropdownMenuItem(value: 'inactive', child: Text('Inactivo')),
-                    DropdownMenuItem(value: 'retired', child: Text('Retirado')),
-                  ],
-                  onChanged: _editable ? (value) => setState(() => _statusValue = value ?? _statusValue) : null,
-                ),
-                if (_detailError != null) ...[
-                  const SizedBox(height: 8),
-                  Text(_detailError!, key: const Key('pos-role-detail-error'), style: TextStyle(color: palette.error, fontSize: 12)),
-                ],
-                const SizedBox(height: 10),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          key: const Key('pos-role-detail-description'),
+          controller: _descriptionController,
+          enabled: _editable,
+          maxLines: 2,
+          style: const TextStyle(fontSize: 12.5),
+          decoration: const InputDecoration(isDense: true, labelText: 'Descripción'),
+        ),
+        if (_detailError != null) ...[
+          const SizedBox(height: 8),
+          Text(_detailError!, key: const Key('pos-role-detail-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+        ],
+        const SizedBox(height: 10),
                 Align(
                   alignment: Alignment.centerRight,
                   child: Tooltip(
@@ -3021,27 +3063,17 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
                     ),
                   ),
                 ),
-                const Divider(height: 28),
-                // TASK 16.16A Phase 6 — labeled "Permisos avanzados" (not
-                // just "Permisos") to visually pair against "Nuevo rol"'s
-                // own "Plantilla" (roles predefinidos) step: a template
-                // pre-fills a starting set here, but this granular
-                // checkbox-per-permission picker is always the real,
-                // precise, advanced editing surface underneath it — the
-                // same distinction Phase 6 asks this screen to make
-                // clearer, without redesigning the tab structure.
-                Text(
-                  'Permisos avanzados',
-                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Marca o desmarca permisos individuales para ajustar este rol con precisión, '
-                  'más allá de lo que trae una plantilla predefinida.',
-                  style: TextStyle(color: palette.textMuted, fontSize: 11),
-                ),
-                const SizedBox(height: 8),
-                switch (_permissionsPhase) {
+        const SizedBox(height: 4),
+        // TASK 16.31.3 (Phase 5/6) — "PERMISOS" replaces the old
+        // "Permisos avanzados" heading + a 2-line explanatory paragraph:
+        // the density this task asks for comes from showing permissions
+        // immediately, not from a longer intro above them.
+        Text(
+          'PERMISOS',
+          style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: .4),
+        ),
+        const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Divider(height: 1)),
+        switch (_permissionsPhase) {
                   _ListPhase.loading => const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Center(child: CircularProgressIndicator())),
                   _ListPhase.empty => Text('El catálogo de permisos está vacío.', style: TextStyle(color: palette.textMuted, fontSize: 12)),
                   _ListPhase.failure => Text(_permissionsError ?? 'No fue posible cargar los permisos.', style: TextStyle(color: palette.error, fontSize: 12)),
@@ -3385,7 +3417,7 @@ class _SessionTabState extends State<_SessionTab> {
 ///    already selected — the self-escalation guard this task requires: an
 ///    actor can freely un-grant a permission it doesn't itself hold (a
 ///    restriction), but can never grant one it doesn't hold.
-class _PermissionPicker extends StatelessWidget {
+class _PermissionPicker extends StatefulWidget {
   const _PermissionPicker({
     required this.permissions,
     required this.selectedIds,
@@ -3402,40 +3434,80 @@ class _PermissionPicker extends StatelessWidget {
   final String? disabledReason;
   final ValueChanged<PosPermission>? onToggle;
 
-  bool get _editable => selectedIds != null;
+  @override
+  State<_PermissionPicker> createState() => _PermissionPickerState();
+}
+
+class _PermissionPickerState extends State<_PermissionPicker> {
+  String _query = '';
+
+  bool get _editable => widget.selectedIds != null;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    // TASK 16.31.3 (Phase 11) — a purely client-side filter over the
+    // already-loaded real catalogue (never a new backend call, never a
+    // change to what's actually granted/grantable). Matches the
+    // commercial label or the raw technical code.
+    final query = _query.trim().toLowerCase();
+    final visible = query.isEmpty
+        ? widget.permissions
+        : widget.permissions
+              .where(
+                (p) => permissionLabel(p.code).toLowerCase().contains(query) || p.code.toLowerCase().contains(query),
+              )
+              .toList(growable: false);
     final grouped = <String, List<PosPermission>>{};
-    for (final permission in permissions) {
+    for (final permission in visible) {
       grouped.putIfAbsent(permission.domain, () => []).add(permission);
     }
     final domains = grouped.keys.toList(growable: false)..sort();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (_editable && !enabled && disabledReason != null && disabledReason!.isNotEmpty)
+        if (_editable && !widget.enabled && widget.disabledReason != null && widget.disabledReason!.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Text(disabledReason!, style: TextStyle(color: palette.warning, fontSize: 11)),
+            child: Text(widget.disabledReason!, style: TextStyle(color: palette.warning, fontSize: 11)),
+          ),
+        if (widget.permissions.length > 8)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: TextField(
+              key: const Key('pos-permission-search'),
+              onChanged: (value) => setState(() => _query = value),
+              decoration: const InputDecoration(isDense: true, hintText: 'Buscar permiso…', prefixIcon: Icon(Icons.search, size: 18)),
+            ),
+          ),
+        if (domains.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text('Sin coincidencias.', style: TextStyle(color: palette.textMuted, fontSize: 12)),
           ),
         for (final domain in domains)
-          _PermissionDomainGroup(
+          _PermissionDomainSection(
             domain: domain,
             permissions: grouped[domain]!,
-            selectedIds: selectedIds,
-            actorPermissionCodes: actorPermissionCodes,
-            enabled: enabled,
-            onToggle: onToggle,
+            selectedIds: widget.selectedIds,
+            actorPermissionCodes: widget.actorPermissionCodes,
+            enabled: widget.enabled,
+            onToggle: widget.onToggle,
           ),
       ],
     );
   }
 }
 
-class _PermissionDomainGroup extends StatelessWidget {
-  const _PermissionDomainGroup({
+/// TASK 16.31.3 (Phase 7) — replaces the old collapsed-by-default
+/// `ExpansionTile` accordion: a compact, ALWAYS-VISIBLE section (a small
+/// header + a divider, never a card the user must tap open) so every
+/// permission in the loaded catalogue is scannable without interaction —
+/// the density this task's own Phase 5/12 explicitly asks for. Domain
+/// grouping itself is preserved (Phase 7's own "keep the organization,
+/// lose the accordion").
+class _PermissionDomainSection extends StatelessWidget {
+  const _PermissionDomainSection({
     required this.domain,
     required this.permissions,
     required this.selectedIds,
@@ -3457,89 +3529,134 @@ class _PermissionDomainGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     final selectedCount = _editable ? permissions.where((p) => selectedIds!.contains(p.id)).length : 0;
-    return Card(
-      key: Key('pos-permission-domain-$domain'),
-      margin: const EdgeInsets.only(bottom: 8),
-      color: palette.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: palette.border)),
-      child: ExpansionTile(
-        title: Text(
-          _editable
-              ? '${permissionCategoryLabel(domain)} ($selectedCount/${permissions.length})'
-              : permissionCategoryLabel(domain),
-          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
-        ),
-        // TASK 16.16A — the raw `domain` string (e.g. "branch_consolidation")
-        // used to render here unconditionally as a subtitle under every
-        // category header. That's exactly the kind of always-visible
-        // technical-identifier leak Phase 7 asks to close at the CATEGORY
-        // level: `permissionCategoryLabel(domain)` above already says the
-        // same thing in commercial Spanish, and the raw code is still
-        // available per-permission (see `_PermissionRow`'s own "Código
-        // técnico" caption) for whoever actually needs it — no separate
-        // affordance needed here too.
-        children: [for (final permission in permissions) _PermissionRow(permission: permission, picker: this)],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        key: Key('pos-permission-domain-$domain'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                permissionCategoryLabel(domain).toUpperCase(),
+                style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: .4),
+              ),
+              if (_editable) ...[
+                const SizedBox(width: 6),
+                Text('$selectedCount/${permissions.length}', style: TextStyle(color: palette.textMuted, fontSize: 10.5)),
+              ],
+            ],
+          ),
+          Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Divider(height: 1, color: palette.border)),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // Phase 15 — two columns on desktop/medium width, one
+              // column narrow enough that two would crush the label.
+              if (constraints.maxWidth < 520) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [for (final permission in permissions) _PermissionSwitchRow(permission: permission, picker: this)],
+                );
+              }
+              final left = <PosPermission>[];
+              final right = <PosPermission>[];
+              for (var i = 0; i < permissions.length; i++) {
+                (i.isEven ? left : right).add(permissions[i]);
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [for (final permission in left) _PermissionSwitchRow(permission: permission, picker: this)],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [for (final permission in right) _PermissionSwitchRow(permission: permission, picker: this)],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }
 }
 
-class _PermissionRow extends StatelessWidget {
-  const _PermissionRow({required this.permission, required this.picker});
+/// TASK 16.31.3 (Phase 8) — one compact, single-line-label permission
+/// row. The full commercial description (a whole sentence) that used to
+/// render unconditionally under every row was the single biggest
+/// consumer of vertical space in the old accordion layout — it is now a
+/// long-press/hover `Tooltip` on the row instead of always-visible text,
+/// so the density target is met by BETTER LAYOUT, never smaller
+/// typography (the label itself keeps its original font size). The
+/// short "Código técnico: <code>" caption stays directly visible
+/// (unlike the description) — it is what a support conversation or a
+/// developer actually needs to reference, and existing tests already
+/// depend on it being real, findable text.
+class _PermissionSwitchRow extends StatelessWidget {
+  const _PermissionSwitchRow({required this.permission, required this.picker});
   final PosPermission permission;
-  final _PermissionDomainGroup picker;
+  final _PermissionDomainSection picker;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    // TASK 16.16A — never read `permission.description` (the backend's own
-    // raw, generic "Approved AS ONE capability: <code>" string — see
-    // `pos_permission_presentation.dart`'s own header doc comment) in this
-    // file anymore. [permissionLabel]/[permissionDescription] are always
-    // non-empty and safe for an unmapped code, so both title and subtitle
-    // are unconditional now.
-    final title = Text(
-      permissionLabel(permission.code),
-      style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w700),
-    );
-    // Phase 7 — the raw technical code is never the primary/leading text
-    // anymore, but stays available as a small, clearly-secondary, muted
-    // caption underneath the commercial description: a deliberate
-    // developer/technical-detail affordance (for an admin cross-
-    // referencing support docs or the API), not an oversight.
-    final subtitle = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(permissionDescription(permission.code), style: TextStyle(color: palette.textSecondary, fontSize: 11)),
-        const SizedBox(height: 2),
-        Text('Código técnico: ${permission.code}', style: TextStyle(color: palette.textMuted, fontSize: 10)),
-      ],
+    // TASK 16.31.3 — the description Tooltip wraps only the label (never
+    // the switch itself), so the switch keeps exactly ONE Tooltip
+    // ancestor (its own self-escalation "reason" tooltip) — matching
+    // this file's own established, tested convention of one reason
+    // tooltip per interactive control.
+    final label = Tooltip(
+      message: permissionDescription(permission.code),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            permissionLabel(permission.code),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: palette.text, fontSize: 12.5, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            'Código técnico: ${permission.code}',
+            key: Key('pos-permission-row-${permission.id}'),
+            style: TextStyle(color: palette.textMuted, fontSize: 9.5),
+          ),
+        ],
+      ),
     );
     if (picker.selectedIds == null) {
-      return ListTile(
-        key: Key('pos-permission-row-${permission.id}'),
-        dense: true,
-        title: title,
-        subtitle: subtitle,
-      );
+      return Padding(padding: const EdgeInsets.symmetric(vertical: 5), child: label);
     }
     final isChecked = picker.selectedIds!.contains(permission.id);
     final actorHasIt = picker.actorPermissionCodes?.contains(permission.code) ?? false;
-    final checkboxEnabled = picker.enabled && (actorHasIt || isChecked);
-    final tooltip = !picker.enabled
+    final switchEnabled = picker.enabled && (actorHasIt || isChecked);
+    final reason = !picker.enabled
         ? ''
-        : (!checkboxEnabled ? 'Tu sesión no tiene el permiso ${permission.code} — no puedes otorgarlo.' : '');
-    return Tooltip(
-      message: tooltip,
-      child: CheckboxListTile(
-        key: Key('pos-permission-checkbox-${permission.id}'),
-        dense: true,
-        value: isChecked,
-        onChanged: checkboxEnabled ? (_) => picker.onToggle?.call(permission) : null,
-        controlAffinity: ListTileControlAffinity.leading,
-        title: title,
-        subtitle: subtitle,
+        : (!switchEnabled ? 'Tu sesión no tiene el permiso ${permission.code} — no puedes otorgarlo.' : '');
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(child: label),
+          const SizedBox(width: 8),
+          Tooltip(
+            message: reason,
+            child: Switch(
+              key: Key('pos-permission-checkbox-${permission.id}'),
+              value: isChecked,
+              onChanged: switchEnabled ? (_) => picker.onToggle?.call(permission) : null,
+            ),
+          ),
+        ],
       ),
     );
   }

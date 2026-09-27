@@ -250,14 +250,14 @@ void main() {
 
         await tester.tap(find.byKey(const Key('pos-permission-domain-sale')));
         await tester.pumpAndSettle();
-        final saleReadCheckbox = tester.widget<CheckboxListTile>(
+        final saleReadCheckbox = tester.widget<Switch>(
           find.byKey(Key('pos-permission-checkbox-${saleReadPermission.id}')),
         );
         expect(saleReadCheckbox.value, isTrue, reason: 'sale.read is in the template AND the actor holds it');
 
         await tester.tap(find.byKey(const Key('pos-permission-domain-cash_session')));
         await tester.pumpAndSettle();
-        final cashReadCheckbox = tester.widget<CheckboxListTile>(
+        final cashReadCheckbox = tester.widget<Switch>(
           find.byKey(Key('pos-permission-checkbox-${cashSessionReadPermission.id}')),
         );
         expect(
@@ -368,9 +368,18 @@ void main() {
         await tester.pumpAndSettle();
 
         // A real, human-readable Spanish description is shown — never a
-        // bare list of permission codes.
+        // bare list of permission codes, WITHIN THE CREATE-ROLE DIALOG
+        // itself. (TASK 16.31.3 made the background master/detail's own
+        // default catalog-browse pane show every real code's "Código
+        // técnico" caption unconditionally now — a real, intentional
+        // density change, not a leak from this dialog — so the search is
+        // scoped to the open `Dialog` to keep proving what this test
+        // actually asserts.)
         expect(find.text(betaDescription), findsOneWidget);
-        expect(find.textContaining('sale.read'), findsNothing);
+        expect(
+          find.descendant(of: find.byType(Dialog), matching: find.textContaining('sale.read')),
+          findsNothing,
+        );
 
         // The name field is pre-filled with the template's own label,
         // exactly like every other template — still fully editable.
@@ -399,11 +408,11 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-permission-domain-sale')));
       await tester.pumpAndSettle();
 
-      final grantable = tester.widget<CheckboxListTile>(find.byKey(Key('pos-permission-checkbox-${saleRead.id}')));
+      final grantable = tester.widget<Switch>(find.byKey(Key('pos-permission-checkbox-${saleRead.id}')));
       expect(grantable.value, isTrue);
       expect(grantable.onChanged, isNotNull, reason: 'the actor holds sale.read, so it stays interactive');
 
-      final ungrantable = tester.widget<CheckboxListTile>(find.byKey(Key('pos-permission-checkbox-${saleCreate.id}')));
+      final ungrantable = tester.widget<Switch>(find.byKey(Key('pos-permission-checkbox-${saleCreate.id}')));
       expect(ungrantable.value, isFalse);
       expect(
         ungrantable.onChanged,
@@ -732,8 +741,8 @@ void main() {
 
       expect(find.byKey(const Key('pos-permission-domain-sale')), findsOneWidget);
       expect(find.byKey(const Key('pos-permission-domain-inventory')), findsOneWidget);
-      // Browse mode never renders an interactive checkbox.
-      expect(find.byType(CheckboxListTile), findsNothing);
+      // Browse mode never renders an interactive switch.
+      expect(find.byType(Switch), findsNothing);
     });
   });
 
@@ -771,7 +780,9 @@ void main() {
         expect(find.textContaining('Approved AS ONE capability'), findsNothing);
         expect(find.textContaining('AS ONE'), findsNothing);
         // The commercial category label replaces the raw domain string.
-        expect(find.text('Control de acceso'), findsOneWidget);
+        // TASK 16.31.3 — compact section headings now render uppercase
+        // (matching the visual reference's "VENTAS"/"CATÁLOGO" style).
+        expect(find.text('CONTROL DE ACCESO'), findsOneWidget);
         // The raw code stays available only as a small, secondary,
         // clearly-labeled technical-detail affordance.
         expect(find.text('Código técnico: access.read'), findsOneWidget);
@@ -1028,6 +1039,83 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.byKey(const Key('pos-role-detail-name')), findsOneWidget);
+    });
+
+    for (final size in [const Size(1440, 900), const Size(1365, 768)]) {
+      testWidgets('el maestro/detalle de Roles no revienta en un escritorio de ${size.width.toInt()}x${size.height.toInt()}', (
+        tester,
+      ) async {
+        final role = _role(
+          'role-a',
+          'Gerente',
+          'manager',
+        );
+        final permissions = [for (var i = 0; i < 24; i++) _permission('p-$i', 'sale.action_$i', 'sale')];
+        final gateway = _RecordingIdentityAdminGateway(
+          roles: [role],
+          permissions: permissions,
+          rolePermissionsByRole: {role.id: [for (final p in permissions.take(6)) _assignment(p)]},
+        );
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1;
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-role-row-role-a')));
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-permission-checkbox-p-0')), findsOneWidget);
+      });
+    }
+  });
+
+  // TASK 16.31.3 (Phase 5/6/16) — the primary requested change: no
+  // accordion, no tap-to-expand required to see what a role grants.
+  group('Densidad de permisos (TASK 16.31.3)', () {
+    testWidgets('los permisos son visibles de inmediato, sin tocar el dominio para expandirlo', (tester) async {
+      final role = _role('role-a', 'Gerente', 'manager');
+      final permission = _permission('p-sale-read', 'sale.read', 'sale');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [role],
+        permissions: [permission],
+        rolePermissionsByRole: {role.id: [_assignment(permission)]},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      await tester.tap(find.byKey(const Key('pos-role-row-role-a')));
+      await tester.pumpAndSettle();
+
+      // No tap on `pos-permission-domain-sale` anywhere in this test —
+      // the switch and its label are already in the tree.
+      expect(find.text('Consultar ventas'), findsOneWidget);
+      expect(find.byKey(const Key('pos-permission-checkbox-p-sale-read')), findsOneWidget);
+      expect(find.byType(Switch), findsOneWidget);
+    });
+
+    testWidgets('Buscar permiso filtra el catálogo por etiqueta o código, sin llamar al backend de nuevo', (
+      tester,
+    ) async {
+      final permissions = [
+        _permission('p-sale-read', 'sale.read', 'sale'),
+        _permission('p-inv-read', 'inventory.read', 'inventory'),
+        // Filler so the catalogue crosses the "worth searching" size —
+        // the search field is deliberately omitted for a tiny custom
+        // role's own handful of permissions.
+        for (var i = 0; i < 8; i++) _permission('p-filler-$i', 'report.action_$i', 'report'),
+      ];
+      final gateway = _RecordingIdentityAdminGateway(permissions: permissions);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      expect(gateway.listPermissionsCalls, 1);
+      await tester.enterText(find.byKey(const Key('pos-permission-search')), 'inventory');
+      await tester.pumpAndSettle();
+
+      expect(find.text('Consultar inventario'), findsOneWidget);
+      expect(find.text('Consultar ventas'), findsNothing);
+      // A pure client-side filter over the already-loaded catalogue —
+      // never a second real fetch.
+      expect(gateway.listPermissionsCalls, 1);
     });
   });
 
