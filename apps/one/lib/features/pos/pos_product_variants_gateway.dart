@@ -17,6 +17,16 @@
 ///   * A variant's `version` (used for optimistic concurrency on
 ///     `PATCH .../product-variants/:id` via `If-Match`) is a real
 ///     server-assigned integer — never invented client-side.
+///
+/// TASK 12.2 (product recipe / bill-of-materials) also adds this same
+/// file's [PosProductVariantsGateway.getRecipe]/[replaceRecipe]/
+/// [deleteRecipe] — the `/api/v1/product-variants/{variant_id}/recipe`
+/// endpoints — rather than a second, standalone gateway class: they're
+/// scoped to the exact same `product_variants` resource this file already
+/// owns, and `_EditProductDialog` (`pos_shell.dart`) already holds one
+/// instance of this gateway in scope for its Costo/Stock mínimo section,
+/// so its new Receta section reuses that same instance instead of
+/// threading a second gateway object through the dialog's constructor.
 library;
 
 import '../../core/networking/api_client.dart';
@@ -140,6 +150,103 @@ class PosProductVariantPage {
   final String? nextCursor;
 }
 
+// --- TASK 12.2 — product recipe (bill-of-materials) ----------------------
+
+/// One `product_recipe_components` row, as embedded in a recipe's own
+/// `components` array (`GET`/`PUT /api/v1/product-variants/{id}/recipe`).
+/// Carries a real, server-assigned [id] — unlike
+/// [PosProductRecipeComponentInput], the write-side shape, which never
+/// does (the backend assigns it on save).
+class PosProductRecipeComponent {
+  const PosProductRecipeComponent({
+    required this.id,
+    required this.componentVariantId,
+    required this.quantity,
+    required this.unitOfMeasureCode,
+  });
+
+  factory PosProductRecipeComponent.fromJson(Map<String, Object?> json) => PosProductRecipeComponent(
+    id: json['id']! as String,
+    componentVariantId: json['component_variant_id']! as String,
+    quantity: json['quantity']! as String,
+    unitOfMeasureCode: json['unit_of_measure_code']! as String,
+  );
+
+  final String id;
+  final String componentVariantId;
+
+  /// The exact decimal string the backend sent (ADR-0001) — never lossily
+  /// parsed to a Dart `double` for storage, only for display/editing math.
+  final String quantity;
+  final String unitOfMeasureCode;
+}
+
+/// A `product_recipes` row (`GET`/`PUT /api/v1/product-variants/{variant_id}
+/// /recipe`) — `null` at the call site means "no recipe configured for this
+/// variant," the normal case for most products (merchandise, tickets,
+/// services never get one), never a fabricated empty recipe.
+class PosProductRecipe {
+  const PosProductRecipe({
+    required this.id,
+    required this.productVariantId,
+    required this.isActive,
+    required this.components,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory PosProductRecipe.fromJson(Map<String, Object?> json) {
+    final rawComponents = json['components'];
+    return PosProductRecipe(
+      id: json['id']! as String,
+      productVariantId: json['product_variant_id']! as String,
+      isActive: json['is_active']! as bool,
+      components: rawComponents is List<Object?>
+          ? rawComponents
+                .whereType<Map<String, Object?>>()
+                .map(PosProductRecipeComponent.fromJson)
+                .toList(growable: false)
+          : const [],
+      version: json['version']! as int,
+      createdAt: DateTime.parse(json['created_at']! as String),
+      updatedAt: DateTime.parse(json['updated_at']! as String),
+    );
+  }
+
+  final String id;
+  final String productVariantId;
+  final bool isActive;
+  final List<PosProductRecipeComponent> components;
+  final int version;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+}
+
+/// One ingredient line of a `PUT .../recipe` request body — never carries
+/// an `id` (the backend assigns/reconciles those on the full replace); the
+/// caller-side form is responsible for resolving [componentVariantId] to a
+/// REAL, inventory-tracked variant before calling
+/// [PosProductVariantsGateway.replaceRecipe] (see `_EditProductDialog`'s own
+/// ingredient picker).
+class PosProductRecipeComponentInput {
+  const PosProductRecipeComponentInput({
+    required this.componentVariantId,
+    required this.quantity,
+    required this.unitOfMeasureCode,
+  });
+
+  final String componentVariantId;
+  final String quantity;
+  final String unitOfMeasureCode;
+
+  Map<String, Object?> toJson() => {
+    'component_variant_id': componentVariantId,
+    'quantity': quantity,
+    'unit_of_measure_code': unitOfMeasureCode,
+  };
+}
+
 /// The create/patch input both `POST .../variants` and
 /// `PATCH /product-variants/{id}` accept. Every field is optional here —
 /// the backend itself is what requires `sku`/`unit_of_measure_code` on
@@ -220,6 +327,28 @@ abstract interface class PosProductVariantsGateway {
   /// concurrency); throws [ApiException] honestly, including a 409 on a
   /// stale version.
   Future<PosProductVariant> updateVariant(String id, int version, PosProductVariantInput input);
+
+  /// `GET /api/v1/product-variants/{variant_id}/recipe` (`catalog.read`) —
+  /// `null` = no recipe configured for this variant (the normal case for
+  /// most products), never a fabricated empty one.
+  Future<PosProductRecipe?> getRecipe(String variantId);
+
+  /// `PUT /api/v1/product-variants/{variant_id}/recipe` (`product.manage`)
+  /// — a full replace: always sends the WHOLE desired ingredient list,
+  /// never a diff. Requires `Idempotency-Key` (ADR-0005); throws
+  /// [ApiException] honestly on any rejection (e.g. a duplicate
+  /// `component_variant_id` or an incompatible unit dimension).
+  Future<PosProductRecipe> replaceRecipe(
+    String variantId, {
+    bool? isActive,
+    required List<PosProductRecipeComponentInput> components,
+  });
+
+  /// `DELETE /api/v1/product-variants/{variant_id}/recipe` (`product.manage`)
+  /// — requires `If-Match` carrying the recipe's own current
+  /// [expectedVersion]; throws [ApiException] honestly, including a 409 on
+  /// a stale version.
+  Future<void> deleteRecipe(String variantId, int expectedVersion);
 }
 
 class ApiPosProductVariantsGateway implements PosProductVariantsGateway {
@@ -309,6 +438,46 @@ class ApiPosProductVariantsGateway implements PosProductVariantsGateway {
     return _decode(envelope);
   }
 
+  @override
+  Future<PosProductRecipe?> getRecipe(String variantId) async {
+    final envelope = await _client.getJson('/api/v1/product-variants/$variantId/recipe');
+    final data = envelope['data'];
+    if (data == null) return null;
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product recipe data.');
+    }
+    return PosProductRecipe.fromJson(data);
+  }
+
+  @override
+  Future<PosProductRecipe> replaceRecipe(
+    String variantId, {
+    bool? isActive,
+    required List<PosProductRecipeComponentInput> components,
+  }) async {
+    final envelope = await _client.putJson(
+      '/api/v1/product-variants/$variantId/recipe',
+      idempotencyKey: 'one-recipe-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      body: {
+        if (isActive != null) 'is_active': isActive,
+        'components': [for (final component in components) component.toJson()],
+      },
+    );
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing product recipe data.');
+    }
+    return PosProductRecipe.fromJson(data);
+  }
+
+  @override
+  Future<void> deleteRecipe(String variantId, int expectedVersion) async {
+    await _client.deleteJson(
+      '/api/v1/product-variants/$variantId/recipe',
+      ifMatch: '"$expectedVersion"',
+    );
+  }
+
   static String _idempotencyKey() =>
       'one-variant-${DateTime.now().toUtc().microsecondsSinceEpoch}';
 
@@ -342,5 +511,19 @@ class EmptyPosProductVariantsGateway implements PosProductVariantsGateway {
 
   @override
   Future<PosProductVariant> updateVariant(String id, int version, PosProductVariantInput input) =>
+      Future.error(StateError('No product variants gateway is configured.'));
+
+  @override
+  Future<PosProductRecipe?> getRecipe(String variantId) async => null;
+
+  @override
+  Future<PosProductRecipe> replaceRecipe(
+    String variantId, {
+    bool? isActive,
+    required List<PosProductRecipeComponentInput> components,
+  }) => Future.error(StateError('No product variants gateway is configured.'));
+
+  @override
+  Future<void> deleteRecipe(String variantId, int expectedVersion) =>
       Future.error(StateError('No product variants gateway is configured.'));
 }

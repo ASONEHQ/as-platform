@@ -10460,6 +10460,7 @@ class _ProductsState extends State<_Products> {
           suppliersGateway: widget.suppliersGateway,
           variantsGateway: widget.variantsGateway,
           pickImage: widget.pickProductImage,
+          canManage: widget.canCreate,
         ),
       );
       if (saved == true) widget.onRefresh();
@@ -11165,6 +11166,7 @@ class _EditProductDialog extends StatefulWidget {
     this.suppliersGateway = const EmptyPosSuppliersGateway(),
     this.variantsGateway = const EmptyPosProductVariantsGateway(),
     this.pickImage,
+    this.canManage = true,
   });
   final PosCatalogAdminGateway gateway;
   final PosCatalogProduct product;
@@ -11178,6 +11180,16 @@ class _EditProductDialog extends StatefulWidget {
   /// TASK 16.6 — see `ProductImagePicker`'s own doc comment; `null` falls
   /// back to a real `ImagePicker`.
   final ProductImagePicker? pickImage;
+
+  /// TASK 12.2 (product recipe) — the real `product.manage` permission,
+  /// gating the Receta section's own add/edit/save/delete affordances
+  /// (read-only plain rows otherwise). Defaults to `true`: every pre-
+  /// existing call site of this dialog already only opens it from behind
+  /// its own `product.manage` gate (`_ProductsState._editProduct`'s own
+  /// `canManage` check) — this is the same real permission, threaded
+  /// through explicitly for this one section rather than assumed, so it
+  /// stays correct if that outer gate is ever loosened.
+  final bool canManage;
 
   @override
   State<_EditProductDialog> createState() => _EditProductDialogState();
@@ -11239,6 +11251,35 @@ class _EditProductDialogState extends State<_EditProductDialog> {
 
   static const _statuses = ['draft', 'active', 'inactive', 'retired'];
 
+  // TASK 12.2 — "Receta" (bill-of-materials): its own independently-saved
+  // block, same convention as Precio/Costo above — real inventory-tracked
+  // ingredients consumed from stock automatically whenever this product's
+  // default variant is sold. `null` recipe (after a successful load) is
+  // the honest, common case: most products never get one.
+  _RecipeLoadPhase _recipePhase = _RecipeLoadPhase.loading;
+  String? _recipeLoadError;
+  PosProductRecipe? _recipe;
+  List<_RecipeComponentRow> _recipeRows = [];
+  bool _savingRecipe = false;
+  String? _recipeSaveError;
+  String? _recipeSuccessMessage;
+
+  /// Real ingredient display names, keyed by `component_variant_id`,
+  /// resolved through the real product/variant picker whenever an
+  /// operator (re)assigns a row's ingredient in THIS session — never
+  /// fabricated. A component loaded from an already-saved recipe that was
+  /// never re-picked this session has no entry here; see
+  /// `_ingredientLabelFor`'s own doc comment for the honest fallback.
+  final Map<String, String> _ingredientLabels = {};
+
+  static const _recipeUnits = ['unit', 'kg', 'l', 'g', 'ml'];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRecipe());
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -11246,6 +11287,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
     _priceController.dispose();
     _costController.dispose();
     _minStockController.dispose();
+    for (final row in _recipeRows) row.dispose();
     super.dispose();
   }
 
@@ -11382,6 +11424,266 @@ class _EditProductDialogState extends State<_EditProductDialog> {
     }
   }
 
+  // TASK 12.2 — "Receta" (bill-of-materials). Operates on the exact same
+  // default variant the Costo/Stock mínimo section above already edits
+  // (`_defaultVariant`) — never a second, divergent variant lookup.
+  Future<void> _loadRecipe() async {
+    final variantId = _defaultVariant?.id;
+    if (variantId == null) {
+      // No default variant to attach a recipe to — same honest state the
+      // Costo/Stock mínimo section above already shows for this case.
+      setState(() => _recipePhase = _RecipeLoadPhase.ready);
+      return;
+    }
+    setState(() {
+      _recipePhase = _RecipeLoadPhase.loading;
+      _recipeLoadError = null;
+    });
+    try {
+      final recipe = await widget.variantsGateway.getRecipe(variantId);
+      if (!mounted) return;
+      setState(() {
+        _recipe = recipe;
+        _recipeRows = _rowsFromRecipe(recipe);
+        _recipePhase = _RecipeLoadPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _recipePhase = _RecipeLoadPhase.failure;
+        _recipeLoadError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _recipePhase = _RecipeLoadPhase.failure;
+        _recipeLoadError = 'No fue posible cargar la receta.';
+      });
+    }
+  }
+
+  static List<_RecipeComponentRow> _rowsFromRecipe(PosProductRecipe? recipe) => [
+    for (final component in recipe?.components ?? const <PosProductRecipeComponent>[])
+      _RecipeComponentRow(
+        componentVariantId: component.componentVariantId,
+        quantity: component.quantity,
+        unitOfMeasureCode: component.unitOfMeasureCode,
+      ),
+  ];
+
+  /// An honest display label for a row's ingredient: the real resolved
+  /// name when this session's own picker resolved it (this load or a
+  /// prior save), else a plain, non-fabricated fallback built from the
+  /// real variant id — never a guessed/invented product name. See this
+  /// file's own header note on why no cheap client-side lookup exists yet
+  /// to always resolve a bare `component_variant_id` to a name (no
+  /// `GET /product-variants/{id}` caller exists anywhere in this app).
+  String _ingredientLabelFor(String variantId) {
+    final resolved = _ingredientLabels[variantId];
+    if (resolved != null) return resolved;
+    final shortId = variantId.length > 8 ? variantId.substring(variantId.length - 8) : variantId;
+    return 'Ingrediente (variante …$shortId)';
+  }
+
+  void _addRecipeRow() {
+    setState(() {
+      _recipeRows = [..._recipeRows, _RecipeComponentRow()];
+      _recipeSaveError = null;
+      _recipeSuccessMessage = null;
+    });
+  }
+
+  void _removeRecipeRow(_RecipeComponentRow row) {
+    setState(() {
+      row.dispose();
+      _recipeRows = _recipeRows.where((item) => item != row).toList(growable: false);
+      _recipeSaveError = null;
+      _recipeSuccessMessage = null;
+    });
+  }
+
+  /// Opens the exact same real product picker (`_ProductSelectorDialog`)/
+  /// variant picker (`_VariantSelectorDialog`) `_PackageFormDialogState
+  /// ._addConsumable` already established for "pick a real catalog
+  /// variant" — never a second, divergent picker, and never a raw
+  /// UUID/JSON entry field. Only a genuinely inventory-tracked variant is
+  /// accepted (per this feature's own real-inventory-consumption
+  /// requirement); a picked product/variant with none is rejected with an
+  /// honest inline row error, never silently accepted.
+  Future<void> _pickIngredientForRow(_RecipeComponentRow row) async {
+    final product = await showDialog<PosCatalogProduct>(
+      context: context,
+      builder: (dialogContext) => _ProductSelectorDialog(catalogAdminGateway: widget.gateway),
+    );
+    if (product == null || !mounted) return;
+
+    String? variantId;
+    String? variantLabel;
+    String? variantUnit;
+    if (product.tracksInventory) {
+      try {
+        final variantPage = await widget.variantsGateway.listVariants(product.id, limit: 50);
+        final tracked = variantPage.items
+            .where((v) => v.status == 'active' && v.tracksInventory)
+            .toList(growable: false);
+        if (tracked.length > 1) {
+          if (!mounted) return;
+          final chosen = await showDialog<PosProductVariant>(
+            context: context,
+            builder: (dialogContext) => _VariantSelectorDialog(variants: tracked),
+          );
+          if (chosen == null || !mounted) return; // operator cancelled — abandon the whole pick.
+          variantId = chosen.id;
+          variantLabel = chosen.name ?? chosen.sku;
+          variantUnit = chosen.unitOfMeasureCode;
+        } else if (tracked.length == 1) {
+          variantId = tracked.single.id;
+          variantLabel = tracked.single.name ?? tracked.single.sku;
+          variantUnit = tracked.single.unitOfMeasureCode;
+        }
+      } on Object {
+        // Non-fatal — mirrors `_PackageFormDialogState._addConsumable`'s
+        // own established "a picker failure never blocks the rest of the
+        // form" convention.
+      }
+    }
+    if (variantId == null) {
+      setState(() => row.error = 'Ese producto no tiene una variante con inventario.');
+      return;
+    }
+    final resolvedVariantId = variantId;
+    final isDuplicate = _recipeRows.any(
+      (other) => other != row && other.componentVariantId == resolvedVariantId,
+    );
+    setState(() {
+      if (isDuplicate) {
+        row.error = 'Este ingrediente ya está en la receta.';
+      } else {
+        row.componentVariantId = resolvedVariantId;
+        // Only ever SUGGESTS the ingredient's own unit for a row that has
+        // none picked yet — never overwrites a unit the operator already
+        // chose (TASK 12.2's own "offer the full list, let the backend
+        // validate compatibility" decision; see this file's own header
+        // note).
+        row.unitOfMeasureCode ??= variantUnit;
+        row.error = null;
+        _ingredientLabels[resolvedVariantId] = variantLabel == null
+            ? product.name
+            : '${product.name} — $variantLabel';
+      }
+      _recipeSaveError = null;
+      _recipeSuccessMessage = null;
+    });
+  }
+
+  Future<void> _saveRecipe() async {
+    if (_busy || _savingRecipe) return;
+    final variantId = _defaultVariant?.id;
+    if (variantId == null) return;
+
+    for (final row in _recipeRows) {
+      row.error = null;
+    }
+    final seen = <String>{};
+    String? summary;
+    for (final row in _recipeRows) {
+      if (row.componentVariantId == null) {
+        row.error = 'Selecciona un ingrediente.';
+        summary ??= 'Completa el ingrediente de cada fila antes de guardar.';
+      } else if (!seen.add(row.componentVariantId!)) {
+        row.error = 'Este ingrediente ya está en la receta.';
+        summary ??= 'Hay ingredientes duplicados en la receta.';
+      } else if ((double.tryParse(row.quantityController.text.trim()) ?? 0) <= 0) {
+        row.error = 'La cantidad debe ser mayor a cero.';
+        summary ??= 'Revisa las cantidades de la receta.';
+      } else if (row.unitOfMeasureCode == null) {
+        row.error = 'Selecciona una unidad.';
+        summary ??= 'Selecciona una unidad para cada ingrediente.';
+      }
+    }
+    if (summary != null) {
+      setState(() => _recipeSaveError = summary);
+      return;
+    }
+
+    setState(() {
+      _savingRecipe = true;
+      _recipeSaveError = null;
+      _recipeSuccessMessage = null;
+    });
+    try {
+      final saved = await widget.variantsGateway.replaceRecipe(
+        variantId,
+        isActive: true,
+        components: [
+          for (final row in _recipeRows)
+            PosProductRecipeComponentInput(
+              componentVariantId: row.componentVariantId!,
+              quantity: row.quantityController.text.trim(),
+              unitOfMeasureCode: row.unitOfMeasureCode!,
+            ),
+        ],
+      );
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        _recipe = saved;
+        for (final row in _recipeRows) row.dispose();
+        _recipeRows = _rowsFromRecipe(saved);
+        _recipeSuccessMessage = 'Receta guardada correctamente.';
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        _recipeSaveError = error.statusCode == 409
+            ? 'Otra sesión cambió esta receta. Cierra y vuelve a abrirlo.'
+            : error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        _recipeSaveError = 'No fue posible guardar la receta.';
+      });
+    }
+  }
+
+  Future<void> _deleteRecipe() async {
+    final recipe = _recipe;
+    if (recipe == null || _busy || _savingRecipe) return;
+    setState(() {
+      _savingRecipe = true;
+      _recipeSaveError = null;
+      _recipeSuccessMessage = null;
+    });
+    try {
+      await widget.variantsGateway.deleteRecipe(recipe.productVariantId, recipe.version);
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        for (final row in _recipeRows) row.dispose();
+        _recipe = null;
+        _recipeRows = [];
+        _recipeSuccessMessage = 'Receta eliminada correctamente.';
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        _recipeSaveError = error.statusCode == 409
+            ? 'Otra sesión cambió esta receta. Cierra y vuelve a abrirlo.'
+            : error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _savingRecipe = false;
+        _recipeSaveError = 'No fue posible eliminar la receta.';
+      });
+    }
+  }
+
   Future<void> _pickAndUploadImage() async {
     if (_busy || _uploadingImage) return;
     setState(() {
@@ -11509,6 +11811,220 @@ class _EditProductDialogState extends State<_EditProductDialog> {
         _error = 'No fue posible guardar los cambios.';
       });
     }
+  }
+
+  Widget _buildRecipeSection(BuildContext context) {
+    if (_defaultVariant == null) {
+      return const Text(
+        'Este producto no tiene una variante por defecto.',
+        style: TextStyle(fontSize: 12),
+      );
+    }
+    if (_recipePhase == _RecipeLoadPhase.loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (_recipePhase == _RecipeLoadPhase.failure) {
+      return Row(
+        children: [
+          Expanded(
+            child: Text(
+              _recipeLoadError ?? 'No fue posible cargar la receta.',
+              key: const Key('pos-product-edit-recipe-load-error'),
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ),
+          TextButton(
+            key: const Key('pos-product-edit-recipe-retry'),
+            onPressed: () => unawaited(_loadRecipe()),
+            child: const Text('Reintentar'),
+          ),
+        ],
+      );
+    }
+
+    final palette = PosPalette.of(context);
+    if (!widget.canManage) {
+      // Read-only — plain rows, no inputs, no add/remove/save affordance.
+      if (_recipeRows.isEmpty) {
+        return const Text(
+          'Sin receta configurada',
+          key: Key('pos-product-edit-recipe-empty'),
+          style: TextStyle(fontSize: 12),
+        );
+      }
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (index, row) in _recipeRows.indexed)
+            Padding(
+              key: Key('pos-product-edit-recipe-row-$index'),
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Text(
+                '${row.quantityController.text} ${row.unitOfMeasureCode ?? ''} — '
+                '${_ingredientLabelFor(row.componentVariantId!)}',
+                style: TextStyle(fontSize: 12, color: palette.text),
+              ),
+            ),
+        ],
+      );
+    }
+
+    // Editable (`product.manage`) — real add/edit/remove/save. Row widget
+    // keys use each row's current INDEX (never `row.hashCode`, which is
+    // non-deterministic and unusable from a test) — acceptable here since
+    // a row's identity is carried by its own `TextEditingController`
+    // object, not by its Key.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_recipeRows.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Sin receta configurada',
+              key: Key('pos-product-edit-recipe-empty'),
+              style: TextStyle(fontSize: 12),
+            ),
+          ),
+        for (final (index, row) in _recipeRows.indexed)
+          Container(
+            key: Key('pos-product-edit-recipe-row-$index'),
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              border: Border.all(color: palette.border),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        key: Key('pos-product-edit-recipe-ingredient-$index'),
+                        onPressed: _savingRecipe ? null : () => unawaited(_pickIngredientForRow(row)),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            row.componentVariantId == null
+                                ? 'Selecciona un ingrediente'
+                                : _ingredientLabelFor(row.componentVariantId!),
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      key: Key('pos-product-edit-recipe-remove-$index'),
+                      tooltip: 'Quitar ingrediente',
+                      onPressed: _savingRecipe ? null : () => _removeRecipeRow(row),
+                      icon: const Icon(Icons.close, size: 16),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: Key('pos-product-edit-recipe-qty-$index'),
+                        controller: row.quantityController,
+                        enabled: !_savingRecipe,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'Cantidad', isDense: true),
+                        onChanged: (_) => setState(() {
+                          row.error = null;
+                          _recipeSaveError = null;
+                          _recipeSuccessMessage = null;
+                        }),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        key: Key('pos-product-edit-recipe-unit-$index'),
+                        initialValue: row.unitOfMeasureCode,
+                        decoration: const InputDecoration(labelText: 'Unidad', isDense: true),
+                        items: [
+                          for (final unit in _recipeUnits) DropdownMenuItem(value: unit, child: Text(unit)),
+                        ],
+                        onChanged: _savingRecipe
+                            ? null
+                            : (value) => setState(() {
+                                row.unitOfMeasureCode = value;
+                                row.error = null;
+                                _recipeSaveError = null;
+                                _recipeSuccessMessage = null;
+                              }),
+                      ),
+                    ),
+                  ],
+                ),
+                if (row.error != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    row.error!,
+                    key: Key('pos-product-edit-recipe-row-error-$index'),
+                    style: const TextStyle(color: Colors.red, fontSize: 11),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        // `Wrap` (never a `Row` with a `Spacer`) — this dialog's fixed
+        // 460px width has no room for three real buttons side by side
+        // once "Quitar receta" also appears (found live in this task's
+        // own widget-test run: a real `RenderFlex` overflow).
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          runSpacing: 4,
+          children: [
+            TextButton(
+              key: const Key('pos-product-edit-recipe-add'),
+              onPressed: _savingRecipe ? null : _addRecipeRow,
+              child: const Text('+ Agregar ingrediente'),
+            ),
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (_recipe != null)
+                  TextButton(
+                    key: const Key('pos-product-edit-recipe-delete'),
+                    onPressed: _savingRecipe ? null : () => unawaited(_deleteRecipe()),
+                    child: const Text('Quitar receta'),
+                  ),
+                TextButton(
+                  key: const Key('pos-product-edit-recipe-save'),
+                  onPressed: _savingRecipe ? null : () => unawaited(_saveRecipe()),
+                  child: _savingRecipe
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Guardar receta'),
+                ),
+              ],
+            ),
+          ],
+        ),
+        if (_recipeSaveError != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            _recipeSaveError!,
+            key: const Key('pos-product-edit-recipe-error'),
+            style: const TextStyle(color: Colors.red, fontSize: 12),
+          ),
+        ],
+        if (_recipeSuccessMessage != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            _recipeSuccessMessage!,
+            key: const Key('pos-product-edit-recipe-success'),
+            style: const TextStyle(color: Colors.green, fontSize: 12),
+          ),
+        ],
+      ],
+    );
   }
 
   @override
@@ -11695,6 +12211,9 @@ class _EditProductDialogState extends State<_EditProductDialog> {
             // value.
             _PosUtilidadRow(effectivePrice: _effectivePrice, variant: _defaultVariant),
             const SizedBox(height: 6),
+            const _DialogSectionLabel('Receta'),
+            _buildRecipeSection(context),
+            const SizedBox(height: 6),
             const _DialogSectionLabel('Extras'),
             Row(
               children: [
@@ -11767,6 +12286,30 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       ),
     ],
   );
+}
+
+enum _RecipeLoadPhase { loading, ready, failure }
+
+/// TASK 12.2 — one draft ingredient row in `_EditProductDialog`'s own
+/// Receta section. `componentVariantId`/`unitOfMeasureCode` are always
+/// populated together with an entry in `_ingredientLabels` when set via
+/// the real picker — never typed by hand. `quantityController` is a real,
+/// disposable `TextEditingController` (this row owns its lifecycle; see
+/// `_EditProductDialogState.dispose`/`_removeRecipeRow`).
+class _RecipeComponentRow {
+  _RecipeComponentRow({this.componentVariantId, String quantity = '', this.unitOfMeasureCode})
+    : quantityController = TextEditingController(text: quantity);
+
+  String? componentVariantId;
+  final TextEditingController quantityController;
+  String? unitOfMeasureCode;
+
+  /// A row-local validation/picker error (duplicate ingredient, missing
+  /// inventory-tracked variant, ...) — cleared on the next edit to this
+  /// row.
+  String? error;
+
+  void dispose() => quantityController.dispose();
 }
 
 // TASK 16.6A — legacy "Utilidad" (profit) parity.

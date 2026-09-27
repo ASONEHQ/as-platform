@@ -393,6 +393,21 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
     }
     throw StateError('Variant not found: $id');
   }
+
+  @override
+  Future<PosProductRecipe?> getRecipe(String variantId) =>
+      Future.error(StateError('not used in this fixture'));
+
+  @override
+  Future<PosProductRecipe> replaceRecipe(
+    String variantId, {
+    bool? isActive,
+    required List<PosProductRecipeComponentInput> components,
+  }) => Future.error(StateError('not used in this fixture'));
+
+  @override
+  Future<void> deleteRecipe(String variantId, int expectedVersion) =>
+      Future.error(StateError('not used in this fixture'));
 }
 
 Future<void> _pump(
