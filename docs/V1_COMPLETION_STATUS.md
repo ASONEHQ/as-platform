@@ -65,7 +65,8 @@ These are real, verified gaps — not guesses — that were judged out of scope 
 | Memberships/Rewards | COMPLETE | per TASK 16.26 audit |
 | Access Control | COMPLETE | branch-switch bug fixed in TASK 16.26 |
 | Administration | COMPLETE WITH P2 GAP | bare loading spinners, cosmetic (TASK 16.26) |
-| Empleados — Plantilla | COMPLETE | full CRUD, search, status filter, responsive grid (TASK 16.29) |
+| Usuarios / Roles y permisos / Sesión actual | COMPLETE | dense card grid + KPI strip, role master/detail, real session/permission-chip view (TASK 16.31); quick-user-switching deliberately not implemented — see docs/USERS_EMPLOYEES_UX.md |
+| Empleados — Plantilla | COMPLETE | full CRUD, search, status filter, responsive grid (TASK 16.29); card now also shows real phone (TASK 16.31) |
 | Empleados — Horarios | COMPLETE | full employee-rows × Mon-Sun matrix (TASK 16.29), replacing TASK 16.28's per-employee day-list |
 | Empleados — Checador | COMPLETE | terminal-style panel (live clock, business date, code/id identification, confirmation dialog — TASK 16.29.3) + branch-wide "Checadas de hoy"/"Historial de asistencia" panels (TASK 16.29); real device integration deferred by design |
 | Empleados — Nómina | COMPLETE | lateness/overtime already real, exact-arithmetic backend logic — already existed; lines now show the real employee name (TASK 16.29) |
@@ -93,12 +94,18 @@ Built directly on TASK 16.28's architecture, per its own explicit instruction no
 
 Frontend-only, on top of TASK 16.29 — see `docs/WORKFORCE_SYSTEM.md`'s "TASK 16.29.3" section for the full writeup. The upper Checador panel became a terminal-style experience: a live device-local clock (matching `pos_shell.dart`'s own established topbar-clock convention), the resolved business date in long Spanish form, an always-visible "Código o ID del empleado" field that resolves against the real, already-fetched branch roster by code (never an invented lookup-by-name backend capability — unmatched input still forwards to the real endpoint unchanged), and a polished success-confirmation dialog showing the real employee/hora/método the backend returned. The device/biometric placeholder stays copy-only, unchanged in substance. No backend file was touched this task.
 
+## TASK 16.31 — Users + Employees visual & operational upgrade
+
+Frontend-only. Full writeup in `docs/USERS_EMPLOYEES_UX.md`. In short: Usuarios becomes a dense, responsive card grid with a real KPI strip (Usuarios totales/Activos/Roles en uso/Sin rol asignado — the last two replacing the reference's non-derivable "Con sesión hoy", since `users.last_login_at` is a confirmed-dead column) and a real role filter; Roles + the old standalone Permisos tab merge into one "Roles y permisos" master/detail view (role cards with a deterministic, presentation-only icon/color, reusing the existing, already-commercial `_RoleDetailDialog`/permission-matrix content inline instead of only ever as a modal); a new "Sesión actual" tab shows the real logged-in user, their resolved role, branch scope, and their active permissions as real chips, plus the same real logout action the topbar already used. Employee cards gain their real `phone` field; the employee detail dialog reorganizes into named sections and replaces a raw linked-user id with an honest "Usuario vinculado"/"Sin usuario vinculado" line. Quick-user-switching was audited and deliberately NOT implemented (the backend can mint a new session via PIN, but the frontend never adopts one as the active session today — building that hand-off is a real, separate follow-up, not a decorative add-on). No fake employees, roles, permissions, or session metadata were introduced anywhere in this pass.
+
 ## Backend
 
 TASK 16.26/16.27: no backend changes.
 TASK 16.28: one additive migration (`packages/database/drizzle/0047_stiff_joshua_kane.sql`, adds `time_clock_punches.method`), applied only to the local test database — never production. No table dropped/renamed, no existing column changed, no data migrated.
 TASK 16.29: no migration — two new, additive read-only routes/service/repository methods only (see above), applied to the local test database's existing schema. No table dropped/renamed, no existing column changed, no data migrated.
 TASK 16.29.3: no backend changes at all — frontend-only (confirmed by an empty `git diff` under `apps/api`).
+TASK 16.30: no backend changes at all — frontend-only.
+TASK 16.31: no backend changes at all — frontend-only (confirmed by an empty `git diff` under `apps/api` and `packages/database`).
 
 ## Tests
 
@@ -110,4 +117,6 @@ TASK 16.28:
 - Backend targeted: `src/modules/people` 22/22, `src/modules/dashboard` + `src/modules/reports` (both read `time_clock_punches`) 42/42 — all against the local test database.
 
 TASK 16.29 — see this task's own final report (and `docs/WORKFORCE_SYSTEM.md`'s "Tests" section) for the complete gate results: targeted `pos_people_test.dart` (23/23), full Flutter suite, `flutter analyze`, `flutter build web --release`, and backend `src/modules/people` (24/24) + `dashboard` regression check.
+
+TASK 16.31 — backend untouched, no re-run needed. Frontend: `pos_user_administration_test.dart` 37/37 passing (23 pre-existing rewired to the new master/detail interaction model + 7 new: KPI strip, role filter, master/detail selection, protected-role read-only state, session tab real data, absent-unsupported-metadata, real logout wiring), `pos_people_test.dart` 33/33 (31 prior + 2 new: card phone display, user-link status). See this task's own final report for the full/whole-suite, `flutter analyze`, and `flutter build web --release` gate results.
 - Backend typecheck/lint: `@asone/database` and `@asone/api` both clean.
