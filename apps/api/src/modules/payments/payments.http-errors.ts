@@ -38,6 +38,7 @@ const cashErrorStatus: Readonly<Record<string, number>> = {
 const inventoryPostingStatus: Readonly<Record<string, number>> = {
   insufficient_inventory: 409,
   inventory_location_not_found: 500,
+  invalid_recipe_component: 409,
 };
 
 export function mapPaymentError(error: unknown): Error {

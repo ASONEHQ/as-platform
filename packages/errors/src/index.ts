@@ -68,6 +68,14 @@ export const infrastructureErrorCodes = [
   'count_lock_expired',
   'count_already_applied',
   'insufficient_inventory',
+  // TASK 16.32 — a recipe (bill-of-materials) component that fails a
+  // safety invariant recipe *authoring* (`product-recipes.service.ts`) is
+  // already supposed to reject — reachable only as a defensive backstop at
+  // sale-settlement time (e.g. an ingredient variant retired/detracked
+  // after the recipe was saved), never expected in ordinary operation. See
+  // `SaleInventoryPostingError` in `apps/api/src/modules/inventory/
+  // sale-consumption.ts`.
+  'invalid_recipe_component',
   'reservation_expired',
   'reservation_already_completed',
   'resource_not_found',

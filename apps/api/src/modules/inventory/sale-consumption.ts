@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
  *   same transaction).
  * - **A2 (movement type)**: a new `sale_consumption` movement type — no
  *   sale-specific type already existed; `issue` is too generic to let a
- *   manager separate "sold" from "manually issued/written off" later.
+ *   manager separate "sold" from "manually issued/write-offs" later.
  * - **A3 (location)**: the branch's own single active default
  *   `inventory_location` (`is_default=true`) — proven, not assumed: every
  *   one of the 6 seeded branches has exactly one. If a branch genuinely
@@ -53,6 +53,24 @@ import { randomUUID } from 'node:crypto';
  *   ("TASK 09.4 ... the single canonical stock-change fact") — no new
  *   event type. `movement_type: 'sale_consumption'` in the payload is
  *   what distinguishes this from any other posted movement.
+ *
+ * TASK 16.32 — Part B: recipe (bill-of-materials) ingredient consumption.
+ * Selling a product that has an active `product_recipes` row (see
+ * `packages/database/src/schema/product-recipes.ts` and
+ * `docs/PRODUCT_RECIPES.md`) must ALSO decrement its ingredients'
+ * inventory, multiplied by the quantity sold, unit-converted safely. This
+ * is deliberately implemented as an EXTRA set of lines appended to the
+ * *same* `sale_consumption` movement this function already posts — not a
+ * second movement/reference — so recipe consumption inherits every
+ * guarantee above for free (A1 same transaction, A5 same negative-stock
+ * policy, A6 same idempotency via the same single-row-per-sale unique
+ * index, A7 same audit/outbox shape) with zero new infrastructure. A
+ * product with no recipe behaves byte-identically to before this task
+ * (Phase 28 backward compatibility): `recipeLines` is simply empty. Each
+ * recipe-driven line carries a `metadata` payload (the existing, until-now
+ * unused `inventory_movement_lines.metadata` jsonb column) identifying the
+ * recipe/component/sold-line it came from, for traceability (Phase 13) —
+ * a direct (non-recipe) line's `metadata` stays `null`, exactly as before.
  */
 
 export interface SaleConsumptionTransaction {
@@ -81,7 +99,15 @@ export interface SaleConsumptionItem {
   nameSnapshot: string;
 }
 
-export type SaleConsumptionErrorCode = 'inventory_location_not_found' | 'insufficient_inventory';
+export type SaleConsumptionErrorCode =
+  | 'inventory_location_not_found'
+  | 'insufficient_inventory'
+  // TASK 16.32: a recipe component that fails a Phase-5/34 safety
+  // invariant that recipe *authoring* (`product-recipes.service.ts`) is
+  // already supposed to have rejected — reachable here only as a defensive
+  // backstop (e.g. an ingredient variant retired/detracked after the
+  // recipe was saved), never expected in ordinary operation.
+  | 'invalid_recipe_component';
 
 export class SaleInventoryPostingError extends Error {
   public constructor(
@@ -108,6 +134,16 @@ function formatDecimal(units: bigint): string {
   const fraction = (magnitude % QUANTITY_SCALE).toString().padStart(6, '0');
   return `${negative ? '-' : ''}${whole.toString()}.${fraction}`;
 }
+// TASK 16.32 — converts a quantity expressed in one unit-of-measure into
+// the equivalent quantity in another, using each unit's own
+// `conversion_factor_to_base` (see `units_of_measure`, Phase 4/5). Callers
+// must already have verified both units share the same `dimension`
+// ('mass'/'volume'/'count') — this function does not, and does not know
+// what a nonsense cross-dimension conversion even is; that safety check
+// happens once, at the call site, right before this runs.
+function convertUnits(quantityUnits: bigint, fromFactorUnits: bigint, toFactorUnits: bigint): bigint {
+  return (quantityUnits * fromFactorUnits) / toFactorUnits;
+}
 
 interface QueryResult<T> {
   rows: T[];
@@ -120,17 +156,47 @@ interface VariantLookup {
   id: string;
   tracks_inventory: boolean;
   unit_of_measure_code: string;
+  sku: string;
+  name: string | null;
+}
+interface RecipeComponentLookup {
+  recipe_id: string;
+  sold_variant_id: string;
+  component_id: string;
+  component_variant_id: string;
+  quantity: string;
+  unit_of_measure_code: string;
+}
+interface UnitOfMeasureLookup {
+  code: string;
+  dimension: string;
+  conversion_factor_to_base: string;
+}
+
+interface ConsumptionLine {
+  variantId: string;
+  consumeUnits: bigint;
+  unitOfMeasureCode: string;
+  /** Display identifier used only inside error messages. */
+  label: string;
+  metadata: Readonly<Record<string, unknown>> | null;
+}
+
+function variantLabel(variant: VariantLookup): string {
+  return variant.name ?? variant.sku;
 }
 
 /**
  * Returns `{ posted: false, movementId: null }` (a legitimate, expected
- * outcome — not an error) when the Sale has no stock-tracked lines at
- * all: no variant identity, a retired/deleted variant, or a variant that
- * simply does not track inventory (admissions, services, memberships).
- * Throws `SaleInventoryPostingError` — which rolls back the caller's
- * whole transaction — only for a genuine posting problem (missing
- * location, insufficient stock); see this module's own doc comment for
- * why that trade-off was chosen deliberately rather than invented ad hoc.
+ * outcome — not an error) when the Sale has no stock-tracked lines and no
+ * recipe-driven ingredient consumption at all: no variant identity, a
+ * retired/deleted variant, a variant that simply does not track inventory
+ * (admissions, services, memberships), and no active recipe attached to
+ * anything sold. Throws `SaleInventoryPostingError` — which rolls back the
+ * caller's whole transaction — only for a genuine posting problem (missing
+ * location, insufficient stock, an invalid recipe component); see this
+ * module's own doc comment for why that trade-off was chosen deliberately
+ * rather than invented ad hoc.
  */
 export async function postSaleConsumption(
   client: SaleConsumptionTransaction,
@@ -138,21 +204,43 @@ export async function postSaleConsumption(
   sale: SaleConsumptionSale,
   items: readonly SaleConsumptionItem[],
 ): Promise<{ posted: boolean; movementId: string | null }> {
-  const variantIds = [
+  const soldVariantIds = [
     ...new Set(
       items
         .map((item) => item.productVariantId)
         .filter((id): id is string => id !== null),
     ),
   ];
-  if (variantIds.length === 0) return { posted: false, movementId: null };
+  if (soldVariantIds.length === 0) return { posted: false, movementId: null };
+
+  // TASK 16.32 — every active recipe attached to any variant actually sold
+  // in this sale, joined to its components in one query. Looked up before
+  // the variant query below so that ingredient variant ids can be folded
+  // into that single query's `IN` list too (never a per-ingredient
+  // round-trip).
+  const recipeRows = result<RecipeComponentLookup>(
+    await client.query(
+      `select r.id as recipe_id, r.product_variant_id as sold_variant_id,
+              c.id as component_id, c.component_variant_id,
+              c.quantity::text as quantity, c.unit_of_measure_code
+       from product_recipes r
+       join product_recipe_components c
+         on c.company_id = r.company_id and c.recipe_id = r.id
+       where r.company_id=$1 and r.product_variant_id=any($2::uuid[]) and r.is_active=true
+       order by c.created_at, c.id`,
+      [context.companyId, soldVariantIds],
+    ),
+  ).rows;
+
+  const componentVariantIds = [...new Set(recipeRows.map((row) => row.component_variant_id))];
+  const allVariantIds = [...new Set([...soldVariantIds, ...componentVariantIds])];
 
   const variantRows = result<VariantLookup>(
     await client.query(
-      `select id, tracks_inventory, unit_of_measure_code
+      `select id, tracks_inventory, unit_of_measure_code, sku, name
        from product_variants
        where company_id=$1 and id=any($2::uuid[])`,
-      [context.companyId, variantIds],
+      [context.companyId, allVariantIds],
     ),
   ).rows;
   const variantById = new Map(variantRows.map((row) => [row.id, row]));
@@ -171,7 +259,93 @@ export async function postSaleConsumption(
         variant: VariantLookup;
       } => entry.variant?.tracks_inventory === true,
     );
-  if (trackedLines.length === 0) return { posted: false, movementId: null };
+
+  // TASK 16.32 — expand each sold line's active recipe (if any) into extra
+  // ingredient-consumption lines, unit-converted into each ingredient's own
+  // native unit of measure so the result can be compared/applied against
+  // `inventory_balances` (which is always denominated in the variant's own
+  // unit) exactly like a direct line already is.
+  const recipeLines: ConsumptionLine[] = [];
+  if (recipeRows.length > 0) {
+    const unitCodes = [
+      ...new Set([...variantRows.map((row) => row.unit_of_measure_code), ...recipeRows.map((row) => row.unit_of_measure_code)]),
+    ];
+    const unitRows = result<UnitOfMeasureLookup>(
+      await client.query(
+        `select code, dimension, conversion_factor_to_base::text as conversion_factor_to_base
+         from units_of_measure where code=any($1::text[])`,
+        [unitCodes],
+      ),
+    ).rows;
+    const unitByCode = new Map(unitRows.map((row) => [row.code, row]));
+    const recipesBySoldVariant = new Map<string, RecipeComponentLookup[]>();
+    for (const row of recipeRows) {
+      const list = recipesBySoldVariant.get(row.sold_variant_id) ?? [];
+      list.push(row);
+      recipesBySoldVariant.set(row.sold_variant_id, list);
+    }
+    for (const item of items) {
+      if (item.productVariantId === null) continue;
+      const components = recipesBySoldVariant.get(item.productVariantId);
+      if (components === undefined) continue;
+      const soldQuantityUnits = decimalUnits(item.quantity);
+      for (const component of components) {
+        const ingredient = variantById.get(component.component_variant_id);
+        if (ingredient === undefined || !ingredient.tracks_inventory)
+          throw new SaleInventoryPostingError(
+            'invalid_recipe_component',
+            `The recipe for "${item.nameSnapshot}" references an ingredient that is no longer a valid stock-tracked item.`,
+          );
+        const componentUnit = unitByCode.get(component.unit_of_measure_code);
+        const ingredientUnit = unitByCode.get(ingredient.unit_of_measure_code);
+        if (componentUnit === undefined || ingredientUnit === undefined)
+          throw new SaleInventoryPostingError(
+            'invalid_recipe_component',
+            `The recipe for "${item.nameSnapshot}" uses an unrecognized unit of measure.`,
+          );
+        if (componentUnit.dimension !== ingredientUnit.dimension)
+          throw new SaleInventoryPostingError(
+            'invalid_recipe_component',
+            `The recipe for "${item.nameSnapshot}" mixes incompatible units of measure for "${variantLabel(ingredient)}".`,
+          );
+        const recipeQuantityUnits = decimalUnits(component.quantity);
+        const totalComponentUnits = (recipeQuantityUnits * soldQuantityUnits) / QUANTITY_SCALE;
+        const consumeUnits = convertUnits(
+          totalComponentUnits,
+          decimalUnits(componentUnit.conversion_factor_to_base),
+          decimalUnits(ingredientUnit.conversion_factor_to_base),
+        );
+        recipeLines.push({
+          variantId: ingredient.id,
+          consumeUnits,
+          unitOfMeasureCode: ingredient.unit_of_measure_code,
+          label: variantLabel(ingredient),
+          metadata: {
+            source: 'recipe',
+            recipe_id: component.recipe_id,
+            recipe_component_id: component.component_id,
+            sold_product_variant_id: item.productVariantId,
+            sold_product_name_snapshot: item.nameSnapshot,
+            sale_item_quantity: item.quantity,
+            recipe_component_quantity: component.quantity,
+            recipe_component_unit_of_measure_code: component.unit_of_measure_code,
+          },
+        });
+      }
+    }
+  }
+
+  const consumptionLines: ConsumptionLine[] = [
+    ...trackedLines.map(({ item, variant }) => ({
+      variantId: variant.id,
+      consumeUnits: decimalUnits(item.quantity),
+      unitOfMeasureCode: variant.unit_of_measure_code,
+      label: item.nameSnapshot,
+      metadata: null,
+    })),
+    ...recipeLines,
+  ];
+  if (consumptionLines.length === 0) return { posted: false, movementId: null };
 
   const location = result<{ id: string }>(
     await client.query(
@@ -207,7 +381,7 @@ export async function postSaleConsumption(
 
   const stockChanges: { variantId: string; previous: bigint; delta: bigint; next: bigint; balanceId: string; balanceVersion: bigint }[] = [];
   let lineNumber = 0;
-  for (const { item, variant } of trackedLines) {
+  for (const line of consumptionLines) {
     lineNumber += 1;
     const balance = result<{
       id: string;
@@ -220,20 +394,22 @@ export async function postSaleConsumption(
          from inventory_balances
          where company_id=$1 and branch_id=$2 and inventory_location_id=$3 and product_variant_id=$4
          for update`,
-        [context.companyId, sale.branchId, location.id, variant.id],
+        [context.companyId, sale.branchId, location.id, line.variantId],
       ),
     ).rows[0];
     const onHand = balance === undefined ? 0n : decimalUnits(balance.quantity_on_hand);
     const reserved = balance === undefined ? 0n : decimalUnits(balance.quantity_reserved);
-    const consumeUnits = decimalUnits(item.quantity);
-    const next = onHand - consumeUnits;
+    const next = onHand - line.consumeUnits;
     // A6/A5: preserves the exact same block-negative policy
     // `InventoryPostingService.post()` already enforces for every other
-    // movement type — never invented fresh for sales.
+    // movement type — never invented fresh for sales, and applied
+    // uniformly to recipe-driven ingredient lines too (Phase 20: recipe
+    // consumption follows whatever negative-stock policy already governs
+    // this codebase, it does not introduce a second one).
     if (next < 0n || next < reserved)
       throw new SaleInventoryPostingError(
         'insufficient_inventory',
-        `Available inventory is insufficient for "${item.nameSnapshot}".`,
+        `Available inventory is insufficient for "${line.label}".`,
       );
     if (balance === undefined) {
       // Unreachable in practice: onHand defaults to 0, so any positive
@@ -242,7 +418,7 @@ export async function postSaleConsumption(
       // missing balance row through as a free pass.
       throw new SaleInventoryPostingError(
         'insufficient_inventory',
-        `Available inventory is insufficient for "${item.nameSnapshot}".`,
+        `Available inventory is insufficient for "${line.label}".`,
       );
     }
     await client.query(
@@ -253,24 +429,25 @@ export async function postSaleConsumption(
     await client.query(
       `insert into inventory_movement_lines
        (id,company_id,inventory_movement_id,line_number,product_variant_id,source_location_id,
-        destination_location_id,quantity,unit_of_measure_code,base_quantity,created_at)
-       values ($1,$2,$3,$4,$5,$6,null,$7,$8,$7,$9)`,
+        destination_location_id,quantity,unit_of_measure_code,base_quantity,metadata,created_at)
+       values ($1,$2,$3,$4,$5,$6,null,$7,$8,$7,$10::jsonb,$9)`,
       [
         randomUUID(),
         context.companyId,
         movementId,
         lineNumber,
-        variant.id,
+        line.variantId,
         location.id,
-        item.quantity,
-        variant.unit_of_measure_code,
+        formatDecimal(line.consumeUnits),
+        line.unitOfMeasureCode,
         context.timestamp,
+        line.metadata === null ? null : JSON.stringify(line.metadata),
       ],
     );
     stockChanges.push({
-      variantId: variant.id,
+      variantId: line.variantId,
       previous: onHand,
-      delta: -consumeUnits,
+      delta: -line.consumeUnits,
       next,
       balanceId: balance.id,
       balanceVersion: BigInt(balance.version) + 1n,
@@ -292,7 +469,7 @@ export async function postSaleConsumption(
         movement_type: 'sale_consumption',
         reference_type: 'sale',
         reference_id: sale.id,
-        line_count: trackedLines.length,
+        line_count: consumptionLines.length,
       }),
       context.timestamp,
     ],
@@ -321,7 +498,7 @@ export async function postSaleConsumption(
         posted_at: context.timestamp.toISOString(),
         actor_id: context.actorId,
         correlation_id: context.correlationId,
-        line_count: trackedLines.length,
+        line_count: consumptionLines.length,
         reference_type: 'sale',
         reference_id: sale.id,
       }),
