@@ -33,6 +33,9 @@ import {
 } from '../modules/catalog/product-images.storage.js';
 import { registerProductOptionsRoutes } from '../modules/catalog/product-options.routes.js';
 import { ProductOptionsService } from '../modules/catalog/product-options.service.js';
+import { ProductRecipeRepository } from '../modules/catalog/product-recipes.repository.js';
+import { registerProductRecipeRoutes } from '../modules/catalog/product-recipes.routes.js';
+import { ProductRecipeService } from '../modules/catalog/product-recipes.service.js';
 import {
   InventoryBalanceReadRepository,
   InventoryLocationRepository,
@@ -254,6 +257,11 @@ export async function registerPlugins(
         app,
         authentication,
         new ProductOptionsService(new ProductCatalogRepository(options.infrastructure.database)),
+      );
+      registerProductRecipeRoutes(
+        app,
+        authentication,
+        new ProductRecipeService(new ProductRecipeRepository(options.infrastructure.database)),
       );
       registerInventoryRoutes(
         app,
