@@ -783,9 +783,18 @@ void main() {
         // TASK 16.31.3 — compact section headings now render uppercase
         // (matching the visual reference's "VENTAS"/"CATÁLOGO" style).
         expect(find.text('CONTROL DE ACCESO'), findsOneWidget);
-        // The raw code stays available only as a small, secondary,
-        // clearly-labeled technical-detail affordance.
-        expect(find.text('Código técnico: access.read'), findsOneWidget);
+        // TASK 16.31.5 — the raw code no longer consumes its own
+        // permanently-visible line (the density this task asks for);
+        // it stays reachable in the SAME hover/long-press Tooltip as the
+        // commercial description, never as always-visible text.
+        expect(find.text('Código técnico: access.read'), findsNothing);
+        final tooltip = tester.widget<Tooltip>(
+          find.ancestor(
+            of: find.byKey(const Key('pos-permission-row-p-access-read')),
+            matching: find.byType(Tooltip),
+          ),
+        );
+        expect(tooltip.message, contains('Código técnico: access.read'));
       },
     );
 
@@ -1116,6 +1125,87 @@ void main() {
       // A pure client-side filter over the already-loaded catalogue —
       // never a second real fetch.
       expect(gateway.listPermissionsCalls, 1);
+    });
+  });
+
+  // TASK 16.31.5 — the final visual polish over the same real data: the
+  // technical code no longer consumes a permanently-visible second
+  // line, switches replace checkboxes, and everything above still
+  // behaves (interactivity, RBAC, protected-role read-only state).
+  group('Pulido final de permisos (TASK 16.31.5)', () {
+    testWidgets('el código técnico nunca se renderiza como texto permanente — solo dentro del tooltip', (
+      tester,
+    ) async {
+      final permissions = [
+        _permission('p-sale-read', 'sale.read', 'sale'),
+        _permission('p-inv-read', 'inventory.read', 'inventory'),
+      ];
+      final gateway = _RecordingIdentityAdminGateway(permissions: permissions);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      for (final permission in permissions) {
+        expect(find.text('Código técnico: ${permission.code}'), findsNothing);
+        final tooltip = tester.widget<Tooltip>(
+          find.ancestor(
+            of: find.byKey(Key('pos-permission-row-${permission.id}')),
+            matching: find.byType(Tooltip),
+          ),
+        );
+        expect(tooltip.message, contains('Código técnico: ${permission.code}'));
+      }
+    });
+
+    testWidgets('un permiso otorgable sigue siendo interactivo, y uno protegido/no otorgable queda de solo lectura', (
+      tester,
+    ) async {
+      final role = _role('role-a', 'Cajero', 'cashier');
+      final saleRead = _permission('p-sale-read', 'sale.read', 'sale');
+      final saleCreate = _permission('p-sale-create', 'sale.create', 'sale');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [role],
+        permissions: [saleRead, saleCreate],
+        rolePermissionsByRole: {role.id: [_assignment(saleRead)]},
+      );
+      // Holds sale.read but not sale.create.
+      await _pump(tester, gateway: gateway, permissions: [...(_ownerPermissions), 'sale.read'], tab: 'Roles y permisos');
+
+      await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
+      await tester.pumpAndSettle();
+
+      final grantable = tester.widget<Switch>(find.byKey(Key('pos-permission-checkbox-${saleRead.id}')));
+      expect(grantable.value, isTrue);
+      expect(grantable.onChanged, isNotNull);
+
+      final ungrantable = tester.widget<Switch>(find.byKey(Key('pos-permission-checkbox-${saleCreate.id}')));
+      expect(ungrantable.value, isFalse);
+      expect(ungrantable.onChanged, isNull);
+
+      await tester.tap(find.byKey(Key('pos-permission-checkbox-${saleRead.id}')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Switch>(find.byKey(Key('pos-permission-checkbox-${saleRead.id}'))).value,
+        isFalse,
+        reason: 'a granted switch the actor holds itself can still be toggled off',
+      );
+    });
+
+    testWidgets('un rol protegido mantiene sus switches visibles pero de solo lectura', (tester) async {
+      final systemRole = _role('role-owner', 'Owner', 'owner', isSystem: true);
+      final permission = _permission('p-sale-read', 'sale.read', 'sale');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [systemRole],
+        permissions: [permission],
+        rolePermissionsByRole: {systemRole.id: [_assignment(permission)]},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      await tester.tap(find.byKey(const Key('pos-role-row-role-owner')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Protegido'), findsWidgets);
+      final protectedSwitch = tester.widget<Switch>(find.byKey(const Key('pos-permission-checkbox-p-sale-read')));
+      expect(protectedSwitch.value, isTrue);
+      expect(protectedSwitch.onChanged, isNull, reason: 'a system role stays read-only even for a held permission');
     });
   });
 

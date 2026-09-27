@@ -2455,9 +2455,9 @@ class _RoleCard extends StatelessWidget {
             child: Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(5),
                   decoration: BoxDecoration(color: accent.withValues(alpha: .14), shape: BoxShape.circle),
-                  child: Icon(_roleIcon(role), size: 14, color: accent),
+                  child: Icon(_roleIcon(role), size: 12, color: accent),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -2942,9 +2942,9 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
         Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(7),
               decoration: BoxDecoration(color: headerAccent.withValues(alpha: .14), shape: BoxShape.circle),
-              child: Icon(_roleIcon(_role), size: 18, color: headerAccent),
+              child: Icon(_roleIcon(_role), size: 16, color: headerAccent),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -3039,6 +3039,11 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
           key: const Key('pos-role-detail-description'),
           controller: _descriptionController,
           enabled: _editable,
+          // TASK 16.31.5 (Phase 5) — content-driven height: a single
+          // line when empty/short (never dominates the viewport for a
+          // role with no description), grows to 2 only if the admin
+          // actually types more.
+          minLines: 1,
           maxLines: 2,
           style: const TextStyle(fontSize: 12.5),
           decoration: const InputDecoration(isDense: true, labelText: 'Descripción'),
@@ -3477,7 +3482,7 @@ class _PermissionPickerState extends State<_PermissionPicker> {
             child: TextField(
               key: const Key('pos-permission-search'),
               onChanged: (value) => setState(() => _query = value),
-              decoration: const InputDecoration(isDense: true, hintText: 'Buscar permiso…', prefixIcon: Icon(Icons.search, size: 18)),
+              decoration: const InputDecoration(isDense: true, hintText: 'Buscar permiso…', prefixIcon: Icon(Icons.search, size: 16)),
             ),
           ),
         if (domains.isEmpty)
@@ -3608,33 +3613,24 @@ class _PermissionSwitchRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    // TASK 16.31.3 — the description Tooltip wraps only the label (never
-    // the switch itself), so the switch keeps exactly ONE Tooltip
-    // ancestor (its own self-escalation "reason" tooltip) — matching
-    // this file's own established, tested convention of one reason
-    // tooltip per interactive control.
+    // TASK 16.31.5 — the raw technical code is real, useful data (worth
+    // keeping reachable — e.g. for a support conversation or cross-
+    // referencing the API), but no longer consumes its own permanently-
+    // visible line: it now lives in the SAME hover/long-press Tooltip as
+    // the commercial description, right below it. The single visible
+    // label line is what drives the real density gain here.
     final label = Tooltip(
-      message: permissionDescription(permission.code),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            permissionLabel(permission.code),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: palette.text, fontSize: 12.5, fontWeight: FontWeight.w600),
-          ),
-          Text(
-            'Código técnico: ${permission.code}',
-            key: Key('pos-permission-row-${permission.id}'),
-            style: TextStyle(color: palette.textMuted, fontSize: 9.5),
-          ),
-        ],
+      message: '${permissionDescription(permission.code)}\n\nCódigo técnico: ${permission.code}',
+      child: Text(
+        permissionLabel(permission.code),
+        key: Key('pos-permission-row-${permission.id}'),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: palette.text, fontSize: 12.5, fontWeight: FontWeight.w600),
       ),
     );
     if (picker.selectedIds == null) {
-      return Padding(padding: const EdgeInsets.symmetric(vertical: 5), child: label);
+      return Padding(padding: const EdgeInsets.symmetric(vertical: 7), child: label);
     }
     final isChecked = picker.selectedIds!.contains(permission.id);
     final actorHasIt = picker.actorPermissionCodes?.contains(permission.code) ?? false;
@@ -3643,17 +3639,26 @@ class _PermissionSwitchRow extends StatelessWidget {
         ? ''
         : (!switchEnabled ? 'Tu sesión no tiene el permiso ${permission.code} — no puedes otorgarlo.' : '');
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         children: [
           Expanded(child: label),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Tooltip(
             message: reason,
-            child: Switch(
-              key: Key('pos-permission-checkbox-${permission.id}'),
-              value: isChecked,
-              onChanged: switchEnabled ? (_) => picker.onToggle?.call(permission) : null,
+            // TASK 16.31.5 (Phase 12) — visually smaller/more refined
+            // than a default Material switch (matching the reference's
+            // own compact control scale), while `shrinkWrap` (not a
+            // further-shrunk custom hit box) keeps a reasonable tap
+            // area around the visibly smaller track/thumb.
+            child: Transform.scale(
+              scale: 0.82,
+              child: Switch(
+                key: Key('pos-permission-checkbox-${permission.id}'),
+                value: isChecked,
+                onChanged: switchEnabled ? (_) => picker.onToggle?.call(permission) : null,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
           ),
         ],
