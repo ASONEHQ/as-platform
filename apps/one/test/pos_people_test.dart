@@ -128,6 +128,85 @@ void main() {
       final deactivateButton = tester.widget<FilledButton>(find.byKey(const Key('pos-employee-detail-deactivate')));
       expect(deactivateButton.onPressed, isNull);
     });
+
+    // TASK 16.31 (Phase 19/21/28) — the card/detail visual upgrade must
+    // only ever show real fields, omit a genuinely-absent one elegantly
+    // (never "—"/"null"), and never fabricate a user-link resolution.
+    testWidgets('the employee card shows a real phone number when present, and omits the row when absent', (
+      tester,
+    ) async {
+      final withPhone = PosEmployee(
+        id: 'employee-2',
+        branchId: 'branch-id',
+        code: 'EMP-2',
+        displayName: 'Luis Hernández',
+        phone: '442-100-0001',
+        email: null,
+        jobTitle: 'Mantenimiento',
+        status: 'active',
+        hireDate: '2024-02-01',
+        weeklySalary: '1200.0000',
+        currencyCode: 'MXN',
+        userId: null,
+        notes: null,
+        deactivatedAt: null,
+        deactivatedBy: null,
+        version: 1,
+        createdAt: DateTime.utc(2024, 2, 1),
+        updatedAt: DateTime.utc(2024, 2, 1),
+      );
+      final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee, withPhone]);
+      await _pump(tester, employeesGateway: gateway);
+      await tester.pumpAndSettle();
+
+      expect(find.text('442-100-0001'), findsOneWidget);
+      expect(find.text('null'), findsNothing);
+    });
+
+    testWidgets('employee detail honestly shows "Usuario vinculado" vs "Sin usuario vinculado" — never a raw id as the primary line', (
+      tester,
+    ) async {
+      final unlinked = PosEmployee(
+        id: 'employee-3',
+        branchId: 'branch-id',
+        code: 'EMP-3',
+        displayName: 'Marta Ruiz',
+        phone: null,
+        email: null,
+        jobTitle: 'Cocina',
+        status: 'active',
+        hireDate: '2024-03-01',
+        weeklySalary: '1300.0000',
+        currencyCode: 'MXN',
+        userId: null,
+        notes: null,
+        deactivatedAt: null,
+        deactivatedBy: null,
+        version: 1,
+        createdAt: DateTime.utc(2024, 3, 1),
+        updatedAt: DateTime.utc(2024, 3, 1),
+      );
+      final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee, unlinked]);
+      await _pump(tester, employeesGateway: gateway);
+      await tester.pumpAndSettle();
+
+      // _activeEmployee.userId == 'user-id' — linked.
+      await tester.tap(find.byKey(const Key('pos-employee-row-employee-1')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-employee-detail-user-link-status'))).data,
+        'Usuario vinculado',
+      );
+      await tester.tap(find.text('Cerrar'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-employee-row-employee-3')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.byKey(const Key('pos-employee-detail-user-link-status'))).data,
+        'Sin usuario vinculado',
+      );
+    });
   });
 
   // TASK 16.26 — `PosPeopleScreen`'s own roster/attendance data is only

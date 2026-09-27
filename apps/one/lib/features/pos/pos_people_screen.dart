@@ -291,6 +291,27 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
+/// TASK 16.31 (Phase 21) — a small, dense section label inside a detail
+/// dialog's `_DetailRow` list. Never a heavyweight card/divider — this app's
+/// detail dialogs are already scroll-constrained (see this dialog's own
+/// `ConstrainedBox`), so grouping stays visual/typographic only.
+class _DetailSectionHeader extends StatelessWidget {
+  const _DetailSectionHeader({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
+      child: Text(
+        label.toUpperCase(),
+        style: TextStyle(color: palette.textMuted, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: .6),
+      ),
+    );
+  }
+}
+
 class _DialogButtons extends StatelessWidget {
   const _DialogButtons({
     required this.busy,
@@ -619,14 +640,16 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
   }
 }
 
-/// TASK 16.29 (Phase 2) — the Plantilla card. Every field shown comes
-/// straight off the real `PosEmployee` the backend returned — never a
-/// fabricated avatar, phone, employment type, or schedule (none of
-/// those exist on this model; see `pos_people_gateway.dart`'s own
-/// `PosEmployee` field list — showing them would mean inventing data
-/// this app has no source for). [showSalary] gates the weekly-salary
-/// line to `employee.manage` actors only — a read-only viewer can still
-/// open the full detail dialog, which controls its own visibility.
+/// TASK 16.29 (Phase 2) + TASK 16.31 (Phase 19) — the Plantilla card.
+/// Every field shown comes straight off the real `PosEmployee` the
+/// backend returned — including `phone` (real, shown only when
+/// present). Never a fabricated avatar, employment type, or schedule —
+/// none of those exist on this model at all (see
+/// `pos_people_gateway.dart`'s own `PosEmployee` field list — showing
+/// them would mean inventing data this app has no source for).
+/// [showSalary] gates the weekly-salary line to `employee.manage`
+/// actors only — a read-only viewer can still open the full detail
+/// dialog, which controls its own visibility.
 class _EmployeeCard extends StatelessWidget {
   const _EmployeeCard({required this.employee, required this.showSalary, required this.onTap, super.key});
   final PosEmployee employee;
@@ -707,6 +730,20 @@ class _EmployeeCard extends StatelessWidget {
                   Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
                 ],
               ),
+              // TASK 16.31 (Phase 19) — real `employee.phone`, omitted
+              // elegantly (no row at all) when absent — never "—"/"null"
+              // filling the space of a field this employee simply doesn't
+              // have on file.
+              if (employee.phone != null && employee.phone!.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Icon(Icons.phone_outlined, size: 14, color: palette.textMuted),
+                    const SizedBox(width: 4),
+                    Text(employee.phone!, style: TextStyle(color: palette.textMuted, fontSize: 11.5)),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -1075,13 +1112,63 @@ class _EmployeeDetailDialogState extends State<_EmployeeDetailDialog> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                _DetailRow(label: 'Código', value: _employee.code),
-                _DetailRow(label: 'Puesto', value: _employee.jobTitle ?? '—'),
+                _DetailSectionHeader(label: 'Información personal'),
                 _DetailRow(label: 'Teléfono', value: _employee.phone ?? '—'),
                 _DetailRow(label: 'Correo', value: _employee.email ?? '—'),
+                _DetailSectionHeader(label: 'Información laboral'),
+                _DetailRow(label: 'Código', value: _employee.code),
+                _DetailRow(label: 'Puesto', value: _employee.jobTitle ?? '—'),
                 _DetailRow(label: 'Fecha de contratación', value: _employee.hireDate ?? '—'),
                 _DetailRow(label: 'Salario semanal', value: _formatMoney(_employee.weeklySalary, _employee.currencyCode)),
-                _DetailRow(label: 'Id de usuario vinculado', value: _employee.userId ?? '—'),
+                _DetailSectionHeader(label: 'Vinculación de usuario'),
+                // TASK 16.31 (Phase 21/22) — presentation only, over the
+                // EXISTING `employees.user_id` relationship: never a raw
+                // id as the primary line (an id a business owner can't act
+                // on), and never an invented resolved user name (that
+                // would need a new cross-module Users-gateway dependency
+                // this screen deliberately does not take on — see
+                // docs/USERS_EMPLOYEES_UX.md). The real id still appears,
+                // just as a small secondary technical caption, matching
+                // this app's own established "Código técnico" convention
+                // (`pos_user_administration_screen.dart`'s `_PermissionRow`).
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        _employee.userId == null ? Icons.link_off : Icons.link,
+                        size: 16,
+                        color: _employee.userId == null ? palette.textMuted : palette.success,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _employee.userId == null ? 'Sin usuario vinculado' : 'Usuario vinculado',
+                              key: const Key('pos-employee-detail-user-link-status'),
+                              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12.5),
+                            ),
+                            if (_employee.userId != null)
+                              Text(
+                                'Id técnico: ${_employee.userId}',
+                                style: TextStyle(color: palette.textMuted, fontSize: 10.5),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _DetailSectionHeader(label: 'Estado'),
+                _DetailRow(label: 'Estado actual', value: _employee.isActive ? 'Activo' : 'Inactivo'),
+                if (!_employee.isActive)
+                  _DetailRow(
+                    label: 'Desactivado',
+                    value: _employee.deactivatedAt == null ? '—' : _formatDateTime(_employee.deactivatedAt!),
+                  ),
                 _DetailRow(label: 'Notas', value: _employee.notes ?? '—'),
                 if (_error != null) ...[
                   const SizedBox(height: 10),
