@@ -385,7 +385,11 @@ export type ProductCatalogErrorCode =
   | 'price_conflict'
   | 'resource_not_found'
   | 'validation_error'
-  | 'version_conflict';
+  | 'version_conflict'
+  // TASK 16.32.3 — the reverse of the V1 direct-stock/recipe invariant
+  // (see `docs/PRODUCT_RECIPES.md`): rejects enabling `tracksInventory`
+  // on a variant that still has an active recipe.
+  | 'variant_active_recipe_conflict';
 
 export class ProductCatalogError extends Error {
   constructor(

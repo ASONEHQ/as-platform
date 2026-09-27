@@ -116,6 +116,13 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
       companyId,
       otherCompanyId,
     ]);
+    // TASK 16.32.3 — product_recipes.product_variant_id is onDelete:
+    // 'restrict' too (see product-recipes.repository.ts), same reasoning
+    // as product_prices immediately above.
+    await database.pool.query('delete from product_recipes where company_id in ($1,$2)', [
+      companyId,
+      otherCompanyId,
+    ]);
     await database.pool.query('delete from product_variants where company_id in ($1,$2)', [
       companyId,
       otherCompanyId,
@@ -428,6 +435,72 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
     await expect(
       products.patchVariant(context, updated.id, updated.version, { status: 'retired' }),
     ).rejects.toMatchObject({ code: 'invalid_product_state' });
+  });
+
+  // TASK 16.32.3 — the reverse direction of the V1 direct-stock/recipe
+  // invariant (`docs/PRODUCT_RECIPES.md`): `product-recipes.service.ts`'s
+  // own tests cover the forward direction (recipe creation rejected on an
+  // already-direct-stock variant); this covers enabling direct stock
+  // tracking on a variant that already has an active recipe. Inserts the
+  // `product_recipes` row directly via SQL (no components needed — the
+  // guard only checks the recipe header's existence/`is_active`), since
+  // this module owns the variant mutation, not recipe authoring.
+  it('TASK 16.32.3 — rejects enabling tracksInventory on a variant with an active recipe', async () => {
+    const draft = await products.createProduct(context, 'recipe-guard-parent', {
+      code: 'recipe-guard-parent',
+      name: 'Recipe Guard Parent',
+      productType: 'variable',
+      tracksInventory: false,
+      status: 'draft',
+    });
+    const variant = await products.createVariant(context, draft.value.id, 'recipe-guard-create', {
+      sku: 'recipe-guard-variant',
+      unitOfMeasureCode: 'unit',
+      quantityScale: 0,
+      tracksInventory: false,
+      standardCost: '0',
+      currencyCode: 'MXN',
+      isDefault: true,
+      status: 'active',
+      optionValueIds: [],
+    });
+    await database.pool.query(
+      `insert into product_recipes (id,company_id,product_variant_id,is_active,created_by,updated_by)
+       values ($1,$2,$3,true,$4,$4)`,
+      [randomUUID(), companyId, variant.value.id, userId],
+    );
+    await expect(
+      products.patchVariant(context, variant.value.id, variant.value.version, {
+        tracksInventory: true,
+      }),
+    ).rejects.toMatchObject({ code: 'variant_active_recipe_conflict' });
+    const stillFalse = await products.variant(companyId, variant.value.id);
+    expect(stillFalse.tracksInventory).toBe(false);
+  });
+
+  it('TASK 16.32.3 — allows enabling tracksInventory on a variant with no recipe', async () => {
+    const draft = await products.createProduct(context, 'no-recipe-guard-parent', {
+      code: 'no-recipe-guard-parent',
+      name: 'No Recipe Guard Parent',
+      productType: 'variable',
+      tracksInventory: false,
+      status: 'draft',
+    });
+    const variant = await products.createVariant(context, draft.value.id, 'no-recipe-guard-create', {
+      sku: 'no-recipe-guard-variant',
+      unitOfMeasureCode: 'unit',
+      quantityScale: 0,
+      tracksInventory: false,
+      standardCost: '0',
+      currencyCode: 'MXN',
+      isDefault: true,
+      status: 'active',
+      optionValueIds: [],
+    });
+    const updated = await products.patchVariant(context, variant.value.id, variant.value.version, {
+      tracksInventory: true,
+    });
+    expect(updated.tracksInventory).toBe(true);
   });
 
   it('allows one concurrent SKU/default winner and maps the loser safely', async () => {

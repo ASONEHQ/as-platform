@@ -255,14 +255,14 @@ export class ProductRecipeRepository {
     client: ProductRecipeTransaction,
     companyId: string,
     variantId: string,
-  ): Promise<{ id: string } | null> {
-    const row = result<{ id: string }>(
-      await client.query('select id from product_variants where company_id=$1 and id=$2 for update', [
-        companyId,
-        variantId,
-      ]),
+  ): Promise<{ id: string; tracksInventory: boolean } | null> {
+    const row = result<{ id: string; tracks_inventory: boolean }>(
+      await client.query(
+        'select id, tracks_inventory from product_variants where company_id=$1 and id=$2 for update',
+        [companyId, variantId],
+      ),
     ).rows[0];
-    return row === undefined ? null : { id: row.id };
+    return row === undefined ? null : { id: row.id, tracksInventory: row.tracks_inventory };
   }
 
   public async lockRecipeByVariant(

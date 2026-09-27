@@ -107,7 +107,16 @@ export type SaleConsumptionErrorCode =
   // already supposed to have rejected — reachable here only as a defensive
   // backstop (e.g. an ingredient variant retired/detracked after the
   // recipe was saved), never expected in ordinary operation.
-  | 'invalid_recipe_component';
+  | 'invalid_recipe_component'
+  // TASK 16.32.3 — the settlement-time defense-in-depth backstop for the
+  // V1 direct-stock/recipe invariant (see `docs/PRODUCT_RECIPES.md`):
+  // authoring already refuses to let a variant acquire both
+  // `tracks_inventory=true` and an active recipe, in either order (see
+  // `product-recipes.service.ts`/`product-catalog.service.ts`), so this
+  // should be unreachable in ordinary operation — reachable only against
+  // legacy/imported/manually-edited data. Detected and thrown before any
+  // balance is touched for this sale, never a silent "pick one" choice.
+  | 'conflicting_recipe_configuration';
 
 export class SaleInventoryPostingError extends Error {
   public constructor(
@@ -244,6 +253,24 @@ export async function postSaleConsumption(
     ),
   ).rows;
   const variantById = new Map(variantRows.map((row) => [row.id, row]));
+
+  // TASK 16.32.3 — settlement-time defense in depth for the V1
+  // direct-stock/recipe invariant. Checked for EVERY sold variant, across
+  // the WHOLE sale, before anything below reads a balance or writes
+  // anything — a single violating line (e.g. one misconfigured pizza
+  // alongside one ordinary bottled drink) must fail the entire settlement
+  // before the drink's own stock is ever touched, never a partial
+  // consumption (Phase 5's own "detect before any mutation for this
+  // sale" requirement).
+  const recipeSoldVariantIds = new Set(recipeRows.map((row) => row.sold_variant_id));
+  for (const soldVariantId of soldVariantIds) {
+    const variant = variantById.get(soldVariantId);
+    if (variant?.tracks_inventory === true && recipeSoldVariantIds.has(soldVariantId))
+      throw new SaleInventoryPostingError(
+        'conflicting_recipe_configuration',
+        `"${variantLabel(variant)}" is configured to track inventory directly and also has an active recipe — this sale cannot be completed until that conflict is resolved.`,
+      );
+  }
 
   const trackedLines = items
     .filter(

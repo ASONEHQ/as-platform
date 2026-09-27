@@ -59,6 +59,14 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
   // A sellable, stock-tracked product with NO recipe at all — the backward
   // compatibility control (Phase 28).
   const plainId = randomUUID();
+  // TASK 16.32.3 — a deliberately invalid, "legacy/manual/imported" fixture:
+  // tracks_inventory=true AND an active recipe at the same time. Inserted
+  // directly via SQL (never through the authoring API/service, which now
+  // refuses to create this exact state) specifically to exercise the
+  // settlement-time defense-in-depth backstop against data the authoring
+  // guards never got a chance to prevent.
+  const misconfiguredId = randomUUID();
+  const misconfiguredRecipeId = randomUUID();
 
   const pizzaRecipeId = randomUUID();
   const nachosRecipeId = randomUUID();
@@ -199,6 +207,8 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
     await insertProductAndVariant(pizzaId, pizzaId, `pizza-${pizzaId}`, 'unit', false);
     await insertProductAndVariant(nachosId, nachosId, `nachos-${nachosId}`, 'unit', false);
     await insertProductAndVariant(plainId, plainId, `plain-${plainId}`, 'unit', true);
+    // TASK 16.32.3 — deliberately invalid: tracks_inventory=true.
+    await insertProductAndVariant(misconfiguredId, misconfiguredId, `misconfigured-${misconfiguredId}`, 'unit', true);
 
     await insertRecipe(pizzaRecipeId, pizzaId, [
       { variantId: doughId, quantity: '1', unitOfMeasureCode: 'unit' },
@@ -208,6 +218,13 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
     ]);
     await insertRecipe(nachosRecipeId, nachosId, [
       { variantId: cheeseId, quantity: '100', unitOfMeasureCode: 'g' },
+    ]);
+    // TASK 16.32.3 — the misconfigured variant's own recipe, consuming
+    // dough (an ordinary, already stock-tracked ingredient) — the recipe
+    // content itself is unremarkable; what's invalid is that its OWN
+    // sold variant also tracks inventory directly.
+    await insertRecipe(misconfiguredRecipeId, misconfiguredId, [
+      { variantId: doughId, quantity: '1', unitOfMeasureCode: 'unit' },
     ]);
   });
 
@@ -374,5 +391,50 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
     ).rows;
     expect(lines).toHaveLength(1);
     expect(lines[0]?.metadata).toBeNull();
+  });
+
+  it('TASK 16.32.3 — fails closed on a variant that both tracks inventory directly and has an active recipe, with zero mutations', async () => {
+    await openingBalance(misconfiguredId, '10');
+    const doughBefore = await onHand(doughId);
+    const misconfiguredBefore = await onHand(misconfiguredId);
+
+    await expect(
+      postSaleConsumption(
+        database.pool,
+        context,
+        { id: randomUUID(), branchId, saleNumber: 'RECIPE-SALE-MISCONFIGURED' },
+        [{ productVariantId: misconfiguredId, quantity: '1', nameSnapshot: 'Misconfigured Item' }],
+      ),
+    ).rejects.toMatchObject({ code: 'conflicting_recipe_configuration' });
+
+    // Fails closed BEFORE any balance mutation — never the direct line,
+    // never the recipe's own ingredient line, never a partial pick.
+    expect(await onHand(misconfiguredId)).toBe(misconfiguredBefore);
+    expect(await onHand(doughId)).toBe(doughBefore);
+  });
+
+  it('TASK 16.32.3 — a multi-line sale with one misconfigured line leaves every line untouched, including a perfectly valid one', async () => {
+    const doughBefore = await onHand(doughId);
+    const plainBefore = await onHand(plainId);
+    const misconfiguredBefore = await onHand(misconfiguredId);
+
+    await expect(
+      postSaleConsumption(
+        database.pool,
+        context,
+        { id: randomUUID(), branchId, saleNumber: 'RECIPE-SALE-MISCONFIGURED-MULTI' },
+        [
+          { productVariantId: plainId, quantity: '1', nameSnapshot: 'Plain Item' },
+          { productVariantId: misconfiguredId, quantity: '1', nameSnapshot: 'Misconfigured Item' },
+        ],
+      ),
+    ).rejects.toMatchObject({ code: 'conflicting_recipe_configuration' });
+
+    // The perfectly ordinary line (`plainId`) must be just as untouched as
+    // the misconfigured one — the whole sale fails before any line's
+    // balance is read for mutation, not just the offending line's own.
+    expect(await onHand(plainId)).toBe(plainBefore);
+    expect(await onHand(misconfiguredId)).toBe(misconfiguredBefore);
+    expect(await onHand(doughId)).toBe(doughBefore);
   });
 });

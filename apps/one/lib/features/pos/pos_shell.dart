@@ -11264,6 +11264,17 @@ class _EditProductDialogState extends State<_EditProductDialog> {
   String? _recipeSaveError;
   String? _recipeSuccessMessage;
 
+  /// TASK 16.32.3 — whether the default variant currently tracks
+  /// inventory directly (the V1 direct-stock/recipe invariant —
+  /// `docs/PRODUCT_RECIPES.md`). `PosCatalogDefaultVariant` (the embedded
+  /// object this dialog already holds as `_defaultVariant`) doesn't carry
+  /// this field, so it's fetched once, alongside the recipe itself, via
+  /// the real `PosProductVariant` the ingredient picker already knows how
+  /// to fetch (`listVariants`). Defaults to `false` (fail OPEN) on any
+  /// fetch failure — this is only a helpful front-end hint; the backend
+  /// remains the actual, authoritative gate either way.
+  bool _tracksInventoryDirectly = false;
+
   /// Real ingredient display names, keyed by `component_variant_id`,
   /// resolved through the real product/variant picker whenever an
   /// operator (re)assigns a row's ingredient in THIS session — never
@@ -11440,6 +11451,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       _recipeLoadError = null;
     });
     try {
+      await _loadTracksInventoryDirectly(variantId);
       final recipe = await widget.variantsGateway.getRecipe(variantId);
       if (!mounted) return;
       setState(() {
@@ -11459,6 +11471,22 @@ class _EditProductDialogState extends State<_EditProductDialog> {
         _recipePhase = _RecipeLoadPhase.failure;
         _recipeLoadError = 'No fue posible cargar la receta.';
       });
+    }
+  }
+
+  /// TASK 16.32.3 — resolves `_tracksInventoryDirectly` for the current
+  /// default variant via the same `listVariants` call the ingredient
+  /// picker already uses (no single-variant-by-id fetch exists in this
+  /// gateway). Deliberately fails open (leaves it `false`) on any error —
+  /// this is only a front-end hint, not the actual enforcement.
+  Future<void> _loadTracksInventoryDirectly(String variantId) async {
+    try {
+      final page = await widget.variantsGateway.listVariants(widget.product.id, limit: 50);
+      final match = page.items.where((item) => item.id == variantId).firstOrNull;
+      if (!mounted || match == null) return;
+      setState(() => _tracksInventoryDirectly = match.tracksInventory);
+    } on Object {
+      // Fail open — see this method's own doc comment.
     }
   }
 
@@ -11636,7 +11664,15 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       if (!mounted) return;
       setState(() {
         _savingRecipe = false;
-        _recipeSaveError = error.statusCode == 409
+        // TASK 16.32.3 — checks the specific `version_conflict` CODE, not
+        // just "any 409", now that `variant_direct_stock_conflict` is
+        // also a real 409 this same save call can receive (a stale UI
+        // that still shows the editable form for a variant whose
+        // `tracksInventory` was flipped to `true` elsewhere) — that one
+        // must show its own real, already-localized message
+        // (`error.failure.message`), never this unrelated stale-version
+        // copy.
+        _recipeSaveError = error.failure.code == 'version_conflict'
             ? 'Otra sesión cambió esta receta. Cierra y vuelve a abrirlo.'
             : error.failure.message;
       });
@@ -11671,7 +11707,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       if (!mounted) return;
       setState(() {
         _savingRecipe = false;
-        _recipeSaveError = error.statusCode == 409
+        _recipeSaveError = error.failure.code == 'version_conflict'
             ? 'Otra sesión cambió esta receta. Cierra y vuelve a abrirlo.'
             : error.failure.message;
       });
@@ -11817,6 +11853,22 @@ class _EditProductDialogState extends State<_EditProductDialog> {
     if (_defaultVariant == null) {
       return const Text(
         'Este producto no tiene una variante por defecto.',
+        style: TextStyle(fontSize: 12),
+      );
+    }
+    // TASK 16.32.3 — the V1 direct-stock/recipe invariant, enforced by the
+    // backend (`product-recipes.service.ts`) — this is a helpful FRONT-END
+    // explanation only, never the actual gate: shown unconditionally
+    // whenever the loaded variant already tracks inventory directly,
+    // regardless of load phase, and regardless of whether a legacy recipe
+    // technically still exists for it. Never auto-changes `tracksInventory`
+    // — that stays an explicit business decision the admin makes elsewhere.
+    if (_tracksInventoryDirectly) {
+      return const Text(
+        'Este producto controla su propio inventario.\n\n'
+        'Para utilizar ingredientes y consumo por receta, desactiva primero '
+        '"Controlar inventario" en la configuración del producto.',
+        key: Key('pos-product-edit-recipe-direct-stock-conflict'),
         style: TextStyle(fontSize: 12),
       );
     }

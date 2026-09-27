@@ -265,6 +265,157 @@ void main() {
       expect(find.byKey(const Key('pos-product-edit-recipe-success')), findsNothing);
     });
   });
+
+  group('TASK 16.32.3 — direct-stock/recipe invariant', () {
+    testWidgets(
+      'a variant that tracks inventory directly shows the incompatibility state, never the recipe editor',
+      (tester) async {
+        final variantsGateway = _RecordingProductVariantsGateway(
+          editedVariant: PosProductVariant(
+            id: _pizzaVariantId,
+            productId: _pizzaProduct.id,
+            sku: 'PIZZA-1-SKU',
+            name: null,
+            unitOfMeasureCode: 'unit',
+            quantityScale: 0,
+            tracksInventory: true,
+            standardCost: null,
+            currencyCode: null,
+            isDefault: true,
+            status: 'active',
+            version: 1,
+            createdAt: _fixedTimestamp,
+            updatedAt: _fixedTimestamp,
+          ),
+        );
+        await _pump(tester, variantsGateway: variantsGateway);
+        await _openEditDialog(tester);
+
+        expect(
+          find.byKey(const Key('pos-product-edit-recipe-direct-stock-conflict')),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('controla su propio inventario'),
+          findsOneWidget,
+        );
+        // No editing affordance at all — not the empty state, not the
+        // add-ingredient button, not the save button.
+        expect(find.byKey(const Key('pos-product-edit-recipe-empty')), findsNothing);
+        expect(find.byKey(const Key('pos-product-edit-recipe-add')), findsNothing);
+        expect(find.byKey(const Key('pos-product-edit-recipe-save')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'never automatically mutates tracksInventory — the admin must change it explicitly elsewhere',
+      (tester) async {
+        final variantsGateway = _RecordingProductVariantsGateway(
+          editedVariant: PosProductVariant(
+            id: _pizzaVariantId,
+            productId: _pizzaProduct.id,
+            sku: 'PIZZA-1-SKU',
+            name: null,
+            unitOfMeasureCode: 'unit',
+            quantityScale: 0,
+            tracksInventory: true,
+            standardCost: null,
+            currencyCode: null,
+            isDefault: true,
+            status: 'active',
+            version: 1,
+            createdAt: _fixedTimestamp,
+            updatedAt: _fixedTimestamp,
+          ),
+        );
+        await _pump(tester, variantsGateway: variantsGateway);
+        await _openEditDialog(tester);
+
+        // The Receta section never calls updateVariant under any
+        // circumstance — it only ever reads/writes the recipe itself.
+        expect(variantsGateway.replaceRecipeCalls, isEmpty);
+        expect(variantsGateway.deleteRecipeCalls, isEmpty);
+      },
+    );
+
+    testWidgets('a variant that does NOT track inventory directly still shows the normal, editable recipe UI', (
+      tester,
+    ) async {
+      final variantsGateway = _RecordingProductVariantsGateway(
+        editedVariant: PosProductVariant(
+          id: _pizzaVariantId,
+          productId: _pizzaProduct.id,
+          sku: 'PIZZA-1-SKU',
+          name: null,
+          unitOfMeasureCode: 'unit',
+          quantityScale: 0,
+          tracksInventory: false,
+          standardCost: null,
+          currencyCode: null,
+          isDefault: true,
+          status: 'active',
+          version: 1,
+          createdAt: _fixedTimestamp,
+          updatedAt: _fixedTimestamp,
+        ),
+      );
+      await _pump(tester, variantsGateway: variantsGateway);
+      await _openEditDialog(tester);
+
+      expect(
+        find.byKey(const Key('pos-product-edit-recipe-direct-stock-conflict')),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('pos-product-edit-recipe-empty')), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-edit-recipe-add')), findsOneWidget);
+    });
+
+    testWidgets(
+      'a stale-UI save attempt rejected by the backend as a direct-stock conflict shows that real message, never the generic stale-version one',
+      (tester) async {
+        final variantsGateway = _RecordingProductVariantsGateway(
+          replaceRecipeError: const ApiException(
+            AppFailure(
+              AppErrorKind.validation,
+              'Este producto controla inventario directamente. Desactiva el control de inventario del producto antes de configurar una receta.',
+              code: 'variant_direct_stock_conflict',
+            ),
+            statusCode: 409,
+          ),
+        );
+        final catalogGateway = _RecordingCatalogAdminGateway(products: [_cheeseProduct]);
+        await _pump(tester, variantsGateway: variantsGateway, catalogAdminGateway: catalogGateway);
+        await _openEditDialog(tester);
+
+        await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-add')));
+        await tester.tap(find.byKey(const Key('pos-product-edit-recipe-add')));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+        await tester.tap(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Queso');
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('pos-fiestas-consumable-product-result-${_cheeseProduct.id}')));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-qty-0')));
+        await tester.enterText(find.byKey(const Key('pos-product-edit-recipe-qty-0')), '180');
+        await tester.pumpAndSettle();
+
+        await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-save')));
+        await tester.tap(find.byKey(const Key('pos-product-edit-recipe-save')));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text(
+            'Este producto controla inventario directamente. Desactiva el control de inventario del producto antes de configurar una receta.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Otra sesión cambió esta receta. Cierra y vuelve a abrirlo.'), findsNothing);
+      },
+    );
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -443,9 +594,18 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   _RecordingProductVariantsGateway({
     Map<String, PosProductRecipe>? recipesByVariantId,
     this.replaceRecipeError,
+    this.editedVariant,
   }) : _recipesByVariantId = Map.of(recipesByVariantId ?? const {});
 
   final Map<String, PosProductRecipe> _recipesByVariantId;
+
+  /// TASK 16.32.3 — the real `PosProductVariant` `listVariants` returns
+  /// for `_pizzaProduct.id` (`_EditProductDialog`'s own dialog-under-test
+  /// product), letting a test control `tracksInventory` for the
+  /// direct-stock/recipe invariant's UI check. `null` (the default)
+  /// reproduces every pre-existing test's behavior exactly — no match
+  /// found, `_tracksInventoryDirectly` fails open to `false`.
+  final PosProductVariant? editedVariant;
 
   /// When set, `replaceRecipe` throws this instead of succeeding — lets a
   /// test inject any real save-rejection shape.
@@ -470,6 +630,9 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
   }) async {
     if (productId == _cheeseProduct.id) {
       return PosProductVariantPage(items: [_cheeseVariant], nextCursor: null);
+    }
+    if (productId == _pizzaProduct.id && editedVariant != null) {
+      return PosProductVariantPage(items: [editedVariant!], nextCursor: null);
     }
     return const PosProductVariantPage(items: [], nextCursor: null);
   }

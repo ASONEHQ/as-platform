@@ -51,7 +51,11 @@ export type ProductRecipeErrorCode =
   | 'idempotency_conflict'
   | 'resource_not_found'
   | 'validation_error'
-  | 'version_conflict';
+  | 'version_conflict'
+  // TASK 16.32.3 — the V1 direct-stock/recipe invariant: a variant that
+  // already tracks inventory directly cannot also be given a recipe. See
+  // `docs/PRODUCT_RECIPES.md`.
+  | 'variant_direct_stock_conflict';
 
 export class ProductRecipeError extends Error {
   constructor(

@@ -83,6 +83,17 @@ export class ProductRecipeService {
           const variant = await this.repository.lockVariant(client, context.companyId, variantId);
           if (variant === null)
             throw new ProductRecipeError('resource_not_found', 'The product variant was not found.');
+          // TASK 16.32.3 — the V1 invariant: a variant may track its own
+          // inventory directly OR use a recipe, never both (see
+          // `docs/PRODUCT_RECIPES.md`). Checked unconditionally, even for
+          // an empty `components` array or an `is_active: false` save —
+          // this variant must never acquire a `product_recipes` row at
+          // all while it tracks its own inventory.
+          if (variant.tracksInventory)
+            throw new ProductRecipeError(
+              'variant_direct_stock_conflict',
+              'This product variant tracks inventory directly and cannot also use a recipe. Disable direct inventory tracking on the product before configuring a recipe.',
+            );
           await this.validateComponents(client, context.companyId, components);
           const existing = await this.repository.lockRecipeByVariant(
             client,

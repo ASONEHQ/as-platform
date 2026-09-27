@@ -855,6 +855,30 @@ export class ProductCatalogRepository {
     return variant(row);
   }
 
+  // TASK 16.32.3 — the reverse direction of the V1 direct-stock/recipe
+  // invariant (see `docs/PRODUCT_RECIPES.md` and `product-recipes.
+  // service.ts`'s own forward-direction check): used by `patchVariant`
+  // right before allowing `tracksInventory` to become `true`. A direct,
+  // single-purpose cross-table read — `product_recipes` is owned by a
+  // sibling module's schema file, not duplicated business logic.
+  public async hasActiveRecipe(
+    client: ProductCatalogTransaction,
+    companyId: string,
+    variantId: string,
+  ): Promise<boolean> {
+    return (
+      result<{ exists: boolean }>(
+        await client.query(
+          `select exists(
+             select 1 from product_recipes
+             where company_id=$1 and product_variant_id=$2 and is_active=true
+           ) exists`,
+          [companyId, variantId],
+        ),
+      ).rows[0]?.exists ?? false
+    );
+  }
+
   public async updateVariant(
     client: ProductCatalogTransaction,
     input: ProductMutationContext &

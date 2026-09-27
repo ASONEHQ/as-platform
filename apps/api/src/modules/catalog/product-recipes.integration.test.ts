@@ -314,6 +314,50 @@ integration('PostgreSQL product recipe authoring API', { concurrent: false }, ()
     expect(replacedBody.components[0]?.quantity).toBe('0.250000');
   });
 
+  it('TASK 16.32.3 — rejects creating a recipe on a variant that tracks inventory directly', async () => {
+    const bottledDrink = await insertVariant(companyId, 'recipe-direct-stock-conflict', {
+      unitOfMeasureCode: 'unit',
+      tracksInventory: true,
+    });
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/product-variants/${bottledDrink.variantId}/recipe`,
+      headers: { ...auth(), 'idempotency-key': 'direct-stock-conflict' },
+      payload: {
+        components: [
+          { component_variant_id: mozzarella.variantId, quantity: '50', unit_of_measure_code: 'g' },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe(
+      'variant_direct_stock_conflict',
+    );
+    const stored = await database.pool.query(
+      `select 1 from product_recipes where company_id=$1 and product_variant_id=$2`,
+      [companyId, bottledDrink.variantId],
+    );
+    expect(stored.rowCount).toBe(0);
+  });
+
+  it('TASK 16.32.3 — succeeds creating a recipe on a variant that does not track inventory directly', async () => {
+    const frappe = await insertVariant(companyId, 'recipe-no-direct-stock', {
+      unitOfMeasureCode: 'unit',
+      tracksInventory: false,
+    });
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/product-variants/${frappe.variantId}/recipe`,
+      headers: { ...auth(), 'idempotency-key': 'no-direct-stock-conflict' },
+      payload: {
+        components: [
+          { component_variant_id: mozzarella.variantId, quantity: '50', unit_of_measure_code: 'g' },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
   it('returns 200 with null data for a variant that has no recipe', async () => {
     const response = await app.inject({
       method: 'GET',

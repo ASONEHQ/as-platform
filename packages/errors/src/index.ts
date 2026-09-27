@@ -76,6 +76,19 @@ export const infrastructureErrorCodes = [
   // `SaleInventoryPostingError` in `apps/api/src/modules/inventory/
   // sale-consumption.ts`.
   'invalid_recipe_component',
+  // TASK 16.32.3 — the V1 direct-stock/recipe invariant (a sellable
+  // variant may track inventory directly OR use a recipe, never both).
+  // `variant_direct_stock_conflict`: recipe authoring rejects a variant
+  // whose own `tracks_inventory` is already `true`.
+  // `variant_active_recipe_conflict`: the reverse — the variant-patch
+  // path rejects flipping `tracks_inventory` to `true` while an active
+  // recipe still exists.
+  // `conflicting_recipe_configuration`: the settlement-time defense in
+  // depth backstop for legacy/imported/manually-edited data that
+  // somehow has both anyway — see `sale-consumption.ts`.
+  'variant_direct_stock_conflict',
+  'variant_active_recipe_conflict',
+  'conflicting_recipe_configuration',
   'reservation_expired',
   'reservation_already_completed',
   'resource_not_found',

@@ -956,6 +956,18 @@ export class ProductCatalogService {
           'invalid_variant_state',
           'Service and kit variants cannot track inventory.',
         );
+      // TASK 16.32.3 — the reverse direction of the V1 direct-stock/recipe
+      // invariant (see `docs/PRODUCT_RECIPES.md`): `product-recipes.
+      // service.ts` already refuses to create a recipe on a variant that
+      // tracks inventory directly; this closes the other side of that
+      // gap — enabling direct tracking on a variant that already has an
+      // active recipe would silently recreate the same ambiguity after
+      // the fact.
+      if (next.tracksInventory && (await this.repository.hasActiveRecipe(client, context.companyId, id)))
+        throw new ProductCatalogError(
+          'variant_active_recipe_conflict',
+          'This variant already has an active recipe and cannot also track inventory directly. Remove or deactivate the recipe first.',
+        );
       if (next.status === 'retired') next.isDefault = false;
       await this.repository.validateUnit(client, next.unitOfMeasureCode, next.quantityScale);
       const variants = (

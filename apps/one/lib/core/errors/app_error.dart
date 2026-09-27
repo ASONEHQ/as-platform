@@ -322,6 +322,29 @@ class AppFailure {
       'Un periodo de nómina cerrado ya no puede recalcularse.',
       code: 'payroll_period_closed',
     ),
+    // TASK 16.32.3 — the V1 direct-stock/recipe invariant (a product may
+    // control su propio inventario directamente O usar una receta, nunca
+    // ambos — ver `docs/PRODUCT_RECIPES.md`). Three codes: the recipe
+    // authoring rejection, the reverse (enabling direct tracking while a
+    // recipe exists — currently unreachable from this app's own UI, which
+    // has no `tracksInventory` toggle, but still localized in case a
+    // future screen exposes it), and the rare settlement-time backstop
+    // for legacy/manual data.
+    'variant_direct_stock_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'Este producto controla inventario directamente. Desactiva el control de inventario del producto antes de configurar una receta.',
+      code: 'variant_direct_stock_conflict',
+    ),
+    'variant_active_recipe_conflict' => const AppFailure(
+      AppErrorKind.validation,
+      'Este producto ya tiene una receta activa. Elimina la receta antes de activar el control de inventario directo.',
+      code: 'variant_active_recipe_conflict',
+    ),
+    'conflicting_recipe_configuration' => const AppFailure(
+      AppErrorKind.validation,
+      'Este producto tiene una configuración de inventario conflictiva (control directo y receta a la vez). Contacta a soporte antes de continuar.',
+      code: 'conflicting_recipe_configuration',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',
