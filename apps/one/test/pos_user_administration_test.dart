@@ -149,7 +149,7 @@ void main() {
   group('Roles — creación', () {
     testWidgets('Nuevo rol calls createRole with the entered name/code/description', (tester) async {
       final gateway = _RecordingIdentityAdminGateway(roles: const []);
-      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
       await tester.tap(find.byKey(const Key('pos-roles-new')));
       await tester.pumpAndSettle();
@@ -161,12 +161,17 @@ void main() {
       expect(gateway.createRoleCalls, hasLength(1));
       expect(gateway.createRoleCalls.single.name, 'Supervisor de sucursal');
       expect(gateway.createRoleCalls.single.code, 'branch_supervisor');
-      expect(find.text('Supervisor de sucursal'), findsOneWidget);
+      // TASK 16.31 — creating a role now selects it in the master/detail
+      // view, so its name legitimately appears twice: the left-pane
+      // card/right-pane header AND the now-editable "Nombre" field's own
+      // pre-filled value.
+      expect(find.text('Supervisor de sucursal'), findsAtLeastNWidgets(1));
+      expect(find.byKey(const Key('pos-role-detail-name')), findsOneWidget);
     });
 
     testWidgets('sin role.create deja "Nuevo rol" deshabilitado', (tester) async {
       final gateway = _RecordingIdentityAdminGateway(roles: const []);
-      await _pump(tester, gateway: gateway, permissions: const ['role.read'], tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: const ['role.read'], tab: 'Roles y permisos');
 
       final button = tester.widget<FilledButton>(find.byKey(const Key('pos-roles-new')));
       expect(button.onPressed, isNull);
@@ -216,7 +221,7 @@ void main() {
           permissions: [roleReadPermission, roleCreatePermission, saleReadPermission, cashSessionReadPermission],
           roleTemplates: templates(),
         );
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
         await tester.tap(find.byKey(const Key('pos-roles-new')));
         await tester.pumpAndSettle();
@@ -287,7 +292,7 @@ void main() {
           permissions: [roleReadPermission, roleCreatePermission, saleReadPermission],
           roleTemplates: templates(),
         );
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
         await tester.tap(find.byKey(const Key('pos-roles-new')));
         await tester.pumpAndSettle();
@@ -305,9 +310,12 @@ void main() {
 
         expect(gateway.createRoleCalls, hasLength(1));
         expect(gateway.createRoleCalls.single.name, 'Rol a la medida');
-        // No automatic permission dialog, and no permissions ever sent —
-        // a truly empty role, exactly like the pre-TASK-16.16 flow.
-        expect(find.byKey(const Key('pos-role-detail-save-permissions')), findsNothing);
+        // TASK 16.31 — the new role now selects itself in the master/
+        // detail view (so its own permission picker section IS visible —
+        // that's the point of master/detail), but with NO template codes
+        // this time, nothing was ever pre-checked or auto-submitted — a
+        // truly empty role, exactly like the pre-TASK-16.16 flow's own
+        // substantive guarantee.
         expect(gateway.replaceRolePermissionsCalls, isEmpty);
       },
     );
@@ -345,7 +353,7 @@ void main() {
             ),
           ],
         );
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
         await tester.tap(find.byKey(const Key('pos-roles-new')));
         await tester.pumpAndSettle();
@@ -384,7 +392,7 @@ void main() {
         },
       );
       // The acting session holds sale.read but NOT sale.create.
-      await _pump(tester, gateway: gateway, permissions: [...(_ownerPermissions), 'sale.read'], tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: [...(_ownerPermissions), 'sale.read'], tab: 'Roles y permisos');
 
       await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
       await tester.pumpAndSettle();
@@ -419,7 +427,7 @@ void main() {
           role.id: [_assignment(saleRead)],
         },
       );
-      await _pump(tester, gateway: gateway, permissions: [...(_ownerPermissions), 'sale.read'], tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: [...(_ownerPermissions), 'sale.read'], tab: 'Roles y permisos');
 
       await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
       await tester.pumpAndSettle();
@@ -458,7 +466,7 @@ void main() {
           role.id: [_assignment(saleRead), _assignment(saleCreate)],
         },
       );
-      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
       await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
       await tester.pumpAndSettle();
@@ -477,7 +485,7 @@ void main() {
           role.id: [_assignment(auditRead)],
         },
       );
-      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
       await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
       await tester.pumpAndSettle();
@@ -720,7 +728,7 @@ void main() {
       final gateway = _RecordingIdentityAdminGateway(
         permissions: [_permission('p1', 'sale.read', 'sale'), _permission('p2', 'inventory.read', 'inventory')],
       );
-      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Permisos');
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
       expect(find.byKey(const Key('pos-permission-domain-sale')), findsOneWidget);
       expect(find.byKey(const Key('pos-permission-domain-inventory')), findsOneWidget);
@@ -750,7 +758,7 @@ void main() {
             ),
           ],
         );
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Permisos');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
         await tester.tap(find.byKey(const Key('pos-permission-domain-access')));
         await tester.pumpAndSettle();
 
@@ -785,7 +793,7 @@ void main() {
           permissions: [permission],
           rolePermissionsByRole: {role.id: const []},
         );
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
         await tester.tap(find.byKey(Key('pos-role-row-${role.id}')));
         await tester.pumpAndSettle();
@@ -805,7 +813,7 @@ void main() {
           for (var i = 0; i < 40; i++) _permission('p-sale-$i', 'sale.action_$i', 'sale'),
         ];
         final gateway = _RecordingIdentityAdminGateway(permissions: permissions);
-        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Permisos');
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
         await tester.tap(find.byKey(const Key('pos-permission-domain-sale')));
         await tester.pumpAndSettle();
@@ -830,7 +838,7 @@ void main() {
 
     testWidgets('sin role.read, la pestaña Roles nunca llama al gateway', (tester) async {
       final gateway = _RecordingIdentityAdminGateway(roles: [_role('r1', 'Owner', 'owner')]);
-      await _pump(tester, gateway: gateway, permissions: const [], tab: 'Roles');
+      await _pump(tester, gateway: gateway, permissions: const [], tab: 'Roles y permisos');
 
       expect(find.textContaining('role.read'), findsOneWidget);
       expect(gateway.listRolesCalls, 0);
@@ -838,10 +846,270 @@ void main() {
 
     testWidgets('sin permission.read, la pestaña Permisos nunca llama al gateway', (tester) async {
       final gateway = _RecordingIdentityAdminGateway(permissions: [_permission('p1', 'sale.read', 'sale')]);
-      await _pump(tester, gateway: gateway, permissions: const [], tab: 'Permisos');
+      await _pump(tester, gateway: gateway, permissions: const [], tab: 'Roles y permisos');
 
       expect(find.textContaining('permission.read'), findsOneWidget);
       expect(gateway.listPermissionsCalls, 0);
+    });
+  });
+
+  // TASK 16.31 — the Usuarios card grid's own real enrichment (role
+  // badge/branch scope/permission count), KPI strip, and role filter.
+  group('Usuarios — tarjetas enriquecidas y KPIs (TASK 16.31)', () {
+    testWidgets('el KPI strip muestra totales reales, y rol/sucursal/permisos se resuelven en la tarjeta', (
+      tester,
+    ) async {
+      final role = _role('role-1', 'Gerente', 'manager');
+      final salePermission = _permission('perm-1', 'sale.read', 'sale');
+      final refundPermission = _permission('perm-2', 'refund.read', 'refund');
+      final u1 = _user('u1', 'ana@inflapark.test', 'Ana Cajero');
+      final u2 = _user('u2', 'bob@inflapark.test', 'Bob Sin Rol');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [u1, u2],
+        roles: [role],
+        rolePermissionsByRole: {
+          role.id: [_assignment(salePermission), _assignment(refundPermission)],
+        },
+        userDetails: {
+          u1.id: PosUserDetail(
+            user: u1,
+            roles: [
+              PosUserRoleAssignment(id: 'a1', roleId: role.id, roleCode: role.code, roleName: role.name, branchId: null, status: 'active'),
+            ],
+            branchAccess: const [],
+          ),
+          u2.id: PosUserDetail(user: u2, roles: const [], branchAccess: const []),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      expect(tester.widget<Text>(find.byKey(const Key('pos-users-kpi-total'))).data, '2');
+      expect(tester.widget<Text>(find.byKey(const Key('pos-users-kpi-active'))).data, '2');
+      // Enrichment resolves asynchronously — settle once more before
+      // reading the role-derived KPIs/card content.
+      await tester.pumpAndSettle();
+      expect(tester.widget<Text>(find.byKey(const Key('pos-users-kpi-roles-in-use'))).data, '1');
+      expect(tester.widget<Text>(find.byKey(const Key('pos-users-kpi-without-role'))).data, '1');
+
+      // Ana: real role name, "Todas las sucursales" (branchId: null on
+      // her own assignment), and a real 2-permission count.
+      expect(find.text('Gerente'), findsWidgets);
+      expect(find.text('Todas las sucursales'), findsOneWidget);
+      expect(find.text('2 permisos'), findsOneWidget);
+      // Bob: honestly "Sin rol" — never a fabricated role.
+      expect(find.text('Sin rol'), findsOneWidget);
+    });
+
+    testWidgets('el filtro de rol solo muestra usuarios con ese rol asignado', (tester) async {
+      final manager = _role('role-mgr', 'Gerente', 'manager');
+      final cashier = _role('role-csh', 'Cajero', 'cashier');
+      final u1 = _user('u1', 'ana@inflapark.test', 'Ana Gerente');
+      final u2 = _user('u2', 'bob@inflapark.test', 'Bob Cajero');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [u1, u2],
+        roles: [manager, cashier],
+        userDetails: {
+          u1.id: PosUserDetail(
+            user: u1,
+            roles: [
+              PosUserRoleAssignment(
+                id: 'a1',
+                roleId: manager.id,
+                roleCode: manager.code,
+                roleName: manager.name,
+                branchId: 'branch-1',
+                status: 'active',
+              ),
+            ],
+            branchAccess: const [],
+          ),
+          u2.id: PosUserDetail(
+            user: u2,
+            roles: [
+              PosUserRoleAssignment(
+                id: 'a2',
+                roleId: cashier.id,
+                roleCode: cashier.code,
+                roleName: cashier.name,
+                branchId: 'branch-1',
+                status: 'active',
+              ),
+            ],
+            branchAccess: const [],
+          ),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-users-role-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cajero').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ana Gerente'), findsNothing);
+      expect(find.text('Bob Cajero'), findsOneWidget);
+    });
+  });
+
+  // TASK 16.31 — the Roles master/detail: selecting a role updates the
+  // right pane in place (no modal), a protected role shows "Protegido"
+  // and never a close button in the embedded pane, and the default
+  // (nothing selected) right pane is the full permission catalog.
+  group('Roles — maestro/detalle (TASK 16.31)', () {
+    testWidgets('seleccionar un rol en la lista actualiza el panel derecho sin abrir un diálogo', (tester) async {
+      final roleA = _role('role-a', 'Gerente', 'manager');
+      final roleB = _role('role-b', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(roles: [roleA, roleB]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      // Nothing selected yet — the default catalog-browse pane shows.
+      expect(find.text('Selecciona un rol para ver o editar sus permisos'), findsOneWidget);
+      expect(find.byKey(const Key('pos-role-detail-close')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('pos-role-row-role-a')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-role-detail-name')), findsOneWidget);
+      // No modal route was pushed — the close button never renders in
+      // the embedded pane (there's nothing to pop back to).
+      expect(find.byKey(const Key('pos-role-detail-close')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('pos-role-row-role-b')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-role-detail-name'))).controller!.text,
+        'Cajero',
+      );
+    });
+
+    testWidgets('un rol protegido (is_system) muestra "Protegido" y sus campos quedan de solo lectura', (
+      tester,
+    ) async {
+      final systemRole = _role('role-owner', 'Owner', 'owner', isSystem: true);
+      final gateway = _RecordingIdentityAdminGateway(roles: [systemRole]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+
+      expect(find.text('Protegido'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-role-row-role-owner')));
+      await tester.pumpAndSettle();
+
+      final nameField = tester.widget<TextField>(find.byKey(const Key('pos-role-detail-name')));
+      expect(nameField.enabled, isFalse);
+    });
+  });
+
+  // TASK 16.31 (Phase 23/29) — responsive/no-overflow at a narrow width
+  // for both the Usuarios card grid and the Roles master/detail (which
+  // must stack list-then-detail rather than crush a two-column row).
+  group('Responsive (TASK 16.31)', () {
+    testWidgets('la cuadrícula de Usuarios no revienta en un viewport angosto', (tester) async {
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [_user('u1', 'ana@inflapark.test', 'Ana Cajero'), _user('u2', 'bob@inflapark.test', 'Bob Gerente')],
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('pos-users-grid')), findsOneWidget);
+    });
+
+    testWidgets('el maestro/detalle de Roles se apila (lista, luego detalle) en un viewport angosto', (tester) async {
+      final role = _role('role-a', 'Gerente', 'manager');
+      final gateway = _RecordingIdentityAdminGateway(roles: [role]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byKey(const Key('pos-role-row-role-a')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('pos-role-detail-name')), findsOneWidget);
+    });
+  });
+
+  // TASK 16.31 (Phase 13/14/15/16) — Sesión actual: only real
+  // `AuthenticatedContext` data, no fabricated login time/device/IP, and
+  // no quick-user-switching affordance (the backend capability exists
+  // but this app never adopts a switched session as its own — see
+  // docs/USERS_EMPLOYEES_UX.md).
+  group('Sesión actual (TASK 16.31)', () {
+    testWidgets('muestra el usuario real, su rol resuelto, alcance de sucursal, y sus permisos como chips', (
+      tester,
+    ) async {
+      final role = _role('role-1', 'Dueña', 'owner');
+      final gateway = _RecordingIdentityAdminGateway(
+        userDetails: {
+          'user-id': PosUserDetail(
+            user: _user('user-id', 'owner@example.test', 'Dueña AS'),
+            roles: [
+              PosUserRoleAssignment(id: 'a1', roleId: role.id, roleCode: role.code, roleName: role.name, branchId: null, status: 'active'),
+            ],
+            branchAccess: const [],
+          ),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Sesión actual');
+
+      expect(find.text('Dueña AS'), findsOneWidget);
+      expect(find.text('owner@example.test'), findsOneWidget);
+      expect(find.text('Todas las sucursales'), findsOneWidget);
+      await tester.pumpAndSettle();
+      expect(find.text('Dueña'), findsOneWidget);
+      for (final code in _ownerPermissions) {
+        expect(find.byKey(Key('pos-session-permission-chip-$code')), findsOneWidget);
+      }
+    });
+
+    testWidgets('nunca muestra hora de entrada, equipo, IP, cambiar contraseña, ni cambiar usuario rápido', (
+      tester,
+    ) async {
+      final gateway = _RecordingIdentityAdminGateway(
+        userDetails: {'user-id': PosUserDetail(user: _user('user-id', 'owner@example.test', 'Dueña AS'), roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Sesión actual');
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Hora de entrada'), findsNothing);
+      expect(find.textContaining('Equipo'), findsNothing);
+      expect(find.textContaining('IP'), findsNothing);
+      expect(find.textContaining('Cambiar contraseña'), findsNothing);
+      expect(find.textContaining('usuario rápido'), findsNothing);
+    });
+
+    testWidgets('Cerrar sesión llama al callback real cuando está disponible, y queda deshabilitado si no', (
+      tester,
+    ) async {
+      var loggedOut = false;
+      final gateway = _RecordingIdentityAdminGateway(
+        userDetails: {'user-id': PosUserDetail(user: _user('user-id', 'owner@example.test', 'Dueña AS'), roles: const [], branchAccess: const [])},
+      );
+      tester.view.physicalSize = const Size(1400, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: PosUserAdministrationScreen(
+                context: _context(_ownerPermissions),
+                gateway: gateway,
+                onLogout: () => loggedOut = true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sesión actual'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-session-logout')));
+      await tester.pumpAndSettle();
+      expect(loggedOut, isTrue);
     });
   });
 }

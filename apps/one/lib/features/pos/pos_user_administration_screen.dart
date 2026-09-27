@@ -106,6 +106,12 @@ class PosUserAdministrationScreen extends StatefulWidget {
     // dialog's own area/register pickers — see `_GrantRegisterAccessDialog`.
     this.areasGateway = const EmptyPosOperationalAreasGateway(),
     this.cashGateway = const EmptyPosCashGateway(),
+    // TASK 16.31 — optional, additive (same convention as above): only
+    // "Sesión actual" → "Cerrar sesión" uses this; every pre-existing
+    // call site (including every test) keeps working unmodified against
+    // a safe no-op default. `pos_shell.dart`'s real call site passes the
+    // exact same real logout callback the topbar account menu uses.
+    this.onLogout,
     super.key,
   });
 
@@ -113,12 +119,26 @@ class PosUserAdministrationScreen extends StatefulWidget {
   final PosIdentityAdminGateway gateway;
   final PosOperationalAreasGateway areasGateway;
   final PosCashGateway cashGateway;
+  final VoidCallback? onLogout;
 
   @override
   State<PosUserAdministrationScreen> createState() => _PosUserAdministrationScreenState();
 }
 
-enum _AdminTab { usuarios, roles, permisos }
+// TASK 16.31 — `roles`/`permisos` merge into one "Roles y permisos"
+// master/detail tab (Phase 4/9); `sesion` is new (Phase 13). The
+// underlying `identifier` string is what `_AdminHeader`'s own
+// `SegmentedButton` shows and what widget tests navigate by
+// (`tester.tap(find.text(tab.label))`, mirroring this file's own
+// pre-existing `tab: 'Roles'`-style test convention).
+enum _AdminTab {
+  usuarios('Usuarios'),
+  rolesPermisos('Roles y permisos'),
+  sesion('Sesión actual');
+
+  const _AdminTab(this.label);
+  final String label;
+}
 
 class _PosUserAdministrationScreenState extends State<PosUserAdministrationScreen> {
   _AdminTab _tab = _AdminTab.usuarios;
@@ -135,8 +155,12 @@ class _PosUserAdministrationScreenState extends State<PosUserAdministrationScree
           areasGateway: widget.areasGateway,
           cashGateway: widget.cashGateway,
         ),
-        _AdminTab.roles => _RolesTab(context: widget.context, gateway: widget.gateway),
-        _AdminTab.permisos => _PermissionsTab(context: widget.context, gateway: widget.gateway),
+        _AdminTab.rolesPermisos => _RolesTab(context: widget.context, gateway: widget.gateway),
+        _AdminTab.sesion => _SessionTab(
+          context: widget.context,
+          gateway: widget.gateway,
+          onLogout: widget.onLogout,
+        ),
       },
     ],
   );
@@ -161,7 +185,7 @@ class _AdminHeader extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Usuarios y permisos', style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800)),
+                Text('Usuarios y roles', style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
                 Text(
                   'Usuarios, roles y permisos — datos reales del backend.',
@@ -172,13 +196,55 @@ class _AdminHeader extends StatelessWidget {
           ),
           SegmentedButton<_AdminTab>(
             key: const Key('pos-user-admin-tabs'),
-            segments: const [
-              ButtonSegment(value: _AdminTab.usuarios, label: Text('Usuarios')),
-              ButtonSegment(value: _AdminTab.roles, label: Text('Roles')),
-              ButtonSegment(value: _AdminTab.permisos, label: Text('Permisos')),
-            ],
+            segments: [for (final value in _AdminTab.values) ButtonSegment(value: value, label: Text(value.label))],
             selected: {tab},
             onSelectionChanged: (value) => onTabChanged(value.first),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 16.31 (Phase 3) — a compact KPI tile shared by the Usuarios
+/// strip. [value] is a pre-formatted string so a caller can show a
+/// small loading indicator in its place while real data is still
+/// resolving — this widget never renders a placeholder `0` for data
+/// that hasn't loaded yet.
+class _AdminMetricCard extends StatelessWidget {
+  const _AdminMetricCard({required this.label, required this.value, required this.icon});
+  final String label;
+  final Widget value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _Card(
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, size: 18, color: palette.blueDeep),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DefaultTextStyle(
+                  style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 18),
+                  child: value,
+                ),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.textMuted, fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -284,6 +350,24 @@ class _Failure extends StatelessWidget {
   );
 }
 
+// TASK 16.31 (Phase 3) — the real, raw status shared by
+// `membershipStatus`/`identityStatus` (users), role-assignment/branch-
+// access/register-grant `status`, and `PosRole.status`. Display only —
+// the color-positivity check below still keys off the ORIGINAL raw
+// value. An unrecognized value still renders (never hidden), just
+// untranslated.
+String _statusPillLabel(String raw) => switch (raw) {
+  'active' => 'Activo',
+  'inactive' => 'Inactivo',
+  'retired' => 'Retirado',
+  'pending' => 'Pendiente',
+  'invited' => 'Invitado',
+  'suspended' => 'Suspendido',
+  'disabled' => 'Deshabilitado',
+  'revoked' => 'Revocado',
+  _ => raw,
+};
+
 class _StatusPill extends StatelessWidget {
   const _StatusPill({required this.label});
   final String label;
@@ -296,7 +380,32 @@ class _StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
-      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+      child: Text(_statusPillLabel(label), style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+/// TASK 16.31 (Phase 3/8) — a small, dense label/value row, matching
+/// `pos_people_screen.dart`'s own `_DetailRow` shape exactly (this
+/// file's own header doc comment already establishes the convention of
+/// small, file-private redeclarations rather than a shared import).
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 100, child: Text(label, style: TextStyle(color: palette.textMuted, fontSize: 11))),
+          Expanded(child: Text(value, style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w600))),
+        ],
+      ),
     );
   }
 }
@@ -372,8 +481,26 @@ class _UsersTab extends StatefulWidget {
 class _UsersTabState extends State<_UsersTab> {
   _ListPhase _phase = _ListPhase.loading;
   List<PosUser> _items = const [];
+  List<PosRole> _roles = const [];
   String? _errorMessage;
   String _query = '';
+  String? _roleFilter;
+
+  // TASK 16.31 (Phase 7) — `PosUser`/`listUsers()` carry no role/branch/
+  // permission-count field at all (confirmed against the real backend —
+  // see docs/USERS_EMPLOYEES_UX.md's own architecture-audit section).
+  // Enriching the grid with that data therefore means one additional
+  // `userDetail(id)` call per VISIBLE user, fired in parallel right after
+  // the base list resolves — the exact same "join after the base fetch"
+  // convention already established by Nómina's employee-name join (TASK
+  // 16.29). Bounded to one page's worth of users (this screen has no
+  // pagination today), never a per-role reverse aggregate (that WOULD be
+  // a real N+1 over every user just to render a handful of role rows —
+  // deliberately not done, matching `_RoleRow`'s own pre-existing,
+  // documented decision not to compute a user-count there).
+  final Map<String, PosUserDetail> _details = {};
+  final Map<String, Set<String>> _rolePermissionIds = {};
+  bool _enrichmentLoading = false;
 
   bool get _canRead => widget.context.permissions.contains('user.read');
   bool get _canCreate => widget.context.permissions.contains('user.create');
@@ -395,11 +522,21 @@ class _UsersTabState extends State<_UsersTab> {
     });
     try {
       final items = await widget.gateway.listUsers();
+      // Honest fallback — no `role.read` means no role filter/KPIs, never
+      // a blocked Usuarios tab (`user.read` alone already got us here).
+      List<PosRole> roles = const [];
+      try {
+        roles = await widget.gateway.listRoles();
+      } on Object {
+        // Swallowed deliberately — see comment above.
+      }
       if (!mounted) return;
       setState(() {
         _items = items;
+        _roles = roles;
         _phase = _visibleItems.isEmpty ? _ListPhase.empty : _ListPhase.ready;
       });
+      unawaited(_loadEnrichment(items));
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -415,15 +552,92 @@ class _UsersTabState extends State<_UsersTab> {
     }
   }
 
+  Future<void> _loadEnrichment(List<PosUser> items) async {
+    setState(() => _enrichmentLoading = true);
+    final results = await Future.wait([
+      for (final user in items)
+        widget.gateway
+            .userDetail(user.id)
+            .then<PosUserDetail?>((detail) => detail)
+            .catchError((Object _) => null),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      for (var i = 0; i < items.length; i++) {
+        final detail = results[i];
+        if (detail != null) _details[items[i].id] = detail;
+      }
+      _enrichmentLoading = false;
+    });
+    unawaited(_loadRolePermissionCounts());
+  }
+
+  /// TASK 16.31 (Phase 7) — a real, derived "permission count" per user:
+  /// the union of every ACTIVE role assignment's own granted permission
+  /// ids. Cost is bounded by the number of DISTINCT roles actually
+  /// assigned across the loaded users (typically a handful), cached here
+  /// so the same role is never re-fetched for a second user who shares
+  /// it.
+  Future<void> _loadRolePermissionCounts() async {
+    final roleIds =
+        {
+          for (final detail in _details.values)
+            for (final assignment in detail.roles)
+              if (assignment.status == 'active') assignment.roleId,
+        }..removeWhere(_rolePermissionIds.containsKey);
+    for (final roleId in roleIds) {
+      try {
+        final assignments = await widget.gateway.rolePermissions(roleId);
+        if (!mounted) return;
+        setState(() {
+          _rolePermissionIds[roleId] = assignments
+              .where((assignment) => assignment.effect == 'allow')
+              .map((assignment) => assignment.permissionId)
+              .toSet();
+        });
+      } on Object {
+        // Leave this role's contribution uncounted rather than crash the
+        // whole grid over one role's transient failure.
+      }
+    }
+  }
+
+  /// `null` = still resolving (a role's own permission set hasn't loaded
+  /// yet) — the card shows a small loading affordance instead of a
+  /// number, never a fabricated `0`.
+  int? _permissionCountFor(PosUserDetail detail) {
+    final activeRoleIds = detail.roles.where((r) => r.status == 'active').map((r) => r.roleId).toSet();
+    if (activeRoleIds.isEmpty) return 0;
+    if (!activeRoleIds.every(_rolePermissionIds.containsKey)) return null;
+    final ids = <String>{};
+    for (final roleId in activeRoleIds) {
+      ids.addAll(_rolePermissionIds[roleId]!);
+    }
+    return ids.length;
+  }
+
   List<PosUser> get _visibleItems {
     final query = _query.trim().toLowerCase();
-    if (query.isEmpty) return _items;
-    return _items
-        .where(
-          (user) => user.displayName.toLowerCase().contains(query) || user.email.toLowerCase().contains(query),
-        )
-        .toList(growable: false);
+    return _items.where((user) {
+      if (query.isNotEmpty) {
+        final matchesBase = user.displayName.toLowerCase().contains(query) || user.email.toLowerCase().contains(query);
+        final matchesRole = _details[user.id]?.roles.any((r) => r.roleName.toLowerCase().contains(query)) ?? false;
+        if (!matchesBase && !matchesRole) return false;
+      }
+      final roleFilter = _roleFilter;
+      if (roleFilter != null) {
+        final hasRole = _details[user.id]?.roles.any((r) => r.status == 'active' && r.roleId == roleFilter) ?? false;
+        if (!hasRole) return false;
+      }
+      return true;
+    }).toList(growable: false);
   }
+
+  void _refilter() => setState(() {
+    if (_items.isNotEmpty) {
+      _phase = _visibleItems.isEmpty ? _ListPhase.empty : _ListPhase.ready;
+    }
+  });
 
   Future<void> _openNewForm() async {
     if (!_canCreate) return;
@@ -451,29 +665,119 @@ class _UsersTabState extends State<_UsersTab> {
     if (changed == true) unawaited(_load());
   }
 
+  Widget _metricValue(Key key, String value) => Text(value, key: key);
+  Widget _metricLoading(Key key) => SizedBox(
+    key: key,
+    width: 16,
+    height: 16,
+    child: const CircularProgressIndicator(strokeWidth: 2),
+  );
+
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     if (!_canRead) return const _PermissionDenied(permission: 'user.read');
     final newDisabledReason = _canCreate ? '' : 'Se requiere el permiso user.create.';
+    final rolesInUse = <String>{
+      for (final detail in _details.values)
+        for (final assignment in detail.roles)
+          if (assignment.status == 'active') assignment.roleId,
+    };
+    // `!_enrichmentLoading` alone — never additionally require
+    // `_details.length == _items.length`: a real per-user enrichment
+    // failure (an honest, caught, non-fatal case — see `_loadEnrichment`)
+    // must still let the KPI strip settle on whatever DID resolve,
+    // rather than spin forever waiting for a completion that will never
+    // come.
+    final enrichmentReady = !_enrichmentLoading;
+    final withoutRole = _details.values.where((d) => !d.roles.any((r) => r.status == 'active')).length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        // TASK 16.31 (Phase 5) — every tile is real data. "Con sesión
+        // hoy" from the old reference is deliberately NOT here: the
+        // backend's `users.last_login_at` column is never written or
+        // read anywhere (confirmed dead — see docs/USERS_EMPLOYEES_UX.
+        // md), so faking that metric was never an option. "Roles en
+        // uso"/"Sin rol" are real, honestly-derived replacements.
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = constraints.maxWidth >= 820 ? 4 : (constraints.maxWidth >= 560 ? 2 : 1);
+            return GridView.count(
+              key: const Key('pos-users-kpi-strip'),
+              crossAxisCount: columns,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 2.6,
+              children: [
+                _AdminMetricCard(
+                  label: 'Usuarios totales',
+                  icon: Icons.people_alt_outlined,
+                  value: _metricValue(const Key('pos-users-kpi-total'), '${_items.length}'),
+                ),
+                _AdminMetricCard(
+                  label: 'Activos',
+                  icon: Icons.check_circle_outline,
+                  value: _metricValue(
+                    const Key('pos-users-kpi-active'),
+                    '${_items.where((u) => u.membershipStatus == 'active').length}',
+                  ),
+                ),
+                _AdminMetricCard(
+                  label: 'Roles en uso',
+                  icon: Icons.badge_outlined,
+                  value: enrichmentReady
+                      ? _metricValue(const Key('pos-users-kpi-roles-in-use'), '${rolesInUse.length}')
+                      : _metricLoading(const Key('pos-users-kpi-roles-in-use')),
+                ),
+                _AdminMetricCard(
+                  label: 'Sin rol asignado',
+                  icon: Icons.person_off_outlined,
+                  value: enrichmentReady
+                      ? _metricValue(const Key('pos-users-kpi-without-role'), '$withoutRole')
+                      : _metricLoading(const Key('pos-users-kpi-without-role')),
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(
+            SizedBox(
+              width: 280,
               child: TextField(
                 key: const Key('pos-users-search'),
-                onChanged: (value) => setState(() {
+                onChanged: (value) {
                   _query = value;
-                  if (_items.isNotEmpty) {
-                    _phase = _visibleItems.isEmpty ? _ListPhase.empty : _ListPhase.ready;
-                  }
-                }),
-                decoration: const InputDecoration(isDense: true, hintText: 'Buscar por nombre o correo', prefixIcon: Icon(Icons.search)),
+                  _refilter();
+                },
+                decoration: const InputDecoration(isDense: true, hintText: 'Buscar por nombre, correo o rol', prefixIcon: Icon(Icons.search)),
               ),
             ),
-            const SizedBox(width: 10),
+            if (_roles.isNotEmpty)
+              SizedBox(
+                width: 200,
+                child: DropdownButtonFormField<String?>(
+                  key: const Key('pos-users-role-filter'),
+                  initialValue: _roleFilter,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Rol'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Todos los roles')),
+                    for (final role in _roles) DropdownMenuItem(value: role.id, child: Text(role.name)),
+                  ],
+                  onChanged: (value) {
+                    _roleFilter = value;
+                    _refilter();
+                  },
+                ),
+              ),
             Tooltip(
               message: newDisabledReason,
               child: FilledButton.icon(
@@ -489,16 +793,39 @@ class _UsersTabState extends State<_UsersTab> {
         const SizedBox(height: 12),
         switch (_phase) {
           _ListPhase.loading => const _Loading(),
-          _ListPhase.empty => const _Empty(message: 'No hay usuarios registrados.'),
+          _ListPhase.empty => const _Empty(message: 'No hay usuarios para mostrar.'),
           _ListPhase.failure => _Failure(
             message: _errorMessage ?? 'No fue posible cargar los usuarios.',
             onRetry: () => unawaited(_load()),
           ),
-          _ListPhase.ready => Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final user in _visibleItems) _UserRow(user: user, onTap: () => unawaited(_openDetail(user))),
-            ],
+          _ListPhase.ready => LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 980
+                  ? 3
+                  : constraints.maxWidth >= 620
+                  ? 2
+                  : 1;
+              return GridView.count(
+                key: const Key('pos-users-grid'),
+                crossAxisCount: columns,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: columns == 1 ? 2.4 : 1.55,
+                children: [
+                  for (final user in _visibleItems)
+                    _UserCard(
+                      key: Key('pos-user-row-${user.id}'),
+                      user: user,
+                      detail: _details[user.id],
+                      branches: widget.context.branches,
+                      permissionCount: _details[user.id] == null ? null : _permissionCountFor(_details[user.id]!),
+                      onTap: () => unawaited(_openDetail(user)),
+                    ),
+                ],
+              );
+            },
           ),
         },
       ],
@@ -506,41 +833,144 @@ class _UsersTabState extends State<_UsersTab> {
   }
 }
 
-class _UserRow extends StatelessWidget {
-  const _UserRow({required this.user, required this.onTap});
+/// TASK 16.31 (Phase 7) — the Usuarios card. Every field shown comes from
+/// the real `PosUser`, or from the real `PosUserDetail` enrichment once
+/// it resolves (role/branch scope/permission count) — never a fabricated
+/// job title (that would require an Employees-gateway cross-reference
+/// this screen deliberately does not take on, see
+/// docs/USERS_EMPLOYEES_UX.md) and never a raw UUID as primary text.
+class _UserCard extends StatelessWidget {
+  const _UserCard({
+    required this.user,
+    required this.detail,
+    required this.branches,
+    required this.permissionCount,
+    required this.onTap,
+    super.key,
+  });
   final PosUser user;
+  final PosUserDetail? detail;
+  final List<BranchSummary> branches;
+  final int? permissionCount;
   final VoidCallback onTap;
+
+  String get _initials {
+    final parts = user.displayName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return '?';
+    final first = parts.first.characters.first;
+    final last = parts.length > 1 ? parts.last.characters.first : '';
+    return (first + last).toUpperCase();
+  }
+
+  String? get _roleName {
+    final active = detail?.roles.where((r) => r.status == 'active');
+    if (active == null || active.isEmpty) return null;
+    return active.map((r) => r.roleName).join(', ');
+  }
+
+  String get _branchScope {
+    final active = detail?.roles.where((r) => r.status == 'active') ?? const [];
+    if (active.any((r) => r.branchId == null)) return 'Todas las sucursales';
+    final branchAccess = detail?.branchAccess.where((b) => b.status == 'active') ?? const [];
+    if (branchAccess.isEmpty) return 'Sin sucursal asignada';
+    final names = branchAccess
+        .map((access) => branches.where((b) => b.id == access.branchId).firstOrNull?.name ?? access.branchId)
+        .toList(growable: false);
+    return names.join(', ');
+  }
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     return _Card(
-      key: Key('pos-user-row-${user.id}'),
       padding: EdgeInsets.zero,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(user.displayName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
-                    const SizedBox(height: 2),
-                    Text(user.email, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
-                  ],
-                ),
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: palette.actionTint,
+                    child: Text(_initials, style: TextStyle(color: palette.blueDeep, fontWeight: FontWeight.w800, fontSize: 13)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          user.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13.5),
+                        ),
+                        Text(
+                          user.email,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _StatusPill(label: user.membershipStatus),
+                ],
               ),
-              _StatusPill(label: user.membershipStatus),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 10,
+                runSpacing: 6,
+                children: [
+                  _CardMetaChip(
+                    icon: Icons.badge_outlined,
+                    key: const Key('pos-user-card-role'),
+                    label: _roleName ?? (detail == null ? 'Cargando…' : 'Sin rol'),
+                  ),
+                  _CardMetaChip(icon: Icons.store_outlined, label: detail == null ? 'Cargando…' : _branchScope),
+                  _CardMetaChip(
+                    icon: Icons.key_outlined,
+                    key: const Key('pos-user-card-permission-count'),
+                    label: permissionCount == null ? 'Permisos…' : '$permissionCount permisos',
+                  ),
+                ],
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CardMetaChip extends StatelessWidget {
+  const _CardMetaChip({required this.icon, required this.label, super.key});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 13, color: palette.textMuted),
+        const SizedBox(width: 3),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 150),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: palette.textMuted, fontSize: 11),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1777,10 +2207,35 @@ class _RolesTab extends StatefulWidget {
   State<_RolesTab> createState() => _RolesTabState();
 }
 
+// TASK 16.31 (Phase 9) — presentation-only role icon/color, deterministic
+// from the role's own real `code`/`name` (never a fabricated backend
+// field — `PosRole` has no icon/color column, confirmed against the
+// schema). The same role always renders the same icon/color; a role
+// this keyword list doesn't recognize still gets a stable color (hashed
+// from its code) and a sensible generic icon, never a crash or a blank.
+IconData _roleIcon(PosRole role) {
+  final code = role.code.toLowerCase();
+  if (code.contains('owner') || code.contains('dueñ')) return Icons.workspace_premium_outlined;
+  if (code.contains('admin')) return Icons.admin_panel_settings_outlined;
+  if (code.contains('manager') || code.contains('gerente')) return Icons.supervisor_account_outlined;
+  if (code.contains('cashier') || code.contains('cajer')) return Icons.point_of_sale_outlined;
+  if (code.contains('kitchen') || code.contains('cocina')) return Icons.soup_kitchen_outlined;
+  if (code.contains('cafe')) return Icons.local_cafe_outlined;
+  return Icons.shield_outlined;
+}
+
+Color _roleColor(PosPalette palette, PosRole role) {
+  final accents = [palette.blueDeep, palette.action, palette.success, palette.warning, palette.cyan];
+  final hash = role.code.codeUnits.fold<int>(0, (sum, unit) => sum + unit);
+  return accents[hash % accents.length];
+}
+
 class _RolesTabState extends State<_RolesTab> {
   _ListPhase _phase = _ListPhase.loading;
   List<PosRole> _items = const [];
   String? _errorMessage;
+  String? _selectedRoleId;
+  List<String>? _selectedTemplateCodes;
 
   bool get _canRead => widget.context.permissions.contains('role.read');
   bool get _canCreate => widget.context.permissions.contains('role.create');
@@ -1829,136 +2284,211 @@ class _RolesTabState extends State<_RolesTab> {
     );
     if (result == null) return;
     unawaited(_load());
-    // TASK 16.16 — a role created from a template immediately continues
-    // into the SAME `_RoleDetailDialog`/`_PermissionPicker` flow a manual
-    // edit uses, pre-checked with that template's own permission codes
-    // (see `_RoleFormResult`'s own doc comment). Never attempted when the
-    // acting admin can't manage permissions at all — mirrors every other
-    // `role.permission.manage` gate in this file.
-    final templateCodes = result.templatePermissionCodes;
-    if (templateCodes != null && _canManagePermissions && mounted) {
-      final changed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => _RoleDetailDialog(
-          role: result.role,
-          gateway: widget.gateway,
-          actorPermissions: widget.context.permissions,
-          canUpdate: _canUpdate,
-          canManagePermissions: _canManagePermissions,
-          initialTemplatePermissionCodes: templateCodes,
-        ),
-      );
-      if (changed == true) unawaited(_load());
-    }
-  }
-
-  Future<void> _openDetail(PosRole role) async {
-    final changed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => _RoleDetailDialog(
-        role: role,
-        gateway: widget.gateway,
-        actorPermissions: widget.context.permissions,
-        canUpdate: _canUpdate,
-        canManagePermissions: _canManagePermissions,
-      ),
-    );
-    if (changed == true) unawaited(_load());
+    // TASK 16.16/16.31 — a role created from a template immediately
+    // selects itself in the master/detail view below, pre-checked with
+    // that template's own permission codes (see `_RoleFormResult`'s own
+    // doc comment) — the same continuation the old modal-dialog flow
+    // used to do, now inline instead of a second dialog. Never attempted
+    // when the acting admin can't manage permissions at all — mirrors
+    // every other `role.permission.manage` gate in this file.
+    setState(() {
+      _selectedRoleId = result.role.id;
+      _selectedTemplateCodes = _canManagePermissions ? result.templatePermissionCodes : null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    if (!_canRead) return const _PermissionDenied(permission: 'role.read');
+    // TASK 16.31 — lacking `role.read` blocks only the LEFT pane (role
+    // list); the RIGHT pane's own default content (the permission
+    // catalog browse) is independently gated on `permission.read` by
+    // `_PermissionCatalogBrowse` itself and must still render for an
+    // actor who holds that permission but not `role.read` — the same
+    // real capability the old, separate "Permisos" tab always gave
+    // them, never silently withdrawn by this task's own visual merge.
+    if (!_canRead) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Expanded(child: _PermissionDenied(permission: 'role.read')),
+          const SizedBox(width: 16),
+          Expanded(
+            child: _PermissionCatalogBrowse(gateway: widget.gateway, context: widget.context),
+          ),
+        ],
+      );
+    }
     final newDisabledReason = _canCreate ? '' : 'Se requiere el permiso role.create.';
-    return Column(
+    final selectedRole = _selectedRoleId == null ? null : _items.where((r) => r.id == _selectedRoleId).firstOrNull;
+
+    final leftPane = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Align(
-          alignment: Alignment.centerRight,
-          child: Tooltip(
-            message: newDisabledReason,
-            child: FilledButton.icon(
-              key: const Key('pos-roles-new'),
-              onPressed: newDisabledReason.isEmpty ? () => unawaited(_openNewForm()) : null,
-              style: FilledButton.styleFrom(backgroundColor: palette.action),
-              icon: const Icon(Icons.add_moderator_outlined, size: 16),
-              label: const Text('Nuevo rol'),
-            ),
+        Tooltip(
+          message: newDisabledReason,
+          child: FilledButton.icon(
+            key: const Key('pos-roles-new'),
+            onPressed: newDisabledReason.isEmpty ? () => unawaited(_openNewForm()) : null,
+            style: FilledButton.styleFrom(backgroundColor: palette.action),
+            icon: const Icon(Icons.add_moderator_outlined, size: 16),
+            label: const Text('Nuevo rol'),
           ),
         ),
         const SizedBox(height: 12),
         switch (_phase) {
           _ListPhase.loading => const _Loading(),
-          _ListPhase.empty => const _Empty(message: 'No hay roles registrados.'),
+          _ListPhase.empty => const _Empty(message: 'No hay roles disponibles.'),
           _ListPhase.failure => _Failure(
             message: _errorMessage ?? 'No fue posible cargar los roles.',
             onRetry: () => unawaited(_load()),
           ),
           _ListPhase.ready => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [for (final role in _items) _RoleRow(role: role, onTap: () => unawaited(_openDetail(role)))],
+            children: [
+              for (final role in _items)
+                _RoleCard(
+                  role: role,
+                  selected: role.id == _selectedRoleId,
+                  onTap: () => setState(() {
+                    _selectedRoleId = role.id;
+                    _selectedTemplateCodes = null;
+                  }),
+                ),
+            ],
           ),
         },
       ],
     );
+
+    final rightPane = selectedRole == null
+        ? _PermissionCatalogBrowse(key: const Key('pos-role-detail-empty'), gateway: widget.gateway, context: widget.context)
+        : _RoleDetailDialog(
+            key: ValueKey('pos-role-detail-${selectedRole.id}'),
+            role: selectedRole,
+            gateway: widget.gateway,
+            actorPermissions: widget.context.permissions,
+            canUpdate: _canUpdate,
+            canManagePermissions: _canManagePermissions,
+            initialTemplatePermissionCodes: _selectedTemplateCodes,
+            embedded: true,
+            onSaved: () => unawaited(_load()),
+          );
+
+    // TASK 16.31 (Phase 23) — desktop master/detail (≈30/70) collapses to
+    // a stacked list-then-detail column at narrow widths, never a
+    // horizontally-crushed two-column layout.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 860) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              leftPane,
+              if (selectedRole != null || _phase != _ListPhase.ready) ...[
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 8),
+                rightPane,
+              ],
+            ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: 320, child: leftPane),
+            const SizedBox(width: 16),
+            Expanded(child: rightPane),
+          ],
+        );
+      },
+    );
   }
 }
 
-/// TASK 16.16A Phase 7 — deliberately still shows [PosRole.code] (a short,
-/// human-typed slug like "cashier", never a UUID) as the row's secondary
-/// line, NOT a "N permisos" summary: computing that here would mean an
-/// extra `rolePermissions()` call PER ROW in this list (an N+1 fetch for
-/// every role, every time the Roles tab renders) — bad UX/perf, and this
-/// task explicitly does not ask for a new backend field or call to avoid
-/// it. The "Cajero / 12 permisos" style summary this task's own Phase 7
-/// example wants instead lives in [_RoleDetailDialog]'s header, computed
-/// from the SAME `rolePermissions()` call that dialog already makes to
-/// feed its own permission picker — see that class for the real summary.
-class _RoleRow extends StatelessWidget {
-  const _RoleRow({required this.role, required this.onTap});
+/// TASK 16.31 (Phase 9/10) — the left-pane role card: icon/color (see
+/// `_roleIcon`/`_roleColor`), name, "Rol protegido" badge for
+/// `is_system`, status pill, selection highlight. Deliberately still no
+/// "N usuarios" count (see this file's own pre-existing doc comment on
+/// the reasoning — computing that here would mean an aggregate the real
+/// backend has no endpoint for at all, worse than the N+1 the old
+/// `_RoleRow` doc comment already declined; see
+/// docs/USERS_EMPLOYEES_UX.md).
+class _RoleCard extends StatelessWidget {
+  const _RoleCard({required this.role, required this.selected, required this.onTap});
   final PosRole role;
+  final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    return _Card(
-      key: Key('pos-role-row-${role.id}'),
-      padding: EdgeInsets.zero,
-      child: InkWell(
-        onTap: onTap,
+    final accent = _roleColor(palette, role);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        key: Key('pos-role-row-${role.id}'),
+        color: selected ? palette.actionTint : palette.surface,
         borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(role.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
-                        if (role.isSystem) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(color: palette.blueTint, borderRadius: BorderRadius.circular(20)),
-                            child: Text('Sistema', style: TextStyle(color: palette.blueDeep, fontSize: 9, fontWeight: FontWeight.w800)),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Text(role.code, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
-                  ],
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: selected ? accent : palette.border),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(color: accent.withValues(alpha: .14), shape: BoxShape.circle),
+                  child: Icon(_roleIcon(role), size: 16, color: accent),
                 ),
-              ),
-              _StatusPill(label: role.status),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
-            ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              role.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
+                            ),
+                          ),
+                          if (role.isSystem) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(color: palette.blueTint, borderRadius: BorderRadius.circular(20)),
+                              child: Text(
+                                'Protegido',
+                                style: TextStyle(color: palette.blueDeep, fontSize: 9, fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if (role.description != null && role.description!.isNotEmpty)
+                        Text(
+                          role.description!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                _StatusPill(label: role.status),
+              ],
+            ),
           ),
         ),
       ),
@@ -2189,6 +2719,18 @@ class _RoleDetailDialog extends StatefulWidget {
     required this.canUpdate,
     required this.canManagePermissions,
     this.initialTemplatePermissionCodes,
+    // TASK 16.31 (Phase 9) — `true` renders this same content INLINE in
+    // the Roles master/detail right pane (no `Dialog` chrome, no close
+    // button — there's nothing to "close" back to, the left pane stays
+    // visible the whole time); `false` (every pre-existing caller) keeps
+    // the original modal `Dialog` wrapper unchanged. Either way, every
+    // field/mutation/self-escalation-guard below is IDENTICAL — only the
+    // outer shell differs. [onSaved] replaces the old `Navigator.pop
+    // (_changed)` contract for the embedded case (there's no route to
+    // pop); the modal case still pops as before.
+    this.embedded = false,
+    this.onSaved,
+    super.key,
   });
 
   final PosRole role;
@@ -2203,6 +2745,8 @@ class _RoleDetailDialog extends StatefulWidget {
   // how this gets resolved to permission ids and filtered to what the
   // acting admin actually holds.
   final List<String>? initialTemplatePermissionCodes;
+  final bool embedded;
+  final VoidCallback? onSaved;
 
   @override
   State<_RoleDetailDialog> createState() => _RoleDetailDialogState();
@@ -2321,6 +2865,7 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
         _detailBusy = false;
         _changed = true;
       });
+      widget.onSaved?.call();
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -2355,6 +2900,7 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
         _permissionsBusy = false;
         _changed = true;
       });
+      widget.onSaved?.call();
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -2383,29 +2929,26 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    return Dialog(
-      backgroundColor: palette.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(child: Text(_role.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
-                    IconButton(
-                      key: const Key('pos-role-detail-close'),
-                      tooltip: 'Cerrar',
-                      onPressed: () => Navigator.of(context).pop(_changed),
-                      icon: Icon(Icons.close, color: palette.textMuted, size: 18),
-                    ),
-                  ],
-                ),
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(_role.name, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16))),
+            // TASK 16.31 — embedded in the master/detail right pane,
+            // there is no dialog route to close back to (the left pane
+            // stays visible the whole time) — omit the button entirely
+            // rather than have it pop the wrong, enclosing route.
+            if (!widget.embedded)
+              IconButton(
+                key: const Key('pos-role-detail-close'),
+                tooltip: 'Cerrar',
+                onPressed: () => Navigator.of(context).pop(_changed),
+                icon: Icon(Icons.close, color: palette.textMuted, size: 18),
+              ),
+          ],
+        ),
                 // TASK 16.16A Phase 7 — "Cajero / 12 permisos" style
                 // summary, computed from the SAME `rolePermissions()` call
                 // `_loadPermissions` already makes to feed the picker below
@@ -2536,8 +3079,18 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
                   ),
                 ],
               ],
-            ),
-          ),
+            );
+    if (widget.embedded) {
+      return SingleChildScrollView(child: content);
+    }
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
+          child: SingleChildScrollView(child: content),
         ),
       ),
     );
@@ -2549,18 +3102,24 @@ class _RoleDetailDialogState extends State<_RoleDetailDialog> {
 // browser of the live server-authoritative catalog, grouped by domain.
 // This is the SAME `_PermissionPicker` widget the Roles tab's edit flow
 // uses (`readOnly` mode below), not a separate implementation.
+//
+// TASK 16.31 (Phase 9) — this used to be its own standalone "Permisos"
+// tab; it is now the Roles y permisos master/detail view's own DEFAULT
+// right-pane content (no role selected yet) — never removed, just
+// relocated, so the full-catalog browse capability (and its own
+// dedicated permission) is never lost.
 // ---------------------------------------------------------------------
 
-class _PermissionsTab extends StatefulWidget {
-  const _PermissionsTab({required this.context, required this.gateway});
+class _PermissionCatalogBrowse extends StatefulWidget {
+  const _PermissionCatalogBrowse({required this.context, required this.gateway, super.key});
   final AuthenticatedContext context;
   final PosIdentityAdminGateway gateway;
 
   @override
-  State<_PermissionsTab> createState() => _PermissionsTabState();
+  State<_PermissionCatalogBrowse> createState() => _PermissionCatalogBrowseState();
 }
 
-class _PermissionsTabState extends State<_PermissionsTab> {
+class _PermissionCatalogBrowseState extends State<_PermissionCatalogBrowse> {
   _ListPhase _phase = _ListPhase.loading;
   List<PosPermission> _items = const [];
   String? _errorMessage;
@@ -2603,22 +3162,212 @@ class _PermissionsTabState extends State<_PermissionsTab> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
     if (!_canRead) return const _PermissionDenied(permission: 'permission.read');
-    return switch (_phase) {
-      _ListPhase.loading => const _Loading(),
-      _ListPhase.empty => const _Empty(message: 'El catálogo de permisos está vacío.'),
-      _ListPhase.failure => _Failure(
-        message: _errorMessage ?? 'No fue posible cargar los permisos.',
-        onRetry: () => unawaited(_load()),
-      ),
-      _ListPhase.ready => _PermissionPicker(
-        permissions: _items,
-        selectedIds: null,
-        actorPermissionCodes: null,
-        enabled: false,
-        onToggle: null,
-      ),
-    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Selecciona un rol para ver o editar sus permisos',
+          style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Mientras tanto, este es el catálogo completo de permisos disponibles.',
+          style: TextStyle(color: palette.textSecondary, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        switch (_phase) {
+          _ListPhase.loading => const _Loading(),
+          _ListPhase.empty => const _Empty(message: 'El catálogo de permisos está vacío.'),
+          _ListPhase.failure => _Failure(
+            message: _errorMessage ?? 'No fue posible cargar los permisos.',
+            onRetry: () => unawaited(_load()),
+          ),
+          _ListPhase.ready => _PermissionPicker(
+            permissions: _items,
+            selectedIds: null,
+            actorPermissionCodes: null,
+            enabled: false,
+            onToggle: null,
+          ),
+        },
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// Sesión actual (TASK 16.31, Phase 13/14/15) — real `AuthenticatedContext`
+// data only. The old reference screenshot's "Hora de entrada"/"Equipo"/
+// "IP" are deliberately NOT here: confirmed against the real backend
+// that no login timestamp, device/station, or IP address is captured
+// anywhere (not even in the audit log) — see docs/USERS_EMPLOYEES_UX.md.
+// "Cambiar contraseña" is also absent: no endpoint exists to change an
+// already-active user's password. "Cambiar usuario rápido" is absent
+// too — see this file's own architecture-audit doc for why (the backend
+// CAN mint a new session via PIN, but this app's frontend deliberately
+// never adopts it as the active session; building that hand-off is a
+// real, separate follow-up, not a decorative visual add-on here).
+// ---------------------------------------------------------------------
+
+class _SessionTab extends StatefulWidget {
+  const _SessionTab({required this.context, required this.gateway, this.onLogout});
+  final AuthenticatedContext context;
+  final PosIdentityAdminGateway gateway;
+  final VoidCallback? onLogout;
+
+  @override
+  State<_SessionTab> createState() => _SessionTabState();
+}
+
+class _SessionTabState extends State<_SessionTab> {
+  PosUserDetail? _detail;
+  bool _loadingRole = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRole());
+  }
+
+  Future<void> _loadRole() async {
+    try {
+      final detail = await widget.gateway.userDetail(widget.context.session.userId);
+      if (!mounted) return;
+      setState(() {
+        _detail = detail;
+        _loadingRole = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      // Honest fallback — no `user.read` (or a transient failure) just
+      // means the role badge stays omitted; every other field on this
+      // tab (name/email/branch/permissions) comes straight from the
+      // already-loaded `AuthenticatedContext` and needs no network call
+      // at all.
+      setState(() => _loadingRole = false);
+    }
+  }
+
+  String get _initials {
+    final parts = widget.context.user.displayName.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return '?';
+    final first = parts.first.characters.first;
+    final last = parts.length > 1 ? parts.last.characters.first : '';
+    return (first + last).toUpperCase();
+  }
+
+  String get _scopeLabel {
+    if (widget.context.companyWideAccess) return 'Todas las sucursales';
+    return widget.context.currentBranch?.name ?? 'Sin sucursal asignada';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final roleNames = _detail?.roles.where((r) => r.status == 'active').map((r) => r.roleName).join(', ');
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final stacked = constraints.maxWidth < 760;
+        final userCard = _Card(
+          key: const Key('pos-session-user-card'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Usuario en sesión', style: TextStyle(color: palette.textMuted, fontSize: 11, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 26,
+                    backgroundColor: palette.actionTint,
+                    child: Text(_initials, style: TextStyle(color: palette.blueDeep, fontWeight: FontWeight.w800, fontSize: 18)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.context.user.displayName,
+                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                        ),
+                        Text(widget.context.user.email, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _DetailRow(
+                label: 'Rol',
+                value: _loadingRole ? 'Cargando…' : (roleNames == null || roleNames.isEmpty ? 'Sin rol asignado' : roleNames),
+              ),
+              _DetailRow(label: 'Sucursal', value: _scopeLabel),
+              const SizedBox(height: 14),
+              Tooltip(
+                message: widget.onLogout == null ? 'Cerrar sesión no está disponible en este contexto.' : '',
+                child: OutlinedButton.icon(
+                  key: const Key('pos-session-logout'),
+                  onPressed: widget.onLogout,
+                  icon: const Icon(Icons.logout, size: 16),
+                  label: const Text('Cerrar sesión'),
+                ),
+              ),
+            ],
+          ),
+        );
+        final permissionsCard = _Card(
+          key: const Key('pos-session-permissions-card'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Mis permisos activos', style: TextStyle(color: palette.textMuted, fontSize: 11, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(
+                '${widget.context.permissions.length} permisos otorgados a esta sesión.',
+                style: TextStyle(color: palette.textSecondary, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              if (widget.context.permissions.isEmpty)
+                Text('Sin permisos otorgados.', style: TextStyle(color: palette.textMuted, fontSize: 12))
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final code in widget.context.permissions)
+                      Container(
+                        key: Key('pos-session-permission-chip-$code'),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(20)),
+                        child: Text(
+                          permissionLabel(code),
+                          style: TextStyle(color: palette.blueDeep, fontSize: 11.5, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+        );
+        if (stacked) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [userCard, const SizedBox(height: 16), permissionsCard],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: 340, child: userCard),
+            const SizedBox(width: 16),
+            Expanded(child: permissionsCard),
+          ],
+        );
+      },
+    );
   }
 }
 

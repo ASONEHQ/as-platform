@@ -607,6 +607,7 @@ class _PosShellState extends State<PosShell> {
                             onEnterCliente: _enterClienteMode,
                             onBranchSelected: widget.onBranchSelected,
                             onNavigateToModule: select,
+                            onLogout: widget.onLogout,
                           ),
                         ),
                       ],
@@ -3323,10 +3324,16 @@ class _Content extends StatelessWidget {
     required this.onEnterCliente,
     required this.onBranchSelected,
     required this.onNavigateToModule,
+    required this.onLogout,
   });
 
   final PosModule module;
   final AuthenticatedContext context;
+  // TASK 16.31 — the exact same real logout callback the topbar account
+  // menu already uses (`_PosShellState.widget.onLogout`), threaded down
+  // so the new "Sesión actual" tab's "Cerrar sesión" action reuses it
+  // rather than duplicating a second logout path.
+  final VoidCallback onLogout;
   final PosReadController controller;
   final SaleSession saleSession;
   final PosSalesGateway salesGateway;
@@ -3512,6 +3519,9 @@ class _Content extends StatelessWidget {
                     // own area/register pickers.
                     areasGateway: operationalAreasGateway,
                     cashGateway: cashGateway,
+                    // TASK 16.31: the real logout action for "Sesión
+                    // actual" → "Cerrar sesión".
+                    onLogout: onLogout,
                   ),
                   PosModule.history => _SalesHistory(
                     context: this.context,
