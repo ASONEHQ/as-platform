@@ -99,7 +99,20 @@ export class BrandingService {
     const result = await this.settings.mutateCompanySetting(scope, mutation, 'retired');
     if (typeof previousUrl === 'string' && previousUrl.length > 0) {
       const key = this.storage.keyFromUrl(previousUrl);
-      if (key !== undefined) await this.storage.deleteObjectBestEffort(key);
+      // TASK 17.1 — `previousUrl` came back from `branding.logo_url`, a
+      // plain tenant-writable setting string: it is NOT guaranteed to be a
+      // key this company's own upload ever produced (a caller with
+      // `company_settings.update` could have written any string there,
+      // including another company's real logo URL, directly through
+      // `PUT /companies/{id}/settings/branding.logo_url`). Deleting
+      // without this check would let company A delete company B's real
+      // object. When ownership can't be proven, this is a silent no-op —
+      // the setting mutation above already succeeded and is the operation
+      // the caller actually asked for; object cleanup here has always been
+      // best-effort, and refusing to delete a foreign object must never
+      // surface as an error (that would leak that a foreign object exists).
+      if (key !== undefined && this.storage.isOwnedKey(key, scope.companyId))
+        await this.storage.deleteObjectBestEffort(key);
     }
     return result;
   }

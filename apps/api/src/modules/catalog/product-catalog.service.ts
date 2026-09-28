@@ -704,7 +704,19 @@ export class ProductCatalogService {
     const updated = await this.patchProduct(context, id, expectedVersion, { imageUrl: null });
     if (before.imageUrl !== null) {
       const key = this.imageStorage.keyFromUrl(before.imageUrl);
-      if (key !== undefined) await this.imageStorage.deleteObjectBestEffort(key);
+      // TASK 17.1 — `before.imageUrl` may have been a client-pasted
+      // external URL (see `image_url` on `createProduct`/`patchProduct`'s
+      // own doc comments — a documented legacy-parity feature), never
+      // guaranteed to be a key THIS company's own upload produced. A
+      // caller with write access to their own product could set its
+      // `image_url` to another company's real, publicly-readable product
+      // photo, then trigger this delete to destroy it. When ownership
+      // can't be proven, this is a silent no-op — the product mutation
+      // above already succeeded, and object cleanup here has always been
+      // best-effort; refusing to delete a foreign object must never
+      // surface as an error (that would leak that a foreign object exists).
+      if (key !== undefined && this.imageStorage.isOwnedKey(key, context.companyId))
+        await this.imageStorage.deleteObjectBestEffort(key);
     }
     return updated;
   }

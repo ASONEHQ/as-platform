@@ -43,6 +43,23 @@ export class ProductImageStorage {
     return this.storage.keyFromUrl(url);
   }
 
+  /** TASK 17.1 -- true only when `key` is a REAL product-image object key
+   * generated for exactly `companyId` (`products/{companyId}/{uuid}.ext`,
+   * strict equality on `companyId`, never a prefix match). `products
+   * .image_url` accepts a client-pasted external URL as a legacy-parity
+   * feature (see `product-catalog.routes.ts`'s `image_url` field), so a
+   * value read back from a product row can be ANY string a caller with
+   * write access to that product chose to submit -- including another
+   * company's real, publicly-readable product-image URL. Every caller
+   * about to DELETE an object derived from that field MUST check this
+   * first; see `ProductCatalogService.deleteProductImage`. */
+  public isOwnedKey(key: string, companyId: string): boolean {
+    return this.storage.isOwnedKey(key, [companyId]);
+  }
+
+  /** Callers MUST check {@link isOwnedKey} first for any key derived from a
+   * value that could have been client-submitted (see that method's own
+   * doc comment) -- this method itself performs no ownership check. */
   public async deleteObjectBestEffort(key: string): Promise<void> {
     await this.storage.deleteObjectBestEffort(key);
   }

@@ -315,6 +315,82 @@ integration('real Postgres + real MinIO branding routes', () => {
     const objectResponse = await fetch(uploadedUrl);
     expect(objectResponse.status).toBe(404);
   });
+
+  // TASK 17.1 — CRITICAL cross-tenant regression: `branding.logo_url` is a
+  // plain, tenant-writable settings string. Before the fix, company A
+  // could write company B's real logo URL into A's OWN setting (via the
+  // generic settings PUT route, which never validated the value), then
+  // call `DELETE /companies/A/branding/logo` to delete company B's real
+  // object out of the shared bucket. This proves the object survives —
+  // not merely that the HTTP response looks fine (it always did, even
+  // when vulnerable, since clearing company A's own setting always
+  // succeeds regardless of what object cleanup does).
+  it('CRITICAL: deleting company A\'s logo NEVER deletes company B\'s real object, even when A\'s setting holds B\'s real URL', async () => {
+    // 1) Company B uploads a REAL logo of its own.
+    const bLogo = multipartLogo(pngBytes(777));
+    const bUpload = await app.inject({
+      method: 'POST',
+      url: `/api/v1/companies/${otherCompanyId}/branding/logo`,
+      headers: { authorization: 'Bearer integration-other', 'content-type': bLogo.contentType, 'if-match': '"1"' },
+      payload: bLogo.body,
+    });
+    expect(bUpload.statusCode).toBe(200);
+    const bLogoUrl = bUpload.json<{ data: { value: string } }>().data.value;
+    // Sanity: the object genuinely exists in MinIO before the attack.
+    expect((await fetch(bLogoUrl)).status).toBe(200);
+
+    // 2) Company A reads its OWN current setting version (required for the
+    // CAS-guarded PUT below), then poisons its OWN `branding.logo_url`
+    // setting with company B's real URL -- something the generic settings
+    // route allows today, since `branding.logo_url` is validated only as a
+    // bounded string, never as "a URL this tenant's own upload produced".
+    const aCurrent = await app.inject({
+      method: 'GET',
+      url: `/api/v1/companies/${companyId}/settings/effective?keys=branding.logo_url`,
+      headers: { authorization: 'Bearer integration' },
+    });
+    const aCurrentVersion = aCurrent.json<{ data: { settings: { version: number }[] } }>().data
+      .settings[0]?.version;
+    expect(aCurrentVersion).toBeDefined();
+
+    const poison = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/companies/${companyId}/settings/branding.logo_url`,
+      headers: { authorization: 'Bearer integration', 'if-match': `"${String(aCurrentVersion)}"` },
+      payload: { value: bLogoUrl, value_type: 'string', status: 'active' },
+    });
+    expect(poison.statusCode).toBe(200);
+    const poisonedVersion = poison.json<{ data: { version: number } }>().data.version;
+
+    // 3) Company A deletes its OWN logo -- the attack.
+    const attack = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/companies/${companyId}/branding/logo`,
+      headers: { authorization: 'Bearer integration', 'if-match': `"${String(poisonedVersion)}"` },
+    });
+    // The request itself still succeeds -- clearing company A's own
+    // setting is always a legitimate operation, independent of whether the
+    // (foreign, unowned) object gets cleaned up.
+    expect(attack.statusCode).toBe(200);
+    expect(attack.json<{ data: { value: string } }>().data.value).toBe('');
+
+    // 4) The real assertion: company B's object is UNTOUCHED.
+    const stillThere = await fetch(bLogoUrl);
+    expect(stillThere.status).toBe(200);
+    const stillBytes = Buffer.from(await stillThere.arrayBuffer());
+    expect(stillBytes.length).toBe(777);
+    expect(stillBytes.subarray(0, 8)).toEqual(PNG_MAGIC);
+
+    // 5) Company B's own setting is also completely unaffected.
+    const bEffective = await app.inject({
+      method: 'GET',
+      url: `/api/v1/companies/${otherCompanyId}/settings/effective?keys=branding.logo_url`,
+      headers: { authorization: 'Bearer integration-other' },
+    });
+    expect(bEffective.json<{ data: { settings: { value: string }[] } }>().data.settings[0]).toMatchObject(
+      { value: bLogoUrl },
+    );
+  });
 });
 
 async function ensureMigrations(database: DatabaseClient): Promise<void> {

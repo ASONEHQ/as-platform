@@ -99,10 +99,26 @@ export class BrandingObjectStorage {
     return this.storage.keyFromUrl(url);
   }
 
+  /** TASK 17.1 -- true only when `key` is a REAL logo object key that was
+   * generated for exactly `companyId` (i.e. `logos/{companyId}/{uuid}.ext`,
+   * with `companyId` compared for strict equality, never a prefix match).
+   * `branding.logo_url` is a plain, tenant-writable settings string (see
+   * `settings.catalog.ts`), so a value read back from it can be ANY string
+   * a caller with `company_settings.update` chose to write -- including
+   * another company's real, publicly-readable logo URL. Every caller that
+   * is about to DELETE an object derived from that setting value MUST
+   * check this first; see `BrandingService.deleteLogo`. */
+  public isOwnedKey(key: string, companyId: string): boolean {
+    return this.storage.isOwnedKey(key, [companyId]);
+  }
+
   /** Best-effort delete -- a missing object (already gone, or the URL
    * belonged to a different bucket layout) is not an error; any other
    * failure is swallowed too since a failed cleanup must never block the
-   * setting mutation that already succeeded (see `branding.service.ts`). */
+   * setting mutation that already succeeded (see `branding.service.ts`).
+   * Callers MUST check {@link isOwnedKey} first for any key derived from a
+   * value that could have been written by a client (see that method's own
+   * doc comment) -- this method itself performs no ownership check. */
   public async deleteObjectBestEffort(key: string): Promise<void> {
     await this.storage.deleteObjectBestEffort(key);
   }

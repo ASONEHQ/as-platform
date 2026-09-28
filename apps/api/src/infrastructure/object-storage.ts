@@ -210,23 +210,60 @@ export class S3ObjectStorage {
   /** Extracts the object key from a URL this same instance produced (via
    * {@link publicUrl}), or `undefined` if the URL is not one of this
    * bucket's own path-style URLs — callers treat `undefined` as "nothing
-   * to delete". */
+   * to delete". TASK 17.1 — also requires the URL's origin (scheme + host
+   * + port) to match this instance's own `baseUrl` exactly: a URL from a
+   * different host (an attacker-controlled domain that merely happens to
+   * contain `/{bucket}/{key}` somewhere in its path, or a lookalike host)
+   * is rejected here, before any key is ever extracted, rather than
+   * relying solely on {@link isOwnedKey} downstream. */
   public keyFromUrl(url: string): string | undefined {
-    const marker = `/${this.bucket}/`;
-    let pathname: string;
+    let parsed: URL;
+    let base: URL;
     try {
-      pathname = new URL(url).pathname;
+      parsed = new URL(url);
+      base = new URL(this.baseUrl);
     } catch {
       return undefined;
     }
-    const index = pathname.indexOf(marker);
+    if (parsed.origin !== base.origin) return undefined;
+    const marker = `/${this.bucket}/`;
+    const index = parsed.pathname.indexOf(marker);
     if (index === -1) return undefined;
-    return pathname.slice(index + marker.length);
+    const key = parsed.pathname.slice(index + marker.length);
+    return key.length === 0 ? undefined : key;
+  }
+
+  /** TASK 17.1 — the authoritative tenant-ownership check a caller MUST run
+   * on any externally-influenced key/URL before issuing a destructive
+   * operation (delete, or a future overwrite-in-place). A key is owned by
+   * `scopeSegments` only when it is EXACTLY
+   * `{prefix}/{...scopeSegments}/{filename}` — every segment compared for
+   * strict equality, never `startsWith`/substring matching (which would
+   * let company `"abc"` match a key actually scoped to company `"abc123"`,
+   * since `"logos/abc123/x".startsWith("logos/abc")` is true but the two
+   * tenants are distinct). Rejects a key with the wrong number of
+   * segments, any empty segment, or any segment that is exactly `.`/`..`
+   * (defense in depth against a hand-crafted key — S3 itself has no real
+   * filesystem to "traverse", but this method is the boundary that decides
+   * whether a DESTRUCTIVE operation proceeds, so it verifies structure
+   * itself rather than trusting the caller, or `keyFromUrl`, already did). */
+  public isOwnedKey(key: string, scopeSegments: readonly string[]): boolean {
+    if (key.length === 0) return false;
+    const segments = key.split('/');
+    const expected = [this.prefix, ...scopeSegments];
+    if (segments.length !== expected.length + 1) return false;
+    if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..'))
+      return false;
+    return expected.every((value, index) => value.length > 0 && segments[index] === value);
   }
 
   /** Best-effort delete — a missing object, or any other failure, is
    * swallowed: object cleanup must never block the caller's own request,
-   * which by the time this runs has usually already succeeded. */
+   * which by the time this runs has usually already succeeded. Callers
+   * MUST verify {@link isOwnedKey} before calling this — this method itself
+   * performs no ownership check, since it is also used to clean up a
+   * just-uploaded object whose key is already known to be self-generated
+   * (see `uploadObject`), never externally-influenced. */
   public async deleteObjectBestEffort(key: string): Promise<void> {
     try {
       await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
