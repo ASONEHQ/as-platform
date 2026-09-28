@@ -83,6 +83,11 @@ function presented(value: ProductRecipeRow): Readonly<Record<string, unknown>> {
     components: value.components.map((item) => ({
       id: item.id,
       component_variant_id: item.componentVariantId,
+      // TASK 16.32.9 — resolved fresh from the catalog on every read (see
+      // `ProductRecipeRepository.ingredientIdentities`), never persisted
+      // on `product_recipe_components` itself.
+      ingredient_name: item.ingredientName,
+      ingredient_sku: item.ingredientSku,
       quantity: item.quantity,
       unit_of_measure_code: item.unitOfMeasureCode,
     })),

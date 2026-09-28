@@ -23,6 +23,16 @@ export interface ProductRecipeComponentRow {
   unitOfMeasureCode: string;
   createdAt: Date;
   updatedAt: Date;
+  // TASK 16.32.9 — read-model enrichment only: resolved fresh from the
+  // catalog (product_variants/products) on every read, via
+  // `ProductRecipeRepository.ingredientIdentities`, never persisted on
+  // `product_recipe_components` itself (that table keeps storing only the
+  // stable `component_variant_id` reference — see
+  // `docs/PRODUCT_RECIPES.md`). `null` only when the referenced variant
+  // genuinely can't be resolved (unreachable given the FK, but the type
+  // stays honest about it rather than assuming a value always exists).
+  ingredientName: string | null;
+  ingredientSku: string | null;
 }
 
 export interface ProductRecipeRow {

@@ -259,6 +259,48 @@ integration('PostgreSQL product recipe authoring API', { concurrent: false }, ()
     return { authorization: `Bearer ${token}` };
   }
 
+  // TASK 16.32.9 — unlike `insertVariant` above (which deliberately sets
+  // product name = variant name = sku = the same `code`, fine for the
+  // rest of this file's own purposes but useless for proving the
+  // name-priority rule), this lets a test control product name, variant
+  // name (nullable — a real, common case), SKU, and status independently.
+  async function insertNamedVariant(
+    forCompanyId: string,
+    code: string,
+    options: {
+      productName: string;
+      variantName: string | null;
+      sku: string;
+      status?: 'active' | 'inactive' | 'retired';
+    },
+  ): Promise<Variant> {
+    const productId = randomUUID();
+    const variantId = randomUUID();
+    const actorId = forCompanyId === otherCompanyId ? otherUserId : userId;
+    await database.pool.query(
+      `insert into products(id,company_id,code,normalized_code,name,product_type,tracks_inventory,status,created_by,updated_by)
+       values ($1,$2,$3,$3,$4,'simple',true,'active',$5,$5)`,
+      [productId, forCompanyId, code, options.productName, actorId],
+    );
+    await database.pool.query(
+      `insert into product_variants
+       (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
+        tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+       values ($1,$2,$3,$4,lower($4),$5,'g',3,true,0,'MXN',true,$6,$7,$8,$8)`,
+      [
+        variantId,
+        forCompanyId,
+        productId,
+        options.sku,
+        options.variantName,
+        '1'.repeat(64),
+        options.status ?? 'active',
+        actorId,
+      ],
+    );
+    return { productId, variantId };
+  }
+
   it('creates a recipe with two components, then replaces it wholesale', async () => {
     const pizza = await insertVariant(companyId, 'recipe-pizza-replace', {
       unitOfMeasureCode: 'unit',
@@ -690,5 +732,119 @@ integration('PostgreSQL product recipe authoring API', { concurrent: false }, ()
       headers: { ...auth('recipes-readonly'), 'if-match': '"1"' },
     });
     expect(deleteWithoutProductManage.statusCode).toBe(403);
+  });
+
+  // TASK 16.32.9 — recipe ingredient human-readable identity.
+  it('resolves each component to its real product/variant identity — variant name wins over product name when present, product name is the fallback', async () => {
+    const pizza = await insertVariant(companyId, 'recipe-identity-pizza', {
+      unitOfMeasureCode: 'unit',
+      tracksInventory: false,
+    });
+    // A: variant has no name of its own -> falls back to the product's.
+    const quesoIngredient = await insertNamedVariant(companyId, 'recipe-identity-queso', {
+      productName: 'Mozzarella PRUEBA',
+      variantName: null,
+      sku: 'ING-QUESO-TEST',
+    });
+    // B: variant has its OWN distinguishing name -> that wins outright.
+    const salsaIngredient = await insertNamedVariant(companyId, 'recipe-identity-salsa', {
+      productName: 'Salsas y aderezos',
+      variantName: 'SALSA',
+      sku: 'ING-SALSA-TEST',
+    });
+
+    const saved = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/product-variants/${pizza.variantId}/recipe`,
+      headers: { ...auth(), 'idempotency-key': 'identity-save' },
+      payload: {
+        components: [
+          { component_variant_id: quesoIngredient.variantId, quantity: '180', unit_of_measure_code: 'g' },
+          { component_variant_id: salsaIngredient.variantId, quantity: '120', unit_of_measure_code: 'g' },
+        ],
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    const savedComponents = saved.json<{
+      data: {
+        components: {
+          component_variant_id: string;
+          ingredient_name: string | null;
+          ingredient_sku: string | null;
+          quantity: string;
+          unit_of_measure_code: string;
+        }[];
+      };
+    }>().data.components;
+
+    // B: PUT's own response already carries the real identity — no extra
+    // round-trip needed to see it after saving.
+    const savedQueso = savedComponents.find((c) => c.component_variant_id === quesoIngredient.variantId);
+    const savedSalsa = savedComponents.find((c) => c.component_variant_id === salsaIngredient.variantId);
+    expect(savedQueso?.ingredient_name).toBe('Mozzarella PRUEBA');
+    expect(savedQueso?.ingredient_sku).toBe('ING-QUESO-TEST');
+    expect(savedSalsa?.ingredient_name).toBe('SALSA');
+    expect(savedSalsa?.ingredient_sku).toBe('ING-SALSA-TEST');
+    // D/E: the stable reference and the persisted quantity/unit are
+    // completely unaffected by this enrichment.
+    expect(savedQueso?.quantity).toBe('180.000000');
+    expect(savedQueso?.unit_of_measure_code).toBe('g');
+
+    // A/C: a fresh GET (a real reload, not the save's own response) shows
+    // the exact same identity — this is the actual bug being fixed: the
+    // UI used to only ever know the id after a reload.
+    const reloaded = await app.inject({
+      method: 'GET',
+      url: `/api/v1/product-variants/${pizza.variantId}/recipe`,
+      headers: auth(),
+    });
+    expect(reloaded.statusCode).toBe(200);
+    const reloadedComponents = reloaded.json<{
+      data: { components: { component_variant_id: string; ingredient_name: string | null; ingredient_sku: string | null }[] };
+    }>().data.components;
+    const reloadedQueso = reloadedComponents.find(
+      (c) => c.component_variant_id === quesoIngredient.variantId,
+    );
+    expect(reloadedQueso?.ingredient_name).toBe('Mozzarella PRUEBA');
+    expect(reloadedQueso?.ingredient_sku).toBe('ING-QUESO-TEST');
+  });
+
+  it('still resolves a real, correct identity for an ingredient variant that has since been marked inactive', async () => {
+    const pizza = await insertVariant(companyId, 'recipe-identity-inactive-pizza', {
+      unitOfMeasureCode: 'unit',
+      tracksInventory: false,
+    });
+    const masa = await insertNamedVariant(companyId, 'recipe-identity-masa', {
+      productName: 'Masa Pizza PRUEBA',
+      variantName: null,
+      sku: 'ING-MASA-TEST',
+    });
+    await app.inject({
+      method: 'PUT',
+      url: `/api/v1/product-variants/${pizza.variantId}/recipe`,
+      headers: { ...auth(), 'idempotency-key': 'identity-inactive-save' },
+      payload: {
+        components: [{ component_variant_id: masa.variantId, quantity: '1', unit_of_measure_code: 'g' }],
+      },
+    });
+
+    // The ingredient is retired from the active catalog AFTER the recipe
+    // already references it — a historical/configured recipe must stay
+    // legible (Phase G): the enrichment join carries no `status` filter.
+    await database.pool.query(
+      `update product_variants set status='inactive' where company_id=$1 and id=$2`,
+      [companyId, masa.variantId],
+    );
+
+    const reloaded = await app.inject({
+      method: 'GET',
+      url: `/api/v1/product-variants/${pizza.variantId}/recipe`,
+      headers: auth(),
+    });
+    expect(reloaded.statusCode).toBe(200);
+    const component = reloaded
+      .json<{ data: { components: { component_variant_id: string; ingredient_name: string | null }[] } }>()
+      .data.components.find((c) => c.component_variant_id === masa.variantId);
+    expect(component?.ingredient_name).toBe('Masa Pizza PRUEBA');
   });
 });

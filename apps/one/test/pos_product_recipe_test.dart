@@ -80,7 +80,7 @@ void main() {
       // The cheese product has a single real inventory-tracked variant —
       // no further variant-picker step, matching `_pickIngredientForRow`'s
       // own "only asks when there's a real choice" behavior.
-      expect(find.text('Queso mozzarella — Queso mozzarella 1kg'), findsOneWidget);
+      expect(find.text('Queso mozzarella 1kg'), findsOneWidget);
 
       await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-qty-0')));
       await tester.enterText(find.byKey(const Key('pos-product-edit-recipe-qty-0')), '180');
@@ -148,7 +148,7 @@ void main() {
 
       await tapAdd();
       await pickCheeseInto(0);
-      expect(find.text('Queso mozzarella — Queso mozzarella 1kg'), findsOneWidget);
+      expect(find.text('Queso mozzarella 1kg'), findsOneWidget);
 
       await tapAdd();
       await pickCheeseInto(1);
@@ -416,6 +416,141 @@ void main() {
       },
     );
   });
+
+  group('TASK 16.32.9 — recipe ingredient human-readable identity', () {
+    testWidgets('a loaded recipe shows real ingredient names and SKUs for every component, never a raw id', (
+      tester,
+    ) async {
+      final variantsGateway = _RecordingProductVariantsGateway(
+        recipesByVariantId: {_pizzaVariantId: _existingRecipe},
+      );
+      await _pump(tester, variantsGateway: variantsGateway);
+      await _openEditDialog(tester);
+
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.textContaining('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.text('SALSA'), findsOneWidget);
+      expect(find.textContaining('SKU ING-SALSA-TEST'), findsOneWidget);
+      // C: the raw/truncated technical id must never appear as normal UI.
+      expect(find.textContaining('variante …'), findsNothing);
+      expect(find.textContaining(_cheeseVariantId), findsNothing);
+
+      // H: quantity/unit stay real, editable fields — unaffected by the
+      // identity rendering change.
+      expect(find.byKey(const Key('pos-product-edit-recipe-qty-0')), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('pos-product-edit-recipe-qty-0')), '200');
+      await tester.pump();
+      expect(find.widgetWithText(TextField, '200'), findsOneWidget);
+    });
+
+    testWidgets('a newly picked ingredient shows its real name immediately, before saving', (tester) async {
+      final variantsGateway = _RecordingProductVariantsGateway();
+      final catalogGateway = _RecordingCatalogAdminGateway(products: [_cheeseProduct]);
+      await _pump(tester, variantsGateway: variantsGateway, catalogAdminGateway: catalogGateway);
+      await _openEditDialog(tester);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-add')));
+      await tester.tap(find.byKey(const Key('pos-product-edit-recipe-add')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+      await tester.tap(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Queso');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('pos-fiestas-consumable-product-result-${_cheeseProduct.id}')));
+      await tester.pumpAndSettle();
+
+      // Real name shown BEFORE any save call was ever made.
+      expect(variantsGateway.replaceRecipeCalls, isEmpty);
+      expect(find.text('Queso mozzarella 1kg'), findsOneWidget);
+      expect(find.textContaining('SKU QUESO-1-SKU'), findsOneWidget);
+    });
+
+    testWidgets('saving, then a genuine reload (fresh dialog state), still shows the real name — not the raw id', (
+      tester,
+    ) async {
+      final variantsGateway = _RecordingProductVariantsGateway();
+      final catalogGateway = _RecordingCatalogAdminGateway(products: [_cheeseProduct]);
+      await _pump(tester, variantsGateway: variantsGateway, catalogAdminGateway: catalogGateway);
+      await _openEditDialog(tester);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-add')));
+      await tester.tap(find.byKey(const Key('pos-product-edit-recipe-add')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+      await tester.tap(find.byKey(const Key('pos-product-edit-recipe-ingredient-0')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-consumable-product-search')), 'Queso');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('pos-fiestas-consumable-product-result-${_cheeseProduct.id}')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-qty-0')));
+      await tester.enterText(find.byKey(const Key('pos-product-edit-recipe-qty-0')), '180');
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-product-edit-recipe-save')));
+      await tester.tap(find.byKey(const Key('pos-product-edit-recipe-save')));
+      await tester.pumpAndSettle();
+
+      expect(variantsGateway.replaceRecipeCalls, hasLength(1));
+
+      // Simulate a genuine reload: close the dialog and reopen it — a
+      // brand new `_EditProductDialogState` (its own local
+      // `_ingredientIdentities` map starting empty again), so the name
+      // can only come from a fresh `getRecipe` call against the SAME
+      // gateway instance, which now durably holds the saved recipe —
+      // exactly like a real backend would after a real PUT, never the
+      // picker's own session-local memory.
+      await tester.tap(find.text('Cancelar').last);
+      await tester.pumpAndSettle();
+      await _openEditDialog(tester);
+
+      expect(find.text('Queso mozzarella 1kg'), findsOneWidget);
+      expect(find.textContaining('SKU QUESO-1-SKU'), findsOneWidget);
+      expect(find.textContaining('variante …'), findsNothing);
+    });
+
+    testWidgets('an unresolvable ingredient shows an honest human fallback, never the raw id', (tester) async {
+      final unresolvableRecipe = PosProductRecipe(
+        id: 'recipe-unresolvable',
+        productVariantId: _pizzaVariantId,
+        isActive: true,
+        components: const [_unresolvableComponent],
+        version: 1,
+        createdAt: _fixedTimestamp,
+        updatedAt: _fixedTimestamp,
+      );
+      final variantsGateway = _RecordingProductVariantsGateway(
+        recipesByVariantId: {_pizzaVariantId: unresolvableRecipe},
+      );
+      await _pump(tester, variantsGateway: variantsGateway);
+      await _openEditDialog(tester);
+
+      expect(find.text('Ingrediente no disponible'), findsOneWidget);
+      expect(find.textContaining('ghost-variant'), findsNothing);
+      expect(find.textContaining('variante …'), findsNothing);
+    });
+
+    for (final size in const [Size(1440, 900), Size(1365, 768)]) {
+      testWidgets(
+        'the recipe section with real ingredient identities fits without overflow at ${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+          final variantsGateway = _RecordingProductVariantsGateway(
+            recipesByVariantId: {_pizzaVariantId: _existingRecipe},
+          );
+          tester.view.physicalSize = size;
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          await _pump(tester, variantsGateway: variantsGateway);
+          await _openEditDialog(tester);
+
+          expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -474,23 +609,41 @@ final _existingRecipe = PosProductRecipe(
   id: 'recipe-1',
   productVariantId: _pizzaVariantId,
   isActive: true,
+  // TASK 16.32.9 — real backend-resolved identities, exactly as a real
+  // `GET .../recipe` would already carry them (never fabricated by this
+  // fixture beyond what the backend contract promises).
   components: const [
     PosProductRecipeComponent(
       id: 'component-1',
       componentVariantId: _cheeseVariantId,
       quantity: '180.000000',
       unitOfMeasureCode: 'g',
+      ingredientName: 'Mozzarella PRUEBA',
+      ingredientSku: 'ING-QUESO-TEST',
     ),
     PosProductRecipeComponent(
       id: 'component-2',
       componentVariantId: 'sauce-variant',
       quantity: '60.000000',
       unitOfMeasureCode: 'ml',
+      ingredientName: 'SALSA',
+      ingredientSku: 'ING-SALSA-TEST',
     ),
   ],
   version: 1,
   createdAt: _fixedTimestamp,
   updatedAt: _fixedTimestamp,
+);
+
+/// TASK 16.32.9 — a component whose ingredient identity genuinely cannot
+/// be resolved (the honest, defensive fallback case — unreachable given
+/// the schema's own FK in the real backend, but the UI must still handle
+/// it gracefully rather than assume it never happens).
+const _unresolvableComponent = PosProductRecipeComponent(
+  id: 'component-unresolvable',
+  componentVariantId: 'ghost-variant',
+  quantity: '5.000000',
+  unitOfMeasureCode: 'unit',
 );
 
 class _RecordingCatalogAdminGateway implements PosCatalogAdminGateway {
@@ -595,9 +748,21 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
     Map<String, PosProductRecipe>? recipesByVariantId,
     this.replaceRecipeError,
     this.editedVariant,
-  }) : _recipesByVariantId = Map.of(recipesByVariantId ?? const {});
+    Map<String, ({String name, String sku})>? ingredientCatalog,
+  }) : _recipesByVariantId = Map.of(recipesByVariantId ?? const {}),
+       _ingredientCatalog = Map.of(
+         ingredientCatalog ?? {_cheeseVariantId: (name: 'Queso mozzarella 1kg', sku: 'QUESO-1-SKU')},
+       );
 
   final Map<String, PosProductRecipe> _recipesByVariantId;
+
+  /// TASK 16.32.9 — mimics the real backend's own catalog JOIN
+  /// (`ProductRecipeRepository.ingredientIdentities`): `replaceRecipe`
+  /// resolves each saved component's name/SKU from here, so a genuine
+  /// save-then-reload test (a brand new `_EditProductDialogState`, no
+  /// session-local picker state left) still sees the real identity, not
+  /// just whatever the picker itself resolved live.
+  final Map<String, ({String name, String sku})> _ingredientCatalog;
 
   /// TASK 16.32.3 — the real `PosProductVariant` `listVariants` returns
   /// for `_pizzaProduct.id` (`_EditProductDialog`'s own dialog-under-test
@@ -670,6 +835,8 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
             componentVariantId: component.componentVariantId,
             quantity: component.quantity,
             unitOfMeasureCode: component.unitOfMeasureCode,
+            ingredientName: _ingredientCatalog[component.componentVariantId]?.name,
+            ingredientSku: _ingredientCatalog[component.componentVariantId]?.sku,
           ),
       ],
       version: ++_autoVersion,

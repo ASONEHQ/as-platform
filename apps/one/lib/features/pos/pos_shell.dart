@@ -11275,13 +11275,24 @@ class _EditProductDialogState extends State<_EditProductDialog> {
   /// remains the actual, authoritative gate either way.
   bool _tracksInventoryDirectly = false;
 
-  /// Real ingredient display names, keyed by `component_variant_id`,
-  /// resolved through the real product/variant picker whenever an
-  /// operator (re)assigns a row's ingredient in THIS session — never
-  /// fabricated. A component loaded from an already-saved recipe that was
-  /// never re-picked this session has no entry here; see
-  /// `_ingredientLabelFor`'s own doc comment for the honest fallback.
-  final Map<String, String> _ingredientLabels = {};
+  /// TASK 16.32.9 — real ingredient identity (name + SKU), keyed by
+  /// `component_variant_id`. Populated from the backend's own resolved
+  /// `ingredient_name`/`ingredient_sku` (see `product-recipes.routes.ts`)
+  /// whenever a recipe is loaded or saved, AND from the real product/
+  /// variant picker whenever an operator (re)assigns a row's ingredient in
+  /// this session — never fabricated either way. A component whose
+  /// identity genuinely can't be resolved (unreachable given the schema's
+  /// own FK, but never assumed away) simply has no entry here; see
+  /// `_ingredientIdentityFor`'s own doc comment for the honest fallback.
+  final Map<String, ({String name, String? sku})> _ingredientIdentities = {};
+
+  void _recordIngredientIdentities(PosProductRecipe? recipe) {
+    for (final component in recipe?.components ?? const <PosProductRecipeComponent>[]) {
+      final name = component.ingredientName;
+      if (name == null) continue;
+      _ingredientIdentities[component.componentVariantId] = (name: name, sku: component.ingredientSku);
+    }
+  }
 
   static const _recipeUnits = ['unit', 'kg', 'l', 'g', 'ml'];
 
@@ -11456,6 +11467,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       if (!mounted) return;
       setState(() {
         _recipe = recipe;
+        _recordIngredientIdentities(recipe);
         _recipeRows = _rowsFromRecipe(recipe);
         _recipePhase = _RecipeLoadPhase.ready;
       });
@@ -11499,18 +11511,18 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       ),
   ];
 
-  /// An honest display label for a row's ingredient: the real resolved
-  /// name when this session's own picker resolved it (this load or a
-  /// prior save), else a plain, non-fabricated fallback built from the
-  /// real variant id — never a guessed/invented product name. See this
-  /// file's own header note on why no cheap client-side lookup exists yet
-  /// to always resolve a bare `component_variant_id` to a name (no
-  /// `GET /product-variants/{id}` caller exists anywhere in this app).
-  String _ingredientLabelFor(String variantId) {
-    final resolved = _ingredientLabels[variantId];
+  /// TASK 16.32.9 — the real ingredient identity for a row: the backend's
+  /// own resolved name/SKU (`GET`/`PUT .../recipe`'s `ingredient_name`/
+  /// `ingredient_sku`), or — for a row picked fresh this session, before
+  /// the next save/reload round-trip — the same identity the real
+  /// product/variant picker just resolved. A component whose identity
+  /// genuinely can't be resolved (unreachable given the schema's own FK)
+  /// falls back to an honest "Ingrediente no disponible", NEVER the raw
+  /// UUID or a truncated fragment of it as normal UI.
+  ({String name, String? sku}) _ingredientIdentityFor(String variantId) {
+    final resolved = _ingredientIdentities[variantId];
     if (resolved != null) return resolved;
-    final shortId = variantId.length > 8 ? variantId.substring(variantId.length - 8) : variantId;
-    return 'Ingrediente (variante …$shortId)';
+    return (name: 'Ingrediente no disponible', sku: null);
   }
 
   void _addRecipeRow() {
@@ -11546,7 +11558,8 @@ class _EditProductDialogState extends State<_EditProductDialog> {
     if (product == null || !mounted) return;
 
     String? variantId;
-    String? variantLabel;
+    String? variantName;
+    String? variantSku;
     String? variantUnit;
     if (product.tracksInventory) {
       try {
@@ -11562,11 +11575,13 @@ class _EditProductDialogState extends State<_EditProductDialog> {
           );
           if (chosen == null || !mounted) return; // operator cancelled — abandon the whole pick.
           variantId = chosen.id;
-          variantLabel = chosen.name ?? chosen.sku;
+          variantName = chosen.name;
+          variantSku = chosen.sku;
           variantUnit = chosen.unitOfMeasureCode;
         } else if (tracked.length == 1) {
           variantId = tracked.single.id;
-          variantLabel = tracked.single.name ?? tracked.single.sku;
+          variantName = tracked.single.name;
+          variantSku = tracked.single.sku;
           variantUnit = tracked.single.unitOfMeasureCode;
         }
       } on Object {
@@ -11580,6 +11595,13 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       return;
     }
     final resolvedVariantId = variantId;
+    // TASK 16.32.9 — the exact same name-priority rule the backend applies
+    // (`ProductRecipeRepository.ingredientIdentities`): the variant's own
+    // name wins when it has one, else the product's — never a
+    // client-invented rule diverging from what a reload will show.
+    final resolvedName = (variantName != null && variantName.trim().isNotEmpty)
+        ? variantName
+        : product.name;
     final isDuplicate = _recipeRows.any(
       (other) => other != row && other.componentVariantId == resolvedVariantId,
     );
@@ -11595,9 +11617,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
         // note).
         row.unitOfMeasureCode ??= variantUnit;
         row.error = null;
-        _ingredientLabels[resolvedVariantId] = variantLabel == null
-            ? product.name
-            : '${product.name} — $variantLabel';
+        _ingredientIdentities[resolvedVariantId] = (name: resolvedName, sku: variantSku);
       }
       _recipeSaveError = null;
       _recipeSuccessMessage = null;
@@ -11656,6 +11676,7 @@ class _EditProductDialogState extends State<_EditProductDialog> {
       setState(() {
         _savingRecipe = false;
         _recipe = saved;
+        _recordIngredientIdentities(saved);
         for (final row in _recipeRows) row.dispose();
         _recipeRows = _rowsFromRecipe(saved);
         _recipeSuccessMessage = 'Receta guardada correctamente.';
@@ -11914,10 +11935,22 @@ class _EditProductDialogState extends State<_EditProductDialog> {
             Padding(
               key: Key('pos-product-edit-recipe-row-$index'),
               padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Text(
-                '${row.quantityController.text} ${row.unitOfMeasureCode ?? ''} — '
-                '${_ingredientLabelFor(row.componentVariantId!)}',
-                style: TextStyle(fontSize: 12, color: palette.text),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${row.quantityController.text} ${row.unitOfMeasureCode ?? ''} — '
+                    '${_ingredientIdentityFor(row.componentVariantId!).name}',
+                    key: Key('pos-product-edit-recipe-name-$index'),
+                    style: TextStyle(fontSize: 12, color: palette.text),
+                  ),
+                  if (_ingredientIdentityFor(row.componentVariantId!).sku != null)
+                    Text(
+                      'SKU ${_ingredientIdentityFor(row.componentVariantId!).sku}',
+                      key: Key('pos-product-edit-recipe-sku-$index'),
+                      style: TextStyle(fontSize: 10, color: palette.textMuted),
+                    ),
+                ],
               ),
             ),
         ],
@@ -11961,11 +11994,24 @@ class _EditProductDialogState extends State<_EditProductDialog> {
                         onPressed: _savingRecipe ? null : () => unawaited(_pickIngredientForRow(row)),
                         child: Align(
                           alignment: Alignment.centerLeft,
-                          child: Text(
-                            row.componentVariantId == null
-                                ? 'Selecciona un ingrediente'
-                                : _ingredientLabelFor(row.componentVariantId!),
-                          ),
+                          child: row.componentVariantId == null
+                              ? const Text('Selecciona un ingrediente')
+                              : Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      _ingredientIdentityFor(row.componentVariantId!).name,
+                                      key: Key('pos-product-edit-recipe-ingredient-name-$index'),
+                                    ),
+                                    if (_ingredientIdentityFor(row.componentVariantId!).sku != null)
+                                      Text(
+                                        'SKU ${_ingredientIdentityFor(row.componentVariantId!).sku}',
+                                        key: Key('pos-product-edit-recipe-ingredient-sku-$index'),
+                                        style: TextStyle(fontSize: 10, color: palette.textMuted),
+                                      ),
+                                  ],
+                                ),
                         ),
                       ),
                     ),

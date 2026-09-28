@@ -80,7 +80,12 @@ function recipe(row: RecipeDb, components: ProductRecipeComponentRow[]): Product
     components,
   };
 }
-function component(row: ComponentDb): ProductRecipeComponentRow {
+interface IngredientIdentity {
+  name: string | null;
+  sku: string | null;
+}
+
+function component(row: ComponentDb, identity: IngredientIdentity): ProductRecipeComponentRow {
   return {
     id: row.id,
     companyId: row.company_id,
@@ -90,8 +95,11 @@ function component(row: ComponentDb): ProductRecipeComponentRow {
     unitOfMeasureCode: row.unit_of_measure_code,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
+    ingredientName: identity.name,
+    ingredientSku: identity.sku,
   };
 }
+const unresolvedIdentity: IngredientIdentity = { name: null, sku: null };
 function constraint(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'constraint' in error
     ? String((error as { constraint?: unknown }).constraint)
@@ -397,7 +405,7 @@ export class ProductRecipeRepository {
       'delete from product_recipe_components where company_id=$1 and recipe_id=$2',
       [context.companyId, recipeId],
     );
-    const inserted: ProductRecipeComponentRow[] = [];
+    const inserted: ComponentDb[] = [];
     for (const item of components) {
       const row = result<ComponentDb>(
         await client.query(
@@ -418,9 +426,12 @@ export class ProductRecipeRepository {
         ),
       ).rows[0];
       if (row === undefined) throw new Error('Recipe component insertion failed.');
-      inserted.push(component(row));
+      inserted.push(row);
     }
-    return inserted;
+    // TASK 16.32.9 — enriched once, batched, after every row is inserted —
+    // so a saved recipe's PUT response already carries real ingredient
+    // names/SKUs immediately, with no extra round-trip needed to see them.
+    return this.withIdentities(client, context.companyId, inserted);
   }
 
   public async deleteRecipe(
@@ -450,7 +461,50 @@ export class ProductRecipeRepository {
         [companyId, recipeId],
       ),
     ).rows;
-    return rows.map(component);
+    return this.withIdentities(executor, companyId, rows);
+  }
+
+  // TASK 16.32.9 — resolves each component's real, human-facing ingredient
+  // identity (name/SKU) from the CURRENT catalog, in one batched query per
+  // recipe (never per-component — no N+1). Deliberately a read-model join,
+  // never a persisted column on `product_recipe_components`: the recipe
+  // keeps storing only the stable `component_variant_id` reference, and
+  // this always reflects the catalog's current state, including for a
+  // variant later marked inactive (no `status` filter here at all) — only
+  // a variant that no longer exists (unreachable given
+  // `product_recipe_components_variant_scope_fk`) resolves to `null`.
+  private async withIdentities(
+    executor: Executor,
+    companyId: string,
+    rows: readonly ComponentDb[],
+  ): Promise<ProductRecipeComponentRow[]> {
+    const identities = await this.ingredientIdentities(
+      executor,
+      companyId,
+      rows.map((row) => row.component_variant_id),
+    );
+    return rows.map((row) =>
+      component(row, identities.get(row.component_variant_id) ?? unresolvedIdentity),
+    );
+  }
+
+  private async ingredientIdentities(
+    executor: Executor,
+    companyId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, IngredientIdentity>> {
+    if (variantIds.length === 0) return new Map();
+    const rows = result<{ variant_id: string; sku: string; name: string | null }>(
+      await executor.query(
+        `select v.id as variant_id, v.sku,
+                coalesce(nullif(btrim(v.name), ''), p.name) as name
+         from product_variants v
+         join products p on p.company_id = v.company_id and p.id = v.product_id
+         where v.company_id=$1 and v.id = any($2::uuid[])`,
+        [companyId, [...new Set(variantIds)]],
+      ),
+    ).rows;
+    return new Map(rows.map((row) => [row.variant_id, { name: row.name, sku: row.sku }]));
   }
 
   private mapDatabaseError(error: unknown): unknown {

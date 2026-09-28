@@ -163,6 +163,8 @@ class PosProductRecipeComponent {
     required this.componentVariantId,
     required this.quantity,
     required this.unitOfMeasureCode,
+    this.ingredientName,
+    this.ingredientSku,
   });
 
   factory PosProductRecipeComponent.fromJson(Map<String, Object?> json) => PosProductRecipeComponent(
@@ -170,6 +172,8 @@ class PosProductRecipeComponent {
     componentVariantId: json['component_variant_id']! as String,
     quantity: json['quantity']! as String,
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
+    ingredientName: json['ingredient_name'] as String?,
+    ingredientSku: json['ingredient_sku'] as String?,
   );
 
   final String id;
@@ -179,6 +183,15 @@ class PosProductRecipeComponent {
   /// parsed to a Dart `double` for storage, only for display/editing math.
   final String quantity;
   final String unitOfMeasureCode;
+
+  /// TASK 16.32.9 — the real ingredient's human identity, resolved
+  /// server-side fresh from the catalog every time (never persisted on
+  /// `product_recipe_components` itself — see `docs/PRODUCT_RECIPES.md`).
+  /// `null` only when the referenced variant genuinely can't be resolved
+  /// anymore (should be unreachable given the schema's own FK, but the UI
+  /// must still show an honest fallback rather than a raw id).
+  final String? ingredientName;
+  final String? ingredientSku;
 }
 
 /// A `product_recipes` row (`GET`/`PUT /api/v1/product-variants/{variant_id}
