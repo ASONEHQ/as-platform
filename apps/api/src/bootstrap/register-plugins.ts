@@ -62,6 +62,11 @@ import { InventoryReservationService } from '../modules/inventory/reservation.se
 import { InventoryCountRepository } from '../modules/inventory/inventory-counts.repository.js';
 import { registerInventoryCountRoutes } from '../modules/inventory/inventory-counts.routes.js';
 import { InventoryCountService } from '../modules/inventory/inventory-counts.service.js';
+import {
+  InventoryOverviewRepository,
+  InventoryOverviewService,
+  registerInventoryOverviewRoutes,
+} from '../modules/inventory/inventory-overview.js';
 import { HeldSaleCartsRepository } from '../modules/held-sales/held-sales.repository.js';
 import { registerHeldSaleCartRoutes } from '../modules/held-sales/held-sales.routes.js';
 import { HeldSaleCartsService } from '../modules/held-sales/held-sales.service.js';
@@ -274,6 +279,13 @@ export async function registerPlugins(
         ),
         new InventoryMovementReadService(
           new InventoryMovementReadRepository(options.infrastructure.database),
+        ),
+      );
+      registerInventoryOverviewRoutes(
+        app,
+        authentication,
+        new InventoryOverviewService(
+          new InventoryOverviewRepository(options.infrastructure.database),
         ),
       );
       registerInventoryDraftRoutes(

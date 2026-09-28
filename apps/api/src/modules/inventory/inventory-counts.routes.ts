@@ -271,9 +271,12 @@ export function registerInventoryCountRoutes(
           auth.permittedBranchIds,
           request.params.count_id,
         );
+        const identities = await service.identitiesFor(auth.companyId, value.lines);
         return reply
           .header('etag', `"${value.version.toString()}"`)
-          .send(successResponse(inventoryCountJson(value), request.requestContext));
+          .send(
+            successResponse(inventoryCountJson(value, true, identities), request.requestContext),
+          );
       }),
   );
   const transition = (

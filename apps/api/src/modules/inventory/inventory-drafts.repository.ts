@@ -9,6 +9,10 @@ import type {
   DraftMovementType,
 } from './inventory-drafts.types.js';
 import { InventoryDraftError } from './inventory-drafts.types.js';
+import {
+  resolveProductVariantIdentities,
+  type ProductVariantIdentity,
+} from './product-identities.js';
 
 export interface DraftSqlClient {
   query(sql: string, values?: readonly unknown[]): Promise<unknown>;
@@ -325,6 +329,16 @@ export class InventoryDraftRepository {
           ? Buffer.from(`${String(last.lineNumber)}:${last.id}`).toString('base64url')
           : null,
     };
+  }
+
+  /** TASK 17.2 — batched product/variant identity resolution for a page of
+   * lines, never a per-row lookup. See `product-identities.ts`'s own doc
+   * comment for why this is read-model-only (never persisted). */
+  public async identities(
+    companyId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return resolveProductVariantIdentities(this.database.pool, companyId, variantIds);
   }
 
   public async variant(

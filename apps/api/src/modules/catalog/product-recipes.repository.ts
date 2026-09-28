@@ -109,8 +109,59 @@ function jsonValue(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;
 }
 
+export interface RecipeUsage {
+  readonly recipeId: string;
+  readonly isRecipeActive: boolean;
+  readonly soldProductVariantId: string;
+  readonly soldProductName: string;
+  readonly quantity: string;
+  readonly unitOfMeasureCode: string;
+}
+
 export class ProductRecipeRepository {
   public constructor(private readonly database: DatabaseClient) {}
+
+  /** TASK 17.2 §17 ("Usado en") — the reverse of the normal recipe lookup:
+   * given an INGREDIENT variant, which sold products' recipes reference
+   * it, and how much of it do they each use per unit sold? One indexed
+   * query (`product_recipe_components_variant_idx` on `(company_id,
+   * component_variant_id)`), never N+1 — a real, efficient reverse
+   * lookup, not a full scan. Includes inactive recipes too (flagged via
+   * `isRecipeActive`) rather than silently hiding them — an ingredient
+   * that WAS used by a now-deactivated recipe is still relevant context
+   * for an admin deciding whether it's safe to stop stocking it. */
+  public async usedIn(companyId: string, componentVariantId: string): Promise<RecipeUsage[]> {
+    const rows = result<{
+      recipe_id: string;
+      is_recipe_active: boolean;
+      sold_product_variant_id: string;
+      sold_product_name: string;
+      quantity: string;
+      unit_of_measure_code: string;
+    }>(
+      await this.database.pool.query(
+        `select r.id as recipe_id, r.is_active as is_recipe_active,
+                r.product_variant_id as sold_product_variant_id,
+                coalesce(nullif(btrim(sv.name), ''), sp.name) as sold_product_name,
+                c.quantity, c.unit_of_measure_code
+         from product_recipe_components c
+         join product_recipes r on r.company_id = c.company_id and r.id = c.recipe_id
+         join product_variants sv on sv.company_id = r.company_id and sv.id = r.product_variant_id
+         join products sp on sp.company_id = sv.company_id and sp.id = sv.product_id
+         where c.company_id = $1 and c.component_variant_id = $2
+         order by r.is_active desc, sold_product_name`,
+        [companyId, componentVariantId],
+      ),
+    ).rows;
+    return rows.map((row) => ({
+      recipeId: row.recipe_id,
+      isRecipeActive: row.is_recipe_active,
+      soldProductVariantId: row.sold_product_variant_id,
+      soldProductName: row.sold_product_name,
+      quantity: row.quantity,
+      unitOfMeasureCode: row.unit_of_measure_code,
+    }));
+  }
 
   public async transaction<T>(
     callback: (client: ProductRecipeTransaction) => Promise<T>,

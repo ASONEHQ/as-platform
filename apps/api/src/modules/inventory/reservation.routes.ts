@@ -284,9 +284,12 @@ export function registerInventoryReservationRoutes(
           auth.permittedBranchIds,
           request.params.reservation_id,
         );
+        const identities = await service.identitiesFor(auth.companyId, value.lines);
         return reply
           .header('etag', `"${value.version.toString()}"`)
-          .send(successResponse(reservationJson(value), request.requestContext));
+          .send(
+            successResponse(reservationJson(value, true, identities), request.requestContext),
+          );
       }),
   );
 

@@ -15,6 +15,10 @@ import type {
 } from './reservation.types.js';
 import { InventoryReservationError } from './reservation.types.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import {
+  resolveProductVariantIdentities,
+  type ProductVariantIdentity,
+} from './product-identities.js';
 
 interface QueryResult<T> {
   rows: readonly T[];
@@ -132,6 +136,14 @@ export class InventoryReservationRepository {
 
   public transaction<T>(callback: (client: DraftSqlClient) => Promise<T>): Promise<T> {
     return this.drafts.transaction(callback);
+  }
+
+  /** TASK 17.2 — see `product-identities.ts`'s own doc comment. */
+  public async identities(
+    companyId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return resolveProductVariantIdentities(this.database.pool, companyId, variantIds);
   }
 
   public branchExists(

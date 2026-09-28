@@ -292,9 +292,10 @@ export function registerInventoryTransferRoutes(
           auth.permittedBranchIds,
           request.params.transfer_id,
         );
+        const identities = await service.identitiesFor(auth.companyId, value.lines);
         return reply
           .header('etag', `"${value.version.toString()}"`)
-          .send(successResponse(transferJson(value), request.requestContext));
+          .send(successResponse(transferJson(value, true, identities), request.requestContext));
       }),
   );
 

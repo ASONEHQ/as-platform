@@ -478,17 +478,20 @@ export class InventoryBalanceReadRepository {
           b.average_unit_cost::text,b.currency_code,b.version::text,b.updated_at,
           l.code location_code,l.name location_name,v.sku,v.name variant_name,
           v.unit_of_measure_code,v.min_stock::text min_stock,${STOCK_STATUS_EXPR} stock_status,
+          v.is_sellable,
           p.id product_id,p.name product_name,
           c.id category_id,c.name category_name,br.id brand_id,br.name brand_name,
           (select pb.barcode from product_barcodes pb where pb.company_id=b.company_id
             and pb.product_variant_id=b.product_variant_id and pb.status='active'
-            order by pb.is_primary desc,pb.id limit 1) barcode
+            order by pb.is_primary desc,pb.id limit 1) barcode,
+          lm.occurred_at last_movement_at,lm.movement_type last_movement_type
          from inventory_balances b
          join inventory_locations l on l.company_id=b.company_id and l.id=b.inventory_location_id
          join product_variants v on v.company_id=b.company_id and v.id=b.product_variant_id
          join products p on p.company_id=v.company_id and p.id=v.product_id
          left join product_categories c on c.company_id=p.company_id and c.id=p.category_id
          left join brands br on br.company_id=p.company_id and br.id=p.brand_id
+         left join inventory_movements lm on lm.company_id=b.company_id and lm.id=b.last_movement_id
          where ${where.join(' and ')} order by b.id limit $${String(values.length)}`,
         values,
       ),

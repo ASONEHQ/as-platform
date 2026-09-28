@@ -13,6 +13,7 @@ import {
 } from './inventory-posting.service.js';
 import type {
   InventoryReservation,
+  InventoryReservationLine,
   InventoryReservationOwnerType,
   InventoryReservationStatus,
 } from './reservation.types.js';
@@ -22,6 +23,7 @@ import type {
   ReservationCommandResult,
 } from './reservation.repository.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import type { ProductVariantIdentity } from './product-identities.js';
 
 export interface ReservationCreateInput {
   branchId: string;
@@ -95,6 +97,8 @@ function remaining(value: {
 export function reservationJson(
   value: InventoryReservation,
   includeLines = true,
+  // TASK 17.2 — see `product-identities.ts`'s own doc comment.
+  identities?: ReadonlyMap<string, ProductVariantIdentity>,
 ): Readonly<Record<string, unknown>> {
   const locations = [...new Set(value.lines.map((line) => line.locationId))].sort();
   return {
@@ -128,6 +132,9 @@ export function reservationJson(
             line_number: line.lineNumber,
             location_id: line.locationId,
             product_variant_id: line.productVariantId,
+            product_name: identities?.get(line.productVariantId)?.name ?? null,
+            product_sku: identities?.get(line.productVariantId)?.sku ?? null,
+            is_sellable: identities?.get(line.productVariantId)?.isSellable ?? null,
             quantity: line.reservedQuantity,
             consumed_quantity: line.consumedQuantity,
             released_quantity: line.releasedQuantity,
@@ -318,6 +325,18 @@ export class InventoryReservationService {
     if (value === null)
       throw new InventoryReservationError('resource_not_found', 'The reservation was not found.');
     return value;
+  }
+
+  /** TASK 17.2 — see `InventoryTransferService.identitiesFor`'s own doc
+   * comment; same one-batched-lookup pattern. */
+  public async identitiesFor(
+    companyId: string,
+    lines: readonly Pick<InventoryReservationLine, 'productVariantId'>[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return this.repository.identities(
+      companyId,
+      lines.map((line) => line.productVariantId),
+    );
   }
 
   public async confirm(

@@ -11,6 +11,7 @@ import type {
 } from './inventory-drafts.types.js';
 import { InventoryDraftError } from './inventory-drafts.types.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import type { ProductVariantIdentity } from './product-identities.js';
 
 export interface DraftHeaderInput {
   branchId: string;
@@ -116,12 +117,21 @@ function movementJson(value: DraftMovement): Readonly<Record<string, unknown>> {
 function lineJson(
   value: DraftMovementLine,
   includeCost: boolean,
+  // TASK 17.2 — resolved fresh from the catalog on every read, never
+  // persisted on the line itself (see `product-identities.ts`'s own doc
+  // comment). `undefined` only for a variant that no longer resolves
+  // (e.g. hard-deleted test data) — the honest absent case, never a
+  // fabricated name.
+  identity?: ProductVariantIdentity,
 ): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
     movement_id: value.movementId,
     line_number: value.lineNumber,
     product_variant_id: value.productVariantId,
+    product_name: identity?.name ?? null,
+    product_sku: identity?.sku ?? null,
+    is_sellable: identity?.isSellable ?? null,
     source_inventory_location_id: value.sourceLocationId,
     destination_inventory_location_id: value.destinationLocationId,
     quantity: value.quantity,
@@ -291,7 +301,18 @@ export class InventoryDraftService {
   ): Promise<InventoryPage<Readonly<Record<string, unknown>>>> {
     await this.get(companyId, branches, id);
     const page = await this.repository.lines(companyId, id, input);
-    return { ...page, items: page.items.map((value) => lineJson(value, includeCost)) };
+    // TASK 17.2 — one batched identity lookup for the whole page, never
+    // per-line.
+    const identities = await this.repository.identities(
+      companyId,
+      page.items.map((value) => value.productVariantId),
+    );
+    return {
+      ...page,
+      items: page.items.map((value) =>
+        lineJson(value, includeCost, identities.get(value.productVariantId)),
+      ),
+    };
   }
 
   public addLine(

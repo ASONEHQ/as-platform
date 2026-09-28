@@ -20,6 +20,7 @@ import type {
 } from './inventory-transfers.types.js';
 import { InventoryTransferError } from './inventory-transfers.types.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import type { ProductVariantIdentity } from './product-identities.js';
 
 export interface TransferCreateInput {
   sourceBranchId: string;
@@ -70,6 +71,11 @@ function text(value: string | null | undefined, max: number): string | null {
 function transferJson(
   value: InventoryTransfer,
   includeLines = true,
+  // TASK 17.2 — see `product-identities.ts`'s own doc comment. Omitted
+  // (undefined) for every call site that doesn't separately fetch
+  // identities — those responses simply carry no product_name/sku,
+  // exactly as before this task.
+  identities?: ReadonlyMap<string, ProductVariantIdentity>,
 ): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -96,14 +102,22 @@ function transferJson(
     cancelled_by: value.cancelledBy,
     shipment_movement_id: value.shipmentMovementId,
     receipt_movement_id: value.receiptMovementId,
-    ...(includeLines ? { lines: value.lines.map(lineJson) } : {}),
+    ...(includeLines
+      ? { lines: value.lines.map((line) => lineJson(line, identities?.get(line.productVariantId))) }
+      : {}),
   };
 }
-function lineJson(value: InventoryTransferLine): Readonly<Record<string, unknown>> {
+function lineJson(
+  value: InventoryTransferLine,
+  identity?: ProductVariantIdentity,
+): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
     line_number: value.lineNumber,
     product_variant_id: value.productVariantId,
+    product_name: identity?.name ?? null,
+    product_sku: identity?.sku ?? null,
+    is_sellable: identity?.isSellable ?? null,
     quantity: value.requestedQuantity,
     shipped_quantity: value.shippedQuantity,
     received_quantity: value.receivedQuantity,
@@ -222,6 +236,20 @@ export class InventoryTransferService {
     if (value === null)
       throw new InventoryTransferError('resource_not_found', 'The transfer was not found.');
     return value;
+  }
+
+  /** TASK 17.2 — one batched real-identity lookup for a transfer's own
+   * lines, so `GET /inventory/transfers/{id}` never forces the caller to
+   * show a raw variant id. See `product-identities.ts`'s own doc
+   * comment. */
+  public async identitiesFor(
+    companyId: string,
+    lines: readonly Pick<InventoryTransferLine, 'productVariantId'>[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return this.repository.identities(
+      companyId,
+      lines.map((line) => line.productVariantId),
+    );
   }
 
   public decision(

@@ -12,11 +12,13 @@ import {
 import type { InventoryCountRepository } from './inventory-counts.repository.js';
 import type {
   InventoryCount,
+  InventoryCountLine,
   InventoryCountScopeType,
   InventoryCountStatus,
 } from './inventory-counts.types.js';
 import { InventoryCountError } from './inventory-counts.types.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import type { ProductVariantIdentity } from './product-identities.js';
 
 export interface CountCreateInput {
   branchId: string;
@@ -113,6 +115,8 @@ function summary(value: InventoryCount): Readonly<Record<string, unknown>> {
 export function inventoryCountJson(
   value: InventoryCount,
   includeLines = true,
+  // TASK 17.2 — see `product-identities.ts`'s own doc comment.
+  identities?: ReadonlyMap<string, ProductVariantIdentity>,
 ): Readonly<Record<string, unknown>> {
   return {
     id: value.id,
@@ -146,6 +150,9 @@ export function inventoryCountJson(
           lines: value.lines.map((line) => ({
             id: line.id,
             product_variant_id: line.productVariantId,
+            product_name: identities?.get(line.productVariantId)?.name ?? null,
+            product_sku: identities?.get(line.productVariantId)?.sku ?? null,
+            is_sellable: identities?.get(line.productVariantId)?.isSellable ?? null,
             unit_of_measure_code: line.unitOfMeasureCode,
             expected_quantity: line.expectedQuantity,
             counted_quantity: line.countedQuantity,
@@ -185,6 +192,18 @@ export class InventoryCountService {
     if (value === null)
       throw new InventoryCountError('resource_not_found', 'The inventory count was not found.');
     return value;
+  }
+
+  /** TASK 17.2 — see `InventoryTransferService.identitiesFor`'s own doc
+   * comment; same one-batched-lookup pattern. */
+  public async identitiesFor(
+    companyId: string,
+    lines: readonly Pick<InventoryCountLine, 'productVariantId'>[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return this.repository.identities(
+      companyId,
+      lines.map((line) => line.productVariantId),
+    );
   }
   public create(
     context: InventoryMutationContext,

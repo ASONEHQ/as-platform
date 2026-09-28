@@ -122,6 +122,35 @@ export function registerProductRecipeRoutes(
         });
       }),
   );
+  // TASK 17.2 §17 — "Usado en" (where used): the reverse lookup, given an
+  // ingredient variant, which sold products' recipes reference it.
+  app.get<{ Params: VariantParams }>(
+    '/api/v1/product-variants/:variant_id/used-in',
+    {
+      schema: {
+        tags: ['catalog'],
+        params: variantParams,
+        response: { 200: response, ...errors },
+      },
+    },
+    async (request, reply) =>
+      withProductRecipeErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'catalog.read');
+        const usages = await service.usedIn(auth.companyId, request.params.variant_id);
+        return reply.send({
+          data: usages.map((usage) => ({
+            recipe_id: usage.recipeId,
+            is_recipe_active: usage.isRecipeActive,
+            sold_product_variant_id: usage.soldProductVariantId,
+            sold_product_name: usage.soldProductName,
+            quantity: usage.quantity,
+            unit_of_measure_code: usage.unitOfMeasureCode,
+          })),
+          meta: responseMeta(request.requestContext),
+        });
+      }),
+  );
   app.put<{ Params: VariantParams; Body: ReplaceBody }>(
     '/api/v1/product-variants/:variant_id/recipe',
     {

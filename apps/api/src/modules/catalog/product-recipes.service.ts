@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ProductRecipeRepository } from './product-recipes.repository.js';
+import type { ProductRecipeRepository, RecipeUsage } from './product-recipes.repository.js';
 import type {
   ProductRecipeComponentInput,
   ProductRecipeComponentRow,
@@ -59,6 +59,15 @@ export class ProductRecipeService {
     if (!exists)
       throw new ProductRecipeError('resource_not_found', 'The product variant was not found.');
     return this.repository.recipeByVariant(companyId, variantId);
+  }
+
+  /** TASK 17.2 §17 — "Usado en" (where used): which recipes consume this
+   * variant as an ingredient. */
+  public async usedIn(companyId: string, variantId: string): Promise<RecipeUsage[]> {
+    const exists = await this.repository.variantExists(companyId, variantId);
+    if (!exists)
+      throw new ProductRecipeError('resource_not_found', 'The product variant was not found.');
+    return this.repository.usedIn(companyId, variantId);
   }
 
   public replaceRecipe(

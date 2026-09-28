@@ -15,6 +15,10 @@ import type {
 } from './inventory-counts.types.js';
 import { InventoryCountError } from './inventory-counts.types.js';
 import type { InventoryMutationContext, InventoryPage } from './inventory.types.js';
+import {
+  resolveProductVariantIdentities,
+  type ProductVariantIdentity,
+} from './product-identities.js';
 
 interface QueryResult<T> {
   rows: readonly T[];
@@ -142,6 +146,15 @@ export class InventoryCountRepository {
   public transaction<T>(callback: (client: DraftSqlClient) => Promise<T>): Promise<T> {
     return this.drafts.transaction(callback);
   }
+
+  /** TASK 17.2 — see `product-identities.ts`'s own doc comment. */
+  public async identities(
+    companyId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return resolveProductVariantIdentities(this.database.pool, companyId, variantIds);
+  }
+
   public async location(
     client: DraftSqlClient,
     companyId: string,
