@@ -36,12 +36,14 @@ These are real, confirmed gaps. Fixing them was **not** requested by this task a
 
 A batched, never-persisted join (`coalesce(nullif(btrim(v.name), ''), p.name)`) resolving a variant/product's *current* display name, SKU, unit code, and sellability on every read — the exact pattern already proven in TASK 16.32.9's `ProductRecipeRepository.ingredientIdentities`, now generalized into one shared helper instead of four divergent copies. Wired into:
 
-- `inventory-drafts.service.ts` (`listLines`) — draft/movement lines now carry `product_name`/`product_sku`/`is_sellable`, not a raw UUID.
-- `inventory-transfers.service.ts` (`transferJson`/`lineJson`, plus a new `identitiesFor` passthrough used by the GET-detail route).
-- `inventory-counts.service.ts` (same pattern).
-- `reservation.service.ts` (same pattern).
+- `inventory-drafts.service.ts` (`listLines`) — draft/movement lines carry `product_name`/`product_sku`/`is_sellable`, not a raw UUID. This is the exact endpoint (`GET /api/v1/inventory/movements/:movement_id/lines`) the Flutter Movimientos tab calls.
+- `inventory-transfers.service.ts` (`transferJson`/`lineJson`, plus an `identitiesFor` passthrough used by the GET-detail route — the same route the Flutter Traspasos tab calls).
+- `inventory-counts.service.ts` (same pattern; same route the Conteos tab calls).
+- `reservation.service.ts` (same pattern; same route the Reservas tab calls).
 
-None of these persist the resolved name anywhere — a product rename shows up immediately on the next read of any historical movement/transfer/count/reservation, exactly like the existing recipe-ingredient-identity precedent already did.
+**API and Flutter status (TASK 17.2.2):** the API returns this identity on all four routes above, and — as of TASK 17.2.2 — the Flutter Movimientos, Traspasos, Conteos, and Reservas line rows all consume it: each line's primary label is the real product/ingredient name (with SKU as a secondary line), via one shared, network-free presentation widget (`_InventoryProductIdentity` in `pos_inventory_admin_screen.dart`). The raw `product_variant_id` stays on the model for internal use (e.g. keys, API calls) but is never the user-facing label. A line whose identity genuinely can't resolve (e.g. a hard-deleted variant referenced only by old history) shows the honest fallback "Producto no disponible" — never a raw or truncated UUID. `_shortId()` remains in use elsewhere in this screen, but only for movement/transfer/branch *reference* ids, never for a product/ingredient identity. (An earlier gate for this task, before TASK 17.2.2, found the API payload carried this data while the Flutter tabs still rendered `_shortId(productVariantId)` for these same lines — that gap is what TASK 17.2.2 closed. The Ajustes/Reconciliación tab's finding detail is the one surface still showing a short variant id: `inventory-reconciliation.service.ts`/`inventory-repair.service.ts` were not touched by TASK 17.2 or 17.2.2 and carry no identity field to consume.)
+
+**This is deliberately NOT a frozen historical snapshot.** None of the four routes above persist the resolved name anywhere — every read re-resolves it fresh from the *current* `products`/`product_variants` rows. Renaming a product today changes what a movement/transfer/count/reservation from last month displays the next time anyone opens it — this is the exact same trade-off TASK 16.32.9 already accepted for recipe ingredients (see `docs/PRODUCT_RECIPES.md`), applied consistently here rather than introduced as something new.
 
 ### 2.2 Existencias enrichment (`inventory.repository.ts` / `InventoryBalanceReadRepository.list`)
 

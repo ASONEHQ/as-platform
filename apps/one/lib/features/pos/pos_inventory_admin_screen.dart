@@ -1274,6 +1274,49 @@ String _shortId(String id) => id.length <= 8 ? id : '${id.substring(0, 8)}…';
 
 const _quantityDecoration = InputDecoration(isDense: true, labelText: 'Cantidad');
 
+/// TASK 17.2.2 — the one shared way every inventory LINE surface
+/// (Movimientos, Traspasos, Conteos, Reservas) shows which product/
+/// ingredient a line is about. Never fetches anything itself — every value
+/// it renders must already be on the line object the caller passed in (see
+/// `PosInventoryMovementLine.productName`'s own doc comment: real, live,
+/// resolved fresh from the catalog by the backend, honestly `null` — never
+/// fabricated — when it can't resolve). The raw variant id is deliberately
+/// not a constructor parameter: this widget has nothing to fall back to
+/// but the honest "Producto no disponible" copy, by design.
+class _InventoryProductIdentity extends StatelessWidget {
+  const _InventoryProductIdentity({required this.name, required this.sku, this.isSellable});
+  final String? name;
+  final String? sku;
+  final bool? isSellable;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                name ?? 'Producto no disponible',
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+              ),
+            ),
+            // TASK 17.2.2 §9 — flag only the exception (Insumo), never
+            // clutter every row with a "Producto" badge for the default
+            // case.
+            if (isSellable == false) ...[const SizedBox(width: 6), const _TipoPill(tipo: 'Insumo')],
+          ],
+        ),
+        if (sku != null) Text('SKU $sku', style: TextStyle(color: palette.textSecondary, fontSize: 10)),
+      ],
+    );
+  }
+}
+
 // =======================================================================
 // Movimientos — manual movement drafts/adjustments + posting + reversal.
 // Gated by `inventory.read`; mutations by `inventory.adjust`/
@@ -1956,12 +1999,24 @@ class _MovementDetailDialogState extends State<_MovementDetailDialog> {
                     key: Key('pos-movement-line-row-${line.id}'),
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
-                          child: Text(
-                            '${_shortId(line.productVariantId)} · ${line.quantity} ${line.unitOfMeasureCode}'
-                            '${line.reasonCode == null ? '' : ' · ${line.reasonCode}'}',
-                            style: TextStyle(color: palette.text, fontSize: 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _InventoryProductIdentity(
+                                name: line.productName,
+                                sku: line.productSku,
+                                isSellable: line.isSellable,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${_compactQuantity(line.quantity)} ${line.unitOfMeasureCode}'
+                                '${line.reasonCode == null ? '' : ' · ${line.reasonCode}'}',
+                                style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                              ),
+                            ],
                           ),
                         ),
                         if (_movement.isEditable)
@@ -2746,11 +2801,18 @@ class _TransferDetailDialogState extends State<_TransferDetailDialog> {
                 for (final line in _transfer.lines)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      '${_shortId(line.productVariantId)} · ${line.quantity} ${line.unitOfMeasureCode}'
-                      '${line.shippedQuantity == null ? '' : ' · enviado ${line.shippedQuantity}'}'
-                      '${line.receivedQuantity == null ? '' : ' · recibido ${line.receivedQuantity}'}',
-                      style: TextStyle(color: palette.text, fontSize: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _InventoryProductIdentity(name: line.productName, sku: line.productSku, isSellable: line.isSellable),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_compactQuantity(line.quantity)} ${line.unitOfMeasureCode}'
+                          '${line.shippedQuantity == null ? '' : ' · enviado ${_compactQuantity(line.shippedQuantity!)}'}'
+                          '${line.receivedQuantity == null ? '' : ' · recibido ${_compactQuantity(line.receivedQuantity!)}'}',
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                      ],
                     ),
                   ),
                 if (_error != null) ...[
@@ -3316,12 +3378,24 @@ class _CountDetailDialogState extends State<_CountDetailDialog> {
                       key: Key('pos-count-line-row-${line.productVariantId}'),
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
                             flex: 2,
-                            child: Text(
-                              '${_shortId(line.productVariantId)} · esperado ${line.expectedQuantity}',
-                              style: TextStyle(color: palette.text, fontSize: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _InventoryProductIdentity(
+                                  name: line.productName,
+                                  sku: line.productSku,
+                                  isSellable: line.isSellable,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'esperado ${_compactQuantity(line.expectedQuantity)} ${line.unitOfMeasureCode}',
+                                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                                ),
+                              ],
                             ),
                           ),
                           if (_count.status == 'counting') ...[
@@ -3883,7 +3957,18 @@ class _ReservationDetailDialogState extends State<_ReservationDetailDialog> {
                 for (final line in _reservation.lines)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text('${_shortId(line.productVariantId)} · ${line.quantity} ${line.unitOfMeasureCode}', style: TextStyle(color: palette.text, fontSize: 12)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _InventoryProductIdentity(name: line.productName, sku: line.productSku, isSellable: line.isSellable),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_compactQuantity(line.quantity)} ${line.unitOfMeasureCode}'
+                          '${line.remainingQuantity == null ? '' : ' · restante ${_compactQuantity(line.remainingQuantity!)}'}',
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                      ],
+                    ),
                   ),
                 if (_error != null) ...[
                   const SizedBox(height: 10),

@@ -259,6 +259,112 @@ void main() {
     });
   });
 
+  // TASK 17.2.2 — every inventory LINE surface must show the real,
+  // already-enriched product/ingredient identity (product_name/product_sku
+  // — see `product-identities.ts`) as the PRIMARY label, never
+  // `_shortId(productVariantId)`. A line whose identity genuinely could not
+  // resolve must fall back to the honest "Producto no disponible" copy,
+  // never a truncated raw UUID.
+  group('Identidad de producto en líneas de inventario', () {
+    testWidgets('Movimientos: a line shows the real product name and SKU, and an unresolved line falls back honestly — never the raw variant id', (
+      tester,
+    ) async {
+      final gateway = _RecordingInventoryAdminGateway(
+        movements: [_movementWithIdentityLines],
+        movementLines: {'movement-identity-1': _movementIdentityLines},
+      );
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
+
+      await tester.tap(find.byKey(const Key('pos-movement-row-movement-identity-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.text('Insumo'), findsOneWidget);
+      expect(find.text('Producto no disponible'), findsOneWidget);
+      expect(find.textContaining(_mozzarellaVariantId.substring(0, 8)), findsNothing);
+      expect(find.textContaining(_unresolvedVariantId.substring(0, 8)), findsNothing);
+    });
+
+    testWidgets('Traspasos: a transfer line shows the real product name and SKU with quantity/unit, never the raw variant id', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(transfers: [_transferWithIdentityLines]);
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Traspasos');
+
+      await tester.tap(find.byKey(const Key('pos-transfer-row-transfer-identity-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.textContaining('5 kg'), findsOneWidget);
+      expect(find.text('Producto no disponible'), findsOneWidget);
+      expect(find.textContaining(_mozzarellaVariantId.substring(0, 8)), findsNothing);
+    });
+
+    testWidgets('Conteos: a count line shows the real product name and SKU with expected quantity/unit, never the raw variant id', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(counts: [_countWithIdentityLines]);
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Conteos');
+
+      await tester.tap(find.byKey(const Key('pos-count-row-count-identity-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.textContaining('esperado 10 kg'), findsOneWidget);
+      expect(find.text('Producto no disponible'), findsOneWidget);
+      expect(find.textContaining(_mozzarellaVariantId.substring(0, 8)), findsNothing);
+    });
+
+    testWidgets('Reservas: a reservation line shows the real product name and SKU with quantity/unit, never the raw variant id', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(reservations: [_reservationWithIdentityLines]);
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Reservas');
+
+      await tester.tap(find.byKey(const Key('pos-reservation-row-reservation-identity-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.textContaining('5 kg'), findsOneWidget);
+      expect(find.text('Producto no disponible'), findsOneWidget);
+      expect(find.textContaining(_mozzarellaVariantId.substring(0, 8)), findsNothing);
+    });
+
+    testWidgets('a sellable line never shows the Insumo badge (flags only the exception, never clutters every row)', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(transfers: [_requestedTransfer]);
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Traspasos');
+
+      await tester.tap(find.byKey(const Key('pos-transfer-row-transfer-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Insumo'), findsNothing);
+    });
+
+    // Desktop only — `PosInventoryAdminScreen` is a back-office admin tool
+    // with no narrow/mobile layout anywhere (confirmed: even the
+    // pre-existing "Líneas" header row above, unrelated to this task's
+    // identity widget, already overflows at phone width). No narrow
+    // breakpoint is tested, per this section's own "if these screens
+    // support it" qualifier — they don't.
+    for (final size in [const Size(1440, 900), const Size(1365, 768)]) {
+      testWidgets('the identity-enriched line rows fit without overflow at ${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        final gateway = _RecordingInventoryAdminGateway(
+          movements: [_movementWithIdentityLines],
+          movementLines: {'movement-identity-1': _movementIdentityLines},
+        );
+        await _pump(tester, gateway: gateway, viewSize: size);
+        await _navigateToTab(tester, 'Movimientos');
+        await tester.tap(find.byKey(const Key('pos-movement-row-movement-identity-1')));
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
   group('Ajustes/Reconciliación', () {
     testWidgets('renders the real seeded finding list with type and status', (tester) async {
       final gateway = _RecordingInventoryAdminGateway(findings: [_openFinding]);
@@ -586,6 +692,200 @@ final _openFinding = PosInventoryReconciliationFinding(
   dismissedAt: null,
 );
 
+// --- TASK 17.2.2 — human product/ingredient identity on inventory line
+// surfaces (Movimientos/Traspasos/Conteos/Reservas). Variant ids below are
+// realistic UUIDs (never the short `variant-1`-style ids used elsewhere in
+// this file) so the "no raw UUID visible" assertions below are meaningful.
+const _mozzarellaVariantId = 'a1b2c3d4-0000-4000-8000-000000000001';
+const _unresolvedVariantId = 'a1b2c3d4-0000-4000-8000-000000000099';
+
+final _movementWithIdentityLines = PosInventoryMovement(
+  id: 'movement-identity-1',
+  branchId: 'branch-1',
+  movementNumber: 'IMV-IDENTITY-1',
+  movementType: 'adjustment',
+  status: 'draft',
+  reasonCode: 'ajuste inicial',
+  referenceType: null,
+  referenceId: null,
+  sourceDocumentNumber: null,
+  notes: null,
+  version: 1,
+  occurredAt: DateTime.utc(2026, 9, 1),
+  postedAt: null,
+  cancelledAt: null,
+  reversedAt: null,
+  createdAt: DateTime.utc(2026, 9, 1),
+  updatedAt: DateTime.utc(2026, 9, 1),
+  lineCount: 2,
+);
+final _movementIdentityLines = [
+  PosInventoryMovementLine(
+    id: 'movement-identity-line-1',
+    movementId: 'movement-identity-1',
+    lineNumber: 1,
+    productVariantId: _mozzarellaVariantId,
+    sourceLocationId: null,
+    destinationLocationId: 'location-src',
+    quantity: '5',
+    baseQuantity: '5',
+    unitOfMeasureCode: 'kg',
+    reasonCode: null,
+    createdAt: DateTime.utc(2026, 9, 1),
+    productName: 'Mozzarella PRUEBA',
+    productSku: 'ING-QUESO-TEST',
+    isSellable: false,
+  ),
+  PosInventoryMovementLine(
+    id: 'movement-identity-line-2',
+    movementId: 'movement-identity-1',
+    lineNumber: 2,
+    productVariantId: _unresolvedVariantId,
+    sourceLocationId: null,
+    destinationLocationId: 'location-src',
+    quantity: '1',
+    baseQuantity: '1',
+    unitOfMeasureCode: 'unit',
+    reasonCode: null,
+    createdAt: DateTime.utc(2026, 9, 1),
+  ),
+];
+
+final _transferWithIdentityLines = PosInventoryTransfer(
+  id: 'transfer-identity-1',
+  transferNumber: 'TRF-IDENTITY-1',
+  status: 'requested',
+  sourceBranchId: 'branch-1',
+  destinationBranchId: 'branch-2',
+  sourceLocationId: 'location-src',
+  destinationLocationId: 'location-dst',
+  transitLocationId: 'location-transit',
+  notes: null,
+  version: 1,
+  requestedAt: DateTime.utc(2026, 9, 1),
+  approvedAt: null,
+  shippedAt: null,
+  receivedAt: null,
+  rejectedAt: null,
+  cancelledAt: null,
+  shipmentMovementId: null,
+  receiptMovementId: null,
+  lines: const [
+    PosInventoryTransferLine(
+      id: 'transfer-identity-line-1',
+      lineNumber: 1,
+      productVariantId: _mozzarellaVariantId,
+      quantity: '5',
+      shippedQuantity: null,
+      receivedQuantity: null,
+      rejectedQuantity: null,
+      unitOfMeasureCode: 'kg',
+      notes: null,
+      productName: 'Mozzarella PRUEBA',
+      productSku: 'ING-QUESO-TEST',
+      isSellable: false,
+    ),
+    PosInventoryTransferLine(
+      id: 'transfer-identity-line-2',
+      lineNumber: 2,
+      productVariantId: _unresolvedVariantId,
+      quantity: '1',
+      shippedQuantity: null,
+      receivedQuantity: null,
+      rejectedQuantity: null,
+      unitOfMeasureCode: 'unit',
+      notes: null,
+    ),
+  ],
+);
+
+final _countWithIdentityLines = PosInventoryCount(
+  id: 'count-identity-1',
+  countNumber: 'CNT-IDENTITY-1',
+  branchId: 'branch-1',
+  locationId: 'location-main',
+  status: 'counting',
+  scopeType: 'all_balanced_variants',
+  reasonCode: 'ciclo mensual',
+  note: null,
+  version: 2,
+  startedAt: DateTime.utc(2026, 9, 1),
+  submittedAt: null,
+  approvedAt: null,
+  appliedAt: null,
+  cancelledAt: null,
+  applicationMovementId: null,
+  createdAt: DateTime.utc(2026, 9, 1),
+  lineCount: 2,
+  uncountedLineCount: 1,
+  discrepancyLineCount: 0,
+  lines: const [
+    PosInventoryCountLine(
+      id: 'count-identity-line-1',
+      productVariantId: _mozzarellaVariantId,
+      unitOfMeasureCode: 'kg',
+      expectedQuantity: '10',
+      countedQuantity: '10',
+      differenceQuantity: '0',
+      countedBy: 'user-id',
+      version: 1,
+      productName: 'Mozzarella PRUEBA',
+      productSku: 'ING-QUESO-TEST',
+      isSellable: false,
+    ),
+    PosInventoryCountLine(
+      id: 'count-identity-line-2',
+      productVariantId: _unresolvedVariantId,
+      unitOfMeasureCode: 'unit',
+      expectedQuantity: '3',
+      countedQuantity: null,
+      differenceQuantity: null,
+      countedBy: null,
+      version: 1,
+    ),
+  ],
+);
+
+final _reservationWithIdentityLines = PosInventoryReservation(
+  id: 'reservation-identity-1',
+  reservationNumber: 'RES-IDENTITY-1',
+  branchId: 'branch-1',
+  ownerType: 'pos_cart',
+  ownerId: 'cart-42',
+  status: 'active',
+  expiresAt: null,
+  version: 1,
+  createdAt: DateTime.utc(2026, 9, 1),
+  confirmedAt: null,
+  releasedAt: null,
+  expiredAt: null,
+  cancelledAt: null,
+  lineCount: 2,
+  lines: const [
+    PosInventoryReservationLine(
+      id: 'reservation-identity-line-1',
+      lineNumber: 1,
+      locationId: 'location-src',
+      productVariantId: _mozzarellaVariantId,
+      quantity: '5',
+      remainingQuantity: '5',
+      unitOfMeasureCode: 'kg',
+      productName: 'Mozzarella PRUEBA',
+      productSku: 'ING-QUESO-TEST',
+      isSellable: false,
+    ),
+    PosInventoryReservationLine(
+      id: 'reservation-identity-line-2',
+      lineNumber: 2,
+      locationId: 'location-src',
+      productVariantId: _unresolvedVariantId,
+      quantity: '1',
+      remainingQuantity: '1',
+      unitOfMeasureCode: 'unit',
+    ),
+  ],
+);
+
 // --- Fake gateway -----------------------------------------------------
 
 class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
@@ -597,18 +897,20 @@ class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
     List<PosInventoryCount> counts = const [],
     List<PosInventoryReservation> reservations = const [],
     List<PosInventoryReconciliationFinding> findings = const [],
+    Map<String, List<PosInventoryMovementLine>> movementLines = const {},
   }) : _locations = [...locations],
        _balances = [...balances],
        _movements = [...movements],
        _transfers = [...transfers],
        _counts = [...counts],
        _reservations = [...reservations],
-       _findings = [...findings];
+       _findings = [...findings],
+       _movementLines = {for (final entry in movementLines.entries) entry.key: [...entry.value]};
 
   final List<PosInventoryLocation> _locations;
   final List<PosInventoryBalance> _balances;
   final List<PosInventoryMovement> _movements;
-  final Map<String, List<PosInventoryMovementLine>> _movementLines = {};
+  final Map<String, List<PosInventoryMovementLine>> _movementLines;
   final List<PosInventoryTransfer> _transfers;
   final List<PosInventoryCount> _counts;
   final List<PosInventoryReservation> _reservations;
@@ -1366,8 +1668,9 @@ Future<void> _pump(
   List<String>? permissions,
   List<PosCategory> categories = const [],
   bool startOnExistencias = false,
+  Size viewSize = const Size(1440, 1000),
 }) async {
-  tester.view.physicalSize = const Size(1440, 1000);
+  tester.view.physicalSize = viewSize;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   final effectiveContext = permissions == null

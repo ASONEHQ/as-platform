@@ -490,6 +490,9 @@ class PosInventoryMovementLine {
     required this.unitOfMeasureCode,
     required this.reasonCode,
     required this.createdAt,
+    this.productName,
+    this.productSku,
+    this.isSellable,
   });
 
   factory PosInventoryMovementLine.fromJson(Map<String, Object?> json) => PosInventoryMovementLine(
@@ -504,6 +507,9 @@ class PosInventoryMovementLine {
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
     reasonCode: json['reason_code'] as String?,
     createdAt: DateTime.parse(json['created_at']! as String),
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
   );
 
   final String id;
@@ -517,6 +523,14 @@ class PosInventoryMovementLine {
   final String unitOfMeasureCode;
   final String? reasonCode;
   final DateTime createdAt;
+
+  /// TASK 17.2.2 — real, live-resolved catalog identity for
+  /// [productVariantId] (see `product-identities.ts`'s own doc comment).
+  /// `null` only when the backend genuinely could not resolve it (e.g. a
+  /// hard-deleted variant in old history) — never fabricated.
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
 }
 
 /// An `inventory_movements` row (`movementJson()` in
@@ -761,6 +775,9 @@ class PosInventoryTransferLine {
     required this.rejectedQuantity,
     required this.unitOfMeasureCode,
     required this.notes,
+    this.productName,
+    this.productSku,
+    this.isSellable,
   });
 
   factory PosInventoryTransferLine.fromJson(Map<String, Object?> json) => PosInventoryTransferLine(
@@ -773,6 +790,9 @@ class PosInventoryTransferLine {
     rejectedQuantity: json['rejected_quantity'] as String?,
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
     notes: json['notes'] as String?,
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
   );
 
   final String id;
@@ -780,6 +800,12 @@ class PosInventoryTransferLine {
   final String productVariantId;
   final String quantity;
   final String? shippedQuantity;
+  // TASK 17.2.2 — see `PosInventoryMovementLine`'s own doc comment on
+  // [productName]/[productSku]/[isSellable]; same real, live, honest-null
+  // resolution.
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
   final String? receivedQuantity;
   final String? rejectedQuantity;
   final String unitOfMeasureCode;
@@ -945,6 +971,9 @@ class PosInventoryCountLine {
     required this.differenceQuantity,
     required this.countedBy,
     required this.version,
+    this.productName,
+    this.productSku,
+    this.isSellable,
   });
 
   factory PosInventoryCountLine.fromJson(Map<String, Object?> json) => PosInventoryCountLine(
@@ -956,6 +985,9 @@ class PosInventoryCountLine {
     differenceQuantity: json['difference_quantity'] as String?,
     countedBy: json['counted_by'] as String?,
     version: _versionOf(json['version']),
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
   );
 
   final String id;
@@ -966,6 +998,10 @@ class PosInventoryCountLine {
   final String? differenceQuantity;
   final String? countedBy;
   final int version;
+  // TASK 17.2.2 — see `PosInventoryMovementLine`'s own doc comment.
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
 
   bool get isCounted => countedQuantity != null;
 }
@@ -1107,6 +1143,9 @@ class PosInventoryReservationLine {
     required this.quantity,
     required this.remainingQuantity,
     required this.unitOfMeasureCode,
+    this.productName,
+    this.productSku,
+    this.isSellable,
   });
 
   factory PosInventoryReservationLine.fromJson(Map<String, Object?> json) => PosInventoryReservationLine(
@@ -1117,6 +1156,9 @@ class PosInventoryReservationLine {
     quantity: json['quantity']! as String,
     remainingQuantity: json['remaining_quantity'] as String?,
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
   );
 
   final String id;
@@ -1126,6 +1168,10 @@ class PosInventoryReservationLine {
   final String quantity;
   final String? remainingQuantity;
   final String unitOfMeasureCode;
+  // TASK 17.2.2 — see `PosInventoryMovementLine`'s own doc comment.
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
 }
 
 /// An `inventory_reservations` row (`reservationJson()` in
