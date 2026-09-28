@@ -51,6 +51,7 @@ import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'pos_inventory_admin_gateway.dart';
 import 'pos_models.dart' show PosCategory;
+import 'pos_product_variants_gateway.dart' show PosProductRecipeUsage, PosProductVariantsGateway;
 import 'pos_reports_csv_download.dart';
 import 'pos_tokens.dart';
 
@@ -71,6 +72,7 @@ class PosInventoryAdminScreen extends StatefulWidget {
     this.startOnExistencias = false,
     this.categories = const [],
     this.onOpenDirectPurchase,
+    this.variantsGateway,
     super.key,
   });
 
@@ -80,14 +82,20 @@ class PosInventoryAdminScreen extends StatefulWidget {
   final List<PosCategory> categories;
   final VoidCallback? onOpenDirectPurchase;
 
+  /// TASK 17.2 §Task 3 — optional (nullable, defaulting to `null`, so every
+  /// existing call site keeps compiling unchanged) reverse-recipe-lookup
+  /// gateway. When `null`, the "Usado en" affordance on an Insumo
+  /// Existencias row simply doesn't render, rather than crashing.
+  final PosProductVariantsGateway? variantsGateway;
+
   @override
   State<PosInventoryAdminScreen> createState() => _PosInventoryAdminScreenState();
 }
 
-enum _InventoryTab { existencias, movimientos, traspasos, conteos, reservas, ajustes, ubicaciones }
+enum _InventoryTab { resumen, existencias, movimientos, traspasos, conteos, reservas, ajustes, ubicaciones }
 
 class _PosInventoryAdminScreenState extends State<PosInventoryAdminScreen> {
-  late _InventoryTab _tab = widget.startOnExistencias ? _InventoryTab.existencias : _InventoryTab.movimientos;
+  late _InventoryTab _tab = widget.startOnExistencias ? _InventoryTab.existencias : _InventoryTab.resumen;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -95,11 +103,13 @@ class _PosInventoryAdminScreenState extends State<PosInventoryAdminScreen> {
     children: [
       _InventoryHeader(tab: _tab, onTabChanged: (value) => setState(() => _tab = value)),
       switch (_tab) {
+        _InventoryTab.resumen => _ResumenTab(context: widget.context, gateway: widget.gateway),
         _InventoryTab.existencias => _ExistenciasTab(
           context: widget.context,
           gateway: widget.gateway,
           categories: widget.categories,
           onOpenDirectPurchase: widget.onOpenDirectPurchase,
+          variantsGateway: widget.variantsGateway,
         ),
         _InventoryTab.movimientos => _MovimientosTab(context: widget.context, gateway: widget.gateway),
         _InventoryTab.traspasos => _TraspasosTab(context: widget.context, gateway: widget.gateway),
@@ -146,6 +156,7 @@ class _InventoryHeader extends StatelessWidget {
           SegmentedButton<_InventoryTab>(
             key: const Key('pos-inventory-admin-tabs'),
             segments: const [
+              ButtonSegment(value: _InventoryTab.resumen, label: Text('Resumen')),
               ButtonSegment(value: _InventoryTab.existencias, label: Text('Existencias')),
               ButtonSegment(value: _InventoryTab.movimientos, label: Text('Movimientos')),
               ButtonSegment(value: _InventoryTab.traspasos, label: Text('Traspasos')),
@@ -419,6 +430,277 @@ class _DialogButtons extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
+// Resumen — TASK 17.2: `GET /api/v1/inventory/overview`'s own real KPIs/
+// alerts/recent-activity/by-location breakdown. Strictly read-only, exactly
+// like Existencias — no control here ever sets a stock number. Requires an
+// explicit branch (the backend endpoint has no multi-branch aggregate mode)
+// so, unlike Existencias' own `_branchId` (used unguarded there because
+// `listBalances` tolerates an absent `branch_id`), this tab has a real,
+// deliberate null-branch guard before ever calling the gateway.
+// ---------------------------------------------------------------------
+
+class _ResumenTab extends StatefulWidget {
+  const _ResumenTab({required this.context, required this.gateway});
+  final AuthenticatedContext context;
+  final PosInventoryAdminGateway gateway;
+
+  @override
+  State<_ResumenTab> createState() => _ResumenTabState();
+}
+
+class _ResumenTabState extends State<_ResumenTab> {
+  _ListPhase _phase = _ListPhase.loading;
+  PosInventoryOverview? _overview;
+  String? _errorMessage;
+
+  bool get _canRead => widget.context.permissions.contains('inventory.read');
+  String? get _branchId => widget.context.session.branchId;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    if (!_canRead) return;
+    final branchId = _branchId;
+    if (branchId == null) return;
+    setState(() {
+      _phase = _ListPhase.loading;
+      _errorMessage = null;
+    });
+    try {
+      final overview = await widget.gateway.overview(branchId: branchId);
+      if (!mounted) return;
+      setState(() {
+        _overview = overview;
+        _phase = _ListPhase.ready;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ListPhase.failure;
+        _errorMessage = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ListPhase.failure;
+        _errorMessage = 'No fue posible cargar el resumen de inventario.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_canRead) return const _PermissionDenied(permission: 'inventory.read');
+    if (_branchId == null) {
+      return const _Card(
+        key: Key('pos-inventory-resumen-no-branch'),
+        child: Text('Selecciona una sucursal para ver el resumen de inventario.'),
+      );
+    }
+    return switch (_phase) {
+      _ListPhase.loading => const _Loading(),
+      _ListPhase.empty => const _Empty(message: 'No hay información de inventario disponible.'),
+      _ListPhase.failure => _Failure(
+        message: _errorMessage ?? 'No fue posible cargar el resumen de inventario.',
+        onRetry: () => unawaited(_load()),
+      ),
+      _ListPhase.ready => _ResumenContent(key: const Key('pos-inventory-resumen-content'), overview: _overview!),
+    };
+  }
+}
+
+class _ResumenContent extends StatelessWidget {
+  const _ResumenContent({required this.overview, super.key});
+  final PosInventoryOverview overview;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          key: const Key('pos-inventory-resumen-kpis'),
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            _KpiCard(label: 'Productos/insumos', value: '${overview.itemCount}'),
+            _KpiCard(
+              label: 'Stock bajo',
+              value: '${overview.lowStockCount}',
+              tint: overview.lowStockCount > 0 ? palette.warning : null,
+            ),
+            _KpiCard(
+              label: 'Sin existencia',
+              value: '${overview.outOfStockCount}',
+              tint: overview.outOfStockCount > 0 ? palette.error : null,
+            ),
+            _KpiCard(label: 'Movimientos hoy', value: '${overview.movementsTodayCount}'),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _Card(
+          key: const Key('pos-inventory-resumen-valuation'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Valor de inventario', style: TextStyle(color: palette.textMuted, fontSize: 11, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              // TASK 17.2 §4/§13 — `valuationAvailable` is always `false`
+              // today (no authoritative unit cost exists anywhere in this
+              // system yet); the backend sends no numeric total in either
+              // case, so this card shows the honest reason string, never a
+              // fabricated `$0.00` or any computed number.
+              Text('Valor no disponible', style: TextStyle(color: palette.text, fontSize: 16, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(overview.valuationReason, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _Card(
+          key: const Key('pos-inventory-resumen-alerts'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Alertas de stock', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              const SizedBox(height: 10),
+              if (overview.alerts.isEmpty)
+                Text('Sin alertas de stock.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+              else
+                for (final alert in overview.alerts)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${alert.productName} (${alert.sku})',
+                                style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${alert.locationName} · Actual: ${_compactQuantity(alert.quantityOnHand)}'
+                                '${alert.minStock == null ? '' : ' · Mínimo: ${_compactQuantity(alert.minStock!)}'}',
+                                style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        _StockStatusPill(status: alert.stockStatus),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _Card(
+          key: const Key('pos-inventory-resumen-activity'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Actividad reciente', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              const SizedBox(height: 10),
+              if (overview.recentActivity.isEmpty)
+                Text('Sin movimientos recientes.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+              else
+                for (final activity in overview.recentActivity)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${_movementTypeLabel(activity.movementType)} · ${activity.movementNumber}',
+                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _formatDateTime(DateTime.parse(activity.occurredAt)),
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                        if (activity.sourceDocumentNumber != null || activity.referenceType != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'Ref: ${activity.referenceType ?? '—'} · ${activity.sourceDocumentNumber ?? '—'}',
+                            style: TextStyle(color: palette.textMuted, fontSize: 10),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _Card(
+          key: const Key('pos-inventory-resumen-by-location'),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Existencias por ubicación', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
+              const SizedBox(height: 10),
+              if (overview.byLocation.isEmpty)
+                Text('No hay ubicaciones con existencias.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+              else
+                for (final location in overview.byLocation)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(location.locationName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12)),
+                        ),
+                        Text(
+                          '${location.itemCount} artículos · ${location.lowStockCount} bajo · ${location.outOfStockCount} agotado',
+                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _KpiCard extends StatelessWidget {
+  const _KpiCard({required this.label, required this.value, this.tint});
+  final String label;
+  final String value;
+  final Color? tint;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = tint ?? palette.text;
+    return SizedBox(
+      width: 160,
+      child: _Card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: TextStyle(color: palette.textMuted, fontSize: 11, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(value, style: TextStyle(color: color, fontSize: 22, fontWeight: FontWeight.w800)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
 // Existencias — TASK 16.7: the real, named, filterable stock-on-hand view
 // (legacy's "Existencias" tab — `AS POS V1.html`'s `renderInventario`,
 // which read `p.stock`/`p.min`/`p.costo` off one single global-per-product
@@ -439,11 +721,13 @@ class _ExistenciasTab extends StatefulWidget {
     required this.gateway,
     required this.categories,
     this.onOpenDirectPurchase,
+    this.variantsGateway,
   });
   final AuthenticatedContext context;
   final PosInventoryAdminGateway gateway;
   final List<PosCategory> categories;
   final VoidCallback? onOpenDirectPurchase;
+  final PosProductVariantsGateway? variantsGateway;
 
   @override
   State<_ExistenciasTab> createState() => _ExistenciasTabState();
@@ -616,7 +900,14 @@ class _ExistenciasTabState extends State<_ExistenciasTab> {
           _ListPhase.failure => _Failure(message: _errorMessage ?? 'No fue posible cargar las existencias.', onRetry: () => unawaited(_load())),
           _ListPhase.ready => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [for (final balance in _items) _ExistenciaRow(key: Key('pos-existencia-row-${balance.locationId}-${balance.productVariantId}'), balance: balance)],
+            children: [
+              for (final balance in _items)
+                _ExistenciaRow(
+                  key: Key('pos-existencia-row-${balance.locationId}-${balance.productVariantId}'),
+                  balance: balance,
+                  variantsGateway: widget.variantsGateway,
+                ),
+            ],
           ),
         },
       ],
@@ -645,46 +936,182 @@ class _StockStatusPill extends StatelessWidget {
 }
 
 class _ExistenciaRow extends StatelessWidget {
-  const _ExistenciaRow({required this.balance, super.key});
+  const _ExistenciaRow({required this.balance, this.variantsGateway, super.key});
   final PosInventoryBalance balance;
+  final PosProductVariantsGateway? variantsGateway;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final isInsumo = balance.tipo == 'Insumo';
     return _Card(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            flex: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(balance.displayName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
-                const SizedBox(height: 2),
-                Text(
-                  [balance.categoryName, balance.locationName].whereType<String>().join(' · '),
-                  style: TextStyle(color: palette.textSecondary, fontSize: 11),
+          Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(balance.displayName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+                    const SizedBox(height: 2),
+                    Text(
+                      [balance.categoryName, balance.locationName].whereType<String>().join(' · '),
+                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    _Quantity(label: 'Actual', value: balance.quantityOnHand),
+                    const SizedBox(width: 14),
+                    _Quantity(label: 'Reservado', value: balance.quantityReserved),
+                    const SizedBox(width: 14),
+                    _Quantity(label: 'Mínimo', value: balance.minStock ?? '—'),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              _StockStatusPill(status: balance.stockStatus),
+            ],
           ),
-          Expanded(
-            flex: 2,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                _Quantity(label: 'Actual', value: balance.quantityOnHand),
-                const SizedBox(width: 14),
-                _Quantity(label: 'Reservado', value: balance.quantityReserved),
-                const SizedBox(width: 14),
-                _Quantity(label: 'Mínimo', value: balance.minStock ?? '—'),
-              ],
-            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _TipoPill(key: Key('pos-existencia-tipo-${balance.locationId}-${balance.productVariantId}'), tipo: balance.tipo),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(_lastMovementLabel(balance), style: TextStyle(color: palette.textMuted, fontSize: 11)),
+              ),
+              if (isInsumo && variantsGateway != null)
+                IconButton(
+                  key: Key('pos-existencias-used-in-${balance.productVariantId}'),
+                  tooltip: 'Usado en',
+                  icon: const Icon(Icons.info_outline, size: 18),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (dialogContext) => _UsedInDialog(variantId: balance.productVariantId, gateway: variantsGateway!),
+                  ),
+                ),
+            ],
           ),
-          const SizedBox(width: 12),
-          _StockStatusPill(status: balance.stockStatus),
         ],
+      ),
+    );
+  }
+}
+
+/// TASK 17.2 §6 — distinct, mild tinting for "Insumo" so an operator can
+/// tell an ingredient row from a directly-sold product at a glance, never a
+/// third invented category.
+class _TipoPill extends StatelessWidget {
+  const _TipoPill({required this.tipo, super.key});
+  final String tipo;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = tipo == 'Insumo' ? palette.textSecondary : palette.blueDeep;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: .12), borderRadius: BorderRadius.circular(20)),
+      child: Text(tipo, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w800)),
+    );
+  }
+}
+
+/// "Último movimiento" caption for an Existencias row — never fabricates a
+/// movement the backend didn't actually send.
+String _lastMovementLabel(PosInventoryBalance balance) {
+  final rawAt = balance.lastMovementAt;
+  if (rawAt == null) return 'Sin movimientos';
+  final parsed = DateTime.tryParse(rawAt);
+  final when = parsed == null ? rawAt : _formatDateTime(parsed);
+  final type = balance.lastMovementType;
+  return type == null ? 'Último movimiento: $when' : 'Último movimiento: ${_movementTypeLabel(type)} · $when';
+}
+
+/// TASK 17.2 §Task 3 — the "Usado en" (where-used) lookup dialog for an
+/// Insumo Existencias row. Reuses [_ReasonDialog]'s visual shell but is
+/// simpler: no form, just a real, read-only reverse-recipe lookup via
+/// `GET /api/v1/product-variants/{variant_id}/used-in`.
+class _UsedInDialog extends StatelessWidget {
+  const _UsedInDialog({required this.variantId, required this.gateway});
+  final String variantId;
+  final PosProductVariantsGateway gateway;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Usado en', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(height: 14),
+              FutureBuilder<List<PosProductRecipeUsage>>(
+                future: gateway.usedIn(variantId),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  if (snapshot.hasError) {
+                    return Text(
+                      'No fue posible consultar dónde se usa este insumo.',
+                      style: TextStyle(color: palette.error, fontSize: 12),
+                    );
+                  }
+                  final usages = snapshot.data ?? const [];
+                  if (usages.isEmpty) {
+                    return Text(
+                      'No se usa en ninguna receta actualmente.',
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final usage in usages)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Text(
+                            '${_compactQuantity(usage.quantity)} ${usage.unitOfMeasureCode} en ${usage.soldProductName}'
+                            '${usage.isRecipeActive ? '' : ' (receta inactiva)'}',
+                            style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

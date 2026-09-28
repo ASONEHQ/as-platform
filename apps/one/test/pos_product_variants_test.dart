@@ -929,6 +929,9 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
     deleteRecipeCallCount++;
     return Future.error(StateError('not used in this fixture'));
   }
+
+  @override
+  Future<List<PosProductRecipeUsage>> usedIn(String variantId) async => const [];
 }
 
 Future<void> _pump(

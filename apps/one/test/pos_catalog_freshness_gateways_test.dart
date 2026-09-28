@@ -440,6 +440,9 @@ class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
       Future.error(StateError('not used'));
 
   @override
+  Future<PosInventoryOverview> overview({required String branchId}) => Future.error(StateError('not used'));
+
+  @override
   Future<PosInventoryMovementPage> listMovements({String? branchId, String? status, String? type, String? cursor, int limit = 50}) =>
       Future.error(StateError('not used'));
 

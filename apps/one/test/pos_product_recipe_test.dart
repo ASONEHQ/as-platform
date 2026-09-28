@@ -856,6 +856,9 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
     deleteRecipeCalls.add((variantId: variantId, expectedVersion: expectedVersion));
     _recipesByVariantId.remove(variantId);
   }
+
+  @override
+  Future<List<PosProductRecipeUsage>> usedIn(String variantId) async => const [];
 }
 
 final _context = AuthenticatedContext(

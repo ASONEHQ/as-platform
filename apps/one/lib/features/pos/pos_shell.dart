@@ -3507,6 +3507,7 @@ class _Content extends StatelessWidget {
                     startOnExistencias: true,
                     categories: controller.categories.items,
                     onOpenDirectPurchase: () => onNavigateToModule(PosModule.purchases),
+                    variantsGateway: productVariantsGateway,
                   ),
                   // TASK 15.1 Phase 2: closes the "role/user/permission
                   // administration has no Flutter UI" YELLOW — a real,
@@ -3720,6 +3721,7 @@ class _Content extends StatelessWidget {
                   PosModule.inventoryAdmin => PosInventoryAdminScreen(
                     context: this.context,
                     gateway: inventoryAdminGateway,
+                    variantsGateway: productVariantsGateway,
                   ),
                   // TASK 15.1: branch create/edit — closes the
                   // "BranchSelectionScreen only reads, never creates" gap

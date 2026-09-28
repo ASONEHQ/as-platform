@@ -271,6 +271,34 @@ class PosProductRecipeComponentInput {
   };
 }
 
+/// One entry of `GET /api/v1/product-variants/{variant_id}/used-in`'s
+/// response — a real recipe that consumes this ingredient variant, with
+/// its real per-unit quantity. Never a fabricated relationship.
+class PosProductRecipeUsage {
+  const PosProductRecipeUsage({
+    required this.recipeId,
+    required this.isRecipeActive,
+    required this.soldProductVariantId,
+    required this.soldProductName,
+    required this.quantity,
+    required this.unitOfMeasureCode,
+  });
+  factory PosProductRecipeUsage.fromJson(Map<String, Object?> json) => PosProductRecipeUsage(
+    recipeId: json['recipe_id']! as String,
+    isRecipeActive: json['is_recipe_active']! as bool,
+    soldProductVariantId: json['sold_product_variant_id']! as String,
+    soldProductName: json['sold_product_name']! as String,
+    quantity: json['quantity']! as String,
+    unitOfMeasureCode: json['unit_of_measure_code']! as String,
+  );
+  final String recipeId;
+  final bool isRecipeActive;
+  final String soldProductVariantId;
+  final String soldProductName;
+  final String quantity;
+  final String unitOfMeasureCode;
+}
+
 /// The create/patch input both `POST .../variants` and
 /// `PATCH /product-variants/{id}` accept. Every field is optional here —
 /// the backend itself is what requires `sku`/`unit_of_measure_code` on
@@ -381,6 +409,12 @@ abstract interface class PosProductVariantsGateway {
   /// [expectedVersion]; throws [ApiException] honestly, including a 409 on
   /// a stale version.
   Future<void> deleteRecipe(String variantId, int expectedVersion);
+
+  /// `GET /api/v1/product-variants/{variant_id}/used-in` (`catalog.read`) —
+  /// the reverse of [getRecipe]: which recipes consume this variant as an
+  /// ingredient, and how much of it each uses per unit sold. Empty list =
+  /// genuinely unused anywhere, never an error.
+  Future<List<PosProductRecipeUsage>> usedIn(String variantId);
 }
 
 class ApiPosProductVariantsGateway implements PosProductVariantsGateway {
@@ -510,6 +544,16 @@ class ApiPosProductVariantsGateway implements PosProductVariantsGateway {
     );
   }
 
+  @override
+  Future<List<PosProductRecipeUsage>> usedIn(String variantId) async {
+    final envelope = await _client.getJson('/api/v1/product-variants/$variantId/used-in');
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing product recipe usage data.');
+    }
+    return data.map((item) => PosProductRecipeUsage.fromJson(item! as Map<String, Object?>)).toList(growable: false);
+  }
+
   static String _idempotencyKey() =>
       'one-variant-${DateTime.now().toUtc().microsecondsSinceEpoch}';
 
@@ -558,4 +602,7 @@ class EmptyPosProductVariantsGateway implements PosProductVariantsGateway {
   @override
   Future<void> deleteRecipe(String variantId, int expectedVersion) =>
       Future.error(StateError('No product variants gateway is configured.'));
+
+  @override
+  Future<List<PosProductRecipeUsage>> usedIn(String variantId) async => const [];
 }

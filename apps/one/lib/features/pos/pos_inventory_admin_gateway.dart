@@ -259,6 +259,9 @@ class PosInventoryBalance {
     required this.quantityAvailable,
     required this.minStock,
     required this.stockStatus,
+    this.isSellable,
+    this.lastMovementAt,
+    this.lastMovementType,
   });
 
   factory PosInventoryBalance.fromJson(Map<String, Object?> json) => PosInventoryBalance(
@@ -281,6 +284,9 @@ class PosInventoryBalance {
     // .ts`'s `STOCK_STATUS_EXPR`); a response predating that field falls
     // back to a bare zero-availability check, never a fabricated status.
     stockStatus: json['stock_status'] as String? ?? (json['quantity_available'] == '0.000000' ? 'out_of_stock' : 'available'),
+    isSellable: json['is_sellable'] as bool?,
+    lastMovementAt: json['last_movement_at'] as String?,
+    lastMovementType: json['last_movement_type'] as String?,
   );
 
   final String branchId;
@@ -299,13 +305,162 @@ class PosInventoryBalance {
   final String? minStock;
   final String stockStatus;
 
+  /// TASK 17.2 §6/§17: whether this variant is sold directly, or is only an
+  /// ingredient (nullable — a response predating this field must not crash).
+  final bool? isSellable;
+
+  /// ISO-8601 timestamp of the most recent posted movement affecting this
+  /// balance row, or `null` when it has never moved.
+  final String? lastMovementAt;
+  final String? lastMovementType;
+
   String get displayName => variantName == null ? '$productName ($sku)' : '$productName — $variantName ($sku)';
+
+  /// TASK 17.2 §6/§16 — the only two real, evidence-backed classifications:
+  /// an ingredient (`is_sellable=false`, never sold directly) or a directly
+  /// sold product. Never invent a third category like "Consumible"/"Otro" —
+  /// the backend has no data to distinguish more than these two.
+  String get tipo => isSellable == false ? 'Insumo' : 'Producto directo';
 }
 
 class PosInventoryBalancePage {
   const PosInventoryBalancePage({required this.items, required this.nextCursor});
   final List<PosInventoryBalance> items;
   final String? nextCursor;
+}
+
+// ---------------------------------------------------------------------
+// Resumen — `GET /api/v1/inventory/overview` (TASK 17.2).
+// ---------------------------------------------------------------------
+
+class PosInventoryOverviewAlert {
+  const PosInventoryOverviewAlert({
+    required this.productVariantId,
+    required this.productName,
+    required this.sku,
+    required this.locationName,
+    required this.quantityOnHand,
+    required this.minStock,
+    required this.stockStatus,
+  });
+  factory PosInventoryOverviewAlert.fromJson(Map<String, Object?> json) => PosInventoryOverviewAlert(
+    productVariantId: json['product_variant_id']! as String,
+    productName: json['product_name']! as String,
+    sku: json['sku']! as String,
+    locationName: json['location_name']! as String,
+    quantityOnHand: json['quantity_on_hand']! as String,
+    minStock: json['min_stock'] as String?,
+    stockStatus: json['stock_status']! as String,
+  );
+  final String productVariantId;
+  final String productName;
+  final String sku;
+  final String locationName;
+  final String quantityOnHand;
+  final String? minStock;
+  final String stockStatus;
+}
+
+class PosInventoryOverviewActivity {
+  const PosInventoryOverviewActivity({
+    required this.movementId,
+    required this.movementNumber,
+    required this.movementType,
+    required this.status,
+    required this.occurredAt,
+    required this.referenceType,
+    required this.sourceDocumentNumber,
+  });
+  factory PosInventoryOverviewActivity.fromJson(Map<String, Object?> json) => PosInventoryOverviewActivity(
+    movementId: json['movement_id']! as String,
+    movementNumber: json['movement_number']! as String,
+    movementType: json['movement_type']! as String,
+    status: json['status']! as String,
+    occurredAt: json['occurred_at']! as String,
+    referenceType: json['reference_type'] as String?,
+    sourceDocumentNumber: json['source_document_number'] as String?,
+  );
+  final String movementId;
+  final String movementNumber;
+  final String movementType;
+  final String status;
+  final String occurredAt;
+  final String? referenceType;
+  final String? sourceDocumentNumber;
+}
+
+class PosInventoryOverviewLocationSummary {
+  const PosInventoryOverviewLocationSummary({
+    required this.locationId,
+    required this.locationName,
+    required this.itemCount,
+    required this.lowStockCount,
+    required this.outOfStockCount,
+  });
+  factory PosInventoryOverviewLocationSummary.fromJson(Map<String, Object?> json) => PosInventoryOverviewLocationSummary(
+    locationId: json['location_id']! as String,
+    locationName: json['location_name']! as String,
+    itemCount: json['item_count']! as int,
+    lowStockCount: json['low_stock_count']! as int,
+    outOfStockCount: json['out_of_stock_count']! as int,
+  );
+  final String locationId;
+  final String locationName;
+  final int itemCount;
+  final int lowStockCount;
+  final int outOfStockCount;
+}
+
+/// TASK 17.2 §4/§13 — `GET /api/v1/inventory/overview`. `valuationAvailable`
+/// is deliberately always `false` today (see `valuationReason`): no
+/// authoritative unit cost exists anywhere in this system yet (average
+/// cost is hardcoded to 0 on every write path, standard cost is never read
+/// by inventory code) — this screen must show `valuationReason` honestly,
+/// never a fabricated total.
+class PosInventoryOverview {
+  const PosInventoryOverview({
+    required this.itemCount,
+    required this.lowStockCount,
+    required this.outOfStockCount,
+    required this.movementsTodayCount,
+    required this.businessDate,
+    required this.valuationAvailable,
+    required this.valuationReason,
+    required this.alerts,
+    required this.recentActivity,
+    required this.byLocation,
+  });
+  factory PosInventoryOverview.fromJson(Map<String, Object?> json) {
+    final valuation = json['valuation'] as Map<String, Object?>? ?? const {};
+    return PosInventoryOverview(
+      itemCount: json['item_count']! as int,
+      lowStockCount: json['low_stock_count']! as int,
+      outOfStockCount: json['out_of_stock_count']! as int,
+      movementsTodayCount: json['movements_today_count']! as int,
+      businessDate: json['business_date']! as String,
+      valuationAvailable: valuation['available'] as bool? ?? false,
+      valuationReason: valuation['reason'] as String? ?? 'Valor no disponible.',
+      alerts: (json['alerts'] as List<Object?>? ?? const [])
+          .map((item) => PosInventoryOverviewAlert.fromJson(item! as Map<String, Object?>))
+          .toList(growable: false),
+      recentActivity: (json['recent_activity'] as List<Object?>? ?? const [])
+          .map((item) => PosInventoryOverviewActivity.fromJson(item! as Map<String, Object?>))
+          .toList(growable: false),
+      byLocation: (json['by_location'] as List<Object?>? ?? const [])
+          .map((item) => PosInventoryOverviewLocationSummary.fromJson(item! as Map<String, Object?>))
+          .toList(growable: false),
+    );
+  }
+  final int itemCount;
+  final int lowStockCount;
+  final int outOfStockCount;
+  final int movementsTodayCount;
+  final String businessDate;
+  final bool valuationAvailable;
+  final String valuationReason;
+  final List<PosInventoryOverviewAlert> alerts;
+  final List<PosInventoryOverviewActivity> recentActivity;
+  final List<PosInventoryOverviewLocationSummary> byLocation;
 }
 
 // ---------------------------------------------------------------------
@@ -1257,6 +1412,13 @@ abstract interface class PosInventoryAdminGateway {
   /// tenant/branch/permission/filter contract as [listBalances].
   Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus});
 
+  // -- Resumen --------------------------------------------------------------
+
+  /// `GET /api/v1/inventory/overview` (`inventory.read`) — requires an
+  /// explicit `branchId` (the endpoint has no multi-branch aggregate mode;
+  /// see its own doc comment in `inventory-overview.ts`).
+  Future<PosInventoryOverview> overview({required String branchId});
+
   // -- Movimientos --------------------------------------------------------
 
   /// `GET /api/v1/inventory/movements` (`inventory.read`).
@@ -1522,6 +1684,16 @@ class ApiPosInventoryAdminGateway implements PosInventoryAdminGateway {
       if (stockStatus != null) 'stock_status': stockStatus,
     };
     return _client.getText(Uri(path: '/api/v1/inventory/balances/export.csv', queryParameters: query).toString());
+  }
+
+  // -- Resumen ----------------------------------------------------------------
+
+  @override
+  Future<PosInventoryOverview> overview({required String branchId}) async {
+    final envelope = await _client.getJson(
+      Uri(path: '/api/v1/inventory/overview', queryParameters: {'branch_id': branchId}).toString(),
+    );
+    return PosInventoryOverview.fromJson(_single(envelope, 'inventory overview'));
   }
 
   // -- Movimientos ----------------------------------------------------------
@@ -2023,6 +2195,9 @@ class EmptyPosInventoryAdminGateway implements PosInventoryAdminGateway {
 
   @override
   Future<String> exportBalancesCsv({String? branchId, String? locationId, String? categoryId, String? search, String? stockStatus}) async => '';
+
+  @override
+  Future<PosInventoryOverview> overview({required String branchId}) => Future.error(StateError('No inventory admin gateway is configured.'));
 
   @override
   Future<PosInventoryMovementPage> listMovements({String? branchId, String? status, String? type, String? cursor, int limit = 50}) async =>

@@ -105,6 +105,7 @@ void main() {
     testWidgets('renders the real seeded movement list with folio and status', (tester) async {
       final gateway = _RecordingInventoryAdminGateway(movements: [_draftMovement]);
       await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
 
       expect(find.byKey(const Key('pos-movement-row-movement-1')), findsOneWidget);
       expect(find.text('IMV-DRAFT-1'), findsOneWidget);
@@ -116,6 +117,7 @@ void main() {
     testWidgets('creating an adjustment without a reason is rejected client-side, never calls the gateway', (tester) async {
       final gateway = _RecordingInventoryAdminGateway();
       await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
 
       await tester.tap(find.byKey(const Key('pos-movements-new')));
       await tester.pumpAndSettle();
@@ -129,6 +131,7 @@ void main() {
     testWidgets('creating an adjustment with a reason calls the real endpoint with the exact entered values', (tester) async {
       final gateway = _RecordingInventoryAdminGateway();
       await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
 
       await tester.tap(find.byKey(const Key('pos-movements-new')));
       await tester.pumpAndSettle();
@@ -305,6 +308,7 @@ void main() {
     testWidgets('an actor with only inventory.read sees every mutating action disabled', (tester) async {
       final gateway = _RecordingInventoryAdminGateway(movements: [_draftMovement]);
       await _pump(tester, gateway: gateway, permissions: const ['inventory.read']);
+      await _navigateToTab(tester, 'Movimientos');
 
       final newButton = tester.widget<FilledButton>(find.byKey(const Key('pos-movements-new')));
       expect(newButton.onPressed, isNull);
@@ -728,6 +732,28 @@ class _RecordingInventoryAdminGateway implements PosInventoryAdminGateway {
       'stock_status': stockStatus,
     });
     return 'branch_id,product_name\n';
+  }
+
+  // -- Resumen ----------------------------------------------------------------
+
+  final List<String> overviewCalls = [];
+  PosInventoryOverview overviewResult = const PosInventoryOverview(
+    itemCount: 0,
+    lowStockCount: 0,
+    outOfStockCount: 0,
+    movementsTodayCount: 0,
+    businessDate: '2026-09-28',
+    valuationAvailable: false,
+    valuationReason: 'Valor no disponible.',
+    alerts: [],
+    recentActivity: [],
+    byLocation: [],
+  );
+
+  @override
+  Future<PosInventoryOverview> overview({required String branchId}) async {
+    overviewCalls.add(branchId);
+    return overviewResult;
   }
 
   // -- Movimientos ----------------------------------------------------------

@@ -263,6 +263,9 @@ class FreshnessAwareInventoryAdminGateway implements PosInventoryAdminGateway {
       );
 
   @override
+  Future<PosInventoryOverview> overview({required String branchId}) => _inner.overview(branchId: branchId);
+
+  @override
   Future<PosInventoryMovementPage> listMovements({String? branchId, String? status, String? type, String? cursor, int limit = 50}) =>
       _inner.listMovements(branchId: branchId, status: status, type: type, cursor: cursor, limit: limit);
 
