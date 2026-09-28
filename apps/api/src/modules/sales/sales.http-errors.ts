@@ -10,6 +10,7 @@ const statusCodeByCode: Readonly<Record<string, number>> = {
   validation_error: 400,
   product_not_found: 400,
   product_not_active: 400,
+  variant_not_sellable: 400,
   price_not_found: 400,
   currency_mismatch: 400,
   idempotency_conflict: 409,

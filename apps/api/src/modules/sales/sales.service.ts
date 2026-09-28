@@ -225,6 +225,20 @@ export class SalesService {
                 'product_not_active',
                 `items[${String(index)}].product_id is not active.`,
               );
+            // TASK 17.1.3 — authoritative backend guard, independent of
+            // the read-side filtering in `ProductCatalogRepository
+            // .listProducts` (`sellableOnly`): a stale/malicious client
+            // must never be able to submit a recipe ingredient (or any
+            // variant explicitly marked non-sellable) for direct sale by
+            // sending its product id straight to this endpoint. Checked
+            // BEFORE any pricing/currency/inventory work for this line —
+            // no sale line, payment, or inventory mutation is ever caused
+            // by an item that fails this check.
+            if (!product.isSellable)
+              throw new SaleError(
+                'variant_not_sellable',
+                `items[${String(index)}].product_id's default variant is not sellable.`,
+              );
             if (product.price === null)
               throw new SaleError(
                 'price_not_found',

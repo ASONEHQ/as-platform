@@ -121,6 +121,11 @@ export interface ProductVariantRow {
   unitOfMeasureCode: string;
   quantityScale: number;
   tracksInventory: boolean;
+  // TASK 17.1.3 — orthogonal to `tracksInventory`: whether this variant
+  // may be sold DIRECTLY through a sales surface. See
+  // `packages/database/src/schema/catalog.ts`'s own doc comment on
+  // `product_variants.is_sellable`.
+  isSellable: boolean;
   standardCost: string;
   currencyCode: string;
   // TASK 16.6 — legacy "Stock mínimo" parity, see
@@ -203,6 +208,12 @@ export interface ProductFilters {
   search?: string;
   sku?: string;
   barcode?: string;
+  /** TASK 17.1.3 — restricts results to products whose DEFAULT variant has
+   * `is_sellable=true`. Strictly opt-in: only a direct-sale read surface
+   * (the POS register, Cafetería, barcode scan) sets this; every other
+   * caller of `listProducts` (admin Productos, the recipe-ingredient
+   * picker) omits it and continues to see every product. */
+  sellableOnly?: boolean;
   cursor?: string;
   limit: number;
   /** Resolves branch-specific price overrides in addition to the
@@ -260,6 +271,10 @@ export interface CreateDefaultVariantInput {
   unitOfMeasureCode: string;
   quantityScale: number;
   tracksInventory?: boolean;
+  /** TASK 17.1.3 — omitted/`undefined` defaults to `true` (every new
+   * variant is sellable unless explicitly opted out, e.g. a recipe
+   * ingredient created directly as such). */
+  isSellable?: boolean;
   standardCost: string;
   currencyCode: string;
   minStock?: string;
@@ -335,6 +350,9 @@ export interface CreateVariantInput {
   unitOfMeasureCode: string;
   quantityScale: number;
   tracksInventory?: boolean;
+  /** TASK 17.1.3 — omitted/`undefined` defaults to `true` (see
+   * `CreateDefaultVariantInput.isSellable`'s own doc comment). */
+  isSellable?: boolean;
   standardCost: string;
   currencyCode: string;
   /** TASK 16.6 — legacy "Stock mínimo" parity; omitted/`undefined` means
@@ -352,6 +370,9 @@ export interface UpdateVariantInput {
   unitOfMeasureCode?: string;
   quantityScale?: number;
   tracksInventory?: boolean;
+  /** TASK 17.1.3 — orthogonal to `tracksInventory`; independently
+   * toggleable. Omitted keeps the variant's current value. */
+  isSellable?: boolean;
   standardCost?: string;
   currencyCode?: string;
   /** `null` clears the threshold. */

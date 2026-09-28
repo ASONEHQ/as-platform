@@ -136,6 +136,10 @@ interface ProductLookupDb {
   // moment.
   operational_group: string | null;
   variant_id: string | null;
+  // TASK 17.1.3 — the resolved default variant's own `is_sellable`; `null`
+  // only when `variant_id` is also `null` (no active default variant to
+  // join against).
+  variant_is_sellable: boolean | null;
   tax_code: ProductTaxCode;
   status: string;
   version: string;
@@ -231,6 +235,15 @@ export interface ResolvedProductLine {
   // expected once `product` itself resolved, since every active product
   // in this domain has one — see `product_variants_product_default_active_uq`).
   variantId: string | null;
+  // TASK 17.1.3 — whether the resolved default variant may be sold
+  // DIRECTLY (see `product_variants.is_sellable`'s own schema doc
+  // comment). `true` when no active default variant resolved at all
+  // (`variantId === null`) — this check exists to reject an EXPLICITLY
+  // non-sellable variant, never to newly reject a product that already
+  // had no resolvable variant before this task (an orthogonal, pre-
+  // existing condition other checks already handle, e.g. `price
+  // _not_found` — see `docs/SELLABILITY.md`).
+  isSellable: boolean;
   productVersion: bigint;
   name: string;
   skuSnapshot: string | null;
@@ -376,7 +389,7 @@ export class SalesRepository {
     const [productsResult, pricesResult] = await Promise.all([
       client.query(
         `select p.id as product_id, p.category_id, pc.operational_group, p.tax_code, p.status, p.version, p.name,
-                pv.id as variant_id, pv.sku as variant_sku
+                pv.id as variant_id, pv.sku as variant_sku, pv.is_sellable as variant_is_sellable
          from products p
          left join product_variants pv
            on pv.company_id=p.company_id and pv.product_id=p.id
@@ -412,6 +425,7 @@ export class SalesRepository {
           categoryId: row.category_id,
           operationalGroup: row.operational_group,
           variantId: row.variant_id,
+          isSellable: row.variant_is_sellable !== false,
           productVersion: BigInt(row.version),
           name: row.name,
           skuSnapshot: row.variant_sku,

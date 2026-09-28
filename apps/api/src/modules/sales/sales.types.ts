@@ -158,6 +158,11 @@ export type SaleErrorCode =
   | 'invalid_sale_state'
   | 'product_not_found'
   | 'product_not_active'
+  // TASK 17.1.3 — the resolved default variant is marked
+  // `is_sellable=false` (an inventory-only ingredient, e.g. a recipe
+  // component) — orthogonal to `product_not_active`, which is about
+  // product lifecycle status, not direct-sale eligibility.
+  | 'variant_not_sellable'
   | 'price_not_found'
   | 'currency_mismatch'
   // TASK 16.8B — the branch's own persisted `timezone` is not a real IANA

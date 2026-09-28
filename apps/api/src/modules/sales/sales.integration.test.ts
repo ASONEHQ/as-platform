@@ -68,6 +68,13 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
   const noPriceProductId = randomUUID();
   // Draft (not active) — drives the "product not active" test.
   const draftProductId = randomUUID();
+  // TASK 17.1.3 — an active product whose real, DB-inserted default
+  // variant is explicitly `is_sellable=false` (e.g. a recipe ingredient
+  // like "Masa Pizza" submitted directly). Drives the "variant not
+  // sellable" rejection test — distinct from `draftProductId` above,
+  // which is about product lifecycle status, not direct-sale eligibility.
+  const nonSellableProductId = randomUUID();
+  const nonSellableVariantId = randomUUID();
   const otherCompanyProductId = randomUUID();
   const context = {
     companyId,
@@ -233,6 +240,30 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
         otherCompanyUserId,
       ],
     );
+    // TASK 17.1.3 — a real product with a real, DB-inserted default
+    // variant explicitly marked `is_sellable=false`, plus a real active
+    // price — proves the rejection is specifically about sellability
+    // (never merely "no price"/"no variant", which other tests already
+    // cover).
+    await database.pool.query(
+      `insert into products
+       (id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+       values($1,$2,'SALE-NOTSELLABLE','sale-notsellable','Masa Pizza PRUEBA','simple',true,'IVA_GENERAL','active',$3,$3)`,
+      [nonSellableProductId, companyId, userId],
+    );
+    await database.pool.query(
+      `insert into product_variants
+       (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
+        tracks_inventory,is_sellable,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+       values($1,$2,$3,'SALE-NOTSELLABLE','sale-notsellable','Variante',$4,0,true,false,0,'MXN',true,$5,'active',$6,$6)`,
+      [nonSellableVariantId, companyId, nonSellableProductId, 'unit', '1'.repeat(64), userId],
+    );
+    await database.pool.query(
+      `insert into product_prices
+       (id,company_id,product_id,amount,currency_code,status,created_by,updated_by)
+       values($1,$2,$3,'15.0000','MXN','active',$4,$4)`,
+      [randomUUID(), companyId, nonSellableProductId, userId],
+    );
     const salesRepository = new SalesRepository(database);
     sales = new SalesService(salesRepository);
   });
@@ -372,6 +403,36 @@ integration('PostgreSQL sale foundation (TASK 12.4A.1)', { concurrent: false }, 
         items: [{ productId: draftProductId, quantity: '1' }],
       }),
     ).rejects.toMatchObject({ code: 'product_not_active' });
+  });
+
+  // TASK 17.1.3 — items I/J of the test matrix: the backend rejects a
+  // direct-sale submission of a variant explicitly marked
+  // `is_sellable=false`, and — because the whole resolution/validation
+  // happens inside the SAME transaction as the sale insert (the
+  // established pattern for every other pre-mutation check in this
+  // method, e.g. `product_not_active` above) — no sale row, payment, or
+  // inventory mutation is ever caused by that rejected item.
+  it('rejects a variant explicitly marked non-sellable, before any sale/inventory mutation', async () => {
+    const before = await database.pool.query<{ count: string }>(
+      `select count(*)::text count from sales where company_id=$1`,
+      [companyId],
+    );
+    await expect(
+      sales.createSale(context, branchIds, 'sale-not-sellable', {
+        branchId,
+        items: [{ productId: nonSellableProductId, quantity: '1' }],
+      }),
+    ).rejects.toMatchObject({ code: 'variant_not_sellable' });
+    const after = await database.pool.query<{ count: string }>(
+      `select count(*)::text count from sales where company_id=$1`,
+      [companyId],
+    );
+    expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
+    const movementLines = await database.pool.query(
+      `select id from inventory_movement_lines where company_id=$1 and product_variant_id=$2`,
+      [companyId, nonSellableVariantId],
+    );
+    expect(movementLines.rows).toHaveLength(0);
   });
 
   it('rejects a product with no active price', async () => {

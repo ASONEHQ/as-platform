@@ -133,6 +133,7 @@ void main() {
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-cost')), '150.0000');
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-currency')), 'MXN');
       await tester.tap(find.byKey(const Key('pos-product-variants-form-default')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -159,6 +160,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pump();
 
@@ -181,6 +183,7 @@ void main() {
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'PLA-ROJ-M');
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-cost')), 'not-a-number');
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pump();
 
@@ -205,6 +208,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-name')), 'Chica Editada');
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -248,6 +252,7 @@ void main() {
 
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'PLA-ROJ-M');
       await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -271,6 +276,7 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
       await tester.pumpAndSettle();
       expect(find.text('Esta variante podrá utilizar una receta de ingredientes.'), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -330,6 +336,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -361,6 +368,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -393,7 +401,8 @@ void main() {
         await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
-        await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+        await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
         await tester.pumpAndSettle();
 
         expect(gateway.updateCalls, hasLength(1));
@@ -422,6 +431,7 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
       await tester.pumpAndSettle();
 
@@ -463,6 +473,238 @@ void main() {
         },
       );
     }
+  });
+
+  group('TASK 17.1.3 — is_sellable control (orthogonal to tracks_inventory)', () {
+    testWidgets('Nueva variante defaults the sellable toggle to ON', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Disponible para venta'), findsOneWidget);
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-sellable')),
+      );
+      expect(checkbox.value, isTrue);
+      expect(
+        find.text('Permite vender esta variante directamente en Punto de Venta.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('create with the sellable toggle ON sends is_sellable=true', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'AGUA-1');
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls, hasLength(1));
+      expect(gateway.createCalls.single.input.isSellable, isTrue);
+      // Orthogonality: the create call's tracksInventory is untouched by
+      // this group's own toggling (still whatever the tracks-inventory
+      // toggle's own default is).
+      expect(gateway.createCalls.single.input.tracksInventory, isTrue);
+    });
+
+    testWidgets('create with the sellable toggle OFF sends is_sellable=false — the "Masa Pizza" scenario', (
+      tester,
+    ) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Masa Pizza PRUEBA')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-sku')), 'MASA-1');
+      await tester.enterText(find.byKey(const Key('pos-product-variants-form-unit')), 'unit');
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-sellable')));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('No aparecerá en Punto de Venta'),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls, hasLength(1));
+      expect(gateway.createCalls.single.input.isSellable, isFalse);
+      // Turning sellability OFF never touches tracks_inventory — the
+      // ingredient still tracks its own stock directly.
+      expect(gateway.createCalls.single.input.tracksInventory, isTrue);
+    });
+
+    testWidgets('Editar variante whose backend value is sellable=true shows the toggle ON', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Agua')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'AGUA-1', isSellable: true)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-sellable')),
+      );
+      expect(checkbox.value, isTrue);
+    });
+
+    testWidgets('Editar variante whose backend value is sellable=false shows the toggle OFF', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Masa Pizza PRUEBA')],
+        variantsByProduct: {
+          'p-1': [_variant(id: 'v-1', productId: 'p-1', sku: 'MASA-1', isSellable: false)],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      final checkbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('pos-product-variants-form-sellable')),
+      );
+      expect(checkbox.value, isFalse);
+    });
+
+    testWidgets('edit ON → OFF sends is_sellable=false without touching tracks_inventory', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Masa Pizza PRUEBA')],
+        variantsByProduct: {
+          'p-1': [
+            _variant(
+              id: 'v-1',
+              productId: 'p-1',
+              sku: 'MASA-1',
+              tracksInventory: true,
+              isSellable: true,
+              version: 1,
+            ),
+          ],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-sellable')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.updateCalls, hasLength(1));
+      expect(gateway.updateCalls.single.input.isSellable, isFalse);
+      // TASK 17.1.3's own explicit requirement: toggling sellability never
+      // changes tracks_inventory — the form resends its own unchanged
+      // current value (`true`, from the fixture above), the same "always
+      // resend every field's current state" behavior every other toggle
+      // in this form already has (see the tracks_inventory tests above).
+      expect(gateway.updateCalls.single.input.tracksInventory, isTrue);
+    });
+
+    testWidgets('edit OFF → ON sends is_sellable=true without touching tracks_inventory', (tester) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Masa Pizza PRUEBA')],
+        variantsByProduct: {
+          'p-1': [
+            _variant(
+              id: 'v-1',
+              productId: 'p-1',
+              sku: 'MASA-1',
+              tracksInventory: true,
+              isSellable: false,
+              version: 1,
+            ),
+          ],
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-edit-v-1')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-sellable')));
+      await tester.ensureVisible(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.updateCalls, hasLength(1));
+      expect(gateway.updateCalls.single.input.isSellable, isTrue);
+      // Same "always resend the current value" behavior — unchanged from
+      // the fixture's own `true`.
+      expect(gateway.updateCalls.single.input.tracksInventory, isTrue);
+    });
+
+    testWidgets('the tracks-inventory checkbox remains independently toggleable and does not react to the sellable checkbox', (
+      tester,
+    ) async {
+      final gateway = _RecordingProductVariantsGateway(
+        products: [_product(id: 'p-1', name: 'Playera Roja')],
+        variantsByProduct: {'p-1': const []},
+      );
+      await _pump(tester, gateway: gateway, permissions: _readWrite);
+      await tester.tap(find.byKey(const Key('pos-product-variants-product-p-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-product-variants-new')));
+      await tester.pumpAndSettle();
+
+      // Both default ON.
+      expect(
+        tester.widget<CheckboxListTile>(find.byKey(const Key('pos-product-variants-form-tracks-inventory'))).value,
+        isTrue,
+      );
+      expect(
+        tester.widget<CheckboxListTile>(find.byKey(const Key('pos-product-variants-form-sellable'))).value,
+        isTrue,
+      );
+
+      // Turning sellability OFF leaves tracks-inventory rendered ON.
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-sellable')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<CheckboxListTile>(find.byKey(const Key('pos-product-variants-form-tracks-inventory'))).value,
+        isTrue,
+      );
+
+      // Turning tracks-inventory OFF leaves sellability rendered OFF (as
+      // this test left it above) — neither checkbox ever reacts to the
+      // other.
+      await tester.tap(find.byKey(const Key('pos-product-variants-form-tracks-inventory')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<CheckboxListTile>(find.byKey(const Key('pos-product-variants-form-sellable'))).value,
+        isFalse,
+      );
+    });
   });
 
   group('TASK 12.2 — permission gating', () {
@@ -525,6 +767,7 @@ PosProductVariant _variant({
   String unitOfMeasureCode = 'unit',
   int quantityScale = 0,
   bool tracksInventory = true,
+  bool isSellable = true,
   String? standardCost,
   String? currencyCode,
   bool isDefault = false,
@@ -538,6 +781,7 @@ PosProductVariant _variant({
   unitOfMeasureCode: unitOfMeasureCode,
   quantityScale: quantityScale,
   tracksInventory: tracksInventory,
+  isSellable: isSellable,
   standardCost: standardCost,
   currencyCode: currencyCode,
   isDefault: isDefault,
@@ -620,6 +864,7 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
       unitOfMeasureCode: input.unitOfMeasureCode!,
       quantityScale: input.quantityScale ?? 0,
       tracksInventory: input.tracksInventory ?? false,
+      isSellable: input.isSellable ?? true,
       standardCost: input.standardCost,
       currencyCode: input.currencyCode,
       isDefault: input.isDefault ?? false,
@@ -648,6 +893,7 @@ class _RecordingProductVariantsGateway implements PosProductVariantsGateway {
         unitOfMeasureCode: input.unitOfMeasureCode ?? current.unitOfMeasureCode,
         quantityScale: input.quantityScale ?? current.quantityScale,
         tracksInventory: input.tracksInventory ?? current.tracksInventory,
+        isSellable: input.isSellable ?? current.isSellable,
         standardCost: input.standardCost ?? current.standardCost,
         currencyCode: input.currencyCode ?? current.currencyCode,
         isDefault: input.isDefault ?? current.isDefault,

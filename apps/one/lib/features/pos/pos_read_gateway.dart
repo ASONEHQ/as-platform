@@ -38,17 +38,30 @@ class ApiPosReadGateway implements PosReadGateway {
 
   @override
   Future<List<PosProduct>> products({String? branchId}) async {
+    // TASK 17.1.3 — `sellable_only=true` is the backend-authoritative
+    // filter: a product whose DEFAULT variant is marked
+    // `is_sellable=false` (a recipe ingredient like "Masa Pizza") is
+    // excluded from the response entirely, never merely hidden client-
+    // side. This is the ONE gateway used by the POS register/Cafetería —
+    // the admin Productos screen and the recipe-ingredient picker use
+    // their own separate gateways and never send this flag, so they
+    // continue to see every product regardless of sellability.
     final query = branchId == null ? '' : '&branch_id=$branchId';
     return _items(
-      await _client.getJson('/api/v1/products?limit=100$query'),
+      await _client.getJson('/api/v1/products?limit=100&sellable_only=true$query'),
     ).map(PosProduct.fromJson).toList(growable: false);
   }
 
   @override
   Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async {
+    // TASK 17.1.3 — same backend-authoritative `sellable_only` filter as
+    // `products()` above: scanning/typing a non-sellable ingredient's own
+    // barcode/SKU must never resolve it as a direct-sale match (defense
+    // in depth, not just an absent card in the grid).
     final query = <String, String>{
       'limit': '1',
       'barcode': barcode,
+      'sellable_only': 'true',
       if (branchId != null) 'branch_id': branchId,
     };
     final path = Uri(path: '/api/v1/products', queryParameters: query).toString();

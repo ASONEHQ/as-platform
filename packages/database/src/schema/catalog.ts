@@ -492,6 +492,16 @@ export const productVariants = pgTable(
       .references(() => unitsOfMeasure.code, { onDelete: 'restrict' }),
     quantityScale: integer('quantity_scale').notNull(),
     tracksInventory: boolean('tracks_inventory').notNull(),
+    // TASK 17.1.3 — orthogonal to `tracksInventory`: whether this variant
+    // may be sold DIRECTLY through a sales surface (POS/Cafetería). A
+    // recipe ingredient (e.g. "Masa Pizza") is a completely ordinary
+    // `product_variants` row that tracks its own inventory and is
+    // selectable by the recipe-ingredient picker, but must never appear
+    // as a card/search-result/barcode-hit a cashier can ring up on its
+    // own — see docs/SELLABILITY.md. Defaults `true` so every existing
+    // and newly-created variant keeps today's behavior (sellable) unless
+    // explicitly opted out.
+    isSellable: boolean('is_sellable').notNull().default(true),
     standardCost: numeric('standard_cost', { precision: 19, scale: 4 }).notNull().default('0'),
     currencyCode: char('currency_code', { length: 3 }).notNull(),
     // TASK 16.6 (Productos/Catálogo legacy parity) — real "Stock mínimo"

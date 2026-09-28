@@ -71,6 +71,7 @@ interface VariantDb {
   unit_of_measure_code: string;
   quantity_scale: number;
   tracks_inventory: boolean;
+  is_sellable: boolean;
   standard_cost: string;
   currency_code: string;
   min_stock: string | null;
@@ -117,7 +118,7 @@ const PRODUCT_COLUMNS =
 const PRICE_COLUMNS =
   'id,company_id,branch_id,product_id,price_type,amount,currency_code,valid_from,valid_until,status,version,created_at,updated_at';
 const VARIANT_COLUMNS =
-  'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,standard_cost,currency_code,min_stock,is_default,status,version,created_at,updated_at';
+  'id,company_id,product_id,sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,is_sellable,standard_cost,currency_code,min_stock,is_default,status,version,created_at,updated_at';
 const OPTION_COLUMNS =
   'id,company_id,product_id,code,name,sort_order,status,version,created_at,updated_at';
 const VALUE_COLUMNS =
@@ -179,6 +180,7 @@ function variant(row: VariantDb): ProductVariantRow {
     unitOfMeasureCode: row.unit_of_measure_code,
     quantityScale: row.quantity_scale,
     tracksInventory: row.tracks_inventory,
+    isSellable: row.is_sellable,
     standardCost: row.standard_cost,
     currencyCode: row.currency_code,
     minStock: row.min_stock,
@@ -279,6 +281,19 @@ export class ProductCatalogRepository {
         `exists(select 1 from product_variants v join product_barcodes b on b.company_id=v.company_id and b.product_variant_id=v.id where v.company_id=p.company_id and v.product_id=p.id and (b.normalized_barcode=${parameter} or b.normalized_barcode=lower(${parameter})) and b.status<>'retired')`,
       );
     }
+    // TASK 17.1.3 — strictly opt-in: only a direct-sale surface (the POS
+    // register / Cafetería / barcode scan) ever sends this. Every other
+    // caller of this SAME endpoint — the admin Productos screen, the
+    // recipe-ingredient picker (`PosProductVariantsGateway.listProducts`)
+    // — never sends it and continues to see every product regardless of
+    // its default variant's sellability, exactly as required (a hidden
+    // ingredient must remain fully manageable and pickable). Matches on
+    // the product's DEFAULT variant, the only variant a sale line can
+    // ever resolve to today (see `SalesRepository.resolveProductLines`).
+    if (input.sellableOnly === true)
+      where.push(
+        `exists(select 1 from product_variants v where v.company_id=p.company_id and v.product_id=p.id and v.is_default=true and v.status<>'retired' and v.is_sellable=true)`,
+      );
     if (input.cursor !== undefined) where.push(`p.id>${add(input.cursor)}`);
     values.push(input.limit + 1);
     const rows = result<ProductDb>(
@@ -813,6 +828,7 @@ export class ProductCatalogRepository {
       unitOfMeasureCode: string;
       quantityScale: number;
       tracksInventory: boolean;
+      isSellable: boolean;
       standardCost: string;
       currencyCode: string;
       minStock: string | null;
@@ -825,9 +841,9 @@ export class ProductCatalogRepository {
       await client.query(
         `insert into product_variants
          (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
-          tracks_inventory,standard_cost,currency_code,min_stock,is_default,option_signature,status,
-          deleted_at,created_by,updated_by,created_at,updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17,$18,$18)
+          tracks_inventory,is_sellable,standard_cost,currency_code,min_stock,is_default,
+          option_signature,status,deleted_at,created_by,updated_by,created_at,updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18,$19,$19)
          returning ${VARIANT_COLUMNS}`,
         [
           input.id,
@@ -839,6 +855,7 @@ export class ProductCatalogRepository {
           input.unitOfMeasureCode,
           input.quantityScale,
           input.tracksInventory,
+          input.isSellable,
           input.standardCost,
           input.currencyCode,
           input.minStock,
@@ -892,7 +909,7 @@ export class ProductCatalogRepository {
         `update product_variants set sku=$4,normalized_sku=$5,name=$6,unit_of_measure_code=$7,
          quantity_scale=$8,tracks_inventory=$9,standard_cost=$10,currency_code=$11,is_default=$12,
          status=$13,deleted_at=case when $13='retired' then $14::timestamptz else null end,
-         updated_by=$15,updated_at=$14,min_stock=$16,version=version+1
+         updated_by=$15,updated_at=$14,min_stock=$16,is_sellable=$17,version=version+1
          where company_id=$1 and id=$2 and version=$3 returning ${VARIANT_COLUMNS}`,
         [
           input.companyId,
@@ -911,6 +928,7 @@ export class ProductCatalogRepository {
           input.timestamp,
           input.actorId,
           input.minStock,
+          input.isSellable,
         ],
       ),
     ).rows[0];

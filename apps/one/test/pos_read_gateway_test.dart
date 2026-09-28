@@ -79,6 +79,39 @@ void main() {
       'GET /api/v1/users',
     ]);
   });
+
+  // TASK 17.1.3 — the Dart-side half of the POS-visibility fix: proves the
+  // gateway used by the cashier register/Cafetería/barcode scan actually
+  // sends the backend-authoritative `sellable_only=true` filter on every
+  // one of its product-read calls, not just that the filter exists on the
+  // backend. A hidden ingredient like "Masa Pizza" must never even be
+  // fetched by this gateway.
+  test('always sends sellable_only=true on both product-read endpoints', () async {
+    final requestedUris = <Uri>[];
+    final gateway = ApiPosReadGateway(
+      ApiClient(
+        baseUrl: Uri.parse('https://api.test.asone.mx/'),
+        transport: _FakeClient((request) {
+          requestedUris.add(request.url);
+          return http.Response(
+            jsonEncode({'data': <Object?>[]}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+        readAccessToken: () => 'memory-token',
+        createCorrelationId: () => 'correlation-test',
+      ),
+    );
+
+    await gateway.products();
+    await gateway.productByBarcode('ING-MASA-TEST');
+
+    expect(requestedUris, hasLength(2));
+    for (final uri in requestedUris) {
+      expect(uri.queryParameters['sellable_only'], 'true');
+    }
+  });
 }
 
 class _FakeClient extends http.BaseClient {

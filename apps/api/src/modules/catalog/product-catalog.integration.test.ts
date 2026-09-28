@@ -437,6 +437,161 @@ integration('PostgreSQL products and default variants', { concurrent: false }, (
     ).rejects.toMatchObject({ code: 'invalid_product_state' });
   });
 
+  // TASK 17.1.3 — sellable (direct-sale eligibility) is orthogonal to
+  // tracksInventory (direct inventory control): a recipe ingredient (e.g.
+  // "Masa Pizza") tracks its own stock and stays fully manageable, but
+  // must never be directly sellable. Covers the create-default,
+  // explicit-false, and both patch directions.
+  it('TASK 17.1.3 — defaults new variants to sellable=true, honors explicit false, and patches both directions', async () => {
+    const draftA = await products.createProduct(context, 'sellable-parent-a', {
+      code: 'sellable-parent-a',
+      name: 'Sellable Parent A',
+      productType: 'variable',
+      tracksInventory: false,
+      status: 'draft',
+    });
+    const draftB = await products.createProduct(context, 'sellable-parent-b', {
+      code: 'sellable-parent-b',
+      name: 'Sellable Parent B',
+      productType: 'variable',
+      tracksInventory: false,
+      status: 'draft',
+    });
+    // A/B — omitted defaults to sellable=true.
+    const defaulted = await products.createVariant(context, draftA.value.id, 'sellable-create-default', {
+      sku: 'sellable-default-sku',
+      unitOfMeasureCode: 'unit',
+      quantityScale: 0,
+      tracksInventory: true,
+      standardCost: '0',
+      currencyCode: 'MXN',
+      isDefault: false,
+      status: 'active',
+      optionValueIds: [],
+    });
+    expect(defaulted.value.isSellable).toBe(true);
+    // C — explicit false is honored (an ingredient created directly as
+    // such, e.g. "Masa Pizza PRUEBA").
+    const ingredient = await products.createVariant(context, draftB.value.id, 'sellable-create-false', {
+      sku: 'masa-pizza-prueba',
+      unitOfMeasureCode: 'unit',
+      quantityScale: 0,
+      tracksInventory: true,
+      isSellable: false,
+      standardCost: '0',
+      currencyCode: 'MXN',
+      isDefault: false,
+      status: 'active',
+      optionValueIds: [],
+    });
+    expect(ingredient.value.isSellable).toBe(false);
+    // D — patch true -> false.
+    const toggledOff = await products.patchVariant(
+      context,
+      defaulted.value.id,
+      defaulted.value.version,
+      { isSellable: false },
+    );
+    expect(toggledOff.isSellable).toBe(false);
+    // Orthogonality: tracksInventory was never touched by that patch.
+    expect(toggledOff.tracksInventory).toBe(true);
+    // E — patch false -> true.
+    const toggledOn = await products.patchVariant(
+      context,
+      ingredient.value.id,
+      ingredient.value.version,
+      { isSellable: true },
+    );
+    expect(toggledOn.isSellable).toBe(true);
+    expect(toggledOn.tracksInventory).toBe(true);
+  });
+
+  // TASK 17.1.3 — the CRITICAL POS-visibility regression: `listProducts`
+  // with `sellableOnly: true` (what `PosReadGateway.products()` and
+  // `productByBarcode()` both now send) must exclude a product whose
+  // default variant is `is_sellable=false`, while the SAME endpoint
+  // called WITHOUT that flag (the admin Productos screen, the recipe-
+  // ingredient picker) must keep returning it — proving hidden ingredients
+  // remain fully manageable/pickable, never accidentally hidden from
+  // everyone.
+  it('TASK 17.1.3 — sellableOnly excludes a non-sellable default variant from the POS list, search, and barcode lookup, but never from the unfiltered admin view', async () => {
+    const waterProduct = await products.createProduct(context, 'sellable-water', {
+      code: 'AGUA-1',
+      name: 'Agua embotellada',
+      productType: 'simple',
+      tracksInventory: true,
+      status: 'active',
+      defaultVariant: {
+        sku: 'AGUA-1-SKU',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        tracksInventory: true,
+        isSellable: true,
+        standardCost: '0',
+        currencyCode: 'MXN',
+        barcode: { type: 'internal', value: 'AGUA-BARCODE-1', isPrimary: true },
+      },
+    });
+    const doughProduct = await products.createProduct(context, 'sellable-dough', {
+      code: 'MASA-1',
+      name: 'Masa Pizza PRUEBA',
+      productType: 'simple',
+      tracksInventory: true,
+      status: 'active',
+      defaultVariant: {
+        sku: 'MASA-1-SKU',
+        unitOfMeasureCode: 'unit',
+        quantityScale: 0,
+        tracksInventory: true,
+        isSellable: false,
+        standardCost: '0',
+        currencyCode: 'MXN',
+        barcode: { type: 'internal', value: 'MASA-BARCODE-1', isPrimary: true },
+      },
+    });
+
+    // F — the plain list, sellableOnly=true: water present, dough absent.
+    const sellableList = await products.listProducts(companyId, { limit: 50, sellableOnly: true });
+    const sellableIds = sellableList.items.map((item) => item.id);
+    expect(sellableIds).toContain(waterProduct.value.id);
+    expect(sellableIds).not.toContain(doughProduct.value.id);
+
+    // G — a name search for the non-sellable product's own name, still
+    // sellableOnly=true, must not surface it either (this is exactly the
+    // query the POS grid's client-side search filters further, so a
+    // backend-level exclusion here is what actually protects it).
+    const searchResult = await products.listProducts(companyId, {
+      limit: 50,
+      sellableOnly: true,
+      search: 'Masa',
+    });
+    expect(searchResult.items.map((item) => item.id)).not.toContain(doughProduct.value.id);
+
+    // H — barcode lookup, sellableOnly=true: scanning the ingredient's own
+    // real barcode must not resolve it as a direct-sale match.
+    const barcodeResult = await products.listProducts(companyId, {
+      limit: 1,
+      sellableOnly: true,
+      barcode: 'MASA-BARCODE-1',
+    });
+    expect(barcodeResult.items).toHaveLength(0);
+    // Sanity: the SAME barcode, without sellableOnly, resolves fine —
+    // proves the exclusion is specifically about sellability, not a
+    // broken barcode filter.
+    const barcodeResultUnfiltered = await products.listProducts(companyId, {
+      limit: 1,
+      barcode: 'MASA-BARCODE-1',
+    });
+    expect(barcodeResultUnfiltered.items.map((item) => item.id)).toContain(doughProduct.value.id);
+
+    // M — the admin/ingredient-picker view (no sellableOnly at all) still
+    // sees the hidden ingredient — it must remain fully manageable and
+    // pickable by the recipe editor, never accidentally hidden from
+    // everyone.
+    const adminList = await products.listProducts(companyId, { limit: 50 });
+    expect(adminList.items.map((item) => item.id)).toContain(doughProduct.value.id);
+  });
+
   // TASK 16.32.3 — the reverse direction of the V1 direct-stock/recipe
   // invariant (`docs/PRODUCT_RECIPES.md`): `product-recipes.service.ts`'s
   // own tests cover the forward direction (recipe creation rejected on an

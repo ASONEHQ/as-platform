@@ -85,6 +85,7 @@ class PosProductVariant {
     required this.unitOfMeasureCode,
     required this.quantityScale,
     required this.tracksInventory,
+    required this.isSellable,
     required this.standardCost,
     required this.currencyCode,
     this.minStock,
@@ -103,6 +104,11 @@ class PosProductVariant {
     unitOfMeasureCode: json['unit_of_measure_code']! as String,
     quantityScale: json['quantity_scale']! as int,
     tracksInventory: json['tracks_inventory']! as bool,
+    // TASK 17.1.3 — orthogonal to `tracksInventory`: whether this variant
+    // may be sold DIRECTLY through a sales surface. Defaults `true` only
+    // as a defensive fallback for an old cached response shape; the
+    // backend always sends this field.
+    isSellable: json['is_sellable'] as bool? ?? true,
     // Absent entirely (not `null`) when the caller lacks
     // `inventory.cost.read` — see this file's own header note.
     standardCost: json['standard_cost'] as String?,
@@ -126,6 +132,11 @@ class PosProductVariant {
   final String unitOfMeasureCode;
   final int quantityScale;
   final bool tracksInventory;
+
+  /// TASK 17.1.3 — whether this variant may be sold DIRECTLY through a
+  /// sales surface (POS/Cafetería), independent of [tracksInventory]. A
+  /// recipe ingredient tracks its own inventory but is never sellable.
+  final bool isSellable;
 
   /// `null` both when the backend genuinely omitted it (no
   /// `inventory.cost.read`) and when this local record simply hasn't been
@@ -273,6 +284,7 @@ class PosProductVariantInput {
     this.unitOfMeasureCode,
     this.quantityScale,
     this.tracksInventory,
+    this.isSellable,
     this.standardCost,
     this.currencyCode,
     this.minStock,
@@ -286,6 +298,12 @@ class PosProductVariantInput {
   final String? unitOfMeasureCode;
   final int? quantityScale;
   final bool? tracksInventory;
+
+  /// TASK 17.1.3 — orthogonal to [tracksInventory]; independently
+  /// toggleable. `null` omits the field from the request (keeps the
+  /// variant's current value on a PATCH; the backend defaults to `true`
+  /// on create).
+  final bool? isSellable;
   final String? standardCost;
   final String? currencyCode;
 
@@ -306,6 +324,7 @@ class PosProductVariantInput {
     if (unitOfMeasureCode != null) 'unit_of_measure_code': unitOfMeasureCode,
     if (quantityScale != null) 'quantity_scale': quantityScale,
     if (tracksInventory != null) 'tracks_inventory': tracksInventory,
+    if (isSellable != null) 'is_sellable': isSellable,
     if (standardCost != null) 'standard_cost': standardCost,
     if (currencyCode != null) 'currency_code': currencyCode,
     if (clearMinStock)

@@ -13429,6 +13429,7 @@ PosProductVariant _fixtureProductVariant({
   unitOfMeasureCode: 'unit',
   quantityScale: 0,
   tracksInventory: true,
+  isSellable: true,
   standardCost: null,
   currencyCode: null,
   isDefault: isDefault,

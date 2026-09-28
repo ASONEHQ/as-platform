@@ -58,6 +58,8 @@ interface ListQuery {
   sku?: string;
   barcode?: string;
   branch_id?: string;
+  /** TASK 17.1.3 — see `ProductFilters.sellableOnly`'s own doc comment. */
+  sellable_only?: boolean;
 }
 interface DetailQuery {
   branch_id?: string;
@@ -77,6 +79,7 @@ interface DefaultVariantBody {
   name?: string;
   unit_of_measure_code: string;
   quantity_scale?: number;
+  is_sellable?: boolean;
   tracks_inventory?: boolean;
   standard_cost?: string;
   currency_code?: string;
@@ -133,6 +136,7 @@ interface VariantBody {
   unit_of_measure_code: string;
   quantity_scale?: number;
   tracks_inventory?: boolean;
+  is_sellable?: boolean;
   standard_cost?: string;
   currency_code?: string;
   min_stock?: string;
@@ -147,6 +151,7 @@ interface VariantPatchBody {
   unit_of_measure_code?: string;
   quantity_scale?: number;
   tracks_inventory?: boolean;
+  is_sellable?: boolean;
   standard_cost?: string;
   currency_code?: string;
   min_stock?: string | null;
@@ -204,6 +209,7 @@ const defaultVariantSchema = {
     unit_of_measure_code: { type: 'string', minLength: 1, maxLength: 32 },
     quantity_scale: { type: 'integer', minimum: 0, maximum: 6 },
     tracks_inventory: { type: 'boolean' },
+    is_sellable: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
     min_stock: { type: 'string', pattern: minStockPattern },
@@ -278,6 +284,7 @@ const variantBodySchema = {
     unit_of_measure_code: { type: 'string', minLength: 1, maxLength: 32 },
     quantity_scale: { type: 'integer', minimum: 0, maximum: 6 },
     tracks_inventory: { type: 'boolean' },
+    is_sellable: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
     min_stock: { type: 'string', pattern: minStockPattern },
@@ -297,6 +304,7 @@ const variantPatchSchema = {
     unit_of_measure_code: { type: 'string', minLength: 1, maxLength: 32 },
     quantity_scale: { type: 'integer', minimum: 0, maximum: 6 },
     tracks_inventory: { type: 'boolean' },
+    is_sellable: { type: 'boolean' },
     standard_cost: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,14})(?:\\.[0-9]{1,4})?$' },
     currency_code: { type: 'string', pattern: '^[A-Za-z]{3}$' },
     min_stock: { anyOf: [{ type: 'string', pattern: minStockPattern }, { type: 'null' }] },
@@ -343,6 +351,7 @@ function variantHttp(
     unit_of_measure_code: value.unitOfMeasureCode,
     quantity_scale: value.quantityScale,
     tracks_inventory: value.tracksInventory,
+    is_sellable: value.isSellable,
     ...(showCost ? { standard_cost: value.standardCost, currency_code: value.currencyCode } : {}),
     min_stock: value.minStock,
     is_default: value.isDefault,
@@ -520,6 +529,7 @@ export function registerProductCatalogRoutes(
             sku: { type: 'string', minLength: 1, maxLength: 255 },
             barcode: { type: 'string', minLength: 1, maxLength: 255 },
             branch_id: uuid,
+            sellable_only: { type: 'boolean' },
           },
         },
         response: { 200: responseSchema, ...commonErrors },
@@ -546,6 +556,7 @@ export function registerProductCatalogRoutes(
           ...(query.sku === undefined ? {} : { sku: query.sku }),
           ...(query.barcode === undefined ? {} : { barcode: query.barcode }),
           ...(query.branch_id === undefined ? {} : { branchId: query.branch_id }),
+          ...(query.sellable_only === undefined ? {} : { sellableOnly: query.sellable_only }),
         });
         return reply.send({
           data: page.items.map((item) => productHttp(item, hasCostPermission(context.permissions))),
@@ -632,6 +643,9 @@ export function registerProductCatalogRoutes(
                 ...(body.default_variant.tracks_inventory === undefined
                   ? {}
                   : { tracksInventory: body.default_variant.tracks_inventory }),
+                ...(body.default_variant.is_sellable === undefined
+                  ? {}
+                  : { isSellable: body.default_variant.is_sellable }),
                 ...(body.default_variant.min_stock === undefined
                   ? {}
                   : { minStock: body.default_variant.min_stock }),
@@ -947,6 +961,7 @@ export function registerProductCatalogRoutes(
           ...(body.tracks_inventory === undefined
             ? {}
             : { tracksInventory: body.tracks_inventory }),
+          ...(body.is_sellable === undefined ? {} : { isSellable: body.is_sellable }),
           ...(body.min_stock === undefined ? {} : { minStock: body.min_stock }),
           ...(body.barcode === undefined
             ? {}
@@ -1120,6 +1135,7 @@ export function registerProductCatalogRoutes(
           ...(body.tracks_inventory === undefined
             ? {}
             : { tracksInventory: body.tracks_inventory }),
+          ...(body.is_sellable === undefined ? {} : { isSellable: body.is_sellable }),
           ...(body.standard_cost === undefined ? {} : { standardCost: body.standard_cost }),
           ...(body.currency_code === undefined ? {} : { currencyCode: body.currency_code }),
           ...(body.min_stock === undefined ? {} : { minStock: body.min_stock }),

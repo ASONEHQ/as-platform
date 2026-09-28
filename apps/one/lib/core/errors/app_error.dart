@@ -345,6 +345,17 @@ class AppFailure {
       'Este producto tiene una configuración de inventario conflictiva (control directo y receta a la vez). Contacta a soporte antes de continuar.',
       code: 'conflicting_recipe_configuration',
     ),
+    // TASK 17.1.3 — sellability vs. direct-stock/recipe: a variant marked
+    // "no disponible para venta" (e.g. a recipe ingredient like "Masa
+    // Pizza") was submitted directly for sale. Normally unreachable from
+    // this app's own POS grid/search/barcode lookup (all now filtered
+    // server-side), but a real, deterministic rejection for a stale
+    // client cache or any other direct-sale path.
+    'variant_not_sellable' => const AppFailure(
+      AppErrorKind.validation,
+      'Este producto no está disponible para venta directa.',
+      code: 'variant_not_sellable',
+    ),
     _ => const AppFailure(
       AppErrorKind.unknown,
       'No fue posible completar la solicitud.',

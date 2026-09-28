@@ -77,6 +77,10 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
     sku: string,
     unitOfMeasureCode: string,
     tracksInventory: boolean,
+    // TASK 17.1.3 — defaults `true` (the DB column's own default, and
+    // this fixture's pre-existing behavior for every call site that
+    // doesn't pass it explicitly) so this parameter is purely additive.
+    isSellable = true,
   ): Promise<void> {
     await database.pool.query(
       `insert into products
@@ -87,8 +91,8 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
     await database.pool.query(
       `insert into product_variants
        (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,
-        tracks_inventory,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
-       values($1,$2,$3,$4,$4,$4,$5,6,$6,0,'MXN',true,$7,'active',$8,$8)`,
+        tracks_inventory,is_sellable,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+       values($1,$2,$3,$4,$4,$4,$5,6,$6,$9,0,'MXN',true,$7,'active',$8,$8)`,
       [
         variantId,
         companyId,
@@ -98,6 +102,7 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
         tracksInventory,
         randomUUID().replaceAll('-', '').padEnd(64, '0'),
         actorId,
+        isSellable,
       ],
     );
   }
@@ -200,10 +205,17 @@ integration('PostgreSQL recipe (BOM) inventory consumption (TASK 16.32)', () => 
        on conflict (code) do nothing`,
     );
 
-    await insertProductAndVariant(randomUUID(), doughId, `dough-${doughId}`, 'unit', true);
-    await insertProductAndVariant(randomUUID(), cheeseId, `cheese-${cheeseId}`, 'kg', true);
-    await insertProductAndVariant(randomUUID(), pepperoniId, `pepperoni-${pepperoniId}`, 'kg', true);
-    await insertProductAndVariant(randomUUID(), sauceId, `sauce-${sauceId}`, 'kg', true);
+    // TASK 17.1.3 — the ingredients are explicitly `is_sellable=false`,
+    // matching the real production scenario this task fixes (recipe
+    // ingredients like "Masa Pizza"/"Mozzarella"/"Salsa"/"Pepperoni"
+    // appearing as sellable POS cards). Every test below that exercises
+    // recipe consumption through these ingredients therefore already
+    // proves consumption is completely indifferent to sellability — see
+    // `docs/SELLABILITY.md`.
+    await insertProductAndVariant(randomUUID(), doughId, `dough-${doughId}`, 'unit', true, false);
+    await insertProductAndVariant(randomUUID(), cheeseId, `cheese-${cheeseId}`, 'kg', true, false);
+    await insertProductAndVariant(randomUUID(), pepperoniId, `pepperoni-${pepperoniId}`, 'kg', true, false);
+    await insertProductAndVariant(randomUUID(), sauceId, `sauce-${sauceId}`, 'kg', true, false);
     await insertProductAndVariant(pizzaId, pizzaId, `pizza-${pizzaId}`, 'unit', false);
     await insertProductAndVariant(nachosId, nachosId, `nachos-${nachosId}`, 'unit', false);
     await insertProductAndVariant(plainId, plainId, `plain-${plainId}`, 'unit', true);

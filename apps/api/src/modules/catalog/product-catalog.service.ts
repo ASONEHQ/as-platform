@@ -437,6 +437,7 @@ export class ProductCatalogService {
                 input.productType === 'service' || input.productType === 'kit'
                   ? false
                   : (input.defaultVariant.tracksInventory ?? input.tracksInventory),
+              isSellable: input.defaultVariant.isSellable ?? true,
               standardCost: money(input.defaultVariant.standardCost),
               currencyCode: currency(input.defaultVariant.currencyCode),
               minStock:
@@ -819,6 +820,7 @@ export class ProductCatalogService {
       unitOfMeasureCode: clean(input.unitOfMeasureCode, 'unit_of_measure_code').toLowerCase(),
       quantityScale: input.quantityScale,
       tracksInventory: input.tracksInventory,
+      isSellable: input.isSellable ?? true,
       standardCost: money(input.standardCost),
       currencyCode: currency(input.currencyCode),
       minStock: input.minStock === undefined ? null : stockAmount(input.minStock),
@@ -947,6 +949,7 @@ export class ProductCatalogService {
             : clean(patch.unitOfMeasureCode, 'unit_of_measure_code').toLowerCase(),
         quantityScale: patch.quantityScale ?? current.quantityScale,
         tracksInventory: patch.tracksInventory ?? current.tracksInventory,
+        isSellable: patch.isSellable ?? current.isSellable,
         standardCost:
           patch.standardCost === undefined ? current.standardCost : money(patch.standardCost),
         currencyCode:

@@ -529,6 +529,17 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
   /// through the exact same generic path every other backend error here
   /// already uses, with zero special-casing needed.
   late bool _tracksInventory = widget.existing?.tracksInventory ?? true;
+
+  /// TASK 17.1.3 — the missing UI for `product_variants.is_sellable`,
+  /// orthogonal to [_tracksInventory]: whether this variant may be sold
+  /// DIRECTLY through a sales surface (POS/Cafetería). A recipe
+  /// ingredient (e.g. "Masa Pizza") tracks its own inventory and remains
+  /// pickable by the recipe editor, but must never be directly sellable.
+  /// Create defaults to `true` (this app's existing historical behavior
+  /// for a normal product); edit always reflects the real backend value.
+  /// Toggling this never mutates inventory or any recipe — the two
+  /// checkboxes, and the recipe itself, are completely independent.
+  late bool _isSellable = widget.existing?.isSellable ?? true;
   bool _busy = false;
   String? _error;
 
@@ -588,6 +599,7 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
       standardCost: cost.isEmpty ? null : cost,
       currencyCode: currency.isEmpty ? null : currency,
       tracksInventory: _tracksInventory,
+      isSellable: _isSellable,
       isDefault: _isDefault,
       status: _isEdit ? _status : null,
     );
@@ -683,6 +695,20 @@ class _VariantFormDialogState extends State<_VariantFormDialog> {
                     _tracksInventory
                         ? 'El stock se descuenta directamente de esta variante.'
                         : 'Esta variante podrá utilizar una receta de ingredientes.',
+                    style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                  ),
+                ),
+                CheckboxListTile(
+                  key: const Key('pos-product-variants-form-sellable'),
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _isSellable,
+                  onChanged: (value) => setState(() => _isSellable = value ?? true),
+                  title: const Text('Disponible para venta'),
+                  subtitle: Text(
+                    _isSellable
+                        ? 'Permite vender esta variante directamente en Punto de Venta.'
+                        : 'No aparecerá en Punto de Venta ni en el escaneo de código de barras; sigue disponible como ingrediente de receta y en inventario.',
                     style: TextStyle(color: palette.textSecondary, fontSize: 11),
                   ),
                 ),

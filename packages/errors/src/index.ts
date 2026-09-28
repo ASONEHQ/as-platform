@@ -172,6 +172,9 @@ export const infrastructureErrorCodes = [
   'reward_token_invalid',
   'product_not_found',
   'product_not_active',
+  // TASK 17.1.3 — the resolved default variant is not `is_sellable`
+  // (e.g. a recipe ingredient submitted directly for sale).
+  'variant_not_sellable',
   'price_not_found',
   // TASK 14.3 (Wave 1, Part A): party reservations/rooms/packages — this
   // domain is not pre-reserved anywhere. Every other lookup/validation

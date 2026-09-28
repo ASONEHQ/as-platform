@@ -344,6 +344,13 @@
       "when": 1790490452635,
       "tag": "0048_add_product_recipes",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790603804391,
+      "tag": "0049_add_product_variant_is_sellable",
+      "breakpoints": true
     }
   ]
 }
