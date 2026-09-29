@@ -29,6 +29,38 @@ void main() {
       expect(find.text('location-src'), findsNothing);
     });
 
+    // TASK 17.4.1 — dense table on desktop, the pre-existing card list on
+    // a narrow viewport; never the desktop table squeezed sideways.
+    testWidgets('desktop width renders the real dense table, with every real field and no raw ids', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true, viewSize: const Size(1440, 1000));
+
+      expect(find.byKey(const Key('pos-existencias-table')), findsOneWidget);
+      expect(find.byKey(const Key('pos-existencia-row-location-src-variant-2')), findsNothing);
+      expect(find.textContaining('Agua'), findsWidgets);
+      expect(find.textContaining('AGUA-1'), findsWidgets);
+      expect(find.text('Stock bajo'), findsOneWidget);
+      expect(find.text('variant-2'), findsNothing);
+    });
+
+    testWidgets('a narrow viewport keeps the touch-friendly card list, never the desktop table', (tester) async {
+      // TASK 17.4.1 — 700px (below the 860px table/card breakpoint) is
+      // used rather than a phone width (e.g. 390px) because this admin
+      // screen's own `SegmentedButton` tab bar (8 real tabs) already has
+      // a separate, pre-existing overflow at true phone widths —
+      // unrelated to Existencias' own presentation and explicitly out of
+      // this task's scope (the same "documented, not fixed" precedent
+      // TASK 17.2.5 already established for this exact screen's Resumen
+      // tab). This test still proves the real responsive breakpoint:
+      // below 860px, the card list renders, never the desktop table.
+      final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true, viewSize: const Size(700, 1000));
+
+      expect(find.byKey(const Key('pos-existencias-table')), findsNothing);
+      expect(find.textContaining('Agua'), findsWidgets);
+      expect(find.text('Stock bajo'), findsOneWidget);
+    });
+
     testWidgets('labels out-of-stock and available balances distinctly', (tester) async {
       final gateway = _RecordingInventoryAdminGateway(balances: [_sourceBalance, _outOfStockBalance]);
       await _pump(tester, gateway: gateway, startOnExistencias: true);

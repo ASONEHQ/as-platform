@@ -999,19 +999,133 @@ class _ExistenciasTabState extends State<_ExistenciasTab> {
           _ListPhase.loading => const _Loading(),
           _ListPhase.empty => const _Empty(message: 'No hay existencias que coincidan con este filtro.'),
           _ListPhase.failure => _Failure(message: _errorMessage ?? 'No fue posible cargar las existencias.', onRetry: () => unawaited(_load())),
-          _ListPhase.ready => Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (final balance in _items)
-                _ExistenciaRow(
-                  key: Key('pos-existencia-row-${balance.locationId}-${balance.productVariantId}'),
-                  balance: balance,
-                  variantsGateway: widget.variantsGateway,
-                ),
-            ],
+          // TASK 17.4.1 — dense, table-oriented on desktop (a real
+          // administrative tool, not a wall of cards); a narrow viewport
+          // keeps the pre-existing, already-touch-friendly card list —
+          // never the desktop table squeezed sideways.
+          _ListPhase.ready => LayoutBuilder(
+            builder: (context, constraints) => constraints.maxWidth >= 860
+                ? _ExistenciasTable(items: _items, variantsGateway: widget.variantsGateway)
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final balance in _items)
+                        _ExistenciaRow(
+                          key: Key('pos-existencia-row-${balance.locationId}-${balance.productVariantId}'),
+                          balance: balance,
+                          variantsGateway: widget.variantsGateway,
+                        ),
+                    ],
+                  ),
           ),
         },
       ],
+    );
+  }
+}
+
+/// TASK 17.4.1 — the desktop-only dense presentation of the exact same
+/// `_items`/`PosInventoryBalance` list the card representation already
+/// renders; every column is a real, already-fetched field (see
+/// `pos_inventory_admin_gateway.dart`'s own `PosInventoryBalance`) — no
+/// cost/value column, since TASK 17.2's own audit (reconfirmed by TASK
+/// 17.4) proved no authoritative unit cost exists anywhere in this
+/// system yet (`docs/INVENTORY_V2.md` §7).
+class _ExistenciasTable extends StatelessWidget {
+  const _ExistenciasTable({required this.items, this.variantsGateway});
+  final List<PosInventoryBalance> items;
+  final PosProductVariantsGateway? variantsGateway;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return _Card(
+      padding: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          key: const Key('pos-existencias-table'),
+          headingTextStyle: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w800, fontSize: 12),
+          columns: const [
+            DataColumn(label: Text('Producto')),
+            DataColumn(label: Text('SKU')),
+            DataColumn(label: Text('Tipo')),
+            DataColumn(label: Text('Stock'), numeric: true),
+            DataColumn(label: Text('Mínimo'), numeric: true),
+            DataColumn(label: Text('Unidad')),
+            DataColumn(label: Text('Estado')),
+            DataColumn(label: Text('Último movimiento')),
+            DataColumn(label: Text('Acciones')),
+          ],
+          rows: [
+            for (final balance in items)
+              DataRow(
+                key: ValueKey('pos-existencias-table-row-${balance.locationId}-${balance.productVariantId}'),
+                cells: [
+                  DataCell(
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            balance.displayName,
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                            style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12.5),
+                          ),
+                          // Same real category/location caption the card
+                          // representation already shows — folded into
+                          // this cell rather than two more columns.
+                          Text(
+                            [balance.categoryName, balance.locationName].whereType<String>().join(' · '),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                            style: TextStyle(color: palette.textSecondary, fontSize: 10.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  DataCell(Text(balance.sku, style: TextStyle(color: palette.textSecondary, fontSize: 12))),
+                  DataCell(_TipoPill(tipo: balance.tipo)),
+                  DataCell(Text(_compactQuantity(balance.quantityOnHand))),
+                  DataCell(Text(balance.minStock == null ? '—' : _compactQuantity(balance.minStock!))),
+                  DataCell(Text(balance.unitOfMeasureCode, style: TextStyle(color: palette.textSecondary, fontSize: 12))),
+                  DataCell(_StockStatusPill(status: balance.stockStatus)),
+                  DataCell(
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 200),
+                      child: Text(
+                        _lastMovementLabel(balance),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                        style: TextStyle(color: palette.textMuted, fontSize: 11.5),
+                      ),
+                    ),
+                  ),
+                  DataCell(
+                    balance.tipo != 'Insumo' || variantsGateway == null
+                        ? const SizedBox.shrink()
+                        : IconButton(
+                            key: Key('pos-existencias-table-used-in-${balance.productVariantId}'),
+                            tooltip: 'Usado en',
+                            icon: const Icon(Icons.info_outline, size: 18),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                            onPressed: () => showDialog<void>(
+                              context: context,
+                              builder: (dialogContext) =>
+                                  _UsedInDialog(variantId: balance.productVariantId, gateway: variantsGateway!),
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1050,12 +1164,21 @@ class _ExistenciaRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
+          // TASK 17.4.1 — a `Wrap`, not a fixed-flex `Row`: at a narrow
+          // (mobile) width the quantities/status pill move to their own
+          // line below the name instead of overflowing (the same
+          // Row->Wrap fix already used elsewhere in this file, e.g.
+          // `_ActivityItem`, for the identical reason).
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 6,
             children: [
-              Expanded(
-                flex: 3,
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 140),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(balance.displayName, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
                     const SizedBox(height: 2),
@@ -1066,21 +1189,17 @@ class _ExistenciaRow extends StatelessWidget {
                   ],
                 ),
               ),
-              Expanded(
-                flex: 2,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    _Quantity(label: 'Actual', value: balance.quantityOnHand),
-                    const SizedBox(width: 14),
-                    _Quantity(label: 'Reservado', value: balance.quantityReserved),
-                    const SizedBox(width: 14),
-                    _Quantity(label: 'Mínimo', value: balance.minStock ?? '—'),
-                  ],
-                ),
+              Wrap(
+                spacing: 14,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _Quantity(label: 'Actual', value: balance.quantityOnHand),
+                  _Quantity(label: 'Reservado', value: balance.quantityReserved),
+                  _Quantity(label: 'Mínimo', value: balance.minStock ?? '—'),
+                  _StockStatusPill(status: balance.stockStatus),
+                ],
               ),
-              const SizedBox(width: 12),
-              _StockStatusPill(status: balance.stockStatus),
             ],
           ),
           const SizedBox(height: 8),
