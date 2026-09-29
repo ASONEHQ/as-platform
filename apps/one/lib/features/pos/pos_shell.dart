@@ -4638,7 +4638,25 @@ class _DashboardPartyRow extends StatelessWidget {
               ],
             ),
           ),
-          Text(reservation.status, style: TextStyle(color: palette.textSecondary, fontSize: 11.5)),
+          // TASK 17.4.1 — a real status pill, reusing the exact same
+          // label/color mapping the Fiestas module itself already uses
+          // (`_partyStatusLabel`/`_partyStatusColor`) — never a second,
+          // divergent status presentation, never the raw backend code.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: _partyStatusColor(palette, reservation.status).withValues(alpha: .12),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              _partyStatusLabel(reservation.status),
+              style: TextStyle(
+                color: _partyStatusColor(palette, reservation.status),
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
         ],
       ),
     );

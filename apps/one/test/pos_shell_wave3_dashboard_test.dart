@@ -73,6 +73,12 @@ void main() {
       // widget — `textContaining` matches that honestly).
       expect(find.textContaining('Sala Fiesta'), findsOneWidget);
       expect(find.text('Caja Principal'), findsOneWidget);
+      // TASK 17.4.1 — a real, human status pill (reusing the Fiestas
+      // module's own label/color mapping) — never the raw backend code.
+      expect(find.text('Confirmada'), findsOneWidget);
+      expect(find.text('Apartada'), findsOneWidget);
+      expect(find.text('confirmed'), findsNothing);
+      expect(find.text('held'), findsNothing);
     });
 
     testWidgets('a genuinely empty day shows real honest zeros on the metric grid, never a hidden card', (tester) async {
