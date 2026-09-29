@@ -9,6 +9,8 @@ import 'package:as_one/features/pos/pos_auth_gateway.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_catalog_admin_gateway.dart';
 import 'package:as_one/features/pos/pos_customers_gateway.dart';
+import 'package:as_one/features/pos/pos_held_sales_gateway.dart';
+import 'package:as_one/features/pos/pos_inventory_admin_gateway.dart' hide PosInventoryBalance;
 import 'package:as_one/features/pos/pos_loyalty_gateway.dart';
 import 'package:as_one/features/pos/pos_memberships_gateway.dart';
 import 'package:as_one/features/pos/pos_models.dart';
@@ -5964,6 +5966,86 @@ void main() {
     );
   });
 
+  // TASK 17.3 §14/§24 — the same branch-switch-safety proof as the Caja
+  // test above, for the three screens the audit found had NO branch-keyed
+  // remount at all (`PosInventoryAdminScreen`, `_FiestasAdmin`, `_HeldSales`
+  // previously had no `ValueKey`, so their `initState`-only data loads
+  // never re-ran on a live branch switch). Each test proves the SECOND
+  // load call after switching genuinely used the NEW branch id, not that
+  // the screen merely "looks empty" (which could just as easily mean it
+  // never loaded again at all).
+  group('Branch-switch state safety (TASK 17.3)', () {
+    testWidgets('Inventario: switching branch re-fetches the Resumen overview for the new branch, never the old one', (tester) async {
+      final inventoryGateway = _TrackingInventoryAdminGateway();
+      final state = GlobalKey<_BranchSwitchingHarnessState>();
+      await _pumpHarness(
+        tester,
+        _BranchSwitchingHarness(
+          key: state,
+          initialContext: _contextWithAlternateBranch,
+          inventoryAdminGateway: inventoryGateway,
+        ),
+      );
+      await tester.tap(find.byKey(const Key('nav-group-Inventario')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('nav-inventoryAdmin')));
+      await tester.pumpAndSettle();
+      expect(inventoryGateway.overviewBranchIdCalls, ['branch-id']);
+
+      await state.currentState!.attemptSelectBranch('branch-other');
+      await tester.pumpAndSettle();
+
+      expect(inventoryGateway.overviewBranchIdCalls, ['branch-id', 'branch-other']);
+    });
+
+    testWidgets('Fiestas: switching branch re-fetches reservations for the new branch, never the old one', (tester) async {
+      final partiesGateway = _TrackingPartiesGateway();
+      final state = GlobalKey<_BranchSwitchingHarnessState>();
+      await _pumpHarness(
+        tester,
+        _BranchSwitchingHarness(
+          key: state,
+          initialContext: _contextWithAlternateBranchAndPartyPermissions,
+          partiesGateway: partiesGateway,
+        ),
+      );
+      await _navigateToFiestas(tester);
+      expect(partiesGateway.reservationBranchIdCalls, ['branch-id']);
+
+      await state.currentState!.attemptSelectBranch('branch-other');
+      await tester.pumpAndSettle();
+
+      expect(partiesGateway.reservationBranchIdCalls, ['branch-id', 'branch-other']);
+    });
+
+    testWidgets('Ventas suspendidas: switching branch re-fetches held carts for the new branch, never the old one', (tester) async {
+      final heldSalesGateway = _TrackingHeldSalesGateway();
+      final state = GlobalKey<_BranchSwitchingHarnessState>();
+      await _pumpHarness(
+        tester,
+        _BranchSwitchingHarness(key: state, initialContext: _contextWithAlternateBranch, heldSalesGateway: heldSalesGateway),
+      );
+      await _openVentasGroupIfNeeded(tester);
+      await tester.tap(find.byKey(const Key('nav-suspended')));
+      await tester.pumpAndSettle();
+      // `_HeldSalesState._load()` fetches both the `held` and `resuming`
+      // statuses (the backend's own querystring only ever accepts one
+      // `status` value at a time — see `_HeldSalesState._load()`'s own doc
+      // comment), so each load records two gateway calls, not one.
+      expect(heldSalesGateway.listBranchIdCalls, ['branch-id', 'branch-id']);
+
+      await state.currentState!.attemptSelectBranch('branch-other');
+      await tester.pumpAndSettle();
+
+      expect(heldSalesGateway.listBranchIdCalls, [
+        'branch-id',
+        'branch-id',
+        'branch-other',
+        'branch-other',
+      ]);
+    });
+  });
+
   group('Promotions/discounts/coupons (TASK 12.9)', () {
     Future<void> navigateToPromotionsAdmin(WidgetTester tester) async {
       await _openVentasGroupIfNeeded(tester);
@@ -11190,6 +11272,18 @@ final _contextWithAlternateBranchAndCashPermissions = AuthenticatedContext(
   permissions: _contextWithCashPermissions.permissions,
 );
 
+/// TASK 17.3 §14/§24 — [_contextWithAlternateBranch] plus `party.read`,
+/// mirroring [_contextWithAlternateBranchAndCashPermissions]'s own exact
+/// pattern — used by the Fiestas branch-switch-safety test.
+final _contextWithAlternateBranchAndPartyPermissions = AuthenticatedContext(
+  session: _contextWithAlternateBranch.session,
+  user: _contextWithAlternateBranch.user,
+  companies: _contextWithAlternateBranch.companies,
+  branches: _contextWithAlternateBranch.branches,
+  companyWideAccess: false,
+  permissions: _contextWithParties().permissions,
+);
+
 /// POS branch-context fix: mimics the real app's `DashboardScreen`
 /// rebuild-on-`AuthController.notifyListeners()` pattern — `onBranchSelected`
 /// updates this harness's own state and rebuilds `PosShell` with a fresh
@@ -11206,6 +11300,15 @@ class _BranchSwitchingHarness extends StatefulWidget {
     this.salesGateway,
     this.cashGateway,
     this.readGateway,
+    // TASK 17.3 §14/§24 — optional, additive overrides for the branch-
+    // switch-safety tests covering Inventario/Fiestas/Ventas suspendidas,
+    // mirroring `salesGateway`/`cashGateway`/`readGateway`'s exact
+    // existing pattern; every pre-existing call site keeps compiling
+    // unchanged since these default to null (PosShell's own `Empty*`
+    // defaults apply).
+    this.inventoryAdminGateway,
+    this.heldSalesGateway,
+    this.partiesGateway,
     this.onSwitchAttempt,
     super.key,
   });
@@ -11213,6 +11316,9 @@ class _BranchSwitchingHarness extends StatefulWidget {
   final PosSalesGateway? salesGateway;
   final PosCashGateway? cashGateway;
   final PosReadGateway? readGateway;
+  final PosInventoryAdminGateway? inventoryAdminGateway;
+  final PosHeldSalesGateway? heldSalesGateway;
+  final PosPartiesGateway? partiesGateway;
   final ValueChanged<String?>? onSwitchAttempt;
 
   @override
@@ -11287,7 +11393,9 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
     membershipsGateway: const EmptyPosMembershipsGateway(),
     loyaltyGateway: const EmptyPosLoyaltyGateway(),
     rewardsGateway: const EmptyPosRewardsGateway(),
-    partiesGateway: const EmptyPosPartiesGateway(),
+    partiesGateway: widget.partiesGateway ?? const EmptyPosPartiesGateway(),
+    inventoryAdminGateway: widget.inventoryAdminGateway ?? const EmptyPosInventoryAdminGateway(),
+    heldSalesGateway: widget.heldSalesGateway ?? const EmptyPosHeldSalesGateway(),
     onLogout: () {},
     onBranchSelected: _selectBranch,
   );
@@ -11298,6 +11406,69 @@ class _BranchSwitchingHarnessState extends State<_BranchSwitchingHarness> {
 /// re-fetches branch-scoped data rather than retaining whatever
 /// "Todas las sucursales" (or a different branch's) catalog was loaded
 /// before.
+/// TASK 17.3 §14/§24 — records every `branch_id` Inventario's Resumen tab
+/// actually requested with, proving a live branch switch causes a genuine
+/// re-fetch (via the `ValueKey`-forced remount in `pos_shell.dart`) rather
+/// than silently keeping the previous branch's overview on screen.
+class _TrackingInventoryAdminGateway extends EmptyPosInventoryAdminGateway {
+  final List<String> overviewBranchIdCalls = [];
+
+  @override
+  Future<PosInventoryOverview> overview({required String branchId}) async {
+    overviewBranchIdCalls.add(branchId);
+    return const PosInventoryOverview(
+      itemCount: 0,
+      lowStockCount: 0,
+      outOfStockCount: 0,
+      movementsTodayCount: 0,
+      businessDate: '2026-01-01',
+      valuationAvailable: false,
+      valuationReason: 'Valor no disponible.',
+      alerts: [],
+      recentActivity: [],
+      byLocation: [],
+    );
+  }
+}
+
+/// TASK 17.3 §14/§24 — records every `branch_id` Fiestas' "Lista" tab
+/// actually requested reservations with.
+class _TrackingPartiesGateway extends EmptyPosPartiesGateway {
+  final List<String?> reservationBranchIdCalls = [];
+
+  @override
+  Future<PosPartyPage<PosPartyReservation>> listReservations({
+    String? cursor,
+    int limit = 50,
+    String? branchId,
+    String? status,
+    String? roomId,
+    String? customerId,
+    String? sellerUserId,
+    String? eventDateFrom,
+    String? eventDateTo,
+  }) async {
+    reservationBranchIdCalls.add(branchId);
+    return const PosPartyPage(items: [], nextCursor: null);
+  }
+}
+
+/// TASK 17.3 §14/§24 — records every `branch_id` Ventas suspendidas
+/// actually requested carts with.
+class _TrackingHeldSalesGateway extends EmptyPosHeldSalesGateway {
+  final List<String?> listBranchIdCalls = [];
+
+  @override
+  Future<PosHeldSaleCartPage> listCarts({
+    PosHeldSaleCartListFilter filter = const PosHeldSaleCartListFilter(),
+    String? cursor,
+    int limit = 50,
+  }) async {
+    listBranchIdCalls.add(filter.branchId);
+    return const PosHeldSaleCartPage(items: [], nextCursor: null);
+  }
+}
+
 class _TrackingReadGateway implements PosReadGateway {
   final List<String?> productBranchIdCalls = [];
   final List<String?> balanceBranchIdCalls = [];

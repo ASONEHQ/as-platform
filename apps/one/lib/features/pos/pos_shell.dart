@@ -3502,6 +3502,16 @@ class _Content extends StatelessWidget {
                   // `PosModule.inventoryAdmin` below render the exact same
                   // screen, differing only in which tab opens first.
                   PosModule.inventory => PosInventoryAdminScreen(
+                    // TASK 17.3 §14 — without a branch-keyed widget, this
+                    // screen's tabs (`_ResumenTab`/`_ExistenciasTab`/etc.)
+                    // only ever fetch once, in `initState`; none of them
+                    // react to `didUpdateWidget`, so switching the active
+                    // branch via the topbar would silently keep showing
+                    // the PREVIOUS branch's inventory. A `ValueKey` forces
+                    // a full teardown/rebuild on branch change, mirroring
+                    // the exact same fix already used for Caja/Access/
+                    // Employees below.
+                    key: ValueKey('inventory-${this.context.session.branchId}'),
                     context: this.context,
                     gateway: inventoryAdminGateway,
                     startOnExistencias: true,
@@ -3597,7 +3607,14 @@ class _Content extends StatelessWidget {
                   // reservation Lista/Calendario/Cotizador/Ajustes, wired
                   // to the already-tested `apps/api/.../parties` module.
                   // See `docs/LEGACY_FIESTAS_RECOVERY.md`.
+                  // TASK 17.3 §14 — branch-keyed, mirroring Caja/Access/
+                  // Employees below: `_FiestasAdmin`'s own tabs only ever
+                  // load once in `initState`, with no `didUpdateWidget`
+                  // reacting to a live branch switch — without this key,
+                  // switching branches would keep showing the previous
+                  // branch's events/reservations.
                   PosModule.events => _FiestasAdmin(
+                    key: ValueKey('fiestas-${this.context.session.branchId}'),
                     context: this.context,
                     controller: controller,
                     partiesGateway: partiesGateway,
@@ -3610,7 +3627,13 @@ class _Content extends StatelessWidget {
                   // TASK 14.3 Wave 1 Part B.1: the pre-reserved
                   // `PosModule.suspended` slot ("Ventas Suspendidas") —
                   // real, backend-persisted held-cart list/resume/discard.
+                  // TASK 17.3 §14 — branch-keyed for the same reason as
+                  // `_FiestasAdmin` above: a suspended-sale list from the
+                  // previous branch must never keep showing after a
+                  // switch (and must never be resumable against the
+                  // wrong branch).
                   PosModule.suspended => _HeldSales(
+                    key: ValueKey('held-sales-${this.context.session.branchId}'),
                     context: this.context,
                     controller: controller,
                     saleSession: saleSession,
@@ -3719,6 +3742,7 @@ class _Content extends StatelessWidget {
                   // (movement drafts/adjustments, transfers, counts,
                   // reservations, reconciliation) plus locations setup.
                   PosModule.inventoryAdmin => PosInventoryAdminScreen(
+                    key: ValueKey('inventory-admin-${this.context.session.branchId}'),
                     context: this.context,
                     gateway: inventoryAdminGateway,
                     variantsGateway: productVariantsGateway,
@@ -12770,6 +12794,7 @@ class _HeldSales extends StatefulWidget {
     required this.saleSession,
     required this.heldSalesGateway,
     required this.onNavigateToPos,
+    super.key,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -26279,6 +26304,7 @@ class _FiestasAdmin extends StatefulWidget {
     required this.settingsGateway,
     required this.catalogAdminGateway,
     required this.productVariantsGateway,
+    super.key,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
