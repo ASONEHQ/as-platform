@@ -101,7 +101,11 @@ void bootstrap() {
       posSettingsGateway: ApiPosSettingsGateway(api),
       posProductVariantsGateway: ApiPosProductVariantsGateway(api),
       posAssistantGateway: ApiPosAssistantGateway(api),
-      posAuthGateway: ApiPosAuthGateway(api),
+      // TASK 17.5.1 — same live CSRF token `ApiAuthGateway` itself uses
+      // (`readCsrfToken: () => authController.csrfToken` above); without
+      // it, every browser-session PIN/QR quick-switch verification failed
+      // CSRF validation on the real backend.
+      posAuthGateway: ApiPosAuthGateway(api, readCsrfToken: () => authController.csrfToken),
       // TASK 15.1 Phase 2-4: real, backend-wired commercial admin UI.
       posIdentityAdminGateway: ApiPosIdentityAdminGateway(api),
       posInventoryAdminGateway: ApiPosInventoryAdminGateway(api),

@@ -38,18 +38,40 @@ abstract interface class PosAuthGateway {
 }
 
 class ApiPosAuthGateway implements PosAuthGateway {
-  const ApiPosAuthGateway(this._client);
+  const ApiPosAuthGateway(this._client, {required this.readCsrfToken});
 
   final ApiClient _client;
 
+  // TASK 17.5.1 — production root cause: `auth.routes.ts`'s `/pin-login`
+  // and `/qr-login` routes both require a valid `X-CSRF-Token` header
+  // whenever the caller's own session has `transportMode == 'browser'`
+  // (`AuthService.verifyCsrf`) — exactly what every real ACCESS GO web
+  // session has (`auth_gateway.dart`'s own `login()` always sends
+  // `transport_mode: 'browser'`). `ApiAuthGateway.switchByPin`/`switchByQr`
+  // (the OTHER, session-adopting client for these same two endpoints)
+  // already attaches this correctly via its own `_requiredCsrf()`; this
+  // gateway never did, so every real production PIN/QR verification here
+  // failed CSRF validation 100% of the time, surfacing as the generic
+  // `validation_error` -> "Revisa la información e inténtalo de nuevo." —
+  // indistinguishable from a wrong PIN, even though the configured PIN was
+  // always correct. Mirrors `ApiAuthGateway`'s own `readCsrfToken`/
+  // `_requiredCsrf` pattern exactly, not a new mechanism.
+  final String? Function() readCsrfToken;
+
+  String _requiredCsrf() {
+    final value = readCsrfToken();
+    if (value == null) throw const FormatException('Missing CSRF token.');
+    return value;
+  }
+
   @override
   Future<void> pinLogin(String pin) async {
-    await _client.postJson('/api/v1/auth/pin-login', body: {'pin': pin});
+    await _client.postJson('/api/v1/auth/pin-login', csrfToken: _requiredCsrf(), body: {'pin': pin});
   }
 
   @override
   Future<void> qrLogin(String code) async {
-    await _client.postJson('/api/v1/auth/qr-login', body: {'code': code});
+    await _client.postJson('/api/v1/auth/qr-login', csrfToken: _requiredCsrf(), body: {'code': code});
   }
 }
 
