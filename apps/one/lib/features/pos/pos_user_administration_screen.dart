@@ -643,7 +643,13 @@ class _UsersTabState extends State<_UsersTab> {
     if (!_canCreate) return;
     final saved = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => _UserFormDialog(gateway: widget.gateway),
+      builder: (dialogContext) => _UserFormDialog(
+        gateway: widget.gateway,
+        branches: widget.context.branches,
+        roles: _roles,
+        canAssignRole: _canAssignRole,
+        canManageBranchAccess: _canManageBranchAccess,
+      ),
     );
     if (saved == true) unawaited(_load());
   }
@@ -984,8 +990,18 @@ class _CardMetaChip extends StatelessWidget {
 /// gated entry point, mirrors `_EmployeeFormDialog`'s own convention of
 /// carrying no separate internal permission gate.
 class _UserFormDialog extends StatefulWidget {
-  const _UserFormDialog({required this.gateway});
+  const _UserFormDialog({
+    required this.gateway,
+    this.branches = const [],
+    this.roles = const [],
+    this.canAssignRole = false,
+    this.canManageBranchAccess = false,
+  });
   final PosIdentityAdminGateway gateway;
+  final List<BranchSummary> branches;
+  final List<PosRole> roles;
+  final bool canAssignRole;
+  final bool canManageBranchAccess;
 
   @override
   State<_UserFormDialog> createState() => _UserFormDialogState();
@@ -996,6 +1012,23 @@ class _UserFormDialogState extends State<_UserFormDialog> {
   final _nameController = TextEditingController();
   bool _busy = false;
   String? _error;
+
+  // TASK 17.3 — "Acceso" section: role + branches selected up front, so
+  // creating a user doesn't force an admin to immediately re-open the
+  // fresh user's own detail dialog just to make the account usable. Every
+  // call this makes on submit is one of the SAME two already-existing,
+  // already-correct endpoints `_AssignRoleDialog`/`_GrantBranchAccessDialog`
+  // already use one at a time — this only sequences them, never a new
+  // authorization model. `null` role / empty branches means "skip", which
+  // reproduces today's exact create-only behavior unchanged.
+  String? _selectedRoleId;
+  bool _allBranches = false;
+  final Set<String> _selectedBranchIds = {};
+
+  List<PosRole> get _activeRoles => widget.roles.where((role) => role.status == 'active').toList(growable: false);
+
+  bool get _showRoleSection => widget.canAssignRole && _activeRoles.isNotEmpty;
+  bool get _showBranchSection => widget.canManageBranchAccess && widget.branches.isNotEmpty && _selectedRoleId != null;
 
   @override
   void dispose() {
@@ -1015,27 +1048,66 @@ class _UserFormDialogState extends State<_UserFormDialog> {
       setState(() => _error = 'El nombre es obligatorio.');
       return;
     }
+    final roleId = _selectedRoleId;
+    if (_showBranchSection && !_allBranches && _selectedBranchIds.isEmpty) {
+      setState(() => _error = 'Selecciona al menos una sucursal o "Todas las sucursales".');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
+    final PosUser created;
     try {
-      await widget.gateway.createUser(email: email, displayName: name);
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
+      created = await widget.gateway.createUser(email: email, displayName: name);
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
         _busy = false;
         _error = error.failure.message;
       });
+      return;
     } on Object {
       if (!mounted) return;
       setState(() {
         _busy = false;
         _error = 'No fue posible crear el usuario.';
       });
+      return;
     }
+    if (roleId != null) {
+      try {
+        if (_allBranches || !widget.canManageBranchAccess || widget.branches.isEmpty) {
+          await widget.gateway.assignRole(created.id, roleId: roleId, branchId: null);
+        } else {
+          var isFirst = true;
+          for (final branchId in _selectedBranchIds) {
+            await widget.gateway.assignRole(created.id, roleId: roleId, branchId: branchId);
+            await widget.gateway.changeBranchAccess(created.id, branchId, status: 'active', isDefault: isFirst);
+            isFirst = false;
+          }
+        }
+      } on ApiException catch (error) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _error = 'El usuario se creó, pero no fue posible asignar su acceso: ${error.failure.message} '
+              'Complétalo desde su ficha.';
+        });
+        Navigator.of(context).pop(true);
+        return;
+      } on Object {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _error = 'El usuario se creó, pero no fue posible asignar su acceso. Complétalo desde su ficha.';
+        });
+        Navigator.of(context).pop(true);
+        return;
+      }
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
   }
 
   @override
@@ -1059,6 +1131,8 @@ class _UserFormDialogState extends State<_UserFormDialog> {
                 style: TextStyle(color: palette.textSecondary, fontSize: 11),
               ),
               const SizedBox(height: 14),
+              Text('General', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 11)),
+              const SizedBox(height: 8),
               TextField(
                 key: const Key('pos-user-form-email'),
                 controller: _emailController,
@@ -1071,6 +1145,50 @@ class _UserFormDialogState extends State<_UserFormDialog> {
                 controller: _nameController,
                 decoration: const InputDecoration(isDense: true, labelText: 'Nombre completo'),
               ),
+              if (_showRoleSection) ...[
+                const SizedBox(height: 16),
+                Text('Acceso', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 11)),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String?>(
+                  key: const Key('pos-user-form-role'),
+                  initialValue: _selectedRoleId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Rol (opcional)'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('Sin rol')),
+                    for (final role in _activeRoles) DropdownMenuItem<String?>(value: role.id, child: Text(role.name)),
+                  ],
+                  onChanged: (value) => setState(() => _selectedRoleId = value),
+                ),
+                if (_showBranchSection) ...[
+                  const SizedBox(height: 10),
+                  CheckboxListTile(
+                    key: const Key('pos-user-form-all-branches'),
+                    value: _allBranches,
+                    onChanged: (value) => setState(() => _allBranches = value ?? false),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: const Text('Todas las sucursales', style: TextStyle(fontSize: 12)),
+                  ),
+                  if (!_allBranches)
+                    for (final branch in widget.branches)
+                      CheckboxListTile(
+                        key: Key('pos-user-form-branch-${branch.id}'),
+                        value: _selectedBranchIds.contains(branch.id),
+                        onChanged: (value) => setState(() {
+                          if (value ?? false) {
+                            _selectedBranchIds.add(branch.id);
+                          } else {
+                            _selectedBranchIds.remove(branch.id);
+                          }
+                        }),
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: Text(branch.name, style: const TextStyle(fontSize: 12)),
+                      ),
+                ],
+              ],
               if (_error != null) ...[
                 const SizedBox(height: 10),
                 Text(_error!, key: const Key('pos-user-form-error'), style: TextStyle(color: palette.error, fontSize: 12)),

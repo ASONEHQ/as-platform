@@ -71,6 +71,101 @@ void main() {
       final button = tester.widget<FilledButton>(find.byKey(const Key('pos-users-new')));
       expect(button.onPressed, isNull);
     });
+
+    // TASK 17.3 — "Nuevo usuario" now presents role + branches together
+    // (the "Acceso" section) instead of forcing a create-then-open-detail-
+    // then-assign-role-then-grant-each-branch sequence. These calls are
+    // the exact same `assignRole`/`changeBranchAccess` endpoints the
+    // detail dialog's own "Asignar rol"/"Otorgar acceso a sucursal"
+    // dialogs already use — this only sequences them.
+    testWidgets(
+      'Nuevo usuario con rol y una sucursal específica asigna el rol para esa sucursal y le otorga acceso',
+      (tester) async {
+        final role = _role('r1', 'Cajero', 'cashier');
+        final gateway = _RecordingIdentityAdminGateway(users: const [], roles: [role]);
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+        await tester.tap(find.byKey(const Key('pos-users-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-user-form-email')), 'nueva@inflapark.test');
+        await tester.enterText(find.byKey(const Key('pos-user-form-name')), 'Nueva Cajera');
+        await tester.tap(find.byKey(const Key('pos-user-form-role')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Cajero').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-user-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.createUserCalls, hasLength(1));
+        expect(gateway.assignRoleCalls, hasLength(1));
+        expect(gateway.assignRoleCalls.single.roleId, role.id);
+        expect(gateway.assignRoleCalls.single.branchId, 'branch-1');
+        expect(gateway.changeBranchAccessCalls, hasLength(1));
+        expect(gateway.changeBranchAccessCalls.single.branchId, 'branch-1');
+        expect(gateway.changeBranchAccessCalls.single.isDefault, isTrue);
+      },
+    );
+
+    testWidgets(
+      'Nuevo usuario con "Todas las sucursales" asigna el rol de alcance compañía (branchId nulo) sin otorgar accesos individuales',
+      (tester) async {
+        final role = _role('r1', 'Gerente Regional', 'regional-manager');
+        final gateway = _RecordingIdentityAdminGateway(users: const [], roles: [role]);
+        await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+        await tester.tap(find.byKey(const Key('pos-users-new')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-user-form-email')), 'regional@inflapark.test');
+        await tester.enterText(find.byKey(const Key('pos-user-form-name')), 'Regional');
+        await tester.tap(find.byKey(const Key('pos-user-form-role')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Gerente Regional').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-user-form-all-branches')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-user-form-save')));
+        await tester.pumpAndSettle();
+
+        expect(gateway.assignRoleCalls, hasLength(1));
+        expect(gateway.assignRoleCalls.single.roleId, role.id);
+        expect(gateway.assignRoleCalls.single.branchId, isNull);
+        expect(gateway.changeBranchAccessCalls, isEmpty);
+      },
+    );
+
+    testWidgets('Nuevo usuario sin rol seleccionado no hace ninguna llamada de acceso — igual que antes', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(users: const [], roles: [role]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(const Key('pos-users-new')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-user-form-email')), 'sinrol@inflapark.test');
+      await tester.enterText(find.byKey(const Key('pos-user-form-name')), 'Sin Rol');
+      await tester.tap(find.byKey(const Key('pos-user-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createUserCalls, hasLength(1));
+      expect(gateway.assignRoleCalls, isEmpty);
+      expect(gateway.changeBranchAccessCalls, isEmpty);
+    });
+
+    testWidgets('sin role.assign, "Nuevo usuario" nunca muestra el selector de Rol', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(users: const [], roles: [role]);
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: const ['user.read', 'user.create', 'branch_access.manage'],
+      );
+
+      await tester.tap(find.byKey(const Key('pos-users-new')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-user-form-role')), findsNothing);
+    });
   });
 
   group('Usuarios — activar/desactivar', () {
