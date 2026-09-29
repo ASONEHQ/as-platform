@@ -287,8 +287,112 @@ String _movementTypeLabel(String raw) => switch (raw) {
   'receipt' => 'Entrada',
   'issue' => 'Salida',
   'return' => 'Devolución',
+  // TASK 17.2.4 §1 — this was the exact raw string production showed
+  // ("sale_consumption") with no translation at all. The fully specific
+  // "Salida por venta"/"Consumo por receta" distinction needs
+  // reference_type/metadata this plain function doesn't receive — see
+  // `_activityTitle` below, the one place that has both and is used by
+  // every activity/movement CARD. This generic fallback is what any other
+  // (metadata-less) call site of this function shows instead — honest and
+  // real, never the raw enum, never a fabricated specific.
+  'sale_consumption' => 'Consumo por venta',
   _ => raw,
 };
+
+/// TASK 17.2.4 §7/§8 — the ONE centralized place that decides an activity
+/// card's headline business event, reusing `_movementTypeLabel` above for
+/// every case that doesn't need the richer reference/metadata-aware
+/// distinction. Never duplicated as a second switch elsewhere — every
+/// activity/movement card in this file calls this same function.
+///
+/// The recipe-vs-direct distinction for `sale_consumption` is read ONLY
+/// from the line's own real `metadata.source` (see `sale-consumption.ts`'s
+/// own doc comment — the sole authoritative signal this ledger has for
+/// that fact) — never inferred from `is_sellable`, a product name, or an
+/// SKU convention.
+String _activityTitle({
+  required String movementType,
+  required String? referenceType,
+  required Map<String, Object?>? metadata,
+}) {
+  if (movementType == 'sale_consumption') {
+    if (metadata?['source'] == 'recipe') return 'Consumo por receta';
+    if (referenceType == 'sale') return 'Salida por venta';
+    // Honest fallback per this task's own §8: if the reference can't even
+    // confirm this was a sale, never fabricate "por venta".
+    return 'Consumo por venta';
+  }
+  if (movementType == 'return' && referenceType == 'refund') return 'Entrada por devolución';
+  if (movementType == 'receipt' && referenceType == 'purchase_order') return 'Entrada por compra';
+  if (movementType == 'receipt' && referenceType == 'direct_purchase') return 'Entrada por compra';
+  if (movementType == 'adjustment' && referenceType == 'inventory_count') return 'Ajuste por conteo';
+  if (movementType == 'issue' && referenceType == 'inventory_reservation') return 'Salida por reserva';
+  if (movementType == 'transfer_shipment') return 'Salida por traspaso';
+  if (movementType == 'transfer_receipt') return 'Entrada por traspaso';
+  return _movementTypeLabel(movementType);
+}
+
+/// TASK 17.2.4 §9 — a human WORD, never a fabricated business folio. Every
+/// `*_number` field in this system (sale/refund/transfer/count/reservation/
+/// movement number) is itself a disguised UUID
+/// (`'SALE-' + uuid.replaceAll('-', '')`, confirmed by reading
+/// `sales.service.ts`/`inventory-transfers.service.ts`/`reservation
+/// .service.ts`/`inventory-counts.service.ts` directly) — NOT a real
+/// sequential folio. Showing one as "#1234" would be exactly the
+/// fabricated-folio anti-pattern this task explicitly forbids. The real
+/// identifier still belongs in the audit drawer (see `_MovementAuditSection`
+/// below), just never as the primary row's headline text.
+String? _referenceWord(String? referenceType) => switch (referenceType) {
+  'sale' => 'Venta',
+  'refund' => 'Devolución',
+  'purchase_order' => 'Compra',
+  'direct_purchase' => 'Compra',
+  'inventory_count' => 'Conteo',
+  'inventory_transfer' => 'Traspaso',
+  'inventory_reservation' => 'Reserva',
+  null => null,
+  _ => referenceType,
+};
+
+IconData _activityIcon(String movementType, String? direction) {
+  if (movementType == 'reversal') return Icons.undo_rounded;
+  if (movementType == 'transfer_shipment' || movementType == 'transfer_receipt') {
+    return Icons.sync_alt_rounded;
+  }
+  return switch (direction) {
+    'in' => Icons.call_received_rounded,
+    'out' => Icons.call_made_rounded,
+    _ => Icons.swap_horiz_rounded,
+  };
+}
+
+/// TASK 17.2.4 §6 — real localized unit labels, no unsafe conversions
+/// (this ledger's only 5 units are `unit`/`kg`/`g`/`ml`/`l` — see
+/// `units_of_measure`; never invented, never cross-dimension-converted).
+String _unitLabel(String code, num quantity) => switch (code) {
+  'unit' => quantity == 1 ? 'unidad' : 'unidades',
+  'kg' => 'kg',
+  'g' => 'g',
+  'ml' => 'ml',
+  'l' => 'L',
+  _ => code,
+};
+
+/// Signed, compact ("180 g" not "180.000000 g"), unit-labeled quantity —
+/// the sign comes ONLY from [direction] (itself derived structurally by
+/// the backend from source/destination location presence), never from
+/// the stored quantity's own sign (every `inventory_movement_lines
+/// .quantity` is stored positive).
+String _signedQuantityLabel(String quantity, String unitCode, String direction) {
+  final compact = _compactQuantity(quantity);
+  final parsed = double.tryParse(compact) ?? 0;
+  final sign = switch (direction) {
+    'in' => '+',
+    'out' => '−',
+    _ => '',
+  };
+  return '$sign$compact ${_unitLabel(unitCode, parsed)}';
+}
 
 // Reuses the exact same Spanish wording the "Nuevo conteo" dialog
 // already shows for these two values (see `_scopeType` dropdown items
@@ -610,31 +714,28 @@ class _ResumenContent extends StatelessWidget {
               Text('Actividad reciente', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 14)),
               const SizedBox(height: 10),
               if (overview.recentActivity.isEmpty)
-                Text('Sin movimientos recientes.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
+                Text('No hay movimientos todavía.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
               else
                 for (final activity in overview.recentActivity)
                   Padding(
+                    key: Key('pos-inventory-activity-${activity.movementId}-${activity.productVariantId}'),
                     padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${_movementTypeLabel(activity.movementType)} · ${activity.movementNumber}',
-                          style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _formatDateTime(DateTime.parse(activity.occurredAt)),
-                          style: TextStyle(color: palette.textSecondary, fontSize: 11),
-                        ),
-                        if (activity.sourceDocumentNumber != null || activity.referenceType != null) ...[
-                          const SizedBox(height: 2),
-                          Text(
-                            'Ref: ${activity.referenceType ?? '—'} · ${activity.sourceDocumentNumber ?? '—'}',
-                            style: TextStyle(color: palette.textMuted, fontSize: 10),
-                          ),
-                        ],
-                      ],
+                    child: _ActivityItem(
+                      title: _activityTitle(
+                        movementType: activity.movementType,
+                        referenceType: activity.referenceType,
+                        metadata: activity.metadata,
+                      ),
+                      icon: _activityIcon(activity.movementType, activity.direction),
+                      productName: activity.productName,
+                      productSku: activity.productSku,
+                      isSellable: activity.isSellable,
+                      quantity: activity.quantity,
+                      unitOfMeasureCode: activity.unitOfMeasureCode,
+                      direction: activity.direction,
+                      occurredAt: DateTime.parse(activity.occurredAt),
+                      soldProductName: _soldProductNameSnapshot(activity.metadata),
+                      referenceWord: _referenceWord(activity.referenceType),
                     ),
                   ),
             ],
@@ -1297,11 +1398,12 @@ class _InventoryProductIdentity extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
             Flexible(
               child: Text(
                 name ?? 'Producto no disponible',
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
                 style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12),
               ),
             ),
@@ -1312,6 +1414,162 @@ class _InventoryProductIdentity extends StatelessWidget {
           ],
         ),
         if (sku != null) Text('SKU $sku', style: TextStyle(color: palette.textSecondary, fontSize: 10)),
+      ],
+    );
+  }
+}
+
+/// TASK 17.2.4 — the real, frozen "what was sold" fact a recipe-driven
+/// line's own `metadata` already carries (see `sale-consumption.ts`'s own
+/// doc comment: `sold_product_name_snapshot`, captured at the moment of
+/// sale — a later rename of that product does NOT change what's shown
+/// here, unlike the ingredient's own live-resolved name). `null` for a
+/// direct (non-recipe) line, or when metadata is absent — never invented.
+String? _soldProductNameSnapshot(Map<String, Object?>? metadata) =>
+    metadata?['source'] == 'recipe' ? (metadata?['sold_product_name_snapshot'] as String?) : null;
+
+/// TASK 17.2.4 §2/§10/§11 — the one shared "human activity" card:
+/// Resumen's "Actividad reciente" and the Movimientos list both render
+/// through this, never two divergent card layouts. Business event title
+/// first (primary), product identity second, signed quantity + timestamp
+/// (strong/muted), then the honest "what generated it" facts — a sold
+/// product (recipe case) and/or a plain reference word — last. No raw
+/// UUID, no raw enum, ever the primary text.
+class _ActivityItem extends StatelessWidget {
+  const _ActivityItem({
+    required this.title,
+    required this.icon,
+    required this.productName,
+    required this.productSku,
+    required this.isSellable,
+    required this.quantity,
+    required this.unitOfMeasureCode,
+    required this.direction,
+    required this.occurredAt,
+    this.soldProductName,
+    this.referenceWord,
+    this.trailing,
+  });
+
+  final String title;
+  final IconData icon;
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
+  final String quantity;
+  final String unitOfMeasureCode;
+  final String direction;
+  final DateTime occurredAt;
+  final String? soldProductName;
+  final String? referenceWord;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final quantityColor = switch (direction) {
+      'in' => palette.success,
+      'out' => palette.error,
+      _ => palette.text,
+    };
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: palette.textSecondary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12)),
+              const SizedBox(height: 3),
+              _InventoryProductIdentity(name: productName, sku: productSku, isSellable: isSellable),
+              const SizedBox(height: 3),
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    _signedQuantityLabel(quantity, unitOfMeasureCode, direction),
+                    style: TextStyle(color: quantityColor, fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  Text(' · ${_formatDateTime(occurredAt)}', style: TextStyle(color: palette.textMuted, fontSize: 11)),
+                ],
+              ),
+              if (soldProductName != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(soldProductName!, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+                ),
+              if (referenceWord != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(referenceWord!, style: TextStyle(color: palette.textMuted, fontSize: 10)),
+                ),
+            ],
+          ),
+        ),
+        if (trailing != null) trailing!,
+      ],
+    );
+  }
+}
+
+/// TASK 17.2.4 §12 — the movement detail's own collapsible "AUDITORÍA"
+/// section: every technical identifier this task moved OFF the primary
+/// card/summary lives here instead, never deleted — real traceability is
+/// preserved, just not dominating the normal, business-facing view. Reuses
+/// `_DetailRow` exactly like the RESUMEN section above it, for the same
+/// visual language — no new copy-to-clipboard affordance is introduced
+/// (none exists elsewhere in this file to stay consistent with).
+class _MovementAuditSection extends StatefulWidget {
+  const _MovementAuditSection({required this.movement});
+  final PosInventoryMovement movement;
+
+  @override
+  State<_MovementAuditSection> createState() => _MovementAuditSectionState();
+}
+
+class _MovementAuditSectionState extends State<_MovementAuditSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final movement = widget.movement;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          key: const Key('pos-movement-audit-toggle'),
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Row(
+            children: [
+              Text('Auditoría', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+              const SizedBox(width: 6),
+              Icon(_expanded ? Icons.expand_less : Icons.expand_more, size: 18, color: palette.textMuted),
+            ],
+          ),
+        ),
+        if (_expanded)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _DetailRow(label: 'Folio interno', value: movement.movementNumber),
+                _DetailRow(label: 'Tipo (técnico)', value: movement.movementType),
+                if (movement.referenceType != null) _DetailRow(label: 'Tipo de referencia', value: movement.referenceType!),
+                if (movement.sourceDocumentNumber != null)
+                  _DetailRow(label: 'ID de referencia', value: movement.sourceDocumentNumber!)
+                else if (movement.referenceId != null)
+                  _DetailRow(label: 'ID de referencia', value: movement.referenceId!),
+                _DetailRow(label: 'Creado', value: _formatDateTime(movement.createdAt)),
+                _DetailRow(label: 'Contabilizado', value: _formatOptionalDateTime(movement.postedAt)),
+                _DetailRow(label: 'Cancelado', value: _formatOptionalDateTime(movement.cancelledAt)),
+                _DetailRow(label: 'Revertido', value: _formatOptionalDateTime(movement.reversedAt)),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -1380,6 +1638,11 @@ class _MovimientosTabState extends State<_MovimientosTab> {
     }
   }
 
+  // TASK 17.2.4 §13 — extended to product name/SKU now that the list
+  // response actually carries them (single-line movements only — see
+  // `movement-line-summaries.ts`'s own doc comment); still the same
+  // client-side filter over the already-loaded page it always was, never
+  // a backend search capability this endpoint doesn't implement.
   List<PosInventoryMovement> get _visibleItems {
     final query = _query.trim().toLowerCase();
     if (query.isEmpty) return _items;
@@ -1388,7 +1651,9 @@ class _MovimientosTabState extends State<_MovimientosTab> {
           (movement) =>
               movement.movementNumber.toLowerCase().contains(query) ||
               (movement.reasonCode?.toLowerCase().contains(query) ?? false) ||
-              (movement.notes?.toLowerCase().contains(query) ?? false),
+              (movement.notes?.toLowerCase().contains(query) ?? false) ||
+              (movement.productName?.toLowerCase().contains(query) ?? false) ||
+              (movement.productSku?.toLowerCase().contains(query) ?? false),
         )
         .toList(growable: false);
   }
@@ -1433,7 +1698,7 @@ class _MovimientosTabState extends State<_MovimientosTab> {
               child: TextField(
                 key: const Key('pos-movements-search'),
                 onChanged: (value) => setState(() => _query = value),
-                decoration: const InputDecoration(isDense: true, hintText: 'Buscar por folio, motivo o notas', prefixIcon: Icon(Icons.search)),
+                decoration: const InputDecoration(isDense: true, hintText: 'Buscar por producto, SKU, folio, motivo o notas', prefixIcon: Icon(Icons.search)),
               ),
             ),
             const SizedBox(width: 10),
@@ -1492,6 +1757,16 @@ class _MovimientosTabState extends State<_MovimientosTab> {
   }
 }
 
+/// TASK 17.2.4 §11 — replaces the old "IMV-UUID / sale_consumption ·
+/// timestamp" card. Reuses `_ActivityItem` (the exact same card Resumen's
+/// "Actividad reciente" uses) whenever this movement has exactly one real
+/// line to show, so the same product/quantity/recipe presentation logic
+/// exists in exactly one place. A movement with zero or several lines
+/// shows an honest count instead of guessing which single product to
+/// feature — see `movement-line-summaries.ts`'s own doc comment. The
+/// technical `movement_number`/status stay visible (small, muted) — this
+/// is still the Movimientos admin list, where operators intentionally
+/// look up a specific movement, not a pure activity feed.
 class _MovementRow extends StatelessWidget {
   const _MovementRow({required this.movement, required this.onTap});
   final PosInventoryMovement movement;
@@ -1500,6 +1775,14 @@ class _MovementRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final trailing = Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        _StatusPill(label: movement.status),
+        const SizedBox(height: 4),
+        Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
+      ],
+    );
     return _Card(
       key: Key('pos-movement-row-${movement.id}'),
       padding: EdgeInsets.zero,
@@ -1508,26 +1791,57 @@ class _MovementRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          child: movement.lineCount == 1 && movement.productVariantId != null
+              ? _ActivityItem(
+                  title: _activityTitle(
+                    movementType: movement.movementType,
+                    referenceType: movement.referenceType,
+                    metadata: movement.metadata,
+                  ),
+                  icon: _activityIcon(movement.movementType, movement.direction),
+                  productName: movement.productName,
+                  productSku: movement.productSku,
+                  isSellable: movement.isSellable,
+                  quantity: movement.quantity!,
+                  unitOfMeasureCode: movement.unitOfMeasureCode!,
+                  direction: movement.direction!,
+                  occurredAt: movement.occurredAt,
+                  soldProductName: _soldProductNameSnapshot(movement.metadata),
+                  referenceWord: _referenceWord(movement.referenceType),
+                  trailing: trailing,
+                )
+              : Row(
                   children: [
-                    Text(movement.movementNumber, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${_movementTypeLabel(movement.movementType)} · ${_formatDateTime(movement.occurredAt)}${movement.reasonCode == null ? '' : ' · ${movement.reasonCode}'}',
-                      style: TextStyle(color: palette.textSecondary, fontSize: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _activityTitle(
+                              movementType: movement.movementType,
+                              referenceType: movement.referenceType,
+                              metadata: movement.metadata,
+                            ),
+                            style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 12),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            (movement.lineCount ?? 0) == 0
+                                ? 'Sin líneas todavía'
+                                : '${movement.lineCount} productos',
+                            style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            _formatDateTime(movement.occurredAt),
+                            style: TextStyle(color: palette.textMuted, fontSize: 11),
+                          ),
+                        ],
+                      ),
                     ),
+                    trailing,
                   ],
                 ),
-              ),
-              _StatusPill(label: movement.status),
-              const SizedBox(width: 8),
-              Icon(Icons.chevron_right, size: 18, color: palette.textMuted),
-            ],
-          ),
         ),
       ),
     );
@@ -1957,23 +2271,40 @@ class _MovementDetailDialogState extends State<_MovementDetailDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // TASK 17.2.4 §12 — RESUMEN leads with the human business
+                // event, not the internal folio (moved to AUDITORÍA below).
                 Row(
                   children: [
                     Expanded(
-                      child: Text(_movement.movementNumber, style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                      child: Text(
+                        _activityTitle(
+                          movementType: _movement.movementType,
+                          referenceType: _movement.referenceType,
+                          metadata: _lines.length == 1 ? _lines.single.metadata : null,
+                        ),
+                        style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
+                      ),
                     ),
                     _StatusPill(label: _movement.status),
                   ],
                 ),
                 const SizedBox(height: 10),
-                _DetailRow(label: 'Tipo', value: _movementTypeLabel(_movement.movementType)),
+                if (_lines.length == 1) ...[
+                  _DetailRow(label: 'Producto', value: _lines.single.productName ?? 'Producto no disponible'),
+                  if (_lines.single.productSku != null) _DetailRow(label: 'SKU', value: _lines.single.productSku!),
+                  _DetailRow(
+                    label: 'Cantidad',
+                    value: _signedQuantityLabel(_lines.single.quantity, _lines.single.unitOfMeasureCode, _lines.single.direction),
+                  ),
+                  if (_referenceWord(_movement.referenceType) != null)
+                    _DetailRow(label: 'Origen', value: _referenceWord(_movement.referenceType)!),
+                  if (_soldProductNameSnapshot(_lines.single.metadata) != null)
+                    _DetailRow(label: 'Producto vendido', value: _soldProductNameSnapshot(_lines.single.metadata)!),
+                ] else if (_lines.length > 1)
+                  _DetailRow(label: 'Productos', value: '${_lines.length} líneas — ver detalle abajo'),
                 _DetailRow(label: 'Motivo', value: _movement.reasonCode ?? '—'),
                 _DetailRow(label: 'Notas', value: _movement.notes ?? '—'),
-                _DetailRow(label: 'Ocurrido', value: _formatDateTime(_movement.occurredAt)),
-                _DetailRow(label: 'Creado', value: _formatDateTime(_movement.createdAt)),
-                _DetailRow(label: 'Contabilizado', value: _formatOptionalDateTime(_movement.postedAt)),
-                _DetailRow(label: 'Cancelado', value: _formatOptionalDateTime(_movement.cancelledAt)),
-                _DetailRow(label: 'Revertido', value: _formatOptionalDateTime(_movement.reversedAt)),
+                _DetailRow(label: 'Fecha', value: _formatDateTime(_movement.occurredAt)),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -2031,6 +2362,8 @@ class _MovementDetailDialogState extends State<_MovementDetailDialog> {
                       ],
                     ),
                   ),
+                const SizedBox(height: 12),
+                _MovementAuditSection(movement: _movement),
                 if (_error != null) ...[
                   const SizedBox(height: 10),
                   Text(_error!, key: const Key('pos-movement-detail-error'), style: TextStyle(color: palette.error, fontSize: 12)),

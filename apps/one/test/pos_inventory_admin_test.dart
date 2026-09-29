@@ -108,7 +108,13 @@ void main() {
       await _navigateToTab(tester, 'Movimientos');
 
       expect(find.byKey(const Key('pos-movement-row-movement-1')), findsOneWidget);
-      expect(find.text('IMV-DRAFT-1'), findsOneWidget);
+      // TASK 17.2.4 — the internal `IMV-...` folio (itself a disguised
+      // UUID, not a real sequential business number — see
+      // `_referenceWord`'s own doc comment) is intentionally no longer the
+      // primary card text; it now lives only in the audit drawer. A
+      // zero-line movement honestly shows its real line count instead of
+      // a fabricated product.
+      expect(find.text('Sin líneas todavía'), findsOneWidget);
       // TASK 16.30 — `_StatusPill` now translates the real, raw status
       // to Spanish for display only.
       expect(find.text('Borrador'), findsOneWidget);
@@ -145,8 +151,11 @@ void main() {
       expect(call.branchId, 'branch-1');
       expect(call.movementType, 'adjustment');
       expect(call.reasonCode, 'merma por rotura');
-      // The newly-created movement shows up in the refreshed list.
-      expect(find.text('IMV-CREATED-1'), findsOneWidget);
+      // The newly-created movement shows up in the refreshed list — see
+      // the previous test's own comment on why its real folio is no
+      // longer the primary card text.
+      expect(find.text('Sin líneas todavía'), findsOneWidget);
+      expect(find.text('Borrador'), findsOneWidget);
     });
   });
 
@@ -265,6 +274,179 @@ void main() {
   // `_shortId(productVariantId)`. A line whose identity genuinely could not
   // resolve must fall back to the honest "Producto no disponible" copy,
   // never a truncated raw UUID.
+  // TASK 17.2.4 — proves the human-activity presentation on both the
+  // Movimientos list card and its detail/audit drawer: real business event
+  // title, real product identity, real signed quantity, no raw
+  // `sale_consumption`, no movement UUID/folio as primary text.
+  group('Actividad humana de inventario', () {
+    testWidgets('a direct-sale movement shows "Salida por venta", real product/SKU, and a signed quantity — never the raw enum', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(movements: [_directSaleMovement]);
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
+
+      expect(find.text('Salida por venta'), findsOneWidget);
+      expect(find.text('Agua'), findsOneWidget);
+      expect(find.text('SKU AGUA-1'), findsOneWidget);
+      expect(find.textContaining('−1 unidad'), findsOneWidget);
+      expect(find.text('sale_consumption'), findsNothing);
+      expect(find.text('IMV-DIRECT-SALE-1'), findsNothing);
+    });
+
+    testWidgets('a recipe-consumption movement shows "Consumo por receta" and the real sold-product snapshot — never inferred from is_sellable', (
+      tester,
+    ) async {
+      final gateway = _RecordingInventoryAdminGateway(
+        movements: [_recipeSaleMovement],
+        movementLines: {'movement-recipe-sale-1': _recipeSaleLines},
+      );
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
+
+      expect(find.text('Consumo por receta'), findsOneWidget);
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.textContaining('−0.18 kg'), findsOneWidget);
+      expect(find.text('Pizza Pepperoni PRUEBA'), findsOneWidget);
+      expect(find.text('Venta'), findsOneWidget);
+      expect(find.text('sale_consumption'), findsNothing);
+
+      // The detail dialog's own RESUMEN section resolves the same real
+      // sold-product snapshot from the line's own metadata — never a
+      // second, divergent computation.
+      await tester.tap(find.byKey(const Key('pos-movement-row-movement-recipe-sale-1')));
+      await tester.pumpAndSettle();
+      expect(find.text('Producto vendido'), findsOneWidget);
+      expect(find.text('Origen'), findsOneWidget);
+    });
+
+    testWidgets('Resumen: "Actividad reciente" renders the same rich human card as Movimientos, one row per real line', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway()
+        ..overviewResult = const PosInventoryOverview(
+          itemCount: 2,
+          lowStockCount: 0,
+          outOfStockCount: 0,
+          movementsTodayCount: 1,
+          businessDate: '2026-09-28',
+          valuationAvailable: false,
+          valuationReason: 'Valor no disponible.',
+          alerts: [],
+          recentActivity: [
+            PosInventoryOverviewActivity(
+              movementId: 'movement-recipe-sale-1',
+              movementNumber: 'IMV-RECIPE-SALE-1',
+              movementType: 'sale_consumption',
+              status: 'posted',
+              occurredAt: '2026-09-28T15:13:00.000Z',
+              referenceType: 'sale',
+              sourceDocumentNumber: 'SALE-RECIPE-1',
+              productVariantId: 'mozzarella-variant-1',
+              productName: 'Mozzarella PRUEBA',
+              productSku: 'ING-QUESO-TEST',
+              isSellable: false,
+              quantity: '0.180000',
+              unitOfMeasureCode: 'kg',
+              direction: 'out',
+              metadata: {'source': 'recipe', 'sold_product_name_snapshot': 'Pizza Pepperoni PRUEBA'},
+            ),
+          ],
+          byLocation: [],
+        );
+      // Resumen is the default landing tab for the full admin entry point
+      // (`startOnExistencias: false`, this fake's own default) — no
+      // navigation needed.
+      await _pump(tester, gateway: gateway);
+
+      expect(find.text('Consumo por receta'), findsOneWidget);
+      expect(find.text('Mozzarella PRUEBA'), findsOneWidget);
+      expect(find.text('SKU ING-QUESO-TEST'), findsOneWidget);
+      expect(find.textContaining('−0.18 kg'), findsOneWidget);
+      expect(find.text('Pizza Pepperoni PRUEBA'), findsOneWidget);
+      expect(find.text('Venta'), findsOneWidget);
+      expect(find.text('sale_consumption'), findsNothing);
+    });
+
+    for (final size in [const Size(1440, 900), const Size(1365, 768)]) {
+      testWidgets('Movimientos: the human activity card fits without overflow at ${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        final gateway = _RecordingInventoryAdminGateway(movements: [_recipeSaleMovement]);
+        await _pump(tester, gateway: gateway, viewSize: size);
+        await _navigateToTab(tester, 'Movimientos');
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    // Desktop only — a narrow (390) width was tried and found to overflow
+    // by the same fixed 5.3px regardless of whether `recentActivity` is
+    // empty or populated (confirmed by isolating with an empty-activity
+    // control), proving it is pre-existing Resumen KPI-section debt this
+    // presentation-only task's own §20 explicitly forbids touching
+    // ("Do NOT unnecessarily redesign the KPI/alerts sections"), not
+    // something this activity-card redesign introduced.
+    for (final size in [const Size(1440, 900), const Size(1365, 768)]) {
+      testWidgets('Resumen: the human activity card fits without overflow at ${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        final gateway = _RecordingInventoryAdminGateway()
+          ..overviewResult = PosInventoryOverview(
+            itemCount: 1,
+            lowStockCount: 0,
+            outOfStockCount: 0,
+            movementsTodayCount: 1,
+            businessDate: '2026-09-28',
+            valuationAvailable: false,
+            valuationReason: 'Valor no disponible.',
+            alerts: const [],
+            recentActivity: [
+              PosInventoryOverviewActivity(
+                movementId: 'movement-recipe-sale-1',
+                movementNumber: 'IMV-RECIPE-SALE-1',
+                movementType: 'sale_consumption',
+                status: 'posted',
+                occurredAt: '2026-09-28T15:13:00.000Z',
+                referenceType: 'sale',
+                sourceDocumentNumber: 'SALE-RECIPE-1',
+                productVariantId: 'mozzarella-variant-1',
+                productName: 'Mozzarella PRUEBA',
+                productSku: 'ING-QUESO-TEST',
+                isSellable: false,
+                quantity: '0.180000',
+                unitOfMeasureCode: 'kg',
+                direction: 'out',
+                metadata: const {'source': 'recipe', 'sold_product_name_snapshot': 'Pizza Pepperoni PRUEBA'},
+              ),
+            ],
+            byLocation: const [],
+          );
+        await _pump(tester, gateway: gateway, viewSize: size);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('the movement detail/audit drawer preserves the internal folio and reference id, collapsed until expanded', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(
+        movements: [_directSaleMovement],
+        movementLines: {'movement-direct-sale-1': _directSaleLines},
+      );
+      await _pump(tester, gateway: gateway);
+      await _navigateToTab(tester, 'Movimientos');
+      await tester.tap(find.byKey(const Key('pos-movement-row-movement-direct-sale-1')));
+      await tester.pumpAndSettle();
+
+      // The human title leads the detail dialog too — never the raw folio.
+      // Two legitimate matches: the list row behind the dialog stays
+      // mounted, plus the dialog's own title (mirrors this file's
+      // established TASK 16.30 precedent for the same situation).
+      expect(find.text('Salida por venta'), findsAtLeastNWidgets(1));
+      // Collapsed by default: the technical folio is not yet on screen.
+      expect(find.text('IMV-DIRECT-SALE-1'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('pos-movement-audit-toggle')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('IMV-DIRECT-SALE-1'), findsOneWidget);
+      expect(find.text('SALE-DIRECT-1'), findsOneWidget);
+    });
+  });
+
   group('Identidad de producto en líneas de inventario', () {
     testWidgets('Movimientos: a line shows the real product name and SKU, and an unresolved line falls back honestly — never the raw variant id', (
       tester,
@@ -748,6 +930,107 @@ final _movementIdentityLines = [
     unitOfMeasureCode: 'unit',
     reasonCode: null,
     createdAt: DateTime.utc(2026, 9, 1),
+  ),
+];
+
+// TASK 17.2.4 — a single-line direct sale, exactly the "Agua" example
+// from the task's own product goal: real product identity, real signed
+// quantity/unit, real human title, real reference word — no raw
+// `sale_consumption`, no raw UUID, no fabricated folio.
+final _directSaleMovement = PosInventoryMovement(
+  id: 'movement-direct-sale-1',
+  branchId: 'branch-1',
+  movementNumber: 'IMV-DIRECT-SALE-1',
+  movementType: 'sale_consumption',
+  status: 'posted',
+  reasonCode: null,
+  referenceType: 'sale',
+  referenceId: 'sale-1',
+  sourceDocumentNumber: 'SALE-DIRECT-1',
+  notes: null,
+  version: 1,
+  occurredAt: DateTime.utc(2026, 9, 21, 7, 26),
+  postedAt: DateTime.utc(2026, 9, 21, 7, 26),
+  cancelledAt: null,
+  reversedAt: null,
+  createdAt: DateTime.utc(2026, 9, 21, 7, 26),
+  updatedAt: DateTime.utc(2026, 9, 21, 7, 26),
+  lineCount: 1,
+  productVariantId: 'agua-variant-1',
+  productName: 'Agua',
+  productSku: 'AGUA-1',
+  isSellable: true,
+  quantity: '1.000000',
+  unitOfMeasureCode: 'unit',
+  direction: 'out',
+  metadata: null,
+);
+
+// A recipe-driven ingredient consumption line — real
+// `metadata.source == 'recipe'`, real frozen sold-product-name snapshot.
+final _recipeSaleMovement = PosInventoryMovement(
+  id: 'movement-recipe-sale-1',
+  branchId: 'branch-1',
+  movementNumber: 'IMV-RECIPE-SALE-1',
+  movementType: 'sale_consumption',
+  status: 'posted',
+  reasonCode: null,
+  referenceType: 'sale',
+  referenceId: 'sale-2',
+  sourceDocumentNumber: 'SALE-RECIPE-1',
+  notes: null,
+  version: 1,
+  occurredAt: DateTime.utc(2026, 9, 28, 15, 13),
+  postedAt: DateTime.utc(2026, 9, 28, 15, 13),
+  cancelledAt: null,
+  reversedAt: null,
+  createdAt: DateTime.utc(2026, 9, 28, 15, 13),
+  updatedAt: DateTime.utc(2026, 9, 28, 15, 13),
+  lineCount: 1,
+  productVariantId: _mozzarellaVariantId,
+  productName: 'Mozzarella PRUEBA',
+  productSku: 'ING-QUESO-TEST',
+  isSellable: false,
+  quantity: '0.180000',
+  unitOfMeasureCode: 'kg',
+  direction: 'out',
+  metadata: const {'source': 'recipe', 'sold_product_name_snapshot': 'Pizza Pepperoni PRUEBA'},
+);
+final _directSaleLines = [
+  PosInventoryMovementLine(
+    id: 'direct-sale-line-1',
+    movementId: 'movement-direct-sale-1',
+    lineNumber: 1,
+    productVariantId: 'agua-variant-1',
+    sourceLocationId: 'location-src',
+    destinationLocationId: null,
+    quantity: '1',
+    baseQuantity: '1',
+    unitOfMeasureCode: 'unit',
+    reasonCode: null,
+    createdAt: DateTime.utc(2026, 9, 21, 7, 26),
+    productName: 'Agua',
+    productSku: 'AGUA-1',
+    isSellable: true,
+  ),
+];
+final _recipeSaleLines = [
+  PosInventoryMovementLine(
+    id: 'recipe-sale-line-1',
+    movementId: 'movement-recipe-sale-1',
+    lineNumber: 1,
+    productVariantId: _mozzarellaVariantId,
+    sourceLocationId: 'location-src',
+    destinationLocationId: null,
+    quantity: '0.180000',
+    baseQuantity: '0.180000',
+    unitOfMeasureCode: 'kg',
+    reasonCode: null,
+    createdAt: DateTime.utc(2026, 9, 28, 15, 13),
+    productName: 'Mozzarella PRUEBA',
+    productSku: 'ING-QUESO-TEST',
+    isSellable: false,
+    metadata: const {'source': 'recipe', 'sold_product_name_snapshot': 'Pizza Pepperoni PRUEBA'},
   ),
 ];
 

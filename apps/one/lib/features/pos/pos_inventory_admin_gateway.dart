@@ -361,6 +361,10 @@ class PosInventoryOverviewAlert {
   final String stockStatus;
 }
 
+/// TASK 17.2.4 — one row per movement LINE, not per movement (see the
+/// backend's own `InventoryOverviewActivity` doc comment): a multi-
+/// ingredient recipe sale produces several real, distinct activity rows,
+/// never one row with a fabricated single product.
 class PosInventoryOverviewActivity {
   const PosInventoryOverviewActivity({
     required this.movementId,
@@ -370,6 +374,14 @@ class PosInventoryOverviewActivity {
     required this.occurredAt,
     required this.referenceType,
     required this.sourceDocumentNumber,
+    required this.productVariantId,
+    required this.quantity,
+    required this.unitOfMeasureCode,
+    required this.direction,
+    this.productName,
+    this.productSku,
+    this.isSellable,
+    this.metadata,
   });
   factory PosInventoryOverviewActivity.fromJson(Map<String, Object?> json) => PosInventoryOverviewActivity(
     movementId: json['movement_id']! as String,
@@ -379,6 +391,14 @@ class PosInventoryOverviewActivity {
     occurredAt: json['occurred_at']! as String,
     referenceType: json['reference_type'] as String?,
     sourceDocumentNumber: json['source_document_number'] as String?,
+    productVariantId: json['product_variant_id']! as String,
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
+    quantity: json['quantity']! as String,
+    unitOfMeasureCode: json['unit_of_measure_code']! as String,
+    direction: json['direction']! as String,
+    metadata: json['metadata'] as Map<String, Object?>?,
   );
   final String movementId;
   final String movementNumber;
@@ -387,6 +407,14 @@ class PosInventoryOverviewActivity {
   final String occurredAt;
   final String? referenceType;
   final String? sourceDocumentNumber;
+  final String productVariantId;
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
+  final String quantity;
+  final String unitOfMeasureCode;
+  final String direction;
+  final Map<String, Object?>? metadata;
 }
 
 class PosInventoryOverviewLocationSummary {
@@ -493,6 +521,7 @@ class PosInventoryMovementLine {
     this.productName,
     this.productSku,
     this.isSellable,
+    this.metadata,
   });
 
   factory PosInventoryMovementLine.fromJson(Map<String, Object?> json) => PosInventoryMovementLine(
@@ -510,6 +539,7 @@ class PosInventoryMovementLine {
     productName: json['product_name'] as String?,
     productSku: json['product_sku'] as String?,
     isSellable: json['is_sellable'] as bool?,
+    metadata: json['metadata'] as Map<String, Object?>?,
   );
 
   final String id;
@@ -531,6 +561,21 @@ class PosInventoryMovementLine {
   final String? productName;
   final String? productSku;
   final bool? isSellable;
+
+  /// TASK 17.2.4 — raw passthrough of this line's own
+  /// `inventory_movement_lines.metadata`; see
+  /// `PosInventoryMovement.metadata`'s own doc comment.
+  final Map<String, Object?>? metadata;
+
+  /// Derived structurally from which location column is set — never from
+  /// the movement type's name and never from a signed quantity (this
+  /// ledger stores every quantity positive). `'move'` is the honest, rare
+  /// case where both are set.
+  String get direction => sourceLocationId != null && destinationLocationId != null
+      ? 'move'
+      : sourceLocationId != null
+          ? 'out'
+          : 'in';
 }
 
 /// An `inventory_movements` row (`movementJson()` in
@@ -557,6 +602,14 @@ class PosInventoryMovement {
     required this.createdAt,
     required this.updatedAt,
     required this.lineCount,
+    this.productVariantId,
+    this.productName,
+    this.productSku,
+    this.isSellable,
+    this.quantity,
+    this.unitOfMeasureCode,
+    this.direction,
+    this.metadata,
   });
 
   factory PosInventoryMovement.fromJson(Map<String, Object?> json) => PosInventoryMovement(
@@ -578,6 +631,14 @@ class PosInventoryMovement {
     createdAt: DateTime.parse(json['created_at']! as String),
     updatedAt: DateTime.parse(json['updated_at']! as String),
     lineCount: _optionalInt(json['line_count']),
+    productVariantId: json['product_variant_id'] as String?,
+    productName: json['product_name'] as String?,
+    productSku: json['product_sku'] as String?,
+    isSellable: json['is_sellable'] as bool?,
+    quantity: json['quantity'] as String?,
+    unitOfMeasureCode: json['unit_of_measure_code'] as String?,
+    direction: json['direction'] as String?,
+    metadata: json['metadata'] as Map<String, Object?>?,
   );
 
   final String id;
@@ -607,6 +668,31 @@ class PosInventoryMovement {
   final DateTime createdAt;
   final DateTime updatedAt;
   final int? lineCount;
+
+  /// TASK 17.2.4 — real, live product identity and quantity for this
+  /// movement's SINGLE line, present only when `lineCount == 1` (see
+  /// `movement-line-summaries.ts`'s own doc comment — a multi-line
+  /// movement never picks one line to stand in for the whole movement).
+  final String? productVariantId;
+  final String? productName;
+  final String? productSku;
+  final bool? isSellable;
+  final String? quantity;
+  final String? unitOfMeasureCode;
+
+  /// `'in'` | `'out'` | `'move'` — derived structurally by the backend
+  /// from which location column is set on the single line, never from
+  /// `movementType`'s name or a signed quantity (there is no signed
+  /// quantity anywhere in this ledger).
+  final String? direction;
+
+  /// Raw passthrough of the single line's `inventory_movement_lines
+  /// .metadata` — for `sale_consumption`, carries
+  /// `{source: 'recipe', sold_product_name_snapshot, ...}` when this line
+  /// is recipe-driven ingredient consumption, absent/null for a direct
+  /// sale line. The only authoritative signal for that distinction — see
+  /// `sale-consumption.ts`'s own doc comment.
+  final Map<String, Object?>? metadata;
 
   bool get isEditable => status == 'draft' || status == 'pending';
   bool get isPosted => status == 'posted';
