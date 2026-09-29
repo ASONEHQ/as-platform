@@ -7,6 +7,8 @@ import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 import { ProductRecipeRepository } from '../catalog/product-recipes.repository.js';
 import { ProductRecipeService } from '../catalog/product-recipes.service.js';
 import { InventoryOverviewRepository, InventoryOverviewService } from './inventory-overview.js';
+import { InventoryMovementReadRepository } from './inventory.repository.js';
+import { InventoryMovementReadService } from './inventory.service.js';
 import { postSaleConsumption } from './sale-consumption.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
@@ -274,6 +276,88 @@ integration('PostgreSQL Inventory V2 — overview, AGUA case, and usado en (TASK
     ).rejects.toThrow();
     expect(await onHand(aguaId)).toBe('8.000000');
     expect(await movementsFor(aguaId)).toHaveLength(1);
+  });
+
+  it('TASK 17.2.4 — recentActivity reports one real row per movement LINE, with real product identity, direction, and recipe-vs-direct metadata', async () => {
+    // Sells 1 Pizza Pepperoni: a recipe-driven product (tracksInventory=
+    // false), so this posts ONE movement with 2 recipe lines (cheese +
+    // dough) — no direct line, since Pizza itself is never stock-tracked.
+    const pizzaSaleId = randomUUID();
+    const pizzaSale = await postSaleConsumption(
+      database.pool,
+      context,
+      { id: pizzaSaleId, branchId, saleNumber: 'OVERVIEW-PIZZA-SALE-1' },
+      [{ productVariantId: pizzaId, quantity: '1', nameSnapshot: 'Pizza Pepperoni' }],
+    );
+    expect(pizzaSale.posted).toBe(true);
+
+    const snapshot = await overview.get(companyId, branchId);
+    const cheeseActivity = snapshot.recentActivity.find((activity) => activity.productVariantId === cheeseId);
+    const doughActivity = snapshot.recentActivity.find((activity) => activity.productVariantId === doughId);
+    const aguaActivity = snapshot.recentActivity.find((activity) => activity.productVariantId === aguaId);
+
+    // The AGUA sale (direct, non-recipe) — real product identity, real
+    // quantity, direction derived structurally (source set, destination
+    // null => 'out'), and metadata genuinely null.
+    expect(aguaActivity).toMatchObject({
+      referenceType: 'sale',
+      quantity: '2.000000',
+      unitOfMeasureCode: 'unit',
+      direction: 'out',
+      metadata: null,
+    });
+    expect(aguaActivity?.productName).toBeTruthy();
+
+    // The Pizza recipe lines — TWO separate activity rows (never collapsed
+    // into one "Pizza" row that would misattribute which real ingredient
+    // moved), each with the real, authoritative `metadata.source==='recipe'`
+    // signal and the real frozen sold-product-name snapshot — never
+    // inferred from `is_sellable` or product naming.
+    expect(cheeseActivity).toMatchObject({
+      referenceType: 'sale',
+      quantity: '0.180000',
+      unitOfMeasureCode: 'kg',
+      direction: 'out',
+      metadata: { source: 'recipe', sold_product_name_snapshot: 'Pizza Pepperoni' },
+    });
+    expect(doughActivity).toMatchObject({
+      referenceType: 'sale',
+      quantity: '1.000000',
+      unitOfMeasureCode: 'unit',
+      direction: 'out',
+      metadata: { source: 'recipe', sold_product_name_snapshot: 'Pizza Pepperoni' },
+    });
+  });
+
+  it('TASK 17.2.4 — the movements list enriches a single-line movement with real product identity, and reports an honest line_count for a multi-line one', async () => {
+    const movements = new InventoryMovementReadService(new InventoryMovementReadRepository(database));
+    const page = await movements.list(companyId, [branchId], { limit: 20 });
+
+    const aguaMovement = page.items.find(
+      (item) => (item as { reference_type?: string; source_document_number?: string }).source_document_number === 'OVERVIEW-AGUA-SALE-1',
+    ) as Record<string, unknown> | undefined;
+    expect(aguaMovement).toMatchObject({
+      line_count: 1,
+      product_variant_id: aguaId,
+      quantity: '2.000000',
+      unit_of_measure_code: 'unit',
+      direction: 'out',
+      metadata: null,
+    });
+    expect(aguaMovement?.product_name).toEqual(expect.any(String));
+
+    const pizzaMovement = page.items.find(
+      (item) => (item as { source_document_number?: string }).source_document_number === 'OVERVIEW-PIZZA-SALE-1',
+    ) as Record<string, unknown> | undefined;
+    // Two real lines (cheese + dough) — never collapsed into a fabricated
+    // single product for the whole movement.
+    expect(pizzaMovement).toMatchObject({
+      line_count: 2,
+      product_variant_id: null,
+      product_name: null,
+      quantity: null,
+      direction: null,
+    });
   });
 
   it('usado en: reports the real recipe(s) that consume an ingredient, with the real per-unit quantity', async () => {

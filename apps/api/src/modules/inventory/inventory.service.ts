@@ -209,11 +209,45 @@ export class InventoryBalanceReadService {
 
 export class InventoryMovementReadService {
   public constructor(private readonly repository: InventoryMovementReadRepository) {}
-  public list(
+
+  /// TASK 17.2.4 — enriches each movement header with the single-line
+  /// summary (product identity, signed-by-direction quantity, unit, and
+  /// recipe-vs-direct metadata) the Flutter activity/movement cards need,
+  /// WITHOUT reconstructing that meaning client-side from raw ids. See
+  /// `movement-line-summaries.ts`'s own doc comment: a multi-line movement
+  /// only ever reports its real `line_count`, never a single line
+  /// arbitrarily chosen to stand in for the whole movement.
+  public async list(
     companyId: string,
     branchIds: readonly string[],
     input: Parameters<InventoryMovementReadRepository['list']>[2],
   ): Promise<InventoryPage<Readonly<Record<string, unknown>>>> {
-    return this.repository.list(companyId, branchIds, input);
+    const page = await this.repository.list(companyId, branchIds, input);
+    const movementIds = page.items.map((item) => item.id as string);
+    const summaries = await this.repository.lineSummaries(companyId, movementIds);
+    const variantIds = [...summaries.values()]
+      .map((summary) => summary.singleLine?.productVariantId)
+      .filter((id) => id !== undefined);
+    const identities = await this.repository.identities(companyId, variantIds);
+    return {
+      ...page,
+      items: page.items.map((item) => {
+        const summary = summaries.get(item.id as string);
+        const line = summary?.singleLine;
+        const identity = line === undefined ? undefined : identities.get(line.productVariantId);
+        return {
+          ...item,
+          line_count: summary?.lineCount ?? 0,
+          product_variant_id: line?.productVariantId ?? null,
+          product_name: identity?.name ?? null,
+          product_sku: identity?.sku ?? null,
+          is_sellable: identity?.isSellable ?? null,
+          quantity: line?.quantity ?? null,
+          unit_of_measure_code: line?.unitOfMeasureCode ?? null,
+          direction: line?.direction ?? null,
+          metadata: line?.metadata ?? null,
+        };
+      }),
+    };
   }
 }

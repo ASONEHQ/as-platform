@@ -55,6 +55,15 @@ export interface InventoryOverviewAlert {
   readonly minStock: string | null;
   readonly stockStatus: 'low_stock' | 'out_of_stock';
 }
+/// TASK 17.2.4 — ONE ROW PER MOVEMENT LINE, not per movement. A movement
+/// that consumed 4 recipe ingredients for one sale is 4 real, distinct
+/// stock-changing facts — collapsing them into one "activity" row would
+/// either fabricate a single product for the whole movement or hide 3 of
+/// the 4 real changes. This section has no movement-level actions
+/// (submit/post/add-line/etc. — those live only in the Movimientos tab,
+/// which stays movement-granular, see `InventoryMovementReadService.list`'s
+/// own doc comment), so line-level granularity here is a pure, safe,
+/// read-only presentation choice — never a business-logic change.
 export interface InventoryOverviewActivity {
   readonly movementId: string;
   readonly movementNumber: string;
@@ -63,6 +72,14 @@ export interface InventoryOverviewActivity {
   readonly occurredAt: Date;
   readonly referenceType: string | null;
   readonly sourceDocumentNumber: string | null;
+  readonly productVariantId: string;
+  readonly productName: string | null;
+  readonly productSku: string | null;
+  readonly isSellable: boolean | null;
+  readonly quantity: string;
+  readonly unitOfMeasureCode: string;
+  readonly direction: 'in' | 'out' | 'move';
+  readonly metadata: Readonly<Record<string, unknown>> | null;
 }
 export interface InventoryOverviewLocationSummary {
   readonly locationId: string;
@@ -178,38 +195,70 @@ export class InventoryOverviewRepository {
     }));
   }
 
+  /// TASK 17.2.4 — one row per movement LINE (see `InventoryOverviewActivity`'s
+  /// own doc comment for why). A single JOIN, bounded by `limit`, resolving
+  /// product identity the same way `alerts()` above already does — never a
+  /// separate per-row identity lookup.
   public async recentActivity(
     companyId: string,
     branchId: string,
     limit: number,
   ): Promise<InventoryOverviewActivity[]> {
     const rows = result<{
-      id: string;
+      movement_id: string;
       movement_number: string;
       movement_type: string;
       status: string;
       occurred_at: Date | string;
       reference_type: string | null;
       source_document_number: string | null;
+      product_variant_id: string;
+      product_name: string | null;
+      sku: string | null;
+      is_sellable: boolean | null;
+      quantity: string;
+      unit_of_measure_code: string;
+      source_location_id: string | null;
+      destination_location_id: string | null;
+      metadata: Readonly<Record<string, unknown>> | null;
     }>(
       await this.database.pool.query(
-        `select id, movement_number, movement_type, status, occurred_at,
-                reference_type, source_document_number
-         from inventory_movements
-         where company_id=$1 and branch_id=$2
-         order by occurred_at desc, id desc
+        `select m.id movement_id, m.movement_number, m.movement_type, m.status, m.occurred_at,
+                m.reference_type, m.source_document_number,
+                l.product_variant_id, coalesce(nullif(btrim(v.name), ''), p.name) product_name,
+                v.sku, v.is_sellable, l.quantity::text, l.unit_of_measure_code,
+                l.source_location_id, l.destination_location_id, l.metadata
+         from inventory_movements m
+         join inventory_movement_lines l on l.company_id=m.company_id and l.inventory_movement_id=m.id
+         left join product_variants v on v.company_id=l.company_id and v.id=l.product_variant_id
+         left join products p on p.company_id=v.company_id and p.id=v.product_id
+         where m.company_id=$1 and m.branch_id=$2
+         order by m.occurred_at desc, m.id desc, l.line_number asc
          limit $3`,
         [companyId, branchId, limit],
       ),
     ).rows;
     return rows.map((row) => ({
-      movementId: row.id,
+      movementId: row.movement_id,
       movementNumber: row.movement_number,
       movementType: row.movement_type,
       status: row.status,
       occurredAt: new Date(row.occurred_at),
       referenceType: row.reference_type,
       sourceDocumentNumber: row.source_document_number,
+      productVariantId: row.product_variant_id,
+      productName: row.product_name,
+      productSku: row.sku,
+      isSellable: row.is_sellable,
+      quantity: row.quantity,
+      unitOfMeasureCode: row.unit_of_measure_code,
+      direction:
+        row.source_location_id !== null && row.destination_location_id !== null
+          ? 'move'
+          : row.source_location_id !== null
+            ? 'out'
+            : 'in',
+      metadata: row.metadata,
     }));
   }
 
@@ -281,6 +330,7 @@ export class InventoryOverviewService {
         this.repository.recentActivity(companyId, branchId, 10),
         this.repository.byLocation(companyId, branchId),
       ]);
+
     return {
       itemCount,
       lowStockCount,
@@ -355,6 +405,14 @@ export function registerInventoryOverviewRoutes(
             occurred_at: activity.occurredAt.toISOString(),
             reference_type: activity.referenceType,
             source_document_number: activity.sourceDocumentNumber,
+            product_variant_id: activity.productVariantId,
+            product_name: activity.productName,
+            product_sku: activity.productSku,
+            is_sellable: activity.isSellable,
+            quantity: activity.quantity,
+            unit_of_measure_code: activity.unitOfMeasureCode,
+            direction: activity.direction,
+            metadata: activity.metadata,
           })),
           by_location: overview.byLocation.map((location) => ({
             location_id: location.locationId,

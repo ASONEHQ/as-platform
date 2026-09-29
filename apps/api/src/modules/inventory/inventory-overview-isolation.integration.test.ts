@@ -7,6 +7,9 @@ import { createDatabaseClient, type DatabaseClient } from '@asone/database';
 import { ProductRecipeRepository } from '../catalog/product-recipes.repository.js';
 import { ProductRecipeService } from '../catalog/product-recipes.service.js';
 import { InventoryOverviewRepository, InventoryOverviewService } from './inventory-overview.js';
+import { InventoryMovementReadRepository } from './inventory.repository.js';
+import { InventoryMovementReadService } from './inventory.service.js';
+import { postSaleConsumption } from './sale-consumption.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integration = databaseUrl === undefined ? describe.skip : describe;
@@ -28,6 +31,7 @@ integration('PostgreSQL Inventory V2 — cross-tenant/cross-branch isolation (TA
   let database: DatabaseClient;
   let overview: InventoryOverviewService;
   let recipes: ProductRecipeService;
+  let movements: InventoryMovementReadService;
 
   const actorId = randomUUID();
 
@@ -168,14 +172,26 @@ integration('PostgreSQL Inventory V2 — cross-tenant/cross-branch isolation (TA
       [randomUUID(), companyBId, recipeBId, ingredientBId, actorId],
     );
 
+    // TASK 17.2.4 §16 — a real Company B movement/sale, distinctly named,
+    // so a leaked recentActivity/movements-list row would be unmistakable.
+    await postSaleConsumption(
+      database.pool,
+      { companyId: companyBId, actorId, correlationId: 'isolation-b-sale', timestamp: new Date() },
+      { id: randomUUID(), branchId: branchBId, saleNumber: 'ISOLATION-B-SALE-1' },
+      [{ productVariantId: ingredientBId, quantity: '3', nameSnapshot: 'Queso Secreto B' }],
+    );
+
     overview = new InventoryOverviewService(new InventoryOverviewRepository(database));
     recipes = new ProductRecipeService(new ProductRecipeRepository(database));
+    movements = new InventoryMovementReadService(new InventoryMovementReadRepository(database));
   });
 
   afterAll(async () => {
     for (const companyId of [companyAId, companyBId]) {
       await database.pool.query('delete from outbox_events where company_id=$1', [companyId]);
       await database.pool.query('delete from audit_log where company_id=$1', [companyId]);
+      await database.pool.query('delete from idempotency_keys where company_id=$1', [companyId]);
+      await database.pool.query('delete from inventory_movement_lines where company_id=$1', [companyId]);
       await database.pool.query('delete from inventory_balances where company_id=$1', [companyId]);
       await database.pool.query('delete from inventory_movements where company_id=$1', [companyId]);
       await database.pool.query('delete from product_recipe_components where company_id=$1', [companyId]);
@@ -208,7 +224,21 @@ integration('PostgreSQL Inventory V2 — cross-tenant/cross-branch isolation (TA
       expect(snapshot.byLocation.map((location) => location.locationName)).not.toContain('B1-MAIN');
       expect(snapshot.alerts.map((alert) => alert.productVariantId)).not.toContain(ingredientBId);
       expect(snapshot.alerts.map((alert) => alert.productName)).not.toContain('Queso Secreto B');
+      // Company A's branch A1 genuinely has zero movements of its own —
+      // its recentActivity is empty, never Company B's real sale.
       expect(snapshot.recentActivity.map((activity) => activity.movementId)).toEqual([]);
+      expect(snapshot.recentActivity.map((activity) => activity.productName)).not.toContain('Queso Secreto B');
+
+      // Positive control: Company B's OWN overview genuinely DOES show its
+      // real sale — proving the empty result above is real isolation, not
+      // a query bug that would hide the activity from everyone.
+      const companyBSnapshot = await overview.get(companyBId, branchBId);
+      expect(companyBSnapshot.recentActivity).toHaveLength(1);
+      expect(companyBSnapshot.recentActivity[0]).toMatchObject({
+        productVariantId: ingredientBId,
+        productName: 'Queso Secreto B',
+        quantity: '3.000000',
+      });
     });
 
     it('§10.C — Branch A1 overview never leaks Branch A2 data within the same company', async () => {
@@ -250,6 +280,36 @@ integration('PostgreSQL Inventory V2 — cross-tenant/cross-branch isolation (TA
       // above).
       const variantA1Usages = await recipes.usedIn(companyAId, variantA1Id);
       expect(variantA1Usages).toEqual([]);
+    });
+  });
+
+  // TASK 17.2.4 §16/§21.I/§21.J — the movement-list enrichment
+  // (`InventoryMovementReadService.list`'s `line_count`/product-identity
+  // fields, see `movement-line-summaries.ts`) reuses the exact same
+  // company-scoped query pattern; proven separately here since it is a
+  // genuinely new enrichment this task added.
+  describe('GET /inventory/movements isolation', () => {
+    it("Company A's movement list never contains Company B's movement, product identity, or reference data", async () => {
+      const page = await movements.list(companyAId, [branchA1Id, branchA2Id], { limit: 50 });
+      const productNames = page.items.map((item) => item.product_name);
+      const sourceDocuments = page.items.map((item) => item.source_document_number);
+      expect(productNames).not.toContain('Queso Secreto B');
+      expect(sourceDocuments).not.toContain('ISOLATION-B-SALE-1');
+
+      // Positive control: Company B's own movement list genuinely does
+      // show its real sale, with real enrichment — proving the above is
+      // real isolation, not a query bug hiding it from everyone.
+      const companyBPage = await movements.list(companyBId, [branchBId], { limit: 50 });
+      const companyBMovement = companyBPage.items.find(
+        (item) => item.source_document_number === 'ISOLATION-B-SALE-1',
+      );
+      expect(companyBMovement).toMatchObject({
+        line_count: 1,
+        product_variant_id: ingredientBId,
+        product_name: 'Queso Secreto B',
+        quantity: '3.000000',
+        direction: 'out',
+      });
     });
   });
 });

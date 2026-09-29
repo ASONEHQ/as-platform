@@ -10,6 +10,8 @@ import type {
   LocationType,
 } from './inventory.types.js';
 import { InventoryApplicationError } from './inventory.types.js';
+import { resolveMovementLineSummaries, type MovementLineSummary } from './movement-line-summaries.js';
+import { resolveProductVariantIdentities, type ProductVariantIdentity } from './product-identities.js';
 
 export interface InventorySqlClient {
   query(sql: string, values?: readonly unknown[]): Promise<unknown>;
@@ -643,5 +645,23 @@ export class InventoryMovementReadRepository {
       items,
       nextCursor: rows.length > input.limit && typeof lastId === 'string' ? lastId : null,
     };
+  }
+
+  /// TASK 17.2.4 — see `movement-line-summaries.ts`'s own doc comment: one
+  /// batched, bounded pair of queries for a whole page of movements, never
+  /// one query per movement.
+  public lineSummaries(
+    companyId: string,
+    movementIds: readonly string[],
+  ): Promise<Map<string, MovementLineSummary>> {
+    return resolveMovementLineSummaries(this.database.pool, companyId, movementIds);
+  }
+
+  /// TASK 17.2.4 — see `product-identities.ts`'s own doc comment.
+  public identities(
+    companyId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, ProductVariantIdentity>> {
+    return resolveProductVariantIdentities(this.database.pool, companyId, variantIds);
   }
 }
