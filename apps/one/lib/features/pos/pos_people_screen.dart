@@ -1119,7 +1119,16 @@ class _EmployeeDetailDialogState extends State<_EmployeeDetailDialog> {
                 _DetailRow(label: 'Código', value: _employee.code),
                 _DetailRow(label: 'Puesto', value: _employee.jobTitle ?? '—'),
                 _DetailRow(label: 'Fecha de contratación', value: _employee.hireDate ?? '—'),
-                _DetailRow(label: 'Salario semanal', value: _formatMoney(_employee.weeklySalary, _employee.currencyCode)),
+                // TASK 17.4 — compensation is sensitive: gated behind
+                // `employee.manage`, the same permission `_EmployeeCard`'s
+                // own `showSalary` already requires (screen.dart:614).
+                // This dialog is reachable with mere `employee.read` (see
+                // this class's own doc comment on `_EmployeeDetailDialog`
+                // below), so showing it unconditionally here would leak
+                // compensation to a read-only actor even though the card
+                // one screen back already hides it from them.
+                if (widget.canManage)
+                  _DetailRow(label: 'Salario semanal', value: _formatMoney(_employee.weeklySalary, _employee.currencyCode)),
                 _DetailSectionHeader(label: 'Vinculación de usuario'),
                 // TASK 16.31 (Phase 21/22) — presentation only, over the
                 // EXISTING `employees.user_id` relationship: never a raw

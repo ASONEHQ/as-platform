@@ -129,6 +129,33 @@ void main() {
       expect(deactivateButton.onPressed, isNull);
     });
 
+    // TASK 17.4 — the detail dialog is reachable with mere `employee.read`
+    // (unlike create/edit/deactivate, which are all `employee.manage`-
+    // gated above), so compensation must be gated inside the dialog too —
+    // matching `_EmployeeCard`'s own pre-existing `showSalary` gate one
+    // screen back, never shown just because the field exists on the model.
+    testWidgets('sin employee.manage, la ficha del empleado nunca muestra el salario semanal', (tester) async {
+      final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      await _pump(tester, employeesGateway: gateway, permissions: const ['employee.read']);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-employee-row-employee-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Salario semanal'), findsNothing);
+    });
+
+    testWidgets('con employee.manage, la ficha del empleado sí muestra el salario semanal', (tester) async {
+      final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      await _pump(tester, employeesGateway: gateway, permissions: const ['employee.read', 'employee.manage']);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-employee-row-employee-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Salario semanal'), findsOneWidget);
+    });
+
     // TASK 16.31 (Phase 19/21/28) — the card/detail visual upgrade must
     // only ever show real fields, omit a genuinely-absent one elegantly
     // (never "—"/"null"), and never fabricate a user-link resolution.
