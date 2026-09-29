@@ -11,6 +11,8 @@
 /// `_Recording*Gateway` fixture convention.
 library;
 
+import 'package:as_one/core/errors/app_error.dart';
+import 'package:as_one/core/networking/api_client.dart';
 import 'package:as_one/features/authentication/auth_models.dart';
 import 'package:as_one/features/pos/pos_cash_gateway.dart';
 import 'package:as_one/features/pos/pos_identity_admin_gateway.dart';
@@ -165,6 +167,184 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('pos-user-form-role')), findsNothing);
+    });
+  });
+
+  group('Usuarios — creación multi-sucursal resiliente (TASK 17.3.2)', () {
+    Future<void> openFormAndFillGeneral(WidgetTester tester, {required String email, required String name}) async {
+      await tester.tap(find.byKey(const Key('pos-users-new')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-user-form-email')), email);
+      await tester.enterText(find.byKey(const Key('pos-user-form-name')), name);
+    }
+
+    Future<void> selectRole(WidgetTester tester, String roleName) async {
+      await tester.tap(find.byKey(const Key('pos-user-form-role')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(roleName).last);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> save(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('pos-user-form-save')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('todas las sucursales seleccionadas tienen éxito — sin diálogo de resumen', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(users: const [], roles: [role]);
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await openFormAndFillGeneral(tester, email: 'multi@inflapark.test', name: 'Multi Sucursal');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-2')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      expect(gateway.createUserCalls, hasLength(1));
+      expect(gateway.assignRoleCalls.map((c) => c.branchId).toSet(), {'branch-1', 'branch-2'});
+      expect(gateway.changeBranchAccessCalls.map((c) => c.branchId).toSet(), {'branch-1', 'branch-2'});
+      // Full success keeps the normal, silent flow — no summary dialog,
+      // the new user simply appears in the refreshed list.
+      expect(find.byKey(const Key('pos-user-form-summary-title')), findsNothing);
+      expect(find.text('Multi Sucursal'), findsOneWidget);
+    });
+
+    testWidgets('una falla en la sucursal intermedia no detiene el procesamiento de la siguiente', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: const [],
+        roles: [role],
+        assignRoleFailuresByBranchId: {
+          'branch-2': const ApiException(AppFailure(AppErrorKind.validation, 'Sucursal temporalmente no disponible.')),
+        },
+      );
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: _ownerPermissions,
+        context: _contextWithThreeBranches(_ownerPermissions),
+      );
+
+      await openFormAndFillGeneral(tester, email: 'tres@inflapark.test', name: 'Tres Sucursales');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-2')));
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-3')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      // Every selected branch was attempted — branch-3 must not have been
+      // skipped just because branch-2 failed.
+      expect(gateway.assignRoleCalls.map((c) => c.branchId).toList(), ['branch-1', 'branch-2', 'branch-3']);
+      // branch-2's own changeBranchAccess is never attempted since its
+      // role assignment itself failed.
+      expect(gateway.changeBranchAccessCalls.map((c) => c.branchId).toSet(), {'branch-1', 'branch-3'});
+
+      expect(find.byKey(const Key('pos-user-form-summary-title')), findsOneWidget);
+      expect(find.textContaining('Sucursal Centro — configurado'), findsOneWidget);
+      expect(find.textContaining('Sucursal Norte — no se pudo configurar'), findsOneWidget);
+      expect(find.textContaining('Sucursal Sur — configurado'), findsOneWidget);
+      // The real backend message is shown, never a raw UUID as the label.
+      expect(find.text('Sucursal temporalmente no disponible.'), findsOneWidget);
+      expect(find.textContaining('branch-2'), findsNothing);
+    });
+
+    testWidgets('rol asignado pero acceso de sucursal fallido se reporta como parcial, nunca como éxito', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: const [],
+        roles: [role],
+        changeBranchAccessFailuresByBranchId: {
+          'branch-1': const ApiException(AppFailure(AppErrorKind.validation, 'No fue posible otorgar el acceso.')),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await openFormAndFillGeneral(tester, email: 'parcial@inflapark.test', name: 'Parcial');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      expect(gateway.assignRoleCalls, hasLength(1));
+      expect(gateway.changeBranchAccessCalls, hasLength(1));
+      expect(find.byKey(const Key('pos-user-form-summary-title')), findsOneWidget);
+      expect(find.textContaining('Sucursal Centro — rol asignado; no se pudo completar el acceso'), findsOneWidget);
+    });
+
+    testWidgets('una falla en la primera sucursal no detiene el procesamiento de las siguientes', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: const [],
+        roles: [role],
+        assignRoleFailuresByBranchId: {
+          'branch-1': const ApiException(AppFailure(AppErrorKind.validation, 'Rechazado.')),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await openFormAndFillGeneral(tester, email: 'primera@inflapark.test', name: 'Primera Falla');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-2')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      expect(gateway.assignRoleCalls.map((c) => c.branchId).toList(), ['branch-1', 'branch-2']);
+      expect(gateway.changeBranchAccessCalls.map((c) => c.branchId).toList(), ['branch-2']);
+      expect(find.textContaining('Sucursal Centro — no se pudo configurar'), findsOneWidget);
+      expect(find.textContaining('Sucursal Norte — configurado'), findsOneWidget);
+    });
+
+    testWidgets('si la creación base del usuario falla, no se intenta ninguna configuración de sucursal', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: const [],
+        roles: [role],
+        createUserFailure: const ApiException(AppFailure(AppErrorKind.validation, 'El correo ya está en uso.')),
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await openFormAndFillGeneral(tester, email: 'duplicado@inflapark.test', name: 'Duplicado');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      expect(gateway.createUserCalls, hasLength(1));
+      expect(gateway.assignRoleCalls, isEmpty);
+      expect(gateway.changeBranchAccessCalls, isEmpty);
+      expect(find.text('El correo ya está en uso.'), findsOneWidget);
+      // The create dialog itself stays open — nothing was created, so
+      // there is nothing to review.
+      expect(find.byKey(const Key('pos-user-form-email')), findsOneWidget);
+    });
+
+    testWidgets('"Revisar usuario" desde el resumen abre la ficha del usuario recién creado', (tester) async {
+      final role = _role('r1', 'Cajero', 'cashier');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: const [],
+        roles: [role],
+        changeBranchAccessFailuresByBranchId: {
+          'branch-1': const ApiException(AppFailure(AppErrorKind.validation, 'No fue posible otorgar el acceso.')),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await openFormAndFillGeneral(tester, email: 'revisar@inflapark.test', name: 'Revisar');
+      await selectRole(tester, 'Cajero');
+      await tester.tap(find.byKey(const Key('pos-user-form-branch-branch-1')));
+      await tester.pumpAndSettle();
+      await save(tester);
+
+      await tester.tap(find.byKey(const Key('pos-user-form-summary-review')));
+      await tester.pumpAndSettle();
+
+      // The existing user detail flow opened — reusing it, not a new
+      // administration surface.
+      expect(find.byKey(const Key('pos-user-detail-save-status')), findsOneWidget);
     });
   });
 
@@ -1433,6 +1613,15 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     List<BranchSummary> grantableBranches = const [],
     Map<String, List<PosRegisterAccessGrant>> registerAccessByUser = const {},
     List<PosRoleTemplate> roleTemplates = const [],
+    // TASK 17.3.2 — per-branch failure injection for the resilient
+    // multi-branch user-creation orchestration tests: keyed by branchId
+    // (`null` = the company-wide/"Todas las sucursales" call), so a test
+    // can make exactly one selected branch's assignRole/changeBranchAccess
+    // call fail while every other branch still succeeds, proving every
+    // selected branch is genuinely attempted independently.
+    ApiException? createUserFailure,
+    Map<String?, ApiException> assignRoleFailuresByBranchId = const {},
+    Map<String?, ApiException> changeBranchAccessFailuresByBranchId = const {},
   }) : _users = List.of(users),
        _roles = List.of(roles),
        _permissions = List.of(permissions),
@@ -1440,7 +1629,10 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
        _userDetails = Map.of(userDetails),
        _grantableBranches = List.of(grantableBranches),
        _registerAccessByUser = Map.of(registerAccessByUser),
-       _roleTemplates = List.of(roleTemplates);
+       _roleTemplates = List.of(roleTemplates),
+       _createUserFailure = createUserFailure,
+       _assignRoleFailuresByBranchId = Map.of(assignRoleFailuresByBranchId),
+       _changeBranchAccessFailuresByBranchId = Map.of(changeBranchAccessFailuresByBranchId);
 
   final List<PosUser> _users;
   final List<PosRole> _roles;
@@ -1450,6 +1642,9 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final List<BranchSummary> _grantableBranches;
   final Map<String, List<PosRegisterAccessGrant>> _registerAccessByUser;
   final List<PosRoleTemplate> _roleTemplates;
+  final ApiException? _createUserFailure;
+  final Map<String?, ApiException> _assignRoleFailuresByBranchId;
+  final Map<String?, ApiException> _changeBranchAccessFailuresByBranchId;
 
   int listUsersCalls = 0;
   int listRolesCalls = 0;
@@ -1477,6 +1672,8 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   @override
   Future<PosUser> createUser({required String email, required String displayName}) async {
     createUserCalls.add((email: email, displayName: displayName));
+    final failure = _createUserFailure;
+    if (failure != null) throw failure;
     final user = PosUser(
       id: 'new-user-${createUserCalls.length}',
       email: email,
@@ -1597,6 +1794,8 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   @override
   Future<void> assignRole(String userId, {required String roleId, String? branchId}) async {
     assignRoleCalls.add((userId: userId, roleId: roleId, branchId: branchId));
+    final failure = _assignRoleFailuresByBranchId[branchId];
+    if (failure != null) throw failure;
     final role = _roles.firstWhere((role) => role.id == roleId);
     final assignment = PosUserRoleAssignment(
       id: 'assignment-${assignRoleCalls.length}',
@@ -1649,6 +1848,8 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
     required bool isDefault,
   }) async {
     changeBranchAccessCalls.add((userId: userId, branchId: branchId, status: status, isDefault: isDefault));
+    final failure = _changeBranchAccessFailuresByBranchId[branchId];
+    if (failure != null) throw failure;
     final detail = _userDetails[userId];
     if (detail == null) return;
     final existingIndex = detail.branchAccess.indexWhere((access) => access.branchId == branchId);
@@ -1753,6 +1954,11 @@ Future<void> _pump(
   // defaults, exactly like before this task.
   PosOperationalAreasGateway areasGateway = const EmptyPosOperationalAreasGateway(),
   PosCashGateway cashGateway = const EmptyPosCashGateway(),
+  // TASK 17.3.2 — optional context override, additive: only the
+  // multi-branch resilient-creation tests (which need a 3rd branch to
+  // prove a "middle branch" case) pass one; every other existing caller
+  // keeps building its context from `_context(permissions)` unchanged.
+  AuthenticatedContext? context,
 }) async {
   tester.view.physicalSize = const Size(1400, 1000);
   tester.view.devicePixelRatio = 1;
@@ -1762,7 +1968,7 @@ Future<void> _pump(
       home: Scaffold(
         body: SingleChildScrollView(
           child: PosUserAdministrationScreen(
-            context: _context(permissions),
+            context: context ?? _context(permissions),
             gateway: gateway,
             areasGateway: areasGateway,
             cashGateway: cashGateway,
@@ -1821,6 +2027,30 @@ AuthenticatedContext _context(List<String> permissions) => AuthenticatedContext(
   branches: const [
     BranchSummary(id: 'branch-1', code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', current: true),
     BranchSummary(id: 'branch-2', code: 'NORTE', name: 'Sucursal Norte', timezone: 'America/Mexico_City'),
+  ],
+  companyWideAccess: true,
+  permissions: permissions,
+);
+
+// TASK 17.3.2 — a 3-branch variant, needed only to prove a genuine
+// "middle branch" case (branch 1 succeeds, branch 2 fails, branch 3 is
+// still attempted) in the resilient multi-branch creation tests below.
+AuthenticatedContext _contextWithThreeBranches(List<String> permissions) => AuthenticatedContext(
+  session: SessionContext(
+    id: 'session-id',
+    userId: 'user-id',
+    companyId: 'company-id',
+    branchId: 'branch-1',
+    permittedBranchIds: const ['branch-1', 'branch-2', 'branch-3'],
+    companyWideAccess: true,
+    expiresAt: DateTime.utc(2099),
+  ),
+  user: const UserSummary(id: 'user-id', displayName: 'Dueña AS', email: 'owner@example.test'),
+  companies: const [CompanySummary(id: 'company-id', name: 'Empresa AS', current: true)],
+  branches: const [
+    BranchSummary(id: 'branch-1', code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', current: true),
+    BranchSummary(id: 'branch-2', code: 'NORTE', name: 'Sucursal Norte', timezone: 'America/Mexico_City'),
+    BranchSummary(id: 'branch-3', code: 'SUR', name: 'Sucursal Sur', timezone: 'America/Mexico_City'),
   ],
   companyWideAccess: true,
   permissions: permissions,

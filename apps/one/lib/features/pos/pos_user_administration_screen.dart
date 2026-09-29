@@ -641,7 +641,7 @@ class _UsersTabState extends State<_UsersTab> {
 
   Future<void> _openNewForm() async {
     if (!_canCreate) return;
-    final saved = await showDialog<bool>(
+    final outcome = await showDialog<_UserFormOutcome>(
       context: context,
       builder: (dialogContext) => _UserFormDialog(
         gateway: widget.gateway,
@@ -651,7 +651,18 @@ class _UsersTabState extends State<_UsersTab> {
         canManageBranchAccess: _canManageBranchAccess,
       ),
     );
-    if (saved == true) unawaited(_load());
+    if (outcome == null) return;
+    unawaited(_load());
+    // The user itself was created either way — a partial/failed branch
+    // setup is never reported as if creation failed, only as "some
+    // branches need attention".
+    if (!outcome.hasIssues) return;
+    if (!mounted) return;
+    final reviewRequested = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _BranchSetupSummaryDialog(results: outcome.branchResults),
+    );
+    if (reviewRequested == true) unawaited(_openDetail(outcome.user));
   }
 
   Future<void> _openDetail(PosUser user) async {
@@ -989,6 +1000,35 @@ class _CardMetaChip extends StatelessWidget {
 /// New-user dialog — only ever reachable through an already-`user.create`-
 /// gated entry point, mirrors `_EmployeeFormDialog`'s own convention of
 /// carrying no separate internal permission gate.
+// TASK 17.3.2 — createUser()/assignRole()/changeBranchAccess() are three
+// separate backend requests, not one transaction: a failure partway
+// through the per-branch loop below must never look like total success,
+// and must never silently stop at the first failed branch (every
+// SELECTED branch is always attempted, independently). The backend stays
+// the sole source of truth for every authorization rule (company/branch
+// scope, role validity, system-role protection, self-escalation,
+// duplicate-assignment idempotency) — this only orchestrates the calls
+// it already made one at a time and reports what actually happened.
+enum _BranchSetupOutcome { success, partial, failed }
+
+class _BranchSetupResult {
+  const _BranchSetupResult({required this.branchName, required this.outcome, this.detail});
+  final String branchName;
+  final _BranchSetupOutcome outcome;
+  final String? detail;
+}
+
+/// The user is a real, already-created fact by the time this exists —
+/// `branchResults` only ever reports what happened AFTER creation, never
+/// whether creation itself succeeded (a failed creation never reaches
+/// this point at all — see `_UserFormDialogState._submit`).
+class _UserFormOutcome {
+  const _UserFormOutcome({required this.user, this.branchResults = const []});
+  final PosUser user;
+  final List<_BranchSetupResult> branchResults;
+  bool get hasIssues => branchResults.any((result) => result.outcome != _BranchSetupOutcome.success);
+}
+
 class _UserFormDialog extends StatefulWidget {
   const _UserFormDialog({
     required this.gateway,
@@ -1075,39 +1115,78 @@ class _UserFormDialogState extends State<_UserFormDialog> {
       });
       return;
     }
+    final results = <_BranchSetupResult>[];
     if (roleId != null) {
-      try {
-        if (_allBranches || !widget.canManageBranchAccess || widget.branches.isEmpty) {
+      if (_allBranches || !widget.canManageBranchAccess || widget.branches.isEmpty) {
+        // Company-wide (branch_id: null) is a single grant — there is no
+        // per-branch access call to split it into (a company-wide role
+        // already bypasses the branch-access check entirely — see
+        // `docs/MULTI_BRANCH_AUTHORIZATION.md` §4).
+        try {
           await widget.gateway.assignRole(created.id, roleId: roleId, branchId: null);
-        } else {
-          var isFirst = true;
-          for (final branchId in _selectedBranchIds) {
+          results.add(const _BranchSetupResult(branchName: 'Todas las sucursales', outcome: _BranchSetupOutcome.success));
+        } on ApiException catch (error) {
+          results.add(
+            _BranchSetupResult(branchName: 'Todas las sucursales', outcome: _BranchSetupOutcome.failed, detail: error.failure.message),
+          );
+        } on Object {
+          results.add(
+            const _BranchSetupResult(
+              branchName: 'Todas las sucursales',
+              outcome: _BranchSetupOutcome.failed,
+              detail: 'No fue posible asignar el rol.',
+            ),
+          );
+        }
+      } else {
+        // Every selected branch is attempted independently — a failure on
+        // one branch must never stop the rest from being attempted, and
+        // must never be reported as if the whole operation succeeded.
+        for (final branchId in _selectedBranchIds) {
+          final branchName = widget.branches.where((branch) => branch.id == branchId).firstOrNull?.name ?? branchId;
+          bool roleAssigned;
+          String? roleError;
+          try {
             await widget.gateway.assignRole(created.id, roleId: roleId, branchId: branchId);
-            await widget.gateway.changeBranchAccess(created.id, branchId, status: 'active', isDefault: isFirst);
-            isFirst = false;
+            roleAssigned = true;
+          } on ApiException catch (error) {
+            roleAssigned = false;
+            roleError = error.failure.message;
+          } on Object {
+            roleAssigned = false;
+            roleError = 'No fue posible asignar el rol.';
+          }
+          if (!roleAssigned) {
+            results.add(_BranchSetupResult(branchName: branchName, outcome: _BranchSetupOutcome.failed, detail: roleError));
+            continue;
+          }
+          // The default branch goes to the first branch that actually
+          // finishes configured — not merely the first attempted — so an
+          // earlier failure never leaves the user without any default.
+          final isDefault = !results.any((result) => result.outcome == _BranchSetupOutcome.success);
+          try {
+            await widget.gateway.changeBranchAccess(created.id, branchId, status: 'active', isDefault: isDefault);
+            results.add(_BranchSetupResult(branchName: branchName, outcome: _BranchSetupOutcome.success));
+          } on ApiException catch (error) {
+            // The role WAS assigned — this is a partial outcome, never a
+            // plain failure and never a silent success.
+            results.add(
+              _BranchSetupResult(branchName: branchName, outcome: _BranchSetupOutcome.partial, detail: error.failure.message),
+            );
+          } on Object {
+            results.add(
+              _BranchSetupResult(
+                branchName: branchName,
+                outcome: _BranchSetupOutcome.partial,
+                detail: 'No fue posible completar el acceso.',
+              ),
+            );
           }
         }
-      } on ApiException catch (error) {
-        if (!mounted) return;
-        setState(() {
-          _busy = false;
-          _error = 'El usuario se creó, pero no fue posible asignar su acceso: ${error.failure.message} '
-              'Complétalo desde su ficha.';
-        });
-        Navigator.of(context).pop(true);
-        return;
-      } on Object {
-        if (!mounted) return;
-        setState(() {
-          _busy = false;
-          _error = 'El usuario se creó, pero no fue posible asignar su acceso. Complétalo desde su ficha.';
-        });
-        Navigator.of(context).pop(true);
-        return;
       }
     }
     if (!mounted) return;
-    Navigator.of(context).pop(true);
+    Navigator.of(context).pop(_UserFormOutcome(user: created, branchResults: results));
   }
 
   @override
@@ -1196,9 +1275,100 @@ class _UserFormDialogState extends State<_UserFormDialog> {
               const SizedBox(height: 16),
               _DialogButtons(
                 busy: _busy,
-                onCancel: () => Navigator.of(context).pop(false),
+                onCancel: () => Navigator.of(context).pop(),
                 onSave: () => unawaited(_submit()),
                 saveKey: const Key('pos-user-form-save'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown only when at least one selected branch ended up
+/// partial/failed — the user itself was already created successfully by
+/// this point, so this is never framed as "the operation failed", only as
+/// "some branches need attention". "Revisar usuario" reuses the existing
+/// user detail flow — no new administration surface.
+class _BranchSetupSummaryDialog extends StatelessWidget {
+  const _BranchSetupSummaryDialog({required this.results});
+  final List<_BranchSetupResult> results;
+
+  static String _icon(_BranchSetupOutcome outcome) => switch (outcome) {
+    _BranchSetupOutcome.success => '✓',
+    _BranchSetupOutcome.partial => '⚠',
+    _BranchSetupOutcome.failed => '✕',
+  };
+
+  static String _label(_BranchSetupOutcome outcome) => switch (outcome) {
+    _BranchSetupOutcome.success => 'configurado',
+    _BranchSetupOutcome.partial => 'rol asignado; no se pudo completar el acceso',
+    _BranchSetupOutcome.failed => 'no se pudo configurar',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Usuario creado, pero algunas sucursales requieren atención.',
+                key: const Key('pos-user-form-summary-title'),
+                style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15),
+              ),
+              const SizedBox(height: 14),
+              for (final result in results)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_icon(result.outcome), style: const TextStyle(fontSize: 13)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${result.branchName} — ${_label(result.outcome)}',
+                              key: Key('pos-user-form-summary-branch-${result.branchName}'),
+                              style: TextStyle(color: palette.text, fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                            if (result.detail != null)
+                              Text(result.detail!, style: TextStyle(color: palette.textSecondary, fontSize: 11)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    key: const Key('pos-user-form-summary-close'),
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cerrar'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    key: const Key('pos-user-form-summary-review'),
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Revisar usuario'),
+                  ),
+                ],
               ),
             ],
           ),
