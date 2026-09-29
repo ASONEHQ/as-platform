@@ -8105,10 +8105,12 @@ class _ClienteStackedCatalog extends StatelessWidget {
       // V1 always renders every active category's sticky header, with an
       // honest "Sin productos en esta categoría" message for whichever
       // ones have no matching items, instead of hiding the whole catalog
-      // structure. A product with no active category (or an inactive/
-      // deleted category) simply isn't shown in any section — matching
-      // V1's own `renderPosClienteApilado()`, which only ever iterates
-      // active categories.
+      // structure. TASK 17.5.3 — a product with no active category (or an
+      // inactive/deleted category) now still renders, in a final "Sin
+      // categoría" catch-all section, matching CAJERO's own "Todas" view
+      // (which never filtered by category at all) — see
+      // `_ClienteCategorySections.build`'s own doc comment for the real
+      // production bug this closes.
       body = _ClienteCategorySections(
         categories: categories,
         items: controller.products.items,
@@ -8146,8 +8148,29 @@ class _ClienteCategorySections extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (categories.isEmpty) {
-      return const _EmptyState(message: 'No hay categorías disponibles.');
+    final categoryNameById = {for (final category in categories) category.id: category.name};
+    // TASK 17.5.3 — production root cause: CLIENTE's own catalog used to
+    // be driven ENTIRELY by category sections, with no catch-all — a
+    // product whose `categoryId` is `null`, or points at a category that
+    // isn't currently `active`, never appeared in ANY section, even
+    // though CAJERO's own default "Todas" view (`_PosSaleBody._filter`
+    // with `categoryId: null`) shows every such product just fine (it
+    // never filters by category at all there). The two views silently
+    // diverged: CAJERO showed the real catalog, CLIENTE showed an empty
+    // one, for the exact same branch/session. `sellable` below is the
+    // SAME authoritative set CAJERO's own "Todas" already computes (same
+    // `status == 'active'` sellability check, same function, never a
+    // second filter reimplementation) — CLIENTE now organizes that exact
+    // set into category sections, plus one honest "Sin categoría"
+    // catch-all for anything that doesn't match an active category, so
+    // the union of every section always equals CAJERO's own real catalog.
+    final sellable = _PosSaleBody._filter(items, null, '');
+    final categoryIds = categories.map((category) => category.id).toSet();
+    final uncategorized = sellable
+        .where((item) => item.categoryId == null || !categoryIds.contains(item.categoryId))
+        .toList(growable: false);
+    if (categories.isEmpty && uncategorized.isEmpty) {
+      return const _EmptyState(message: 'No hay productos disponibles.');
     }
     return CustomScrollView(
       key: const Key('pos-cliente-catalog'),
@@ -8176,18 +8199,37 @@ class _ClienteCategorySections extends StatelessWidget {
           ),
           SliverPadding(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            sliver: _sectionSliver(context, categories[i]),
+            sliver: _sectionSliver(
+              context,
+              sellable.where((item) => item.categoryId == categories[i].id).toList(growable: false),
+              categoryNameById,
+            ),
+          ),
+        ],
+        if (uncategorized.isNotEmpty) ...[
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _ClienteSectionHeaderDelegate(
+              sectionKey: _clienteSectionKey('uncategorized'),
+              title: 'Sin categoría',
+              showTopBorder: categories.isNotEmpty,
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            sliver: _sectionSliver(context, uncategorized, categoryNameById),
           ),
         ],
       ],
     );
   }
 
-  Widget _sectionSliver(BuildContext context, PosCategory category) {
+  Widget _sectionSliver(
+    BuildContext context,
+    List<PosProduct> categoryItems,
+    Map<String, String> categoryNameById,
+  ) {
     final palette = PosPalette.of(context);
-    final categoryItems = items
-        .where((item) => item.categoryId == category.id)
-        .toList(growable: false);
     if (categoryItems.isEmpty) {
       // Matches `_renderSeccionProductos([])`'s exact copy — the same
       // "no products" string CAJERO's own empty category uses.
@@ -8219,10 +8261,11 @@ class _ClienteCategorySections extends StatelessWidget {
         return _PosProductCard(
           item: item,
           block: block,
-          // TASK 17.4.1 — the category is already known at this call
-          // site (this whole sliver IS that category's own section), no
-          // lookup map needed.
-          categoryName: category.name,
+          // TASK 17.5.3 — same resolution `_PosProductGrid` (CAJERO) uses:
+          // a product with no matching active category (rendered in the
+          // "Sin categoría" catch-all) honestly shows no badge, never a
+          // fabricated one.
+          categoryName: item.categoryId == null ? null : categoryNameById[item.categoryId],
           onTap: block == null
               ? () => saleSession.addProduct(item, balances)
               : () => _showNotice(context, _addabilityMessage(block)),

@@ -4155,8 +4155,158 @@ void main() {
         await tester.tap(find.byKey(const Key('pos-mode-cliente')));
         await tester.pumpAndSettle();
 
+        // TASK 17.5.3 — with genuinely zero products AND zero categories,
+        // the message is now the same honest "nothing at all" copy
+        // CAJERO's own equivalent empty state already uses, rather than a
+        // narrower "no categories" message that would have been
+        // misleading now that a categoryless/uncategorized-category
+        // product legitimately renders (see the new "Sin categoría"
+        // catch-all tests below) even when there are zero active
+        // categories.
         expect(find.byKey(const Key('pos-cliente-jumpbar')), findsNothing);
-        expect(find.text('No hay categorías disponibles.'), findsOneWidget);
+        expect(find.text('No hay productos disponibles.'), findsOneWidget);
+        expect(find.text('No hay categorías disponibles.'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    // TASK 17.5.3 — THE PRODUCTION-BUG TEST: reproduces the exact reported
+    // symptom (CAJERO shows the real catalog; CLIENTE shows none of it)
+    // using a product CAJERO's own "Todas" view has never filtered by
+    // category (`_PosSaleBody._filter`), and proves CLIENTE now shows the
+    // exact same product too, via the new "Sin categoría" catch-all.
+    Future<void> _pumpUncategorized(WidgetTester tester, {Size size = const Size(1440, 900)}) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        PlatformScope(
+          posReadGateway: const _ClienteUncategorizedProductGateway(),
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _ClienteUncategorizedProductGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: _FakeCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              // TASK 17.5.3 — the round-trip test needs a real (fake)
+              // working PIN verification for "Volver a modo Cajero";
+              // `PosShell`'s own default (`EmptyPosAuthGateway`) throws on
+              // every call, which would leave CLIENTE mode active and mask
+              // this test's own assertions with an unrelated PIN error.
+              authGateway: _FakeAuthGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+      'CAJERO "Todas" shows a categoryless product — proving the fixture '
+      'itself is real, sellable catalog data (never filtered by category)',
+      (tester) async {
+        await _pumpUncategorized(tester);
+        await _navigateToPos(tester);
+
+        expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
+        expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'THE PRODUCTION BUG: the same categoryless product that CAJERO shows '
+      'remains visible after switching to CLIENTE mode, under a "Sin '
+      'categoría" section — never silently dropped',
+      (tester) async {
+        await _pumpUncategorized(tester);
+        await enterCliente(tester);
+
+        expect(find.byKey(const Key('pos-cliente-catalog')), findsOneWidget);
+        // The real, categorized product still renders in its own section.
+        expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
+        // THE FIX: the categoryless product is no longer dropped.
+        expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
+        expect(find.text('Sin categoría'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'the categoryless product can be added to the CLIENTE ticket just '
+      'like any other real sellable product',
+      (tester) async {
+        await _pumpUncategorized(tester);
+        await enterCliente(tester);
+
+        await tester.tap(find.byKey(const Key('pos-product-product-orphan')));
+        await tester.pump();
+
+        expect(find.byKey(const Key('pos-cliente-ticket-line-product-orphan')), findsOneWidget);
+      },
+    );
+
+    // TASK 17.5.3 §18 — the fixed catalog (including the new "Sin
+    // categoría" section) must render with no overflow at every
+    // certified size.
+    for (final size in [
+      const Size(1440, 900),
+      const Size(1365, 768),
+      const Size(1024, 768),
+      const Size(390, 844),
+    ]) {
+      testWidgets(
+        'the fixed CLIENTE catalog (incl. "Sin categoría") renders with no overflow at '
+        '${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+          await _pumpUncategorized(tester, size: size);
+          if (size.width < 700) {
+            await tester.tap(find.byKey(const Key('pos-hamburger')));
+            await tester.pumpAndSettle();
+          }
+          await enterCliente(tester);
+
+          expect(tester.takeException(), isNull);
+          expect(find.byKey(const Key('pos-cliente-catalog')), findsOneWidget);
+          expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
+          expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
+        },
+      );
+    }
+
+    testWidgets(
+      'round trip: CLIENTE catalog (incl. the orphan product) survives '
+      'Volver a modo Cajero -> PIN -> back to CLIENTE',
+      (tester) async {
+        await _pumpUncategorized(tester);
+        await enterCliente(tester);
+        expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-cajero-return-input')), '1234');
+        await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+        await tester.pumpAndSettle();
+
+        // Back in CAJERO — the real Todas catalog still shows it.
+        expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
+
+        // Already on the POS/CAJERO surface (no fresh sidebar navigation
+        // needed) — tap straight into CLIENTE again.
+        final backToClienteButton = find.byKey(const Key('pos-mode-cliente'));
+        await tester.ensureVisible(backToClienteButton);
+        await tester.tap(backToClienteButton);
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
         expect(tester.takeException(), isNull);
       },
     );
@@ -12635,6 +12785,43 @@ class _ClienteCatalogGateway implements PosReadGateway {
       inTransit: '0',
     ),
   ];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
+}
+
+/// TASK 17.5.3 — the real production bug: CAJERO's own "Todas" view never
+/// filters by category at all (`_PosSaleBody._filter`'s own
+/// `categoryId == null || item.categoryId == categoryId`), so a product
+/// with no category, or a category that isn't currently active, shows
+/// there just fine — but CLIENTE's old catalog was driven ENTIRELY by
+/// category sections, so that same product silently vanished the moment
+/// CLIENTE mode was entered, even though the terminal/session/branch never
+/// changed. `product-orphan` here has `categoryId: null`; `cat-1` is the
+/// only active category, matching `product-1` — proving both the "still
+/// visible" fix and that a real, categorized product is unaffected.
+class _ClienteUncategorizedProductGateway implements PosReadGateway {
+  const _ClienteUncategorizedProductGateway();
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async => [
+    _pricedProduct(id: 'product-1', code: 'P-001', name: 'Producto real', categoryId: 'cat-1'),
+    _pricedProduct(id: 'product-orphan', code: 'P-ORPHAN', name: 'Producto sin categoría', categoryId: null),
+  ];
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-1', name: 'Bebidas', status: 'active'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [];
 
   @override
   Future<List<PosUser>> users() async => const [];
