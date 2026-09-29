@@ -109,8 +109,13 @@ class _PosReadinessScreenState extends State<PosReadinessScreen> {
           Row(
             children: [
               Expanded(
+                // TASK 17.4.2 §10 — renamed to resolve the naming
+                // collision with the new, real "Configuración" workspace
+                // (`_ConfigurationWorkspace` in `pos_shell.dart`). This
+                // screen itself, its backend, and every one of its checks
+                // are unchanged — only its own framing/label.
                 child: Text(
-                  'Configuración',
+                  'Estado del sistema',
                   style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 20),
                 ),
               ),
@@ -124,7 +129,7 @@ class _PosReadinessScreenState extends State<PosReadinessScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Estado de la configuración de tu empresa: qué está listo y qué falta para vender.',
+            'Configuración y preparación operativa: qué está listo y qué falta para vender.',
             style: TextStyle(color: palette.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: 16),

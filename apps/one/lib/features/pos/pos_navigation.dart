@@ -77,24 +77,24 @@ enum PosModule {
   // an unspecified surface rather than present operators with a
   // non-functional page — these nav entries are gone until a real spec
   // exists, not stubbed.
-  settings('Configuración', Icons.settings_outlined, 'Sistema'),
-  // TASK 14.5 (Wave 3, Phase 8): per-tenant receipt header/footer text —
-  // see `pos_receipt_branding_screen.dart`.
-  // TASK 16.26 — a distinct icon from `billing`'s `receipt_long_outlined`
-  // (this is ticket BRANDING config, not the CFDI invoice screen itself).
-  receiptBranding('Marca del Ticket', Icons.local_print_shop_outlined, 'Sistema'),
-  // TASK 16.7B: real thermal-printer paper-width configuration + a
-  // zero-side-effect "Imprimir ticket de prueba" — see
-  // `pos_printer_settings_screen.dart`.
-  printerSettings('Impresora de Tickets', Icons.print_outlined, 'Sistema'),
-  // TASK 17.4 §32 — `PosBrandingScreen` (the real, already-secured logo
-  // upload/preview/delete screen TASK 14.5A built, reusing TASK 17.1's
-  // own protected object storage) had no nav entry of its own anywhere
-  // in the app — only reachable via a button buried inside "Marca del
-  // Ticket" (`pos_receipt_branding_screen.dart`'s own TASK 15.0 finding
-  // F2 doc comment). No new backend, no new storage — same screen, a
-  // real front door.
-  logo('Logo del Negocio', Icons.image_outlined, 'Sistema'),
+  // TASK 17.4.2 §10 — relabeled "Estado del sistema" to free up the
+  // "Configuración" label/identity for the new, real settings workspace
+  // (`PosModule.configuration`) — this member itself, and everything it
+  // renders (`pos_readiness_screen.dart`), are unchanged.
+  settings('Estado del sistema', Icons.fact_check_outlined, 'Sistema'),
+  // TASK 17.4.2 §3/§9 — the real Configuración workspace: a landing page
+  // organizing Negocio (`PosBrandingScreen`) / Ticket
+  // (`pos_receipt_branding_screen.dart`) / Hardware
+  // (`pos_printer_settings_screen.dart`) / Fiestas config, each embedding
+  // its own real, pre-existing screen verbatim — no new backend, no new
+  // persistence. Replaces the standalone `receiptBranding`/
+  // `printerSettings`/`logo` sidebar entries TASK 14.5/16.7B/17.4 added
+  // (no test referenced those nav keys directly — confirmed by grep —
+  // so folding them here removes duplicate navigation without any
+  // known regression); the 3 screens themselves are unchanged and keep
+  // their own independent, real backend permission checks (see
+  // `_ConfigurationWorkspace` in `pos_shell.dart`).
+  configuration('Configuración', Icons.settings_outlined, 'Sistema'),
   // TASK 14.5 (Wave 3, Phase 7, Item 6): a faithful, real port of the
   // legacy's local keyword/regex FAQ bot — see `pos_assistant_screen.dart`.
   assistant('Asistente', Icons.smart_toy_outlined, 'Sistema');
@@ -161,9 +161,12 @@ enum PosModule {
     // TASK 14.4 (Wave 2, Part B): Empleados/Horarios/Checador/Nómina —
     // see `pos_people_gateway.dart`/`pos_people_screen.dart`.
     PosModule.employees,
-    // TASK 14.5 (Wave 3, Phase 8): Marca del Ticket — per-tenant receipt
-    // header/footer text — see `pos_receipt_branding_screen.dart`.
-    PosModule.receiptBranding,
+    // TASK 17.4.2: Configuración — real settings workspace organizing
+    // Negocio/Ticket/Hardware/Fiestas around already-implemented screens
+    // (`pos_receipt_branding_screen.dart`, `pos_printer_settings_screen.dart`,
+    // `pos_branding_screen.dart`) — see `_ConfigurationWorkspace` in
+    // `pos_shell.dart`.
+    PosModule.configuration,
     // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real deterministic
     // FAQ bot over live data — see `pos_assistant_screen.dart`.
     PosModule.assistant,
@@ -250,9 +253,10 @@ const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
   PosModule.history: ['sale.read'],
   // TASK 16.17: gated by the readiness endpoint's own guard.
   PosModule.settings: ['branch.read'],
-  PosModule.receiptBranding: ['company_settings.read'],
-  PosModule.printerSettings: ['company_settings.read'],
-  PosModule.logo: ['company_settings.read'],
+  // TASK 17.4.2: same permission the 3 folded-in screens already used —
+  // the workspace's own embedded sections keep re-checking their own
+  // authoritative permissions independently (defense in depth unchanged).
+  PosModule.configuration: ['company_settings.read'],
   // `PosModule.assistant` intentionally absent — always visible, matching
   // `pos_assistant_screen.dart`'s own deliberate zero-permission-check
   // design (see this map's own header doc comment).

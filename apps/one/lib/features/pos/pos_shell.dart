@@ -3701,25 +3701,17 @@ class _Content extends StatelessWidget {
                     timeClockGateway: timeClockGateway,
                     payrollGateway: payrollGateway,
                   ),
-                  // TASK 14.5 (Wave 3, Phase 8): Marca del Ticket —
-                  // per-tenant receipt header/footer text.
-                  PosModule.receiptBranding => PosReceiptBrandingScreen(
+                  // TASK 17.4.2 §3–§9: Configuración — real settings
+                  // workspace organizing Negocio/Ticket/Hardware/Fiestas
+                  // around the same real screens this switch used to wire
+                  // up as 3 separate standalone nav entries.
+                  PosModule.configuration => _ConfigurationWorkspace(
                     context: this.context,
                     settingsGateway: settingsGateway,
+                    partiesGateway: partiesGateway,
+                    catalogAdminGateway: catalogAdminGateway,
+                    productVariantsGateway: productVariantsGateway,
                   ),
-                  // TASK 16.7B: real thermal-printer paper-width config +
-                  // zero-side-effect print test — see
-                  // `pos_printer_settings_screen.dart`'s own doc comment
-                  // for the V1 browser-print architecture decision.
-                  PosModule.printerSettings => PosPrinterSettingsScreen(
-                    context: this.context,
-                    settingsGateway: settingsGateway,
-                  ),
-                  // TASK 17.4 §32 — `PosBrandingScreen` itself is
-                  // unchanged (TASK 14.5A); this is only its first real
-                  // nav entry point — see `pos_navigation.dart`'s own
-                  // `PosModule.logo` doc comment.
-                  PosModule.logo => PosBrandingScreen(context: this.context, settingsGateway: settingsGateway),
                   // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real
                   // deterministic FAQ bot over live data.
                   PosModule.assistant => PosAssistantScreen(
@@ -3877,6 +3869,132 @@ class _PosCard extends StatelessWidget {
         ],
       ),
       child: child,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// TASK 17.4.2 §3–§9 — Configuración: a real settings workspace organizing
+// four sections (Negocio/Ticket/Hardware/Fiestas) around already
+// implemented, backend-wired screens. Every section embeds its real
+// screen/widget verbatim — `PosBrandingScreen`, `PosReceiptBrandingScreen`,
+// `PosPrinterSettingsScreen`, `_FiestasAjustes` — so there is exactly one
+// branding form, one receipt/printer persistence path, and one party-
+// configuration surface in the whole app; this workspace only organizes
+// navigation around them. It deliberately builds nothing for Impuestos,
+// notification preferences, "Zona de riesgo", or business address/
+// website/phone/hours/capacity: TASK 17.4's own audit
+// (`docs/OPERATIONAL_VISUAL_POLISH.md`) found no real persistence/mutation
+// API for any of those, and this task's own instructions forbid inventing
+// UI for a field the backend cannot actually save.
+enum _ConfigurationSection { negocio, ticket, hardware, fiestas }
+
+extension on _ConfigurationSection {
+  String get label => switch (this) {
+    _ConfigurationSection.negocio => 'Negocio',
+    _ConfigurationSection.ticket => 'Ticket',
+    _ConfigurationSection.hardware => 'Hardware',
+    _ConfigurationSection.fiestas => 'Fiestas',
+  };
+
+  IconData get icon => switch (this) {
+    _ConfigurationSection.negocio => Icons.storefront_outlined,
+    _ConfigurationSection.ticket => Icons.receipt_long_outlined,
+    _ConfigurationSection.hardware => Icons.print_outlined,
+    _ConfigurationSection.fiestas => Icons.celebration_outlined,
+  };
+}
+
+class _ConfigurationWorkspace extends StatefulWidget {
+  const _ConfigurationWorkspace({
+    required this.context,
+    required this.settingsGateway,
+    required this.partiesGateway,
+    required this.catalogAdminGateway,
+    required this.productVariantsGateway,
+  });
+
+  final AuthenticatedContext context;
+  final PosSettingsGateway settingsGateway;
+  final PosPartiesGateway partiesGateway;
+  final PosCatalogAdminGateway catalogAdminGateway;
+  final PosProductVariantsGateway productVariantsGateway;
+
+  @override
+  State<_ConfigurationWorkspace> createState() => _ConfigurationWorkspaceState();
+}
+
+class _ConfigurationWorkspaceState extends State<_ConfigurationWorkspace> {
+  _ConfigurationSection _section = _ConfigurationSection.negocio;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _SectionHeader(
+            title: 'Configuración',
+            description: 'Administra las preferencias y herramientas de tu negocio.',
+          ),
+          // TASK 17.4.2 §20 — a wrapping chip row instead of a fixed-width
+          // `SegmentedButton`: even 4 segments can crowd a 390px viewport,
+          // and §15's own finding (an 8-segment `SegmentedButton`
+          // overflowing at phone width) is the exact failure mode this
+          // sidesteps from the start rather than patching afterward.
+          Wrap(
+            key: const Key('pos-configuration-sections'),
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final section in _ConfigurationSection.values)
+                ChoiceChip(
+                  key: Key('pos-configuration-section-${section.name}'),
+                  avatar: Icon(
+                    section.icon,
+                    size: 16,
+                    color: _section == section ? palette.action : palette.textMuted,
+                  ),
+                  label: Text(section.label),
+                  selected: _section == section,
+                  onSelected: (_) => setState(() => _section = section),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          switch (_section) {
+            _ConfigurationSection.negocio => _PosCard(
+              padding: EdgeInsets.zero,
+              child: PosBrandingScreen(context: widget.context, settingsGateway: widget.settingsGateway),
+            ),
+            _ConfigurationSection.ticket => _PosCard(
+              padding: EdgeInsets.zero,
+              child: PosReceiptBrandingScreen(context: widget.context, settingsGateway: widget.settingsGateway),
+            ),
+            _ConfigurationSection.hardware => _PosCard(
+              padding: EdgeInsets.zero,
+              child: PosPrinterSettingsScreen(context: widget.context, settingsGateway: widget.settingsGateway),
+            ),
+            // TASK 17.4.2 §7 — the real party-configuration surface: the
+            // SAME `_FiestasAjustes` widget the Fiestas module's own
+            // "Ajustes" tab already renders (Salones/Paquetes/Términos
+            // legales), reused verbatim. Never Calendario/Cotizador —
+            // those are daily operations, not configuration, and stay out
+            // of this workspace per this task's own explicit instruction.
+            _ConfigurationSection.fiestas => _PosCard(
+              child: _FiestasAjustes(
+                context: widget.context,
+                partiesGateway: widget.partiesGateway,
+                settingsGateway: widget.settingsGateway,
+                catalogAdminGateway: widget.catalogAdminGateway,
+                productVariantsGateway: widget.productVariantsGateway,
+              ),
+            ),
+          },
+        ],
+      ),
     );
   }
 }

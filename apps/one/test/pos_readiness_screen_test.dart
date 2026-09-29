@@ -21,9 +21,9 @@ void main() {
       final gateway = _FakeGateway(_tenant(branches: [_branch(name: 'Sucursal QA', stages: _stagesReadyNoInventory)]));
       await _pump(tester, gateway: gateway);
 
-      expect(find.text('Configuración'), findsOneWidget);
+      expect(find.text('Estado del sistema'), findsOneWidget);
       expect(
-        find.text('Estado de la configuración de tu empresa: qué está listo y qué falta para vender.'),
+        find.text('Configuración y preparación operativa: qué está listo y qué falta para vender.'),
         findsOneWidget,
       );
       expect(find.byKey(const Key('pos-readiness-banner-ready')), findsOneWidget);
