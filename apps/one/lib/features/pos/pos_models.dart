@@ -402,6 +402,7 @@ class PosUser {
     required this.displayName,
     required this.identityStatus,
     required this.membershipStatus,
+    this.membershipId,
   });
 
   // TASK 15.1 Phase 6 gap fix: `POST /api/v1/users` (`AdministrationService
@@ -426,6 +427,15 @@ class PosUser {
         ? json['identity_status']! as String
         : 'pending',
     membershipStatus: json.string('membership_status'),
+    // TASK 17.4.1 — `company_memberships.id`, already selected by
+    // `admin.service.ts`'s own `listUsers`/`userDetail`/`createUser`
+    // queries (`m.id as membership_id`) and already flowing through
+    // unmodified (both return the raw row spread) — this was simply
+    // never parsed into this model before now. Needed for the staff
+    // PIN endpoints (`PUT/DELETE /api/v1/auth/staff/{membership_id}
+    // /pin`), which are membership-scoped, never user-scoped (a user
+    // can hold more than one company's membership).
+    membershipId: json['membership_id'] as String?,
   );
 
   final String id;
@@ -433,6 +443,7 @@ class PosUser {
   final String displayName;
   final String identityStatus;
   final String membershipStatus;
+  final String? membershipId;
 }
 
 extension on Map<String, Object?> {

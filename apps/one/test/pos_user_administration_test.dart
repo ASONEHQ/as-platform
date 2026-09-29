@@ -797,6 +797,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
       await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
       await tester.pumpAndSettle();
 
@@ -819,6 +820,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
       await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
       await tester.pumpAndSettle();
       // A single grantable branch is already pre-selected by the dialog's
@@ -843,6 +845,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
       await tester.tap(find.byKey(const Key('pos-user-detail-grant-branch-access')));
       await tester.pumpAndSettle();
 
@@ -875,6 +878,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
 
       expect(find.text('Todas las sucursales (por rol de alcance completo).'), findsOneWidget);
       expect(find.text('Sin acceso a sucursales.'), findsNothing);
@@ -893,6 +897,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
 
       expect(
         find.text('Un rol define qué puede hacer este usuario: el conjunto de permisos activados para él.'),
@@ -942,6 +947,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
 
       expect(find.textContaining('área Zona A (ZONA-A)'), findsOneWidget);
       expect(find.textContaining('área area-1'), findsNothing);
@@ -975,6 +981,7 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
 
       expect(find.textContaining('caja Caja 1 (CAJA-1)'), findsOneWidget);
       expect(find.textContaining('caja register-1'), findsNothing);
@@ -1001,9 +1008,222 @@ void main() {
 
       await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
       await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
 
       expect(tester.takeException(), isNull);
       expect(find.textContaining('área area-missing'), findsOneWidget);
+    });
+  });
+
+  group('Usuarios — Datos/Acceso/Permisos (TASK 17.4.1)', () {
+    testWidgets('la ficha abre en Datos por defecto, mostrando estado de la cuenta', (tester) async {
+      final user = _user('u1', 'owner@inflapark.test', 'Owner', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Estado de la cuenta'), findsOneWidget);
+      // Acceso/Permisos content is not yet on screen until selected.
+      expect(find.text('Roles asignados'), findsNothing);
+      expect(find.text('Permisos efectivos'), findsNothing);
+    });
+
+    testWidgets('Permisos muestra los permisos efectivos reales del rol activo, con etiqueta comercial — nunca el código crudo', (
+      tester,
+    ) async {
+      final role = _role('r-cashier', 'Cajero', 'cashier');
+      final saleRead = _permission('p-sale-read', 'sale.read', 'sale');
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        roles: [role],
+        permissions: [saleRead],
+        rolePermissionsByRole: {
+          role.id: [_assignment(saleRead)],
+        },
+        userDetails: {
+          user.id: PosUserDetail(
+            user: user,
+            roles: [
+              PosUserRoleAssignment(
+                id: 'assignment-1',
+                roleId: role.id,
+                roleCode: role.code,
+                roleName: role.name,
+                branchId: null,
+                status: 'active',
+              ),
+            ],
+            branchAccess: const [],
+          ),
+        },
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(of: find.byKey(const Key('pos-user-detail-tabs')), matching: find.text('Permisos')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-user-permisos-list')), findsOneWidget);
+      expect(find.text('Consultar ventas'), findsOneWidget);
+      expect(find.text('sale.read'), findsNothing);
+      // Never a per-user override control — no schema for one exists.
+      expect(find.byType(Switch), findsNothing);
+      expect(find.byType(Checkbox), findsNothing);
+    });
+
+    testWidgets('sin staff_credential.manage, la sección PIN de acceso no aparece', (tester) async {
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions); // no staff_credential.manage.
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
+
+      expect(find.text('PIN de acceso'), findsNothing);
+      expect(find.byKey(const Key('pos-user-pin-set')), findsNothing);
+    });
+
+    testWidgets('con staff_credential.manage, actualizar el PIN llama al endpoint real — nunca muestra ni retiene el PIN anterior', (
+      tester,
+    ) async {
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: [..._ownerPermissions, 'staff_credential.manage'],
+      );
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
+
+      expect(find.text('PIN de acceso'), findsOneWidget);
+      // The section never claims to know/show an existing PIN — only a
+      // masked placeholder, never a real value.
+      expect(find.text('••••'), findsOneWidget);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-user-pin-set')));
+      await tester.tap(find.byKey(const Key('pos-user-pin-set')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-user-pin-input')), '4321');
+      await tester.tap(find.byKey(const Key('pos-user-pin-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.setStaffPinCalls, hasLength(1));
+      expect(gateway.setStaffPinCalls.single.membershipId, 'membership-u1');
+      expect(gateway.setStaffPinCalls.single.pin, '4321');
+      // The PIN dialog itself is gone — nothing keeps the typed value
+      // around anywhere the UI could re-display it.
+      expect(find.byKey(const Key('pos-user-pin-input')), findsNothing);
+    });
+
+    testWidgets('un PIN con formato inválido se rechaza antes de llamar al backend', (tester) async {
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: [..._ownerPermissions, 'staff_credential.manage'],
+      );
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
+      await tester.ensureVisible(find.byKey(const Key('pos-user-pin-set')));
+      await tester.tap(find.byKey(const Key('pos-user-pin-set')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-user-pin-input')), '12');
+      await tester.tap(find.byKey(const Key('pos-user-pin-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.setStaffPinCalls, isEmpty);
+      expect(find.textContaining('4 y 8 dígitos'), findsOneWidget);
+    });
+
+    testWidgets('quitar el PIN llama al endpoint real de eliminación', (tester) async {
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: [..._ownerPermissions, 'staff_credential.manage'],
+      );
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
+      await tester.ensureVisible(find.byKey(const Key('pos-user-pin-clear')));
+      await tester.tap(find.byKey(const Key('pos-user-pin-clear')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.clearStaffPinCalls, ['membership-u1']);
+    });
+
+    testWidgets('un rechazo real del backend al actualizar el PIN se muestra honestamente, nunca un falso éxito', (tester) async {
+      final user = _user('u1', 'cajero@inflapark.test', 'Cajero', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      )..staffPinFailure = const ApiException(AppFailure(AppErrorKind.authorization, 'No autorizado.'));
+      await _pump(
+        tester,
+        gateway: gateway,
+        permissions: [..._ownerPermissions, 'staff_credential.manage'],
+      );
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await _selectAccesoTab(tester);
+      await tester.ensureVisible(find.byKey(const Key('pos-user-pin-set')));
+      await tester.tap(find.byKey(const Key('pos-user-pin-set')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-user-pin-input')), '123456');
+      await tester.tap(find.byKey(const Key('pos-user-pin-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-user-pin-error')), findsOneWidget);
+      expect(find.text('No autorizado.'), findsOneWidget);
+    });
+
+    testWidgets('Permisos muestra un estado honesto de vacío cuando el usuario no tiene rol activo', (tester) async {
+      final user = _user('u1', 'sinrol@inflapark.test', 'Sin Rol', identityStatus: 'active', membershipStatus: 'active');
+      final gateway = _RecordingIdentityAdminGateway(
+        users: [user],
+        userDetails: {user.id: PosUserDetail(user: user, roles: const [], branchAccess: const [])},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions);
+
+      await tester.tap(find.byKey(Key('pos-user-row-${user.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(of: find.byKey(const Key('pos-user-detail-tabs')), matching: find.text('Permisos')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-user-permisos-empty')), findsOneWidget);
     });
   });
 
@@ -1573,12 +1793,19 @@ PosUser _user(
   String displayName, {
   String identityStatus = 'active',
   String membershipStatus = 'active',
+  // TASK 17.4.1 — real responses always carry `membership_id`; defaulted
+  // here (rather than left null) so every existing call site keeps
+  // exercising the PIN-section's real "membership id present" path,
+  // matching production. `null` remains overridable for a dedicated test
+  // of the (never expected in practice) absent case.
+  String? membershipId,
 }) => PosUser(
   id: id,
   email: email,
   displayName: displayName,
   identityStatus: identityStatus,
   membershipStatus: membershipStatus,
+  membershipId: membershipId ?? 'membership-$id',
 );
 
 PosRole _role(String id, String name, String code, {bool isSystem = false, String status = 'active'}) => PosRole(
@@ -1662,6 +1889,9 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
   final List<({String userId, String branchId, String? operationalAreaId, String? cashRegisterId})>
   grantRegisterAccessCalls = [];
   final List<({String userId, String id})> revokeRegisterAccessCalls = [];
+  final List<({String membershipId, String pin})> setStaffPinCalls = [];
+  final List<String> clearStaffPinCalls = [];
+  ApiException? staffPinFailure;
 
   @override
   Future<List<PosUser>> listUsers() async {
@@ -1941,6 +2171,33 @@ class _RecordingIdentityAdminGateway implements PosIdentityAdminGateway {
           grant,
     ];
   }
+
+  @override
+  Future<void> setStaffPin(String membershipId, String pin) async {
+    setStaffPinCalls.add((membershipId: membershipId, pin: pin));
+    final failure = staffPinFailure;
+    if (failure != null) throw failure;
+  }
+
+  @override
+  Future<void> clearStaffPin(String membershipId) async {
+    clearStaffPinCalls.add(membershipId);
+    final failure = staffPinFailure;
+    if (failure != null) throw failure;
+  }
+}
+
+// TASK 17.4.1 §11 — the user detail dialog now organizes into Datos/
+// Acceso/Permisos tabs (default: Datos); every test below that needs
+// role/branch/register-access content must switch to Acceso first,
+// mirroring `pos_inventory_admin_test.dart`'s own established
+// `find.descendant(of: find.byKey(tabsKey), matching: find.text(label))`
+// tab-selection convention.
+Future<void> _selectAccesoTab(WidgetTester tester) async {
+  await tester.tap(
+    find.descendant(of: find.byKey(const Key('pos-user-detail-tabs')), matching: find.text('Acceso')),
+  );
+  await tester.pumpAndSettle();
 }
 
 Future<void> _pump(

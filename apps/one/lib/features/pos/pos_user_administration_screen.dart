@@ -507,6 +507,7 @@ class _UsersTabState extends State<_UsersTab> {
   bool get _canUpdate => widget.context.permissions.contains('user.update');
   bool get _canAssignRole => widget.context.permissions.contains('role.assign');
   bool get _canManageBranchAccess => widget.context.permissions.contains('branch_access.manage');
+  bool get _canManagePin => widget.context.permissions.contains('staff_credential.manage');
 
   @override
   void initState() {
@@ -677,6 +678,7 @@ class _UsersTabState extends State<_UsersTab> {
         canUpdate: _canUpdate,
         canAssignRole: _canAssignRole,
         canManageBranchAccess: _canManageBranchAccess,
+        canManagePin: _canManagePin,
       ),
     );
     if (changed == true) unawaited(_load());
@@ -1380,6 +1382,13 @@ class _BranchSetupSummaryDialog extends StatelessWidget {
 
 enum _DetailPhase { loading, ready, failure }
 
+/// TASK 17.4.1 §11 — the user detail dialog's own three organized
+/// sections. Datos = account identity/status. Acceso = login identity,
+/// roles, branch/register access. Permisos = effective (role-derived)
+/// permissions ONLY — there is no per-user permission override anywhere
+/// in this schema, so this tab never renders one.
+enum _UserDetailTab { datos, acceso, permisos }
+
 /// The user detail view: account status, role assignments, branch access.
 /// Always reachable with `user.read` (the tab itself is already gated on
 /// it); every mutating action inside stays its own individually-gated,
@@ -1394,6 +1403,7 @@ class _UserDetailDialog extends StatefulWidget {
     required this.canUpdate,
     required this.canAssignRole,
     required this.canManageBranchAccess,
+    this.canManagePin = false,
   });
 
   final PosUser user;
@@ -1404,6 +1414,10 @@ class _UserDetailDialog extends StatefulWidget {
   final bool canUpdate;
   final bool canAssignRole;
   final bool canManageBranchAccess;
+  // TASK 17.4.1 §12 — gates the "PIN de acceso" section in Acceso,
+  // matching `staff_credential.manage` (the real permission the backend
+  // `PUT/DELETE /api/v1/auth/staff/{membershipId}/pin` routes require).
+  final bool canManagePin;
 
   @override
   State<_UserDetailDialog> createState() => _UserDetailDialogState();
@@ -1449,10 +1463,20 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   final _passwordController = TextEditingController();
   bool _statusBusy = false;
   String? _statusError;
+  bool _pinBusy = false;
+  String? _pinError;
 
   static const _updateTooltip = 'Se requiere el permiso user.update.';
   static const _assignTooltip = 'Se requiere el permiso role.assign.';
   static const _branchAccessTooltip = 'Se requiere el permiso branch_access.manage.';
+
+  // TASK 17.4.1 §11 — Datos/Acceso/Permisos organization. A plain local
+  // tab selector (mirrors `pos_inventory_admin_screen.dart`'s own
+  // `SegmentedButton`-driven tab pattern — never a `TabController`/
+  // `TabBarView`, which would need a bounded height inside this dialog's
+  // existing `SingleChildScrollView`). No section moved here changes
+  // its own logic/keys — only which tab it renders under.
+  _UserDetailTab _selectedTab = _UserDetailTab.datos;
 
   @override
   void initState() {
@@ -1548,6 +1572,65 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
       setState(() {
         _statusBusy = false;
         _statusError = 'No fue posible actualizar el estado del usuario.';
+      });
+    }
+  }
+
+  Future<void> _openSetPin() async {
+    final membershipId = widget.user.membershipId;
+    if (membershipId == null) return;
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => const _SetPinDialog(),
+    );
+    if (pin == null) return;
+    setState(() {
+      _pinBusy = true;
+      _pinError = null;
+    });
+    try {
+      await widget.gateway.setStaffPin(membershipId, pin);
+      _changed = true;
+      if (!mounted) return;
+      setState(() => _pinBusy = false);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _pinBusy = false;
+        _pinError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _pinBusy = false;
+        _pinError = 'No fue posible actualizar el PIN.';
+      });
+    }
+  }
+
+  Future<void> _clearPin() async {
+    final membershipId = widget.user.membershipId;
+    if (membershipId == null) return;
+    setState(() {
+      _pinBusy = true;
+      _pinError = null;
+    });
+    try {
+      await widget.gateway.clearStaffPin(membershipId);
+      _changed = true;
+      if (!mounted) return;
+      setState(() => _pinBusy = false);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _pinBusy = false;
+        _pinError = error.failure.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _pinBusy = false;
+        _pinError = 'No fue posible quitar el PIN.';
       });
     }
   }
@@ -1775,6 +1858,31 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
   Widget _buildReady(PosPalette palette) {
     final detail = _detail!;
     return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SegmentedButton<_UserDetailTab>(
+          key: const Key('pos-user-detail-tabs'),
+          segments: const [
+            ButtonSegment(value: _UserDetailTab.datos, label: Text('Datos')),
+            ButtonSegment(value: _UserDetailTab.acceso, label: Text('Acceso')),
+            ButtonSegment(value: _UserDetailTab.permisos, label: Text('Permisos')),
+          ],
+          selected: {_selectedTab},
+          onSelectionChanged: (value) => setState(() => _selectedTab = value.first),
+        ),
+        const SizedBox(height: 14),
+        switch (_selectedTab) {
+          _UserDetailTab.datos => _datosTab(palette, detail),
+          _UserDetailTab.acceso => _accesoTab(palette, detail),
+          _UserDetailTab.permisos => _PermisosTab(gateway: widget.gateway, roles: detail.roles),
+        },
+      ],
+    );
+  }
+
+  Widget _datosTab(PosPalette palette, PosUserDetail detail) {
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
@@ -1831,7 +1939,14 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
             ),
           ),
         ),
-        const Divider(height: 28),
+      ],
+    );
+  }
+
+  Widget _accesoTab(PosPalette palette, PosUserDetail detail) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         Row(
           children: [
             Expanded(child: Text('Roles asignados', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13))),
@@ -2020,7 +2135,244 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
                 ],
               ),
             ),
+        // TASK 17.4.1 §12 — "PIN de acceso". Only rendered when the real
+        // membership id is present (always true from a real gateway
+        // response — see `PosUser.membershipId`'s own doc comment) and
+        // the actor holds `staff_credential.manage`, the exact permission
+        // the backend `PUT/DELETE /api/v1/auth/staff/{membershipId}/pin`
+        // routes already require. The current PIN — set or not — is
+        // never knowable from any existing response (the backend never
+        // exposes `pin_hash`, nor a derived "is one set" boolean), so
+        // this never claims to know it: one neutral "Actualizar PIN"
+        // action (always a real set/replace) and one "Quitar PIN" action,
+        // never a fabricated "PIN actual" display.
+        if (widget.canManagePin && widget.user.membershipId != null) ...[
+          const Divider(height: 28),
+          Text('PIN de acceso', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+          const SizedBox(height: 4),
+          Text(
+            'Un PIN numérico permite a este usuario iniciar sesión rápida en caja. Nunca se muestra '
+            'ni se puede consultar un PIN ya existente — solo establecer uno nuevo o quitarlo.',
+            style: TextStyle(color: palette.textMuted, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          Text('PIN', style: TextStyle(color: palette.textMuted, fontSize: 9)),
+          Text('••••', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 16, letterSpacing: 2)),
+          const SizedBox(height: 8),
+          if (_pinError != null) ...[
+            Text(_pinError!, key: const Key('pos-user-pin-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+            const SizedBox(height: 8),
+          ],
+          Row(
+            children: [
+              OutlinedButton.icon(
+                key: const Key('pos-user-pin-set'),
+                onPressed: _pinBusy ? null : () => unawaited(_openSetPin()),
+                icon: const Icon(Icons.pin_outlined, size: 14),
+                label: const Text('Actualizar PIN'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                key: const Key('pos-user-pin-clear'),
+                onPressed: _pinBusy ? null : () => unawaited(_clearPin()),
+                icon: _pinBusy
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.close, size: 14),
+                label: const Text('Quitar PIN'),
+                style: OutlinedButton.styleFrom(foregroundColor: palette.error),
+              ),
+            ],
+          ),
+        ],
       ],
+    );
+  }
+}
+
+/// TASK 17.4.1 §11 — "Permisos efectivos": the real, union-of-active-
+/// roles permission set this user actually has today — computed the
+/// exact same way `_UsersTabState._permissionCountFor`'s own count
+/// already is (one `rolePermissions(roleId)` call per distinct active
+/// role, bounded by however many roles this one user holds — never
+/// N+1 over every user). Deliberately distinct from, and never a
+/// substitute for, "editar permisos del rol" (still only reachable from
+/// the Roles tab elsewhere in this screen) — there is no per-user
+/// override to edit here, and this tab never pretends otherwise.
+class _PermisosTab extends StatefulWidget {
+  const _PermisosTab({required this.gateway, required this.roles});
+  final PosIdentityAdminGateway gateway;
+  final List<PosUserRoleAssignment> roles;
+
+  @override
+  State<_PermisosTab> createState() => _PermisosTabState();
+}
+
+class _PermisosTabState extends State<_PermisosTab> {
+  _ListPhase _phase = _ListPhase.loading;
+  List<String> _labels = const [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  List<String> get _activeRoleIds =>
+      {for (final r in widget.roles) if (r.status == 'active') r.roleId}.toList(growable: false);
+
+  Future<void> _load() async {
+    final roleIds = _activeRoleIds;
+    if (roleIds.isEmpty) {
+      setState(() => _phase = _ListPhase.empty);
+      return;
+    }
+    try {
+      final results = await Future.wait(roleIds.map(widget.gateway.rolePermissions));
+      final codes = <String>{};
+      for (final assignments in results) {
+        for (final assignment in assignments) {
+          if (assignment.effect == 'allow') codes.add(assignment.code);
+        }
+      }
+      if (!mounted) return;
+      final labels = codes.map(permissionLabel).toList()..sort();
+      setState(() {
+        _labels = labels;
+        _phase = labels.isEmpty ? _ListPhase.empty : _ListPhase.ready;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _phase = _ListPhase.failure;
+        _error = 'No fue posible cargar los permisos efectivos.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Permisos efectivos', style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+        const SizedBox(height: 4),
+        Text(
+          'Lo que este usuario puede hacer hoy, según sus roles activos. No existen permisos '
+          'individuales por usuario — para cambiar uno de estos, edita el rol en la pestaña Roles.',
+          style: TextStyle(color: palette.textMuted, fontSize: 11),
+        ),
+        const SizedBox(height: 10),
+        switch (_phase) {
+          _ListPhase.loading => const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          _ListPhase.failure => Text(
+            _error ?? 'No fue posible cargar los permisos efectivos.',
+            key: const Key('pos-user-permisos-error'),
+            style: TextStyle(color: palette.error, fontSize: 12),
+          ),
+          _ListPhase.empty => Text(
+            'Sin permisos efectivos — este usuario no tiene un rol activo asignado.',
+            key: const Key('pos-user-permisos-empty'),
+            style: TextStyle(color: palette.textMuted, fontSize: 12),
+          ),
+          _ListPhase.ready => Wrap(
+            key: const Key('pos-user-permisos-list'),
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final label in _labels)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(20)),
+                  child: Text(label, style: TextStyle(color: palette.blueDeep, fontSize: 11, fontWeight: FontWeight.w700)),
+                ),
+            ],
+          ),
+        },
+      ],
+    );
+  }
+}
+
+/// TASK 17.4.1 §12 — captures a NEW PIN only; never pre-fills, displays,
+/// or reads back an existing one (there is no endpoint that could —
+/// `pin_hash` is never returned by any response). Mirrors the backend's
+/// own real validation (`setStaffPinSchema`: `^[0-9]{4,8}$`) client-side
+/// only to avoid an unnecessary round trip — the backend re-validates
+/// independently and remains the actual authority.
+class _SetPinDialog extends StatefulWidget {
+  const _SetPinDialog();
+
+  @override
+  State<_SetPinDialog> createState() => _SetPinDialogState();
+}
+
+class _SetPinDialogState extends State<_SetPinDialog> {
+  final _controller = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final value = _controller.text.trim();
+    if (!RegExp(r'^[0-9]{4,8}$').hasMatch(value)) {
+      setState(() => _error = 'El PIN debe tener entre 4 y 8 dígitos numéricos.');
+      return;
+    }
+    Navigator.of(context).pop<String>(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Dialog(
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 340),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Actualizar PIN', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(height: 4),
+              Text(
+                'Escribe un PIN nuevo de 4 a 8 dígitos. Reemplaza cualquier PIN anterior de este usuario.',
+                style: TextStyle(color: palette.textSecondary, fontSize: 11),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('pos-user-pin-input'),
+                controller: _controller,
+                autofocus: true,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                maxLength: 8,
+                decoration: InputDecoration(isDense: true, labelText: 'PIN nuevo', errorText: _error),
+                onChanged: (_) => setState(() => _error = null),
+                onSubmitted: (_) => _confirm(),
+              ),
+              const SizedBox(height: 12),
+              _DialogButtons(
+                busy: false,
+                onCancel: () => Navigator.of(context).pop(),
+                onSave: _confirm,
+                saveKey: const Key('pos-user-pin-confirm'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

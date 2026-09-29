@@ -510,6 +510,20 @@ abstract interface class PosIdentityAdminGateway {
   /// access" — branch-level access itself is managed separately by
   /// [changeBranchAccess]/[revokeBranchAccess] above).
   Future<void> revokeRegisterAccess(String userId, String id);
+
+  /// `PUT /api/v1/auth/staff/{membershipId}/pin` (`staff_credential.
+  /// manage`) — sets/replaces this membership's PIN. The backend hashes
+  /// it server-side (the same argon2id convention passwords already
+  /// use) and never returns it; [pin] is a plain digit string this
+  /// gateway sends over TLS exactly once and never retains.
+  /// Membership-scoped (never user-scoped) — a user can hold more than
+  /// one company's membership, each with its own independent PIN.
+  Future<void> setStaffPin(String membershipId, String pin);
+
+  /// `DELETE /api/v1/auth/staff/{membershipId}/pin` (`staff_credential.
+  /// manage`) — clears the PIN (`pin_hash` back to `null`); the
+  /// membership can no longer PIN-login until a new one is set.
+  Future<void> clearStaffPin(String membershipId);
 }
 
 class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
@@ -681,6 +695,16 @@ class ApiPosIdentityAdminGateway implements PosIdentityAdminGateway {
     await _client.deleteJson('/api/v1/users/$userId/register-access/$id');
   }
 
+  @override
+  Future<void> setStaffPin(String membershipId, String pin) async {
+    await _client.putJson('/api/v1/auth/staff/$membershipId/pin', body: {'pin': pin});
+  }
+
+  @override
+  Future<void> clearStaffPin(String membershipId) async {
+    await _client.deleteJson('/api/v1/auth/staff/$membershipId/pin');
+  }
+
   Map<String, Object?> _map(Map<String, Object?> envelope) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
@@ -781,5 +805,13 @@ class EmptyPosIdentityAdminGateway implements PosIdentityAdminGateway {
 
   @override
   Future<void> revokeRegisterAccess(String userId, String id) =>
+      Future.error(StateError('No identity admin gateway is configured.'));
+
+  @override
+  Future<void> setStaffPin(String membershipId, String pin) =>
+      Future.error(StateError('No identity admin gateway is configured.'));
+
+  @override
+  Future<void> clearStaffPin(String membershipId) =>
       Future.error(StateError('No identity admin gateway is configured.'));
 }
