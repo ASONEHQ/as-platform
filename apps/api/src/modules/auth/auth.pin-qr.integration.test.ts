@@ -222,12 +222,108 @@ integration('PIN/QR quick-switch login (real Postgres, real argon2id hashing)', 
       expect(result.context.userId).toBe(cashierUserId);
       expect(result.context.membershipId).toBe(cashierMembershipId);
       expect(result.context.companyId).toBe(companyAId);
+      expect(result.context.branchId).toBe(branchAId);
       // Real, persisted, queryable session row — not a client-only token.
       const row = await database.pool.query<{ user_id: string; status: string }>(
         'select user_id,status from sessions where id=$1',
         [result.context.sessionId],
       );
       expect(row.rows[0]).toMatchObject({ user_id: cashierUserId, status: 'active' });
+    });
+
+    // TASK 17.4.4 — production bug report: a PIN set from Usuarios →
+    // Acceso → PIN de acceso for an Owner/Manager-role identity failed on
+    // "Volver a modo Cajero". This proves the SET → SWITCH round-trip
+    // works end to end for exactly that scenario: the PIN write and PIN
+    // login are the same `company_memberships.id`/`pin_hash` row, the
+    // same argon2id hash/verify, and `pinLogin` applies no role/permission
+    // restriction on the matched candidate — any active, PIN-enrolled
+    // membership in the caller's own company can quick-switch, Owner/
+    // Manager included. The reported failure was isolated to the Flutter
+    // dialog's own missing client-side input validation (see
+    // `pos_shell.dart`'s `_CajeroReturnAuthDialog`), not this backend
+    // round-trip — this test is the proof.
+    it('TASK 17.4.4 — an Owner/Manager identity (not just a cashier) can set and then use its own PIN via quick-switch', async () => {
+      await service.setStaffPin(managerContext, managerMembershipId, '4321');
+      const result = await service.pinLogin(managerContext, '4321');
+      expect(result.context.userId).toBe(managerUserId);
+      expect(result.context.membershipId).toBe(managerMembershipId);
+      expect(result.context.companyId).toBe(companyAId);
+    });
+
+    it('TASK 17.4.4 — a suspended membership cannot authenticate via PIN even with the correct digits', async () => {
+      await service.setStaffPin(managerContext, cashierMembershipId, '3344');
+      // 'suspended' is a real value of `company_memberships_status_ck`
+      // ('invited' | 'active' | 'suspended' | 'disabled').
+      await database.pool.query(`update company_memberships set status='suspended' where id=$1`, [
+        cashierMembershipId,
+      ]);
+      await expect(service.pinLogin(managerContext, '3344')).rejects.toMatchObject({
+        code: 'invalid_credentials',
+      });
+      // Restore for any tests that run after this one in the same file.
+      await database.pool.query(`update company_memberships set status='active' where id=$1`, [
+        cashierMembershipId,
+      ]);
+    });
+
+    // TASK 17.4.4 §6 — PIN login itself does not filter candidates by
+    // branch (`listPinLoginCandidates` is company-scoped only), but the
+    // exact same `resolveContext` branch-authorization check password
+    // login already uses (TASK 17.3) still runs afterward, inside the
+    // shared `#createLoginSession` path — so a matched PIN holder who
+    // genuinely lacks access to the calling terminal's current branch is
+    // still rejected, never granted a silent cross-branch session.
+    //
+    // The rejection code is `device_revoked`, not `branch_scope_mismatch`,
+    // because `managerContext` (like a real cashier terminal) carries a
+    // `deviceId`: `#createLoginSession` maps EVERY `resolveContext` null
+    // result to `device_revoked` whenever `input.deviceId !== undefined`
+    // (`auth.service.ts`'s own ternary), even when the actual cause is a
+    // branch-permission mismatch rather than a revoked device. This is a
+    // pre-existing, real code behavior (not introduced by this task) —
+    // asserted here so it's provable rather than assumed, and worth a
+    // human review of whether that error-code overload is itself
+    // desirable, separate from this bug.
+    it('TASK 17.4.4 §6 — a correct PIN for a membership without access to the terminal\'s current branch never grants a session', async () => {
+      const otherBranchId = randomUUID();
+      const branchOnlyUserId = randomUUID();
+      const branchOnlyMembershipId = randomUUID();
+      await database.pool.query(
+        `insert into branches (id,company_id,code,name,status,timezone) values ($1,$2,'A2','Branch A2','active','UTC')`,
+        [otherBranchId, companyAId],
+      );
+      await database.pool.query(
+        `insert into users (id,email,normalized_email,display_name,password_hash,status)
+         values ($1,$2,$2,'Branch-only Cashier',$3,'active')`,
+        [branchOnlyUserId, `pinqr-branchonly-${branchOnlyUserId}@example.test`, await hashPassword('Correct-password-1!')],
+      );
+      await database.pool.query(
+        `insert into company_memberships (id,company_id,user_id,status) values ($1,$2,$3,'active')`,
+        [branchOnlyMembershipId, companyAId, branchOnlyUserId],
+      );
+      await database.pool.query(
+        `insert into user_branch_access (id,company_id,membership_id,user_id,branch_id,status,is_default)
+         values ($1,$2,$3,$4,$5,'active',true)`,
+        [randomUUID(), companyAId, branchOnlyMembershipId, branchOnlyUserId, otherBranchId],
+      );
+      await service.setStaffPin(managerContext, branchOnlyMembershipId, '6655');
+
+      // managerContext is scoped to branchAId — this membership only has
+      // access to otherBranchId, never branchAId.
+      await expect(service.pinLogin(managerContext, '6655')).rejects.toMatchObject({
+        code: 'device_revoked',
+        statusCode: 403,
+      });
+
+      await database.pool.query('delete from user_branch_access where membership_id=$1', [
+        branchOnlyMembershipId,
+      ]);
+      await database.pool.query('delete from company_memberships where id=$1', [
+        branchOnlyMembershipId,
+      ]);
+      await database.pool.query('delete from users where id=$1', [branchOnlyUserId]);
+      await database.pool.query('delete from branches where id=$1', [otherBranchId]);
     });
 
     it('an unknown/wrong PIN is rejected honestly, with no hint about which part was wrong', async () => {

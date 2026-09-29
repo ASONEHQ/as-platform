@@ -3865,6 +3865,57 @@ void main() {
       expect(find.byKey(const Key('pos-cliente-ticket-preview')), findsNothing);
     });
 
+    // TASK 17.4.4 — production bug: the backend's `/api/v1/auth/pin-login`
+    // only ever accepts a 4-8 digit PIN, but this dialog used to invite
+    // "PIN o contraseña" on an unrestricted text field, so a real employee
+    // password (or a stray non-digit character) always failed server-side
+    // schema validation with a generic, indistinguishable-from-wrong-PIN
+    // error. The field's own `keyboardType`/`inputFormatters` now keep
+    // typed input digits-only (matching `_SetPinDialog`'s own hardening),
+    // and `_confirm` rejects a malformed value locally before ever
+    // calling the gateway.
+    testWidgets('TASK 17.4.4 — a non-numeric value (e.g. a real employee password) is rejected locally, never sent to the backend', (
+      tester,
+    ) async {
+      final authGateway = _FakeAuthGateway();
+      await _pump(tester, const Size(1440, 900), authGateway: authGateway);
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+
+      // The field's own `FilteringTextInputFormatter.digitsOnly` strips
+      // non-digit characters as they're typed — exactly like a real
+      // device keyboard would with this formatter attached — leaving a
+      // value shorter than the required 4 digits.
+      await tester.enterText(
+        find.byKey(const Key('pos-cajero-return-input')),
+        'Correct-Horse-1!',
+      );
+      await tester.tap(find.byKey(const Key('pos-cajero-return-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(authGateway.pinLoginCalls, 0);
+      expect(find.byKey(const Key('pos-cajero-return-error')), findsOneWidget);
+      expect(find.text('El PIN debe tener entre 4 y 8 dígitos numéricos.'), findsOneWidget);
+      expect(find.byKey(const Key('pos-cajero-return-dialog')), findsOneWidget);
+    });
+
+    testWidgets('TASK 17.4.4 — the corrected copy never invites a password, and the field never surfaces a maxLength counter', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-mode-cajero')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ingresa tu PIN de acceso.'), findsOneWidget);
+      expect(find.textContaining('contraseña'), findsNothing);
+    });
+
     testWidgets('SaleSession lines and quantities are unchanged after the '
         'full CLIENTE → dialog → CAJERO round trip', (tester) async {
       await _pump(tester, const Size(1440, 900));

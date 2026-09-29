@@ -5758,11 +5758,31 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
     super.dispose();
   }
 
+  // TASK 17.4.4 — the backend's own `/api/v1/auth/pin-login` route only
+  // ever accepts a 4-8 digit PIN (`pinLoginSchema`'s
+  // `pattern: '^[0-9]{4,8}$'`, identical to the pattern
+  // `_SetPinDialog` already enforces when a PIN is first set) — it has no
+  // password-alternative path at all. This dialog used to invite "PIN o
+  // contraseña" on an unrestricted text field with no client-side check,
+  // so anything that didn't happen to be exactly 4-8 digits (a real
+  // employee password, a stray space from autofill, etc.) always failed
+  // AJV schema validation server-side, surfacing as the generic
+  // "Revisa la información e inténtalo de nuevo." — indistinguishable
+  // from an actual wrong PIN, even though the real, correctly-configured
+  // PIN would have worked. Validating the exact same pattern here, before
+  // ever calling the network, catches that case honestly and immediately
+  // instead of round-tripping to the server to discover it.
+  static final RegExp _pinPattern = RegExp(r'^[0-9]{4,8}$');
+
   Future<void> _confirm() async {
     if (_busy) return;
-    final pin = pinController.text;
+    final pin = pinController.text.trim();
     if (pin.isEmpty) {
-      setState(() => error = 'Ingresa tu PIN o contraseña.');
+      setState(() => error = 'Ingresa tu PIN.');
+      return;
+    }
+    if (!_pinPattern.hasMatch(pin)) {
+      setState(() => error = 'El PIN debe tener entre 4 y 8 dígitos numéricos.');
       return;
     }
     setState(() {
@@ -5789,7 +5809,7 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        error = 'No fue posible verificar el PIN o contraseña.';
+        error = 'No fue posible verificar el PIN.';
       });
     }
   }
@@ -5829,7 +5849,7 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text(
-            'Ingresa tu PIN o contraseña de empleado.',
+            'Ingresa tu PIN de acceso.',
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 12),
@@ -5840,9 +5860,20 @@ class _CajeroReturnAuthDialogState extends State<_CajeroReturnAuthDialog> {
             autofocus: true,
             enabled: !_busy,
             textAlign: TextAlign.center,
+            // TASK 17.4.4 — matches `_SetPinDialog`'s own hardening
+            // (`pos_user_administration_screen.dart`): a numeric keypad
+            // (never the OS's general alphanumeric keyboard, which is
+            // exactly what tends to trigger a password-manager/autofill
+            // suggestion on an `obscureText` field) plus a digits-only
+            // formatter, so this field can never end up holding anything
+            // `_confirm`'s own `_pinPattern` check would reject anyway.
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            maxLength: 8,
             decoration: const InputDecoration(
               isDense: true,
-              hintText: 'PIN o contraseña',
+              hintText: 'PIN',
+              counterText: '',
             ),
             onSubmitted: (_) => unawaited(_confirm()),
           ),
