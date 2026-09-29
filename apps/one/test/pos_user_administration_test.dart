@@ -1612,6 +1612,29 @@ void main() {
       expect(find.byKey(const Key('pos-role-detail-name')), findsOneWidget);
     });
 
+    // TASK 17.5 §12/§31 — the new read-only "Otorgado"/"No otorgado" pill
+    // (replacing a disabled `Switch` for a protected role) must not
+    // overflow at true phone width either.
+    testWidgets('el pill de solo lectura de un rol protegido no revienta en un viewport angosto', (tester) async {
+      final systemRole = _role('role-owner', 'Owner', 'owner', isSystem: true);
+      final permission = _permission('p-sale-read', 'sale.read', 'sale');
+      final gateway = _RecordingIdentityAdminGateway(
+        roles: [systemRole],
+        permissions: [permission],
+        rolePermissionsByRole: {systemRole.id: [_assignment(permission)]},
+      );
+      await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-role-row-role-owner')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Otorgado'), findsOneWidget);
+    });
+
     for (final size in [const Size(1440, 900), const Size(1365, 768)]) {
       testWidgets('el maestro/detalle de Roles no revienta en un escritorio de ${size.width.toInt()}x${size.height.toInt()}', (
         tester,
@@ -1751,13 +1774,21 @@ void main() {
       );
     });
 
-    testWidgets('un rol protegido mantiene sus switches visibles pero de solo lectura', (tester) async {
+    // TASK 17.5 §12 — a disabled `Switch(value: true)` read visually close
+    // to "disabled and absent" (production review finding); a protected
+    // role's permissions now render as an unmistakable read-only
+    // "Otorgado"/"No otorgado" pill instead, never an editable `Switch`
+    // (which would misleadingly imply the row could ever be toggled).
+    testWidgets('un rol protegido muestra sus permisos como "Otorgado" de solo lectura, nunca un switch', (
+      tester,
+    ) async {
       final systemRole = _role('role-owner', 'Owner', 'owner', isSystem: true);
-      final permission = _permission('p-sale-read', 'sale.read', 'sale');
+      final grantedPermission = _permission('p-sale-read', 'sale.read', 'sale');
+      final ungrantedPermission = _permission('p-sale-create', 'sale.create', 'sale');
       final gateway = _RecordingIdentityAdminGateway(
         roles: [systemRole],
-        permissions: [permission],
-        rolePermissionsByRole: {systemRole.id: [_assignment(permission)]},
+        permissions: [grantedPermission, ungrantedPermission],
+        rolePermissionsByRole: {systemRole.id: [_assignment(grantedPermission)]},
       );
       await _pump(tester, gateway: gateway, permissions: _ownerPermissions, tab: 'Roles y permisos');
 
@@ -1765,9 +1796,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Protegido'), findsWidgets);
-      final protectedSwitch = tester.widget<Switch>(find.byKey(const Key('pos-permission-checkbox-p-sale-read')));
-      expect(protectedSwitch.value, isTrue);
-      expect(protectedSwitch.onChanged, isNull, reason: 'a system role stays read-only even for a held permission');
+      expect(find.byKey(const Key('pos-permission-checkbox-p-sale-read')), findsNothing);
+      expect(find.byKey(const Key('pos-permission-checkbox-p-sale-create')), findsNothing);
+      expect(find.text('Otorgado'), findsOneWidget);
+      expect(find.text('No otorgado'), findsOneWidget);
     });
   });
 

@@ -188,7 +188,7 @@ class _AdminHeader extends StatelessWidget {
                 Text('Usuarios y roles', style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
                 Text(
-                  'Usuarios, roles y permisos — datos reales del backend.',
+                  'Administra usuarios, roles y permisos.',
                   style: TextStyle(color: palette.textSecondary, fontSize: 12),
                 ),
               ],
@@ -4312,6 +4312,27 @@ class _PermissionSwitchRow extends StatelessWidget {
     final reason = !picker.enabled
         ? ''
         : (!switchEnabled ? 'Tu sesión no tiene el permiso ${permission.code} — no puedes otorgarlo.' : '');
+    // TASK 17.5 §12 — a protected role (Owner) is never editable here at
+    // all (`picker.enabled == false`), so a disabled `Switch` was the
+    // wrong control for it: Flutter's default disabled-switch styling
+    // makes a disabled-but-ON track look visually close to a disabled-
+    // but-OFF one, and production review found "granted + protected"
+    // reading as "disabled and absent". A plain read-only status pill
+    // removes that ambiguity — it was never going to be interactive
+    // either way — while every other (editable-but-actor-lacks-permission)
+    // case keeps the real, interactive `Switch` unchanged below.
+    if (!picker.enabled) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          children: [
+            Expanded(child: label),
+            const SizedBox(width: 6),
+            _PermissionGrantedPill(granted: isChecked),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
@@ -4334,6 +4355,39 @@ class _PermissionSwitchRow extends StatelessWidget {
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// TASK 17.5 §12 — the read-only equivalent of `_PermissionSwitchRow`'s
+/// `Switch` for a protected (Owner) role: an unmistakable "Otorgado"/"No
+/// otorgado" pill instead of a disabled toggle nobody can operate anyway.
+class _PermissionGrantedPill extends StatelessWidget {
+  const _PermissionGrantedPill({required this.granted});
+  final bool granted;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final color = granted ? palette.success : palette.textMuted;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: granted ? color.withValues(alpha: .12) : palette.background,
+        border: granted ? null : Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(granted ? Icons.check_circle : Icons.remove_circle_outline, size: 13, color: color),
+          const SizedBox(width: 4),
+          Text(
+            granted ? 'Otorgado' : 'No otorgado',
+            style: TextStyle(color: color, fontSize: 10.5, fontWeight: FontWeight.w700),
           ),
         ],
       ),
