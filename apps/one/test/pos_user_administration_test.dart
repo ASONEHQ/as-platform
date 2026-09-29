@@ -1530,6 +1530,73 @@ void main() {
       expect(find.byKey(const Key('pos-users-grid')), findsOneWidget);
     });
 
+    // TASK 17.4.2 §17/§23 — the user detail dialog's Datos/Acceso/Permisos
+    // tabs and the "PIN de acceso" section (TASK 17.4.1) must all stay
+    // reachable at true phone width, with no overflow anywhere in the
+    // dialog.
+    testWidgets(
+      'TASK 17.4.2 §17 — a 390x844 la ficha de usuario (Datos/Acceso/Permisos/PIN) no revienta y sigue siendo alcanzable',
+      (tester) async {
+        final user = _user('u1', 'cajero@inflapark.test', 'Cajero Móvil', identityStatus: 'active', membershipStatus: 'active');
+        final role = _role('r-cashier', 'Cajero', 'cashier');
+        final saleRead = _permission('p-sale-read', 'sale.read', 'sale');
+        final gateway = _RecordingIdentityAdminGateway(
+          users: [user],
+          roles: [role],
+          permissions: [saleRead],
+          rolePermissionsByRole: {role.id: [_assignment(saleRead)]},
+          userDetails: {
+            user.id: PosUserDetail(
+              user: user,
+              roles: [
+                PosUserRoleAssignment(
+                  id: 'assignment-1',
+                  roleId: role.id,
+                  roleCode: role.code,
+                  roleName: role.name,
+                  branchId: null,
+                  status: 'active',
+                ),
+              ],
+              branchAccess: const [],
+            ),
+          },
+        );
+        await _pump(tester, gateway: gateway, permissions: [..._ownerPermissions, 'staff_credential.manage']);
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-users-grid')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        final userRow = find.byKey(Key('pos-user-row-${user.id}'));
+        await tester.ensureVisible(userRow);
+        await tester.tap(userRow);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final tabs = find.byKey(const Key('pos-user-detail-tabs'));
+        expect(tabs, findsOneWidget);
+        expect(find.text('Estado de la cuenta'), findsOneWidget);
+
+        await tester.tap(find.descendant(of: tabs, matching: find.text('Acceso')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final pinButton = find.byKey(const Key('pos-user-pin-set'));
+        await tester.ensureVisible(pinButton);
+        expect(pinButton, findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        final permisosTab = find.descendant(of: tabs, matching: find.text('Permisos'));
+        await tester.ensureVisible(permisosTab);
+        await tester.tap(permisosTab);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-user-permisos-list')), findsOneWidget);
+        expect(find.text('Consultar ventas'), findsOneWidget);
+      },
+    );
+
     testWidgets('el maestro/detalle de Roles se apila (lista, luego detalle) en un viewport angosto', (tester) async {
       final role = _role('role-a', 'Gerente', 'manager');
       final gateway = _RecordingIdentityAdminGateway(roles: [role]);

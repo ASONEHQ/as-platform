@@ -1389,6 +1389,12 @@ enum _DetailPhase { loading, ready, failure }
 /// in this schema, so this tab never renders one.
 enum _UserDetailTab { datos, acceso, permisos }
 
+String _userDetailTabLabel(_UserDetailTab tab) => switch (tab) {
+  _UserDetailTab.datos => 'Datos',
+  _UserDetailTab.acceso => 'Acceso',
+  _UserDetailTab.permisos => 'Permisos',
+};
+
 /// The user detail view: account status, role assignments, branch access.
 /// Always reachable with `user.read` (the tab itself is already gated on
 /// it); every mutating action inside stays its own individually-gated,
@@ -1861,15 +1867,28 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SegmentedButton<_UserDetailTab>(
+        // TASK 17.4.2 §17 — a wrapping row of `ChoiceChip`s instead of a
+        // `SegmentedButton`: this dialog's own `maxWidth: 520` constraint
+        // shrinks further still inside a true-phone-width viewport (its
+        // `Dialog`'s own platform inset padding), and a `SegmentedButton`'s
+        // internal `Row` genuinely overflowed there (confirmed via a
+        // 390x844 `RenderFlex` failure) — the same fix already applied to
+        // `pos_inventory_admin_screen.dart`'s own 8-tab selector for the
+        // same reason (see that file's own doc comment). Same key, same
+        // `Text` labels as descendants, so every existing
+        // `pos-user-detail-tabs` tap-by-text test keeps working unchanged.
+        Wrap(
           key: const Key('pos-user-detail-tabs'),
-          segments: const [
-            ButtonSegment(value: _UserDetailTab.datos, label: Text('Datos')),
-            ButtonSegment(value: _UserDetailTab.acceso, label: Text('Acceso')),
-            ButtonSegment(value: _UserDetailTab.permisos, label: Text('Permisos')),
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final value in _UserDetailTab.values)
+              ChoiceChip(
+                label: Text(_userDetailTabLabel(value)),
+                selected: _selectedTab == value,
+                onSelected: (_) => setState(() => _selectedTab = value),
+              ),
           ],
-          selected: {_selectedTab},
-          onSelectionChanged: (value) => setState(() => _selectedTab = value.first),
         ),
         const SizedBox(height: 14),
         switch (_selectedTab) {
@@ -1885,11 +1904,19 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        // TASK 17.4.2 §17 — `Wrap` instead of `Row`: this dialog's own
+        // narrow effective width at true phone width (see
+        // `pos-user-detail-tabs`'s own doc comment above) left no room for
+        // both status pairs on one line — a real, pre-existing overflow,
+        // confirmed via a 390x844 `RenderFlex` failure.
+        Wrap(
+          spacing: 4,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text('Identidad: ', style: TextStyle(color: palette.textMuted, fontSize: 11)),
             _StatusPill(label: detail.user.identityStatus),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
             Text('Membresía: ', style: TextStyle(color: palette.textMuted, fontSize: 11)),
             _StatusPill(label: detail.user.membershipStatus),
           ],
@@ -2163,7 +2190,15 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
             Text(_pinError!, key: const Key('pos-user-pin-error'), style: TextStyle(color: palette.error, fontSize: 12)),
             const SizedBox(height: 8),
           ],
-          Row(
+          // TASK 17.4.2 §17/§22 — `Wrap` instead of `Row`: two full-size
+          // `OutlinedButton.icon`s never both fit one line at this
+          // dialog's true-phone-width effective width — a real,
+          // pre-existing overflow, confirmed via a 390x844 `RenderFlex`
+          // failure. Same buttons, same keys, same real PUT/DELETE
+          // endpoints underneath — only the layout changed.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               OutlinedButton.icon(
                 key: const Key('pos-user-pin-set'),
@@ -2171,7 +2206,6 @@ class _UserDetailDialogState extends State<_UserDetailDialog> {
                 icon: const Icon(Icons.pin_outlined, size: 14),
                 label: const Text('Actualizar PIN'),
               ),
-              const SizedBox(width: 8),
               OutlinedButton.icon(
                 key: const Key('pos-user-pin-clear'),
                 onPressed: _pinBusy ? null : () => unawaited(_clearPin()),

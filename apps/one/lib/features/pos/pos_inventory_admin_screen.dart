@@ -153,26 +153,51 @@ class _InventoryHeader extends StatelessWidget {
               ],
             ),
           ),
-          SegmentedButton<_InventoryTab>(
+          // TASK 17.4.2 §15 — a wrapping row of `ChoiceChip`s instead of a
+          // `SegmentedButton`: 8 real tabs never fit one row at true phone
+          // width, and a `SegmentedButton`'s own internal `Row` doesn't
+          // wrap, so it genuinely overflowed there (confirmed via a
+          // 390x844 `RenderFlex` failure — see this screen's own git
+          // history). An earlier attempt wrapped the `SegmentedButton` in
+          // a horizontal `SingleChildScrollView`, which fixed the overflow
+          // but broke multiple pre-existing `find.descendant(...,
+          // matching: find.text(label))` tap tests (a hit-test/offset
+          // regression from the added scroll viewport). `Wrap` keeps every
+          // tab's label at full, readable size, keeps every tab visible
+          // (reflowed onto more lines, nothing scrolled off/hidden), needs
+          // no scroll wrapper, and keeps each tab a plain tappable `Text`
+          // descendant of this same key — so every existing
+          // `pos-inventory-admin-tabs` tap-by-text test keeps working
+          // unchanged.
+          Wrap(
             key: const Key('pos-inventory-admin-tabs'),
-            segments: const [
-              ButtonSegment(value: _InventoryTab.resumen, label: Text('Resumen')),
-              ButtonSegment(value: _InventoryTab.existencias, label: Text('Existencias')),
-              ButtonSegment(value: _InventoryTab.movimientos, label: Text('Movimientos')),
-              ButtonSegment(value: _InventoryTab.traspasos, label: Text('Traspasos')),
-              ButtonSegment(value: _InventoryTab.conteos, label: Text('Conteos')),
-              ButtonSegment(value: _InventoryTab.reservas, label: Text('Reservas')),
-              ButtonSegment(value: _InventoryTab.ajustes, label: Text('Ajustes/Reconciliación')),
-              ButtonSegment(value: _InventoryTab.ubicaciones, label: Text('Ubicaciones')),
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final value in _InventoryTab.values)
+                ChoiceChip(
+                  label: Text(_inventoryTabLabel(value)),
+                  selected: tab == value,
+                  onSelected: (_) => onTabChanged(value),
+                ),
             ],
-            selected: {tab},
-            onSelectionChanged: (value) => onTabChanged(value.first),
           ),
         ],
       ),
     );
   }
 }
+
+String _inventoryTabLabel(_InventoryTab tab) => switch (tab) {
+  _InventoryTab.resumen => 'Resumen',
+  _InventoryTab.existencias => 'Existencias',
+  _InventoryTab.movimientos => 'Movimientos',
+  _InventoryTab.traspasos => 'Traspasos',
+  _InventoryTab.conteos => 'Conteos',
+  _InventoryTab.reservas => 'Reservas',
+  _InventoryTab.ajustes => 'Ajustes/Reconciliación',
+  _InventoryTab.ubicaciones => 'Ubicaciones',
+};
 
 // ---------------------------------------------------------------------
 // Shared, file-private widgets/helpers — small redeclarations of

@@ -532,9 +532,19 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        // TASK 17.4.2 §18 — a wrapping `Wrap` instead of a `Row`: the
+        // status-filter's fixed 150px plus "Nuevo empleado"'s own
+        // intrinsic width left no room for the search field at true phone
+        // width — a real, pre-existing overflow, confirmed via a 390x844
+        // `RenderFlex` failure. Same 3 controls, same keys — only the
+        // layout reflows instead of overflowing.
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(
+            SizedBox(
+              width: 260,
               child: TextField(
                 key: const Key('pos-employees-search'),
                 onChanged: (value) => setState(() => _query = value),
@@ -545,7 +555,6 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
                 ),
               ),
             ),
-            const SizedBox(width: 10),
             SizedBox(
               width: 150,
               child: DropdownButtonFormField<String>(
@@ -564,7 +573,6 @@ class _EmpleadosTabState extends State<_EmpleadosTab> {
                 },
               ),
             ),
-            const SizedBox(width: 10),
             Tooltip(
               message: newDisabledReason,
               child: FilledButton.icon(

@@ -44,21 +44,58 @@ void main() {
     });
 
     testWidgets('a narrow viewport keeps the touch-friendly card list, never the desktop table', (tester) async {
-      // TASK 17.4.1 — 700px (below the 860px table/card breakpoint) is
-      // used rather than a phone width (e.g. 390px) because this admin
-      // screen's own `SegmentedButton` tab bar (8 real tabs) already has
-      // a separate, pre-existing overflow at true phone widths —
-      // unrelated to Existencias' own presentation and explicitly out of
-      // this task's scope (the same "documented, not fixed" precedent
-      // TASK 17.2.5 already established for this exact screen's Resumen
-      // tab). This test still proves the real responsive breakpoint:
-      // below 860px, the card list renders, never the desktop table.
+      // TASK 17.4.1 — 700px, below the 860px table/card breakpoint, proves
+      // the real responsive breakpoint: below 860px, the card list
+      // renders, never the desktop table.
       final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance]);
       await _pump(tester, gateway: gateway, startOnExistencias: true, viewSize: const Size(700, 1000));
 
       expect(find.byKey(const Key('pos-existencias-table')), findsNothing);
       expect(find.textContaining('Agua'), findsWidgets);
       expect(find.text('Stock bajo'), findsOneWidget);
+    });
+
+    // TASK 17.4.2 §15 — regression test for the real fix: the 8-tab
+    // selector used to overflow (`RenderFlex`) at true phone width because
+    // `SegmentedButton`'s own internal `Row` never wraps. Now a `Wrap` of
+    // `ChoiceChip`s, every tab stays visible and tappable with no
+    // exception, at the exact width TASK 17.4.1 left undone.
+    testWidgets('TASK 17.4.2 §15 — at 390x844 every inventory tab is visible with no overflow', (tester) async {
+      final gateway = _RecordingInventoryAdminGateway(balances: [_lowStockBalance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true, viewSize: const Size(390, 844));
+
+      final tabs = find.byKey(const Key('pos-inventory-admin-tabs'));
+      expect(tabs, findsOneWidget);
+      for (final label in const [
+        'Resumen',
+        'Existencias',
+        'Movimientos',
+        'Traspasos',
+        'Conteos',
+        'Reservas',
+        'Ajustes/Reconciliación',
+        'Ubicaciones',
+      ]) {
+        expect(find.descendant(of: tabs, matching: find.text(label)), findsOneWidget, reason: label);
+      }
+      expect(tester.takeException(), isNull);
+
+      // Proves the selector itself (this test's own fix) genuinely works at
+      // phone width — every tab is reachable and switches content. Restricted
+      // to the 3 tabs already confirmed overflow-free at 390px: Movimientos/
+      // Traspasos/Conteos/Reservas each have their own PRE-EXISTING, separate
+      // narrow-width overflow in their own content (an "Agregar línea"-style
+      // form header row, unrelated to this selector) — the same class of
+      // finding TASK 17.4.1/`docs/INVENTORY_V2.md` already documented for
+      // Resumen/Movimientos. Fixing those 4 screens' own internal layouts is
+      // out of this task's explicit scope (§14 certifies only "Inventory
+      // Existencias" for this screen, not every tab), so they're left as a
+      // separate, honestly-documented follow-up rather than patched here.
+      for (final label in const ['Resumen', 'Ajustes/Reconciliación', 'Ubicaciones']) {
+        await tester.tap(find.descendant(of: tabs, matching: find.text(label)));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: label);
+      }
     });
 
     testWidgets('labels out-of-stock and available balances distinctly', (tester) async {

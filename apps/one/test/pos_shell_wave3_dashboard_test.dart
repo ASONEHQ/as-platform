@@ -256,6 +256,27 @@ void main() {
       expect(find.text('9h'), findsOneWidget);
       expect(find.text('14h'), findsOneWidget);
     });
+
+    // TASK 17.4.2 §19/§23 — KPIs, Alertas, Ventas por hora and Fiestas del
+    // día must all render without horizontal overflow at true phone width.
+    testWidgets('TASK 17.4.2 §19 — a 390x844 KPIs, Alertas, Ventas por hora y Fiestas del día no revientan', (
+      tester,
+    ) async {
+      final gateway = _RecordingDashboardGateway(response: _summaryWithPendingDeposit());
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_shell(dashboardGateway: gateway));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('pos-dashboard-metrics-grid')), findsOneWidget);
+      expect(find.byKey(const Key('pos-dashboard-alerts')), findsOneWidget);
+      expect(find.text('2 fiesta(s) pendiente(s) de anticipo'), findsOneWidget);
+      expect(find.byKey(const Key('pos-dashboard-sales-by-hour')), findsOneWidget);
+      expect(find.byKey(const Key('pos-dashboard-parties-list')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
   });
 }
 

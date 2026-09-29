@@ -156,6 +156,31 @@ void main() {
       expect(find.text('Salario semanal'), findsOneWidget);
     });
 
+    // TASK 17.4.2 §18/§23 — cards, "Nuevo empleado", search/filter, the
+    // detail dialog and salary gating must all stay usable at true phone
+    // width, with no overflow anywhere.
+    testWidgets('TASK 17.4.2 §18 — a 390x844 la lista, la búsqueda, "Nuevo empleado" y la ficha no revientan', (
+      tester,
+    ) async {
+      final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
+      await _pump(tester, employeesGateway: gateway, permissions: const ['employee.read', 'employee.manage']);
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('pos-employees-grid')), findsOneWidget);
+      expect(find.byKey(const Key('pos-employees-search')), findsOneWidget);
+      expect(find.byKey(const Key('pos-employees-new')), findsOneWidget);
+
+      final row = find.byKey(const Key('pos-employee-row-employee-1'));
+      await tester.ensureVisible(row);
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Salario semanal'), findsOneWidget);
+    });
+
     // TASK 16.31 (Phase 19/21/28) — the card/detail visual upgrade must
     // only ever show real fields, omit a genuinely-absent one elegantly
     // (never "—"/"null"), and never fabricate a user-link resolution.
