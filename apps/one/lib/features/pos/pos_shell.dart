@@ -5371,6 +5371,9 @@ class _PosSaleBody extends StatelessWidget {
               ),
               balances: controller.balances.items,
               saleSession: saleSession,
+              categoryNameById: {
+                for (final category in controller.categories.items) category.id: category.name,
+              },
             ),
           ),
         ),
@@ -6369,30 +6372,37 @@ class _PosProductGrid extends StatelessWidget {
     required this.items,
     required this.balances,
     required this.saleSession,
+    this.categoryNameById = const {},
   });
   final List<PosProduct> items;
   final List<PosInventoryBalance> balances;
   final SaleSession saleSession;
+  // TASK 17.4.1 — real category NAMES for the card's category badge.
+  // `PosProduct` only ever carries `categoryId` (`productHttp()` never
+  // resolves the name server-side) — this is a plain client-side join
+  // against the SAME `controller.categories.items` list `_CategoryStrip`
+  // already fetches, mirroring `_DashboardPartyRow`'s own roomId→roomName
+  // resolution pattern. Never a second, divergent categories fetch.
+  final Map<String, String> categoryNameById;
 
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) {
       return const _EmptyState(message: 'Sin productos en esta categoría.');
     }
-    // Matches the canonical `.prod-grid{grid-template-columns:repeat(
-    // auto-fill,minmax(120px,1fr))}` (100px under the 900px reference
-    // breakpoint) — fluid tiling rather than fixed column steps.
+    // TASK 17.4.1 — widened from the original 100/120 to give the new
+    // image area, category badge, and optional description room without
+    // making individual cards enormous; still a fluid multi-column tile
+    // grid, not a fixed column count.
     return LayoutBuilder(
       builder: (context, constraints) {
-        final tileWidth = constraints.maxWidth >= 900 ? 120.0 : 100.0;
+        final tileWidth = constraints.maxWidth >= 900 ? 168.0 : 144.0;
         return GridView.builder(
           gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
             maxCrossAxisExtent: tileWidth,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            // TASK 12.3C: +12 over the canonical 160 to fit the new real
-            // price caption without cramming the existing name/code lines.
-            mainAxisExtent: 172,
+            mainAxisExtent: 232,
           ),
           itemCount: items.length,
           itemBuilder: (context, index) {
@@ -6405,6 +6415,7 @@ class _PosProductGrid extends StatelessWidget {
             return _PosProductCard(
               item: item,
               block: block,
+              categoryName: item.categoryId == null ? null : categoryNameById[item.categoryId],
               onTap: block != null
                   ? () => _showNotice(context, _addabilityMessage(block))
                   // TASK 14.3 (Wave 1, Part B.3): a weight-based (`kg`/
@@ -6564,6 +6575,7 @@ class _PosProductCard extends StatelessWidget {
     required this.item,
     required this.block,
     required this.onTap,
+    this.categoryName,
   });
   final PosProduct item;
   // TASK 12.3C: `null` means addable; any other value is why it is not
@@ -6575,6 +6587,10 @@ class _PosProductCard extends StatelessWidget {
   // TASK 12.3: adds the product to the shared ticket (or, when it cannot
   // be sold, surfaces a notice instead) — see `_PosProductGrid`.
   final VoidCallback onTap;
+  // TASK 17.4.1 — real category name resolved by `_PosProductGrid`, or
+  // `null` when the product has no category / it couldn't be resolved
+  // (never fabricated).
+  final String? categoryName;
 
   @override
   Widget build(BuildContext context) {
@@ -6594,27 +6610,23 @@ class _PosProductCard extends StatelessWidget {
       cardColorHex: item.cardColorHex,
       fallback: palette.action,
     );
-    // Matches the canonical `.prod` card: radius 14, subtle shadow, a bare
-    // accent-colored icon (no circular badge), and a compact name.
-    // TASK 12.3C: the reference's own `.prod-precio` now has a real value
-    // to show, so the previously-empty price line is filled in instead of
-    // staying invented-blank.
-    //
-    // Out-of-stock: the reference's pulsing red "AGOTADO" badge is
-    // client-mode only (`body.modo-cliente .prod-agotado-badge`); this
-    // shell has no client-facing mode, so it follows the cajero-mode
-    // convention instead — full opacity, a small red stock indicator. A
-    // missing/malformed price is surfaced the same way, since there is no
-    // canonical equivalent to match either.
+    final description = item.description;
+    // TASK 17.4.1 — friendlier card structure (image / category badge /
+    // name / optional description / price + add glyph), the whole card
+    // stays the ONE tap target (never a second, nested hit-target for the
+    // "+" — a large touch area is more forgiving than a small isolated
+    // button, and this keeps `onTap`/addability-blocking logic untouched).
+    // Out-of-stock/missing-price/malformed-price keep their existing
+    // caption treatment on the last line — no cart/pricing/stock logic
+    // changed here at all.
     return Material(
       key: Key('pos-product-${item.id}'),
       color: fill.background ?? palette.surface,
       borderRadius: BorderRadius.circular(14),
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
         child: Container(
-          padding: const EdgeInsets.fromLTRB(10, 16, 10, 12),
           decoration: BoxDecoration(
             gradient: fill.gradient,
             border: Border.all(color: palette.border, width: 1.5),
@@ -6627,62 +6639,177 @@ class _PosProductCard extends StatelessWidget {
               ),
             ],
           ),
-          alignment: Alignment.center,
-          child: Stack(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
+              Stack(
                 children: [
-                  PosProductCardVisual(
+                  _PosProductImageArea(
                     imageUrl: item.imageUrl,
                     iconKey: item.iconKey,
-                    size: 34,
-                    color: iconColor,
+                    iconColor: iconColor,
                   ),
-                  const SizedBox(height: 7),
-                  Text(
-                    item.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: palette.text,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                      height: 1.35,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _priceCaption(item.pricing),
-                    style: TextStyle(
-                      color: item.pricing.isSellable
-                          ? palette.action
-                          : palette.textMuted,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    outOfStock ? 'Sin existencia' : item.code,
-                    style: TextStyle(
-                      color: blocked ? palette.error : palette.textMuted,
-                      fontWeight: blocked ? FontWeight.w700 : FontWeight.w400,
-                      fontSize: 9,
-                    ),
-                  ),
+                  if (item.isFeatured)
+                    const Positioned(top: 4, right: 4, child: PosProductFeaturedBadge()),
                 ],
               ),
-              if (item.isFeatured)
-                const Positioned(top: 0, right: 0, child: PosProductFeaturedBadge()),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // A fixed-height slot regardless of whether a category
+                    // resolved — keeps every card in the row the same
+                    // height (`mainAxisExtent` above is fixed too).
+                    SizedBox(
+                      height: 16,
+                      child: categoryName == null
+                          ? null
+                          : _PosProductCategoryBadge(label: categoryName!),
+                    ),
+                    Text(
+                      item.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: palette.text,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                        height: 1.3,
+                      ),
+                    ),
+                    SizedBox(
+                      height: 14,
+                      child: (description == null || description.isEmpty)
+                          ? null
+                          : Text(
+                              description,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: palette.textMuted, fontSize: 10),
+                            ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _priceCaption(item.pricing),
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: item.pricing.isSellable ? palette.action : palette.textMuted,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        _PosProductAddGlyph(color: blocked ? palette.textMuted : palette.action),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      outOfStock ? 'Sin existencia' : item.code,
+                      style: TextStyle(
+                        color: blocked ? palette.error : palette.textMuted,
+                        fontWeight: blocked ? FontWeight.w700 : FontWeight.w400,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// TASK 17.4.1 — the card's image area: a real uploaded/linked photo
+/// (`BoxFit.cover`, filling the whole width, never squeezed into a small
+/// square icon slot) when one exists, else the same fallback icon
+/// [PosProductCardVisual] already uses, centered on a neutral tint — the
+/// underlying icon resolution (`posProductIconFor`) is reused, not
+/// duplicated; only the SHAPE it fills differs from the compact
+/// admin-grid tile [PosProductCardVisual] itself renders.
+class _PosProductImageArea extends StatelessWidget {
+  const _PosProductImageArea({required this.imageUrl, required this.iconKey, required this.iconColor});
+  final String? imageUrl;
+  final String? iconKey;
+  final Color iconColor;
+
+  static const double _height = 76;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final url = imageUrl;
+    if (url != null && url.isNotEmpty) {
+      return Image.network(
+        url,
+        width: double.infinity,
+        height: _height,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => _fallback(palette),
+      );
+    }
+    return _fallback(palette);
+  }
+
+  Widget _fallback(PosPalette palette) => Container(
+    width: double.infinity,
+    height: _height,
+    color: palette.background,
+    alignment: Alignment.center,
+    child: Icon(posProductIconFor(iconKey), size: 30, color: iconColor),
+  );
+}
+
+/// TASK 17.4.1 — a compact category badge, real name only (never a raw
+/// category id, never shown at all when unresolved — see
+/// `_PosProductGrid.categoryNameById`).
+class _PosProductCategoryBadge extends StatelessWidget {
+  const _PosProductCategoryBadge({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        label.toUpperCase(),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: palette.textSecondary,
+          fontWeight: FontWeight.w700,
+          fontSize: 9,
+          letterSpacing: .4,
+        ),
+      ),
+    );
+  }
+}
+
+/// TASK 17.4.1 — a purely visual "add" affordance; the whole card is
+/// still the real tap target (see `_PosProductCard`'s own doc comment).
+class _PosProductAddGlyph extends StatelessWidget {
+  const _PosProductAddGlyph({required this.color});
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 22,
+    height: 22,
+    decoration: BoxDecoration(color: color.withValues(alpha: .14), shape: BoxShape.circle),
+    alignment: Alignment.center,
+    child: Icon(Icons.add, size: 15, color: color),
+  );
 }
 
 /// The small price caption shown on every product tile — TASK 12.3C. A
@@ -7459,7 +7586,10 @@ class _ClienteLockedShell extends StatelessWidget {
                   controller: controller,
                   saleSession: saleSession,
                   onRequestCajeroReturn: onRequestCajeroReturn,
-                  tileWidth: wide ? 120.0 : 100.0,
+                  // TASK 17.4.1 — matches `_PosProductGrid`'s own widened
+                  // tile size (the redesigned `_PosProductCard` needs more
+                  // room for the image area/category badge/description).
+                  tileWidth: wide ? 168.0 : 144.0,
                 );
                 final ticket = _ClienteTicketPreview(
                   saleSession: saleSession,
@@ -7898,9 +8028,8 @@ class _ClienteCategorySections extends StatelessWidget {
         maxCrossAxisExtent: tileWidth,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
-        // TASK 12.3C: +12 over the canonical 160 to fit the new real
-        // price caption without cramming the existing name/code lines.
-        mainAxisExtent: 172,
+        // TASK 17.4.1 — matches `_PosProductGrid`'s own card height.
+        mainAxisExtent: 232,
       ),
       delegate: SliverChildBuilderDelegate((context, index) {
         final item = categoryItems[index];
@@ -7910,6 +8039,10 @@ class _ClienteCategorySections extends StatelessWidget {
         return _PosProductCard(
           item: item,
           block: block,
+          // TASK 17.4.1 — the category is already known at this call
+          // site (this whole sliver IS that category's own section), no
+          // lookup map needed.
+          categoryName: category.name,
           onTap: block == null
               ? () => saleSession.addProduct(item, balances)
               : () => _showNotice(context, _addabilityMessage(block)),

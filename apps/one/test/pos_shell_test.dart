@@ -193,6 +193,54 @@ void main() {
       );
     });
 
+    // TASK 17.4.1 — the friendlier product card: real image/fallback,
+    // real category badge, optional description.
+    testWidgets('the card shows the real resolved category name, never the raw category id', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      // product-1 is categoryId 'cat-1' -> 'Bebidas'.
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-product-product-1')), matching: find.text('BEBIDAS')),
+        findsOneWidget,
+      );
+      expect(find.text('cat-1'), findsNothing);
+    });
+
+    testWidgets('a product with a real image_url renders it; one without falls back to the real icon, never a broken/blank box', (
+      tester,
+    ) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      // product-2 has a real imageUrl fixture value.
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('pos-product-product-2')),
+          matching: find.byWidgetPredicate(
+            (widget) => widget is Image && widget.image is NetworkImage && (widget.image as NetworkImage).url == 'https://cdn.example.test/products/agua.png',
+          ),
+        ),
+        findsOneWidget,
+      );
+      // product-1 has no imageUrl — falls back to a real icon, never an Image widget.
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-product-product-1')), matching: find.byType(Image)),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-product-product-1')), matching: find.byType(Icon)),
+        findsWidgets,
+      );
+    });
+
+    testWidgets('an optional real description renders on the card; a product with none shows no description line', (tester) async {
+      await _pump(tester, const Size(1440, 900));
+      await _navigateToPos(tester);
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-product-product-2')), matching: find.text('Botella de 600 ml')),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('product grid shows a loading state while products load', (
       tester,
     ) async {
@@ -11522,6 +11570,8 @@ PosProduct _pricedProduct({
   String? defaultVariantId,
   String amount = '10.00',
   String taxCode = 'IVA_GENERAL',
+  String? imageUrl,
+  String? description,
 }) => PosProduct(
   id: id,
   code: code,
@@ -11534,6 +11584,8 @@ PosProduct _pricedProduct({
   sku: code,
   taxCode: taxCode,
   pricing: PosPricing.fromJson({'amount': amount, 'currency_code': 'MXN'}),
+  imageUrl: imageUrl,
+  description: description,
 );
 
 List<PosProduct> _catalogFixture() => [
@@ -11551,6 +11603,11 @@ List<PosProduct> _catalogFixture() => [
     categoryId: 'cat-2',
     tracksInventory: true,
     defaultVariantId: 'variant-2',
+    // TASK 17.4.1 — a real image URL on one fixture product, proving the
+    // redesigned card actually renders it (and, by product-1/product-3
+    // carrying none, that the fallback icon renders honestly for those).
+    imageUrl: 'https://cdn.example.test/products/agua.png',
+    description: 'Botella de 600 ml',
   ),
   _pricedProduct(
     id: 'product-3',

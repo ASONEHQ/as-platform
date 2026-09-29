@@ -123,6 +123,7 @@ class PosProduct {
     this.cardStyle = 'default',
     this.cardColorHex,
     this.isFeatured = false,
+    this.description,
   });
 
   factory PosProduct.fromJson(Map<String, Object?> json) {
@@ -163,6 +164,11 @@ class PosProduct {
       cardStyle: json['card_style'] as String? ?? 'default',
       cardColorHex: json['card_color_hex'] as String?,
       isFeatured: json['is_featured'] == true,
+      // TASK 17.4.1 — `products.description` is a real, already-settable
+      // catalog field (`product-catalog.routes.ts`'s own create/update
+      // body schema and `productHttp()`'s response) that simply wasn't
+      // parsed into this model before now.
+      description: json['description'] as String?,
     );
   }
 
@@ -215,6 +221,10 @@ class PosProduct {
 
   /// TASK 16.6 — legacy "Favorito" parity.
   final bool isFeatured;
+
+  /// TASK 17.4.1 — a real, optional short description, `null`/empty when
+  /// never set — never a fabricated tagline.
+  final String? description;
 }
 
 /// TASK 14.3 (Wave 1, Part B.3): the platform seeds a small, fixed,
