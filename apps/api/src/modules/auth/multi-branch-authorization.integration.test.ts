@@ -211,13 +211,15 @@ integration('PostgreSQL multi-branch authorization matrix (TASK 17.3)', { concur
     expect(manager?.permittedBranchIds).toEqual([a1Id]);
     if (manager === null) throw new Error('unreachable');
     const context = asAuthContext(manager);
-    expect(() => authService.requireBranchAccess(context, a1Id)).not.toThrow();
-    expect(() => authService.requireBranchAccess(context, a2Id)).toThrow(
-      expect.objectContaining({ code: 'branch_scope_mismatch', statusCode: 403 }),
-    );
-    expect(() => authService.requireBranchAccess(context, b1Id)).toThrow(
-      expect.objectContaining({ code: 'branch_scope_mismatch' }),
-    );
+    expect(() => {
+      authService.requireBranchAccess(context, a1Id);
+    }).not.toThrow();
+    expect(() => {
+      authService.requireBranchAccess(context, a2Id);
+    }).toThrow(expect.objectContaining({ code: 'branch_scope_mismatch', statusCode: 403 }));
+    expect(() => {
+      authService.requireBranchAccess(context, b1Id);
+    }).toThrow(expect.objectContaining({ code: 'branch_scope_mismatch' }));
     // Even resolving directly against B1 (simulating a crafted branch
     // switch request) must fail, not merely be unauthorized once resolved.
     const crossBranch = await authRepository.resolveContext({
@@ -239,11 +241,15 @@ integration('PostgreSQL multi-branch authorization matrix (TASK 17.3)', { concur
     expect([...(regional?.permittedBranchIds ?? [])].sort()).toEqual([a1Id, a2Id].sort());
     if (regional === null) throw new Error('unreachable');
     const context = asAuthContext(regional);
-    expect(() => authService.requireBranchAccess(context, a1Id)).not.toThrow();
-    expect(() => authService.requireBranchAccess(context, a2Id)).not.toThrow();
-    expect(() => authService.requireBranchAccess(context, a3Id)).toThrow(
-      expect.objectContaining({ code: 'branch_scope_mismatch' }),
-    );
+    expect(() => {
+      authService.requireBranchAccess(context, a1Id);
+    }).not.toThrow();
+    expect(() => {
+      authService.requireBranchAccess(context, a2Id);
+    }).not.toThrow();
+    expect(() => {
+      authService.requireBranchAccess(context, a3Id);
+    }).toThrow(expect.objectContaining({ code: 'branch_scope_mismatch' }));
 
     // The actual branch-switch resolution (re-authorization, not a client
     // flag) succeeds for A2, fails for A3.
@@ -272,9 +278,10 @@ integration('PostgreSQL multi-branch authorization matrix (TASK 17.3)', { concur
     });
     expect(cashier?.permittedBranchIds).toEqual([a2Id]);
     if (cashier === null) throw new Error('unreachable');
-    expect(() => authService.requireBranchAccess(asAuthContext(cashier), a1Id)).toThrow(
-      expect.objectContaining({ code: 'branch_scope_mismatch' }),
-    );
+    const cashierContext = asAuthContext(cashier);
+    expect(() => {
+      authService.requireBranchAccess(cashierContext, a1Id);
+    }).toThrow(expect.objectContaining({ code: 'branch_scope_mismatch' }));
     const crossBranch = await authRepository.resolveContext({
       userId: cashierA2UserId,
       membershipId: cashierA2MembershipId,
