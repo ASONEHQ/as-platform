@@ -49,45 +49,60 @@ class PosBarChart extends StatelessWidget {
     }
     const labelsHeight = 34.0;
     final barAreaHeight = height - labelsHeight;
-    return SizedBox(
-      height: height,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          for (final bar in bars)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      bar.valueLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 9, color: palette.textSecondary, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 2),
-                    Container(
-                      height: (barAreaHeight - 14).clamp(2.0, double.infinity) * (bar.value / maxValue),
-                      decoration: BoxDecoration(
-                        color: barColor ?? palette.action,
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      bar.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 9, color: palette.textMuted),
-                    ),
-                  ],
+    final column = <Widget>[
+      for (final bar in bars)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text(
+                bar.valueLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 9, color: palette.textSecondary, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Container(
+                height: (barAreaHeight - 14).clamp(2.0, double.infinity) * (bar.value / maxValue),
+                decoration: BoxDecoration(
+                  color: barColor ?? palette.action,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
                 ),
               ),
+              const SizedBox(height: 4),
+              Text(
+                bar.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 9, color: palette.textMuted),
+              ),
+            ],
+          ),
+        ),
+    ];
+    // TASK 17.5 §6.1 — a handful of real bars (e.g. a single hour with a
+    // sale) used to each get `Expanded` inside the `Row`, so 1-2 bars
+    // stretched to fill the entire chart width — a "solid rectangle" with
+    // no real visual meaning, not an honest single-point chart. Capping
+    // each bar's own column at a normal bar width and centering the row
+    // once there are few enough bars to matter (6 or fewer — a full 24h
+    // sales-by-hour day always exceeds this and keeps the original
+    // fill-the-width behavior unchanged) fixes that without fabricating
+    // any zero-value hour: every bar shown is still real backend data,
+    // just no longer stretched past its own honest proportions.
+    return SizedBox(
+      height: height,
+      child: bars.length <= 6
+          ? Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [for (final bar in column) SizedBox(width: 56, child: bar)],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [for (final bar in column) Expanded(child: bar)],
             ),
-        ],
-      ),
     );
   }
 }

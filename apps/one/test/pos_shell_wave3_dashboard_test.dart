@@ -164,7 +164,7 @@ void main() {
       // `cash_session.read` (this fixture context doesn't carry it) — a
       // real, distinct screen, never the Dashboard still showing
       // underneath.
-      expect(find.text('Apertura, movimientos y cierre de caja — datos reales del backend.'), findsOneWidget);
+      expect(find.text('Apertura, movimientos y cierre de caja.'), findsOneWidget);
     });
 
     testWidgets('an actor without report.read sees the shared permission state, never a metric', (tester) async {
@@ -277,6 +277,27 @@ void main() {
       expect(find.byKey(const Key('pos-dashboard-parties-list')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    // TASK 17.5 §6/§31 — the compacted KPI grid (childAspectRatio raised
+    // from 1.5/2.6 to 1.9/3.4) must still render every real metric with
+    // no overflow at every certified desktop/tablet width.
+    for (final size in [const Size(1440, 900), const Size(1365, 768), const Size(1024, 768)]) {
+      testWidgets(
+        'TASK 17.5 — the compact KPI grid renders with no overflow at ${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+          final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+          tester.view.physicalSize = size;
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          await tester.pumpWidget(_shell(dashboardGateway: gateway));
+          await tester.pumpAndSettle();
+
+          expect(tester.takeException(), isNull);
+          expect(find.byKey(const Key('pos-dashboard-metric-sales')), findsOneWidget);
+          expect(find.byKey(const Key('pos-dashboard-metric-parties')), findsOneWidget);
+        },
+      );
+    }
   });
 }
 

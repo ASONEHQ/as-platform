@@ -4105,9 +4105,11 @@ class _DashboardState extends State<_Dashboard> {
       children: [
         _SectionHeader(
           title: 'Dashboard',
-          description: today == null
-              ? 'Resumen operativo real de hoy, calculado por el servidor. Sin métricas simuladas.'
-              : 'Resumen operativo real de hoy ($today), calculado por el servidor. Sin métricas simuladas.',
+          // TASK 17.5 §5 — "calculado por el servidor. Sin métricas
+          // simuladas." was development-era assurance copy, not something
+          // an operator needs to be told; the underlying honesty
+          // guarantee (never a fabricated metric) is unchanged.
+          description: today == null ? 'Resumen operativo de hoy.' : 'Resumen operativo de hoy ($today).',
           action: const _VisualDialogButton(),
         ),
         // Real company/branch context, mirroring `_ReportsHeader`'s own
@@ -4339,9 +4341,14 @@ class _DashboardReady extends StatelessWidget {
               crossAxisCount: columns,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: columns == 1 ? 2.6 : 1.5,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              // TASK 17.5 §6 — compacted from 1.5/2.6: production review
+              // found the 8-tile KPI row consuming nearly the entire first
+              // viewport relative to its actual content (an icon+label
+              // row, one value line, one caption line). Every real metric
+              // stays exactly the same; only the card's own height shrinks.
+              childAspectRatio: columns == 1 ? 3.4 : 1.9,
               children: [
                 _DashboardMetricCard(
                   key: const Key('pos-dashboard-metric-sales'),
@@ -4646,40 +4653,46 @@ class _DashboardMetricCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    // TASK 17.5 §6 — compact KPI tile: smaller icon/gaps and a smaller
+    // value line than the original (22px/8px gaps), same real value and
+    // caption text, just less vertical space per tile.
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
         Row(
           children: [
-            Icon(icon, size: 18, color: palette.blueDeep),
-            const SizedBox(width: 8),
+            Icon(icon, size: 15, color: palette.blueDeep),
+            const SizedBox(width: 6),
             Expanded(
               child: Text(
                 label,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: palette.textSecondary, fontSize: 11.5, fontWeight: FontWeight.w700),
+                style: TextStyle(color: palette.textSecondary, fontSize: 11, fontWeight: FontWeight.w700),
               ),
             ),
-            if (onTap != null) Icon(Icons.chevron_right, size: 16, color: palette.textMuted),
+            if (onTap != null) Icon(Icons.chevron_right, size: 14, color: palette.textMuted),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 5),
         Text(
           value,
-          style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: palette.text, fontSize: 18, fontWeight: FontWeight.w800),
         ),
-        const SizedBox(height: 2),
-        Text(caption, style: TextStyle(color: palette.textMuted, fontSize: 11)),
+        const SizedBox(height: 1),
+        Text(caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: palette.textMuted, fontSize: 10.5)),
       ],
     );
-    if (onTap == null) return _PosCard(child: content);
+    if (onTap == null) return _PosCard(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), child: content);
     return _PosCard(
       padding: EdgeInsets.zero,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        child: Padding(padding: const EdgeInsets.all(14), child: content),
+        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), child: content),
       ),
     );
   }
@@ -19833,8 +19846,7 @@ class _CajaState extends State<_Caja> {
       children: [
         _SectionHeader(
           title: 'Caja',
-          description:
-              'Apertura, movimientos y cierre de caja — datos reales del backend.',
+          description: 'Apertura, movimientos y cierre de caja.',
           action: canRead
               ? SegmentedButton<_CajaTab>(
                   key: const Key('pos-caja-tabs'),
