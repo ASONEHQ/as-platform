@@ -121,7 +121,7 @@ class _PeopleHeader extends StatelessWidget {
                 Text('Empleados', style: TextStyle(color: palette.text, fontSize: 22, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
                 Text(
-                  'Empleados, horarios, checador y nómina — datos reales del backend.',
+                  'Administra empleados, horarios, checador y nómina.',
                   style: TextStyle(color: palette.textSecondary, fontSize: 12),
                 ),
               ],
@@ -815,6 +815,20 @@ class _EmployeeFormDialogState extends State<_EmployeeFormDialog> {
     super.dispose();
   }
 
+  Future<void> _pickHireDate() async {
+    final current = DateTime.tryParse(_hireDateController.text.trim());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current ?? DateTime.now(),
+      firstDate: DateTime(1970),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked == null || !mounted) return;
+    final iso =
+        '${picked.year.toString().padLeft(4, '0')}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+    setState(() => _hireDateController.text = iso);
+  }
+
   Future<void> _submit() async {
     final code = _codeController.text.trim();
     final name = _nameController.text.trim();
@@ -951,10 +965,29 @@ class _EmployeeFormDialogState extends State<_EmployeeFormDialog> {
                   decoration: const InputDecoration(isDense: true, labelText: 'Puesto (opcional)'),
                 ),
                 const SizedBox(height: 10),
+                // TASK 17.5 §14.2 — a real date picker instead of a plain
+                // text field expecting a manually-typed `YYYY-MM-DD`
+                // string. The backend's own date format is unchanged: the
+                // picker only ever writes that exact `YYYY-MM-DD` string
+                // into the same controller/save path as before.
                 TextField(
                   key: const Key('pos-employee-form-hire-date'),
                   controller: _hireDateController,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Fecha de contratación (YYYY-MM-DD, opcional)'),
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    labelText: 'Fecha de contratación (opcional)',
+                    suffixIcon: IconButton(
+                      key: const Key('pos-employee-form-hire-date-clear'),
+                      tooltip: 'Quitar fecha',
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: _hireDateController.text.isEmpty
+                          ? null
+                          : () => setState(() => _hireDateController.clear()),
+                    ),
+                    prefixIcon: const Icon(Icons.calendar_today_outlined, size: 18),
+                  ),
+                  onTap: () => unawaited(_pickHireDate()),
                 ),
                 const SizedBox(height: 10),
                 Row(

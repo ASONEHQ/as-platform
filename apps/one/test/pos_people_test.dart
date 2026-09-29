@@ -47,6 +47,43 @@ void main() {
       expect(find.text('Ana Torres'), findsOneWidget);
     });
 
+    // TASK 17.5 §14.2 — a real `showDatePicker` instead of a manually-typed
+    // `YYYY-MM-DD` string; the field stays `readOnly` and only the picker
+    // itself can set a value, which flows into the exact same
+    // `hireDate`/create-payload path as before.
+    testWidgets('the hire-date field opens a real date picker and sends the picked date on save', (tester) async {
+      final gateway = _RecordingEmployeesGateway();
+      await _pump(tester, employeesGateway: gateway);
+
+      await tester.tap(find.byKey(const Key('pos-employees-new')));
+      await tester.pumpAndSettle();
+
+      final hireDateField = find.byKey(const Key('pos-employee-form-hire-date'));
+      final textFieldWidget = tester.widget<TextField>(hireDateField);
+      expect(textFieldWidget.readOnly, isTrue);
+
+      await tester.tap(hireDateField);
+      await tester.pumpAndSettle();
+      // A real Material date picker opened — not a manual text entry.
+      expect(find.byType(DatePickerDialog), findsOneWidget);
+
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      final updatedField = tester.widget<TextField>(hireDateField);
+      final pickedText = updatedField.controller!.text;
+      expect(pickedText, matches(RegExp(r'^\d{4}-\d{2}-\d{2}$')));
+
+      await tester.enterText(find.byKey(const Key('pos-employee-form-code')), 'EMP-2');
+      await tester.enterText(find.byKey(const Key('pos-employee-form-name')), 'Luis Peña');
+      await tester.enterText(find.byKey(const Key('pos-employee-form-weekly-salary')), '1200.00');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-employee-form-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createCalls.single.hireDate, pickedText);
+    });
+
     testWidgets('editing an employee sends the real If-Match version and the updated fields', (tester) async {
       final gateway = _RecordingEmployeesGateway(seed: [_activeEmployee]);
       await _pump(tester, employeesGateway: gateway);
