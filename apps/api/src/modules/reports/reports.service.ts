@@ -218,6 +218,7 @@ export class ReportsService {
       quantityReservedTotal: balances.quantityReservedTotal,
       quantityInTransitTotal: balances.quantityInTransitTotal,
       outOfStockVariantCount: balances.outOfStockVariantCount,
+      lowStockVariantCount: balances.lowStockVariantCount,
       inventoryValue,
       movementVolume,
     };

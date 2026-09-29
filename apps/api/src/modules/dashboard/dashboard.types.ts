@@ -1,4 +1,4 @@
-import type { CurrencyAmount } from '../reports/reports.types.js';
+import type { CurrencyAmount, HourlySales } from '../reports/reports.types.js';
 
 /**
  * TASK 14.5 (Wave 3, Phase 2) — "Dashboard" (today at a glance). Recovered
@@ -147,9 +147,19 @@ export interface DashboardSummary {
   /** Reuses `ReportsService.inventoryReport`'s own real, already-computed
    * `outOfStockVariantCount` (a live snapshot, never date-filtered) as the
    * one inventory "alert" backed by an existing, real threshold rule
-   * (quantity_on_hand = 0) — see `docs/LEGACY_FUNCTIONAL_PARITY.md` §4.
-   * No new low-stock threshold concept is invented here. */
+   * (quantity_on_hand = 0) — see `docs/LEGACY_FUNCTIONAL_PARITY.md` §4. */
   readonly outOfStockVariantCount: number;
+  /** TASK 17.4 — same live snapshot, same `inventoryReport` call, the
+   * SAME `min_stock`-based threshold `inventory.repository.ts`'s own
+   * `STOCK_STATUS_EXPR` already uses elsewhere — never a second,
+   * divergent low-stock definition. */
+  readonly lowStockVariantCount: number;
+
+  /** TASK 17.4 — the exact same `salesReport.salesByHour` the Sales
+   * report already computes for this identical `(companyId, branchIds,
+   * filter)` call the Dashboard already makes for `salesGrossTotal`
+   * above — forwarding an already-fetched field, never a second query. */
+  readonly salesByHour: readonly HourlySales[];
 
   /** Real customers whose `birth_date` month/day matches `date` — see
    * this file's header comment and `DashboardRepository.birthdaysOn`. */

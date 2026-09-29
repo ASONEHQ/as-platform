@@ -90,6 +90,31 @@ class PosDashboardSalesTrendEntry {
   final int? pctChange;
 }
 
+/// TASK 17.4 — mirrors the backend's `HourlySales` (via
+/// `dashboard.routes.ts`'s own `hourlySalesHttp`) exactly: real,
+/// branch-timezone-aware completed-sales counts/totals grouped by hour —
+/// never a client-side bucketing of raw rows.
+class PosDashboardHourlySales {
+  const PosDashboardHourlySales({
+    required this.hour,
+    required this.currencyCode,
+    required this.transactionCount,
+    required this.grossSales,
+  });
+
+  factory PosDashboardHourlySales.fromJson(Map<String, Object?> json) => PosDashboardHourlySales(
+    hour: (json['hour']! as num).toInt(),
+    currencyCode: json['currency_code']! as String,
+    transactionCount: (json['transaction_count']! as num).toInt(),
+    grossSales: json['gross_sales']! as String,
+  );
+
+  final int hour;
+  final String currencyCode;
+  final int transactionCount;
+  final String grossSales;
+}
+
 /// TASK 14.5A — mirrors the backend's `DashboardBirthdayCustomer`
 /// (`dashboard.routes.ts`'s `birthdayCustomerHttp`) exactly: a real
 /// customer whose `birth_date` month/day matches the requested date.
@@ -163,6 +188,8 @@ class PosDashboardSummary {
     required this.cancelledPartyReservationsToday,
     required this.clockedInEmployeeCount,
     required this.outOfStockVariantCount,
+    required this.lowStockVariantCount,
+    required this.salesByHour,
     required this.birthdaysToday,
   });
 
@@ -184,6 +211,10 @@ class PosDashboardSummary {
       salesTrendVsYesterday: (sales['trend_vs_yesterday'] as List<Object?>? ?? const [])
           .whereType<Map<String, Object?>>()
           .map(PosDashboardSalesTrendEntry.fromJson)
+          .toList(growable: false),
+      salesByHour: (sales['by_hour'] as List<Object?>? ?? const [])
+          .whereType<Map<String, Object?>>()
+          .map(PosDashboardHourlySales.fromJson)
           .toList(growable: false),
       currentOccupancy: (occupancy['current_occupancy']! as num).toInt(),
       partyReservationCount: (parties['count']! as num).toInt(),
@@ -218,6 +249,7 @@ class PosDashboardSummary {
       cancelledPartyReservationsToday: (parties['cancelled_today'] as num?)?.toInt() ?? 0,
       clockedInEmployeeCount: (attendance['clocked_in_count']! as num).toInt(),
       outOfStockVariantCount: (inventoryAlerts['out_of_stock_variant_count']! as num).toInt(),
+      lowStockVariantCount: (inventoryAlerts['low_stock_variant_count'] as num?)?.toInt() ?? 0,
       birthdaysToday: ((json['birthdays_today'] as Map<String, Object?>?)?['customers'] as List<Object?>? ?? const [])
           .whereType<Map<String, Object?>>()
           .map(PosDashboardBirthdayCustomer.fromJson)
@@ -230,6 +262,7 @@ class PosDashboardSummary {
   final int salesTransactionCount;
   final List<PosDashboardCurrencyAmount> salesGrossTotal;
   final List<PosDashboardSalesTrendEntry> salesTrendVsYesterday;
+  final List<PosDashboardHourlySales> salesByHour;
   final int currentOccupancy;
   final int partyReservationCount;
   final List<PosDashboardPartyReservation> partyReservations;
@@ -250,6 +283,7 @@ class PosDashboardSummary {
   final int cancelledPartyReservationsToday;
   final int clockedInEmployeeCount;
   final int outOfStockVariantCount;
+  final int lowStockVariantCount;
   final List<PosDashboardBirthdayCustomer> birthdaysToday;
 }
 

@@ -264,6 +264,29 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
       [randomUUID(), companyId, branchId, locationId, trackedVariantId],
     );
 
+    // TASK 17.4 — a SECOND tracked variant, available (not zero) but at or
+    // below its own real `min_stock`, proving `low_stock_variant_count` is
+    // counted independently from (never double-counted with) the
+    // zero-quantity out-of-stock variant above.
+    const lowStockProductId = randomUUID();
+    const lowStockVariantId = randomUUID();
+    await database.pool.query(
+      `insert into products(id,company_id,code,normalized_code,name,product_type,tracks_inventory,tax_code,status,created_by,updated_by)
+       values($1,$2,'DB-LOWSTOCK','db-lowstock','DB Low Stock','simple',true,'IVA_GENERAL','active',$3,$3)`,
+      [lowStockProductId, companyId, userId],
+    );
+    await database.pool.query(
+      `insert into product_variants
+       (id,company_id,product_id,sku,normalized_sku,name,unit_of_measure_code,quantity_scale,tracks_inventory,min_stock,standard_cost,currency_code,is_default,option_signature,status,created_by,updated_by)
+       values($1,$2,$3,'DB-LOWSTOCK','db-lowstock','Variante Stock Bajo','unit',0,true,5,5,'MXN',true,$4,'active',$5,$5)`,
+      [lowStockVariantId, companyId, lowStockProductId, '9'.repeat(64), userId],
+    );
+    await database.pool.query(
+      `insert into inventory_balances(id,company_id,branch_id,inventory_location_id,product_variant_id,quantity_on_hand,quantity_reserved,average_unit_cost,currency_code)
+       values($1,$2,$3,$4,$5,'3.000000','0.000000','5.0000','MXN')`,
+      [randomUUID(), companyId, branchId, locationId, lowStockVariantId],
+    );
+
     // --- Employees / attendance -------------------------------------------
     const employeeInId = randomUUID(); // clocked in, never out — counted.
     const employeeOutId = randomUUID(); // clocked in then out — not counted.
@@ -461,13 +484,14 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
         transaction_count: number;
         gross_total: { currency_code: string; amount: string }[];
         trend_vs_yesterday: { currency_code: string; today_total: string; yesterday_total: string; pct_change: number | null }[];
+        by_hour: { hour: number; currency_code: string; transaction_count: number; gross_sales: string }[];
       };
       occupancy: { current_occupancy: number };
       parties: { count: number; reservations: { id: string; room_name: string | null; status: string }[] };
       cash_sessions: { open_count: number; sessions: { cash_register_name: string | null; opening_amount: string }[] };
       outstanding_party_balances: { currency_code: string; amount: string }[];
       employee_attendance: { clocked_in_count: number };
-      inventory_alerts: { out_of_stock_variant_count: number };
+      inventory_alerts: { out_of_stock_variant_count: number; low_stock_variant_count: number };
       birthdays_today: { count: number; customers: { id: string; display_name: string }[] };
     };
   }
@@ -516,8 +540,15 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     // ON this date.
     expect(data.employee_attendance.clocked_in_count).toBe(1);
 
-    // Inventory: the one zero-quantity variant.
+    // Inventory: the one zero-quantity variant, and separately the one
+    // available-but-at-its-min_stock variant — never double-counted.
     expect(data.inventory_alerts.out_of_stock_variant_count).toBe(1);
+    expect(data.inventory_alerts.low_stock_variant_count).toBe(1);
+
+    // Sales by hour: the exact same real `salesReport.salesByHour` the
+    // Sales report itself computes for this identical scope — DB-0001
+    // completed at 09:00 UTC, this branch's own timezone (UTC).
+    expect(data.sales.by_hour).toEqual([{ hour: 9, currency_code: 'MXN', transaction_count: 1, gross_sales: '100.0000' }]);
   });
 
   it('branch scoping: an excluded same-company branch never contributes, even with no branch_id filter', async () => {
@@ -556,6 +587,7 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     const data = response.json<SummaryBody>().data;
     expect(data.sales.transaction_count).toBe(0);
     expect(data.sales.gross_total).toEqual([]);
+    expect(data.sales.by_hour).toEqual([]);
     expect(data.parties.count).toBe(0);
     expect(data.parties.reservations).toEqual([]);
     expect(data.employee_attendance.clocked_in_count).toBe(0);
@@ -563,6 +595,7 @@ integration('Dashboard summary aggregation (TASK 14.5, Wave 3, Phase 2)', { conc
     // requested — never zeroed out just because the date param is empty.
     expect(data.occupancy.current_occupancy).toBe(1);
     expect(data.inventory_alerts.out_of_stock_variant_count).toBe(1);
+    expect(data.inventory_alerts.low_stock_variant_count).toBe(1);
     expect(data.cash_sessions.open_count).toBe(1);
     expect(data.outstanding_party_balances).toEqual([{ currency_code: 'MXN', amount: '600.0000' }]);
     // Real "no activity at all" for this date — no currency was ever seen

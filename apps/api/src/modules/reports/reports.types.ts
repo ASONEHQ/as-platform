@@ -212,6 +212,10 @@ export interface InventoryReport {
   readonly quantityReservedTotal: string;
   readonly quantityInTransitTotal: string;
   readonly outOfStockVariantCount: number;
+  /** Same threshold rule as `inventory.repository.ts`'s own canonical
+   * `STOCK_STATUS_EXPR` (`min_stock is not null and available <= min_stock`,
+   * never counted twice with out-of-stock). */
+  readonly lowStockVariantCount: number;
   readonly inventoryValue: readonly CurrencyAmount[];
   readonly movementVolume: readonly InventoryMovementVolume[];
 }

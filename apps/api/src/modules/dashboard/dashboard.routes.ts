@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { successResponse } from '../../http/response.js';
 import { requireAuthenticatedUser, requireBranchAccess, requirePermission } from '../auth/auth.guards.js';
 import type { AuthService } from '../auth/auth.service.js';
-import type { CurrencyAmount } from '../reports/reports.types.js';
+import type { CurrencyAmount, HourlySales } from '../reports/reports.types.js';
 import { withDashboardErrors } from './dashboard.http-errors.js';
 import type { DashboardService } from './dashboard.service.js';
 import type {
@@ -74,6 +74,15 @@ function birthdayCustomerHttp(entry: DashboardBirthdayCustomer): Readonly<Record
   return { id: entry.id, display_name: entry.displayName };
 }
 
+function hourlySalesHttp(entry: HourlySales): Readonly<Record<string, unknown>> {
+  return {
+    hour: entry.hour,
+    currency_code: entry.currencyCode,
+    transaction_count: entry.transactionCount,
+    gross_sales: entry.grossSales,
+  };
+}
+
 function openCashSessionHttp(entry: DashboardOpenCashSession): Readonly<Record<string, unknown>> {
   return {
     cash_session_id: entry.cashSessionId,
@@ -95,6 +104,7 @@ function summaryHttp(summary: DashboardSummary): Readonly<Record<string, unknown
       transaction_count: summary.salesTransactionCount,
       gross_total: summary.salesGrossTotal.map(currencyAmountHttp),
       trend_vs_yesterday: summary.salesTrendVsYesterday.map(salesTrendHttp),
+      by_hour: summary.salesByHour.map(hourlySalesHttp),
     },
     occupancy: { current_occupancy: summary.currentOccupancy },
     parties: {
@@ -113,7 +123,10 @@ function summaryHttp(summary: DashboardSummary): Readonly<Record<string, unknown
     },
     outstanding_party_balances: summary.outstandingPartyBalances.map(currencyAmountHttp),
     employee_attendance: { clocked_in_count: summary.clockedInEmployeeCount },
-    inventory_alerts: { out_of_stock_variant_count: summary.outOfStockVariantCount },
+    inventory_alerts: {
+      out_of_stock_variant_count: summary.outOfStockVariantCount,
+      low_stock_variant_count: summary.lowStockVariantCount,
+    },
     birthdays_today: {
       count: summary.birthdaysToday.length,
       customers: summary.birthdaysToday.map(birthdayCustomerHttp),

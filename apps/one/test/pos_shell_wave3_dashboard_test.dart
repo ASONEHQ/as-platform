@@ -62,8 +62,11 @@ void main() {
       // Attendance.
       expect(find.text('4'), findsOneWidget);
       expect(find.text('con entrada registrada hoy'), findsOneWidget);
-      // Inventory alerts.
-      expect(find.text('inventario en vivo'), findsOneWidget);
+      // TASK 17.4 — the out-of-stock count moved off the flat KPI grid
+      // into the dedicated Alertas panel (see the dedicated Alertas group
+      // below for its own full coverage); this test still confirms it is
+      // no longer duplicated as a KPI tile.
+      expect(find.text('inventario en vivo'), findsNothing);
 
       // Today's party list row and open cash session row render real data
       // (the room name is embedded alongside the time range in one Text
@@ -86,6 +89,12 @@ void main() {
       expect(find.text('Sin fiestas registradas hoy.'), findsOneWidget);
       expect(find.byKey(const Key('pos-dashboard-cash-sessions-empty')), findsOneWidget);
       expect(find.text('No hay cajas abiertas en este momento.'), findsOneWidget);
+
+      // TASK 17.4 — an honest empty alerts state, never a hidden panel.
+      expect(find.byKey(const Key('pos-dashboard-alerts-empty')), findsOneWidget);
+      expect(find.text('Sin alertas activas.'), findsOneWidget);
+      // TASK 17.4 — an honest "no data" chart, never a fabricated bar.
+      expect(find.text('Sin datos para graficar.'), findsOneWidget);
     });
 
     testWidgets('a branch-scoped session never shows the branch selector and always passes its own branch', (
@@ -192,17 +201,72 @@ void main() {
       expect(find.byKey(const Key('pos-dashboard-metrics-grid')), findsOneWidget);
     });
   });
+
+  group('TASK 17.4 — Dashboard Alertas', () {
+    testWidgets('real out-of-stock and low-stock counts render as distinct alert rows, never a fabricated one', (
+      tester,
+    ) async {
+      final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+      await _pump(tester, dashboardGateway: gateway);
+
+      expect(find.byKey(const Key('pos-dashboard-alerts')), findsOneWidget);
+      expect(find.text('2 producto(s) agotados'), findsOneWidget);
+      expect(find.text('3 producto(s) con stock bajo'), findsOneWidget);
+      // `_fixtureSummary()`'s own `partyStatusBreakdown` carries no
+      // `pending_deposit` entry — that alert must not appear just because
+      // the panel itself is visible.
+      expect(find.byKey(const Key('pos-dashboard-alert-pending-deposit')), findsNothing);
+      expect(find.byKey(const Key('pos-dashboard-alerts-empty')), findsNothing);
+    });
+
+    testWidgets('a real pending-deposit party count renders its own alert row', (tester) async {
+      final gateway = _RecordingDashboardGateway(response: _summaryWithPendingDeposit());
+      await _pump(tester, dashboardGateway: gateway);
+
+      expect(find.text('2 fiesta(s) pendiente(s) de anticipo'), findsOneWidget);
+    });
+
+    testWidgets('tapping the out-of-stock alert navigates away from the Dashboard, via the real onNavigateToModule callback', (
+      tester,
+    ) async {
+      final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+      await _pump(tester, dashboardGateway: gateway);
+
+      final alertFinder = find.byKey(const Key('pos-dashboard-alert-out-of-stock'));
+      await tester.ensureVisible(alertFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(alertFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-dashboard')), findsNothing);
+    });
+
+    testWidgets('sales by hour renders the real backend bars, never a client-side bucketing', (tester) async {
+      final gateway = _RecordingDashboardGateway(response: _fixtureSummary());
+      await _pump(tester, dashboardGateway: gateway);
+
+      expect(find.byKey(const Key('pos-dashboard-sales-by-hour')), findsOneWidget);
+      expect(find.text('Ventas por hora'), findsOneWidget);
+      expect(find.text('9h'), findsOneWidget);
+      expect(find.text('14h'), findsOneWidget);
+    });
+  });
 }
 
 // --- Fixtures ---------------------------------------------------------------
 
-PosDashboardSummary _fixtureSummary() => PosDashboardSummary(
+PosDashboardSummary _fixtureSummary({Map<String, int> partyStatusBreakdown = const {'confirmed': 1, 'held': 1}}) =>
+    PosDashboardSummary(
   date: '2026-09-08',
   branchId: 'branch-id',
   salesTransactionCount: 3,
   salesGrossTotal: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '1500.0000')],
   salesTrendVsYesterday: const [
     PosDashboardSalesTrendEntry(currencyCode: 'MXN', todayTotal: '1500.0000', yesterdayTotal: '1000.0000', pctChange: 50),
+  ],
+  salesByHour: const [
+    PosDashboardHourlySales(hour: 9, currencyCode: 'MXN', transactionCount: 1, grossSales: '500.0000'),
+    PosDashboardHourlySales(hour: 14, currencyCode: 'MXN', transactionCount: 2, grossSales: '1000.0000'),
   ],
   currentOccupancy: 7,
   partyReservationCount: 2,
@@ -243,15 +307,19 @@ PosDashboardSummary _fixtureSummary() => PosDashboardSummary(
   ],
   outstandingPartyBalances: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '450.0000')],
   upcomingPartyReservationCount: 5,
-  partyStatusBreakdown: const {'confirmed': 1, 'held': 1},
+  partyStatusBreakdown: partyStatusBreakdown,
   eventRevenueToday: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '2320.0000')],
   depositsCollectedToday: const [PosDashboardCurrencyAmount(currencyCode: 'MXN', amount: '500.0000')],
   completedPartyReservationsToday: 0,
   cancelledPartyReservationsToday: 0,
   clockedInEmployeeCount: 4,
   outOfStockVariantCount: 2,
+  lowStockVariantCount: 3,
   birthdaysToday: const [PosDashboardBirthdayCustomer(id: 'customer-1', displayName: 'Cliente Cumpleañero')],
 );
+
+PosDashboardSummary _summaryWithPendingDeposit() =>
+    _fixtureSummary(partyStatusBreakdown: const {'confirmed': 1, 'held': 1, 'pending_deposit': 2});
 
 PosDashboardSummary _emptySummary() => const PosDashboardSummary(
   date: '2026-09-08',
@@ -259,6 +327,7 @@ PosDashboardSummary _emptySummary() => const PosDashboardSummary(
   salesTransactionCount: 0,
   salesGrossTotal: [],
   salesTrendVsYesterday: [],
+  salesByHour: [],
   currentOccupancy: 0,
   partyReservationCount: 0,
   partyReservations: [],
@@ -273,6 +342,7 @@ PosDashboardSummary _emptySummary() => const PosDashboardSummary(
   cancelledPartyReservationsToday: 0,
   clockedInEmployeeCount: 0,
   outOfStockVariantCount: 0,
+  lowStockVariantCount: 0,
   birthdaysToday: [],
 );
 

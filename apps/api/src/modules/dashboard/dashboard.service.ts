@@ -208,6 +208,8 @@ export class DashboardService {
       cancelledPartyReservationsToday: partyKpis.cancelledTodayCount,
       clockedInEmployeeCount,
       outOfStockVariantCount: inventoryReport.outOfStockVariantCount,
+      lowStockVariantCount: inventoryReport.lowStockVariantCount,
+      salesByHour: salesReport.salesByHour,
       birthdaysToday,
     };
   }

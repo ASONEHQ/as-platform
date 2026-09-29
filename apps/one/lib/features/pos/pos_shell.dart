@@ -64,6 +64,7 @@ import 'pos_printer_settings_screen.dart';
 import 'pos_receipt_branding_screen.dart';
 import 'pos_refunds_gateway.dart';
 import 'pos_register_scope.dart';
+import 'pos_report_charts.dart';
 import 'pos_reports_gateway.dart';
 import 'pos_reports_screen.dart';
 import 'pos_rewards_gateway.dart';
@@ -4300,17 +4301,38 @@ class _DashboardReady extends StatelessWidget {
                   caption: 'con entrada registrada hoy',
                   onTap: () => onNavigateToModule(PosModule.employees),
                 ),
-                _DashboardMetricCard(
-                  key: const Key('pos-dashboard-metric-inventory-alerts'),
-                  icon: Icons.inventory_2_outlined,
-                  label: 'Variantes agotadas',
-                  value: '${summary.outOfStockVariantCount}',
-                  caption: 'inventario en vivo',
-                  onTap: () => onNavigateToModule(PosModule.inventory),
-                ),
               ],
             );
           },
+        ),
+        const SizedBox(height: 18),
+        // TASK 17.4 §20 — a compact, distinct Alertas panel, pulled out of
+        // the flat KPI-card wall (the out-of-stock count used to be just
+        // another equal-weight tile here — `pos-dashboard-metric-
+        // inventory-alerts`, now folded into this panel instead of
+        // duplicated). Every row is a real, already-computed backend
+        // signal — never a fabricated maintenance/email/birthday alert
+        // (birthdays are already shown, separately, by the always-visible
+        // top banner above the whole shell — see `dashboard_screen.dart`).
+        _DashboardAlerts(summary: summary, onNavigateToModule: onNavigateToModule),
+        const SizedBox(height: 18),
+        // TASK 17.4 §19 — the exact same `salesReport.salesByHour` the
+        // Sales report already computes for this identical scope, reusing
+        // the same `PosBarChart` widget the Reports screen already proves
+        // in production — never a second, divergent chart implementation.
+        _DashboardListCard(
+          key: const Key('pos-dashboard-sales-by-hour'),
+          title: 'Ventas por hora',
+          child: PosBarChart(
+            bars: [
+              for (final entry in summary.salesByHour)
+                PosChartBar(
+                  label: '${entry.hour}h',
+                  value: double.tryParse(entry.grossSales) ?? 0,
+                  valueLabel: _formatDashboardMoney(entry.grossSales, entry.currencyCode),
+                ),
+            ],
+          ),
         ),
         const SizedBox(height: 18),
         LayoutBuilder(
@@ -4372,6 +4394,109 @@ class _DashboardReady extends StatelessWidget {
           style: TextStyle(color: palette.textMuted, fontSize: 11.5),
         ),
       ],
+    );
+  }
+}
+
+/// TASK 17.4 §20 — every row here is backed by an already-real,
+/// already-computed backend signal:
+///  - out-of-stock/low-stock counts: the same live `inventory_balances`
+///    snapshot the KPI grid's own inventory figures already use.
+///  - pending-deposit parties: `summary.partyStatusBreakdown['pending_
+///    deposit']` — TODAY's reservations grouped by status, already
+///    fetched for the "Fiestas completadas/canceladas hoy" card.
+/// Never a maintenance/email/birthday alert — no real backend source
+/// exists for those (see `docs/OPERATIONAL_VISUAL_POLISH.md`).
+class _DashboardAlerts extends StatelessWidget {
+  const _DashboardAlerts({required this.summary, required this.onNavigateToModule});
+  final PosDashboardSummary summary;
+  final ValueChanged<PosModule> onNavigateToModule;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final pendingDeposit = summary.partyStatusBreakdown['pending_deposit'] ?? 0;
+    final rows = <Widget>[
+      if (summary.outOfStockVariantCount > 0)
+        _DashboardAlertRow(
+          key: const Key('pos-dashboard-alert-out-of-stock'),
+          color: palette.error,
+          icon: Icons.error_outline,
+          message: '${summary.outOfStockVariantCount} producto(s) agotados',
+          actionLabel: 'Revisar inventario',
+          onTap: () => onNavigateToModule(PosModule.inventory),
+        ),
+      if (summary.lowStockVariantCount > 0)
+        _DashboardAlertRow(
+          key: const Key('pos-dashboard-alert-low-stock'),
+          color: palette.warning,
+          icon: Icons.warning_amber_outlined,
+          message: '${summary.lowStockVariantCount} producto(s) con stock bajo',
+          actionLabel: 'Revisar existencias',
+          onTap: () => onNavigateToModule(PosModule.inventory),
+        ),
+      if (pendingDeposit > 0)
+        _DashboardAlertRow(
+          key: const Key('pos-dashboard-alert-pending-deposit'),
+          color: palette.action,
+          icon: Icons.info_outline,
+          message: '$pendingDeposit fiesta(s) pendiente(s) de anticipo',
+          actionLabel: 'Revisar fiestas',
+          onTap: () => onNavigateToModule(PosModule.events),
+        ),
+    ];
+    return _PosCard(
+      key: const Key('pos-dashboard-alerts'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Alertas', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 15)),
+          const SizedBox(height: 10),
+          if (rows.isEmpty)
+            _DashboardEmptyNote(key: const Key('pos-dashboard-alerts-empty'), message: 'Sin alertas activas.')
+          else
+            for (final row in rows) row,
+        ],
+      ),
+    );
+  }
+}
+
+class _DashboardAlertRow extends StatelessWidget {
+  const _DashboardAlertRow({
+    required this.color,
+    required this.icon,
+    required this.message,
+    required this.actionLabel,
+    required this.onTap,
+    super.key,
+  });
+  final Color color;
+  final IconData icon;
+  final String message;
+  final String actionLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(message, style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13)),
+            ),
+            Text(actionLabel, style: TextStyle(color: color, fontSize: 11.5, fontWeight: FontWeight.w700)),
+            Icon(Icons.chevron_right, size: 16, color: color),
+          ],
+        ),
+      ),
     );
   }
 }

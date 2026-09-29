@@ -513,24 +513,48 @@ export class ReportsRepository {
     quantityReservedTotal: string;
     quantityInTransitTotal: string;
     outOfStockVariantCount: number;
+    lowStockVariantCount: number;
   }> {
+    // TASK 17.4 — `lowStockVariantCount` joins `product_variants` for
+    // `min_stock`, so the branch-scope predicate is written qualified
+    // (`b.company_id`/`b.branch_id`) here rather than through the shared
+    // `appendBranchScope` helper, which emits unqualified column names
+    // that would be ambiguous once a second table is in scope. Mirrors
+    // `inventory.repository.ts`'s own `STOCK_STATUS_EXPR` priority
+    // exactly (out-of-stock first, low-stock only otherwise) — never a
+    // second, divergent stock-status threshold definition.
     const where: string[] = [];
     const values: unknown[] = [];
-    appendBranchScope(where, values, companyId, branchIds, branchId);
+    values.push(companyId);
+    where.push(`b.company_id = $${String(values.length)}`);
+    values.push(branchIds);
+    where.push(`b.branch_id = any($${String(values.length)}::uuid[])`);
+    if (branchId !== undefined) {
+      values.push(branchId);
+      where.push(`b.branch_id = $${String(values.length)}`);
+    }
     const row = result<{
       cnt: string;
       qoh: string;
       qres: string;
       qit: string;
       oos: string;
+      low: string;
     }>(
       await this.database.pool.query(
         `select count(*)::text cnt,
-                coalesce(sum(quantity_on_hand),0)::text qoh,
-                coalesce(sum(quantity_reserved),0)::text qres,
-                coalesce(sum(quantity_in_transit),0)::text qit,
-                count(*) filter (where quantity_on_hand - quantity_reserved <= 0)::text oos
-         from inventory_balances where ${where.join(' and ')}`,
+                coalesce(sum(b.quantity_on_hand),0)::text qoh,
+                coalesce(sum(b.quantity_reserved),0)::text qres,
+                coalesce(sum(b.quantity_in_transit),0)::text qit,
+                count(*) filter (where (b.quantity_on_hand - b.quantity_reserved) <= 0)::text oos,
+                count(*) filter (
+                  where (b.quantity_on_hand - b.quantity_reserved) > 0
+                    and v.min_stock is not null
+                    and (b.quantity_on_hand - b.quantity_reserved) <= v.min_stock
+                )::text low
+         from inventory_balances b
+         join product_variants v on v.company_id = b.company_id and v.id = b.product_variant_id
+         where ${where.join(' and ')}`,
         values,
       ),
     ).rows[0];
@@ -541,6 +565,7 @@ export class ReportsRepository {
           quantityReservedTotal: '0.000000',
           quantityInTransitTotal: '0.000000',
           outOfStockVariantCount: 0,
+          lowStockVariantCount: 0,
         }
       : {
           trackedVariantCount: Number(row.cnt),
@@ -548,6 +573,7 @@ export class ReportsRepository {
           quantityReservedTotal: row.qres,
           quantityInTransitTotal: row.qit,
           outOfStockVariantCount: Number(row.oos),
+          lowStockVariantCount: Number(row.low),
         };
   }
 
