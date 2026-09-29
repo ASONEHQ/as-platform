@@ -87,6 +87,14 @@ enum PosModule {
   // zero-side-effect "Imprimir ticket de prueba" — see
   // `pos_printer_settings_screen.dart`.
   printerSettings('Impresora de Tickets', Icons.print_outlined, 'Sistema'),
+  // TASK 17.4 §32 — `PosBrandingScreen` (the real, already-secured logo
+  // upload/preview/delete screen TASK 14.5A built, reusing TASK 17.1's
+  // own protected object storage) had no nav entry of its own anywhere
+  // in the app — only reachable via a button buried inside "Marca del
+  // Ticket" (`pos_receipt_branding_screen.dart`'s own TASK 15.0 finding
+  // F2 doc comment). No new backend, no new storage — same screen, a
+  // real front door.
+  logo('Logo del Negocio', Icons.image_outlined, 'Sistema'),
   // TASK 14.5 (Wave 3, Phase 7, Item 6): a faithful, real port of the
   // legacy's local keyword/regex FAQ bot — see `pos_assistant_screen.dart`.
   assistant('Asistente', Icons.smart_toy_outlined, 'Sistema');
@@ -244,6 +252,7 @@ const Map<PosModule, List<String>> _posModuleRequiredAnyPermission = {
   PosModule.settings: ['branch.read'],
   PosModule.receiptBranding: ['company_settings.read'],
   PosModule.printerSettings: ['company_settings.read'],
+  PosModule.logo: ['company_settings.read'],
   // `PosModule.assistant` intentionally absent — always visible, matching
   // `pos_assistant_screen.dart`'s own deliberate zero-permission-check
   // design (see this map's own header doc comment).

@@ -16,6 +16,7 @@ import 'pos_access_screen.dart';
 import 'pos_assistant_gateway.dart';
 import 'pos_assistant_screen.dart';
 import 'pos_auth_gateway.dart';
+import 'pos_branding_screen.dart';
 import 'pos_branch_admin_gateway.dart';
 import 'pos_branch_admin_screen.dart';
 import 'pos_branch_consolidation_gateway.dart';
@@ -3714,6 +3715,11 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     settingsGateway: settingsGateway,
                   ),
+                  // TASK 17.4 §32 — `PosBrandingScreen` itself is
+                  // unchanged (TASK 14.5A); this is only its first real
+                  // nav entry point — see `pos_navigation.dart`'s own
+                  // `PosModule.logo` doc comment.
+                  PosModule.logo => PosBrandingScreen(context: this.context, settingsGateway: settingsGateway),
                   // TASK 14.5 (Wave 3, Phase 7, Item 6): Asistente — real
                   // deterministic FAQ bot over live data.
                   PosModule.assistant => PosAssistantScreen(
