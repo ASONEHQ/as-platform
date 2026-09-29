@@ -164,3 +164,46 @@ Given this, the only honest choice was the one the task spec itself demanded: **
 - RBAC — no new permission name was created; every guard on the new endpoints reuses an existing, already-seeded permission (`inventory.read`, `catalog.read`).
 - Negative-stock policy — unchanged (`next < 0n || next < reserved` throws `insufficient_inventory`, the same formula everywhere it already existed).
 - Unit-of-measure model — unchanged; no `mg`, no density inference, no cross-dimension conversion.
+
+## 10. Human-readable movement presentation (TASK 17.2.4)
+
+Production showed raw ledger internals directly to operators — `sale_consumption · IMV-7ffb6d…`, `Ref: sale · SALE-…` — useful for auditing, wrong as the primary business-facing view. This task closed that gap as a **read-model + presentation change only**: the raw ledger stays exactly as authoritative as it always was; nothing here changes what a movement means or how it's computed.
+
+### 10.1 What's real vs. what had to stay honest
+
+Before writing any UI, this task audited the actual movement schema and every real write path (`sale-consumption.ts`, `purchase-order-receipt.ts`, `purchase-receipt.ts`, `sale-return.ts`, `inventory-transfers.service.ts`, `inventory-counts.service.ts`, `reservation.service.ts`, `inventory-reversal.repository.ts`). Two findings shaped the whole design:
+
+- **Quantity is always stored positive** (`inventory_movement_lines_quantity_ck: quantity > 0`). Direction (`entrada`/`salida`) is derived structurally from which of `source_location_id`/`destination_location_id` is set — never from the movement type's name, never from a signed quantity (there isn't one).
+- **Every `*_number` field in this system is a disguised UUID**, not a real sequential folio: `sale_number = 'SALE-' + uuid`, and identically for `refund_number`, `transfer_number`, `count_number`, `reservation_number`, `movement_number` (confirmed by reading each generator directly). Showing one as "Venta #1234" would itself be a fabricated business folio — exactly the anti-pattern this task forbids. Every reference display below is therefore a plain word ("Venta", "Compra", "Traspaso"…), never a number; the real identifiers still exist, just moved to an explicit audit section.
+
+### 10.2 Direct sale vs. recipe consumption — the real, authoritative signal
+
+`inventory_movement_lines.metadata` (an existing, previously-unused jsonb column) already carries the one fact needed: for a recipe-driven line, `sale-consumption.ts` writes `{source: 'recipe', recipe_id, sold_product_variant_id, sold_product_name_snapshot, recipe_component_quantity, ...}`; for a direct line, `metadata` is `null`. This is the *only* authoritative distinction this ledger has — never inferred from `is_sellable`, a product name, or an SKU convention. `sold_product_name_snapshot` is a real, frozen value captured at the moment of sale (mirroring the same snapshot pattern `sales.customer_display_name`/`direct_purchases.supplier_name` already use elsewhere) — a later rename of the sold product does not change what a past movement shows.
+
+### 10.3 Backend: `movement-line-summaries.ts`
+
+A new shared helper (`apps/api/src/modules/inventory/movement-line-summaries.ts`), reused by both `InventoryMovementReadService.list()` (the Movimientos list) and `InventoryOverviewService.get()`'s `recentActivity`. A movement can have any number of lines (a multi-ingredient recipe sale posts one movement with one line per ingredient); this task never invents a single "the" product for a movement that had several:
+
+- **`GET /api/v1/inventory/movements`** stays movement-granular (one row per movement — it owns real per-movement actions: submit/post/add-line/delete-line/cancel/reverse, which this task did not touch). Each row gets an honest `line_count`, and — only when that count is exactly 1 — the real `product_variant_id`/`product_name`/`product_sku`/`is_sellable`/`quantity`/`unit_of_measure_code`/`direction`/`metadata` for that single line. A multi-line movement's card shows its real line count instead of a guessed product.
+- **`GET /api/v1/inventory/overview`'s `recentActivity`** is genuinely **line-granular** (one row per movement *line*, not per movement) — a deliberate, safe choice specific to this read-only section, which has no movement-level actions to conflict with. A 4-ingredient recipe sale correctly produces 4 real activity rows, never one row with a fabricated single ingredient.
+
+Both reuse the exact identity-resolution pattern already established in TASK 17.2 (`product-identities.ts`) — never a second resolver, never a per-row query (2 bounded queries added per page/request, both backed by the pre-existing `inventory_movement_lines_movement_idx`).
+
+### 10.4 Frontend: one centralized mapping, reused everywhere
+
+`pos_inventory_admin_screen.dart` gains `_activityTitle()` (movement type + reference type + line metadata → the real business-event title: "Salida por venta", "Consumo por receta", "Entrada por compra", "Ajuste por conteo", "Salida por reserva", "Salida/Entrada por traspaso", falling back to the pre-existing generic `_movementTypeLabel()` for every other case — never a duplicated switch statement), `_referenceWord()` (reference type → a plain human word, never a fabricated folio), `_unitLabel()`/`_signedQuantityLabel()` (real localized units — `unidad`/`unidades`/`kg`/`g`/`ml`/`L` — and a compact, correctly-signed quantity, e.g. `−180 g`, never `180.000000 g`), and one shared `_ActivityItem` widget rendering all of the above plus product identity (reusing TASK 17.2.2's own `_InventoryProductIdentity`, "Producto no disponible" fallback included) and the sold-product snapshot when recipe-driven. Resumen's "Actividad reciente" and the Movimientos list card both render through this exact same widget — never two divergent layouts.
+
+### 10.5 Movement detail — the audit drawer
+
+The movement detail dialog's RESUMEN section now leads with the same human title/product/quantity/reference (matching the list card), and gains a collapsed-by-default "Auditoría" section (`_MovementAuditSection`) holding exactly what moved off the primary view: the internal folio (`movement_number`), the raw reference type, the reference/source-document id, and the created/posted/cancelled/reversed timestamps. Nothing is deleted — every technical identifier the file already exposed is still one tap away.
+
+### 10.6 Search
+
+`Buscar por folio, motivo o notas` → `Buscar por producto, SKU, folio, motivo o notas`. Still the exact same client-side filter over the already-loaded page it always was (the list endpoint has no server-side text search) — extended for free once `product_name`/`product_sku` were already in the payload for the card redesign. No new backend capability is claimed.
+
+### 10.7 Known, deliberate limitations
+
+- **Filters**: only status filtering exists (unchanged from before this task). A movement-type/reference-type category filter (Entradas/Salidas/Ventas/Compras/Ajustes/Traspasos/Conteos) is possible — the backend already supports both `movement_type` and `reference_type` query params — but was not built in this pass, to keep this task's scope to the presentation layer it set out to fix.
+- **Reference display for `purchase_order`**: `purchase_orders.order_number` is a real (non-UUID) folio, unlike every other `*_number` field — but joining it into the activity/movement read model was judged out of scope for this pass; `purchase_order`/`direct_purchase` references both show the plain word "Compra" today, with the raw `reference_id` still in the audit drawer.
+- **Location name** on an activity/movement card was not added (would require an additional per-line location join); only the reconciliation/Ajustes tab's finding detail still shows a short id for its product, since that module has no identity field to consume at all (untouched by TASK 17.2 or 17.2.4) — a real, pre-existing gap, not silently faked here.
+- **Narrow (390px) width**: the Resumen tab's pre-existing KPI-card row already overflows by a fixed 5.3px at 390px width, independent of this task's own changes (confirmed by testing with an empty activity feed) — a pre-existing layout limitation this presentation-only task's own scope explicitly excludes fixing ("do not unnecessarily redesign the KPI/alerts sections"). The Movimientos tab has a similar pre-existing narrow-width overflow in its own "Agregar línea" header row (found during TASK 17.2.1's own gate). Both tabs' new activity cards were verified overflow-free at the two required desktop breakpoints (1440×900, 1365×768).
