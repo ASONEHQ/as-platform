@@ -339,6 +339,8 @@ class PosInventoryReport {
     required this.quantityReservedTotal,
     required this.quantityInTransitTotal,
     required this.outOfStockVariantCount,
+    required this.inventoryValueAvailable,
+    required this.inventoryValueUnavailableReason,
     required this.inventoryValue,
     required this.movementVolume,
   });
@@ -352,6 +354,10 @@ class PosInventoryReport {
     quantityReservedTotal: _string(json, 'quantity_reserved_total'),
     quantityInTransitTotal: _string(json, 'quantity_in_transit_total'),
     outOfStockVariantCount: _int(json, 'out_of_stock_variant_count'),
+    // TASK 17.5 §10.6 — defaults to `false`/unavailable if the backend
+    // response ever omits the field (never assumes availability).
+    inventoryValueAvailable: json['inventory_value_available'] as bool? ?? false,
+    inventoryValueUnavailableReason: _stringOrNull(json, 'inventory_value_unavailable_reason'),
     inventoryValue: _amountList(json, 'inventory_value'),
     movementVolume: (json['movement_volume'] as List<Object?>? ?? const [])
         .whereType<Map<String, Object?>>()
@@ -367,6 +373,8 @@ class PosInventoryReport {
   final String quantityReservedTotal;
   final String quantityInTransitTotal;
   final int outOfStockVariantCount;
+  final bool inventoryValueAvailable;
+  final String? inventoryValueUnavailableReason;
   final List<PosReportCurrencyAmount> inventoryValue;
   final List<PosInventoryMovementVolume> movementVolume;
 }

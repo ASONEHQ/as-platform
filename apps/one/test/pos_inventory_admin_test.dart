@@ -43,6 +43,48 @@ void main() {
       expect(find.text('variant-2'), findsNothing);
     });
 
+    // TASK 17.5 §10.1/§10.2/§10.3 — the table's own Producto cell must not
+    // repeat the SKU (already its own adjacent column), quantities over
+    // 999 get a thousands separator, and units use the same real,
+    // pluralization-aware label the rest of this screen already uses —
+    // all presentation-only, on the exact same real balance fields.
+    testWidgets('desktop table avoids redundant "name (sku)", humanizes units, and adds thousands separators', (
+      tester,
+    ) async {
+      final balance = PosInventoryBalance(
+        branchId: 'branch-1',
+        locationId: 'location-src',
+        locationCode: 'SRC',
+        locationName: 'Almacén Origen',
+        productVariantId: 'variant-9',
+        sku: 'calcetas',
+        variantName: null,
+        productName: 'calcetas',
+        categoryName: 'Ropa',
+        unitOfMeasureCode: 'unit',
+        quantityOnHand: '1000',
+        quantityReserved: '0',
+        quantityAvailable: '1000',
+        minStock: '5',
+        stockStatus: 'available',
+      );
+      final gateway = _RecordingInventoryAdminGateway(balances: [balance]);
+      await _pump(tester, gateway: gateway, startOnExistencias: true, viewSize: const Size(1440, 1000));
+
+      expect(find.byKey(const Key('pos-existencias-table')), findsOneWidget);
+      // Never "calcetas (calcetas)" — the redundant SKU-in-parens.
+      expect(find.text('calcetas (calcetas)'), findsNothing);
+      // The bare name renders once (Producto cell) and the real SKU
+      // column renders "calcetas" again on its own — two real, distinct
+      // cells, not one duplicated string.
+      expect(find.text('calcetas'), findsNWidgets(2));
+      // 1000 -> "1,000" for the on-hand quantity.
+      expect(find.text('1,000'), findsOneWidget);
+      // 'unit' with quantity != 1 -> real pluralized label, not the raw code.
+      expect(find.text('unidades'), findsOneWidget);
+      expect(find.text('unit'), findsNothing);
+    });
+
     testWidgets('a narrow viewport keeps the touch-friendly card list, never the desktop table', (tester) async {
       // TASK 17.4.1 — 700px, below the 860px table/card breakpoint, proves
       // the real responsive breakpoint: below 860px, the card list

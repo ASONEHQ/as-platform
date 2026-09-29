@@ -204,9 +204,8 @@ export class ReportsService {
   public async inventoryReport(companyId: string, branchIds: readonly string[], filter: ReportFilter): Promise<InventoryReport> {
     validateRange(filter);
     const timezone = await this.resolveTimezone(companyId, filter.branchId);
-    const [balances, inventoryValue, movementVolume] = await Promise.all([
+    const [balances, movementVolume] = await Promise.all([
       this.repository.inventoryBalanceTotals(companyId, branchIds, filter.branchId),
-      this.repository.inventoryValueByCurrency(companyId, branchIds, filter.branchId),
       this.repository.inventoryMovementVolume(companyId, branchIds, { ...filter, timezone }),
     ]);
     return {
@@ -219,7 +218,16 @@ export class ReportsService {
       quantityInTransitTotal: balances.quantityInTransitTotal,
       outOfStockVariantCount: balances.outOfStockVariantCount,
       lowStockVariantCount: balances.lowStockVariantCount,
-      inventoryValue,
+      // TASK 17.5 §10.6 — see `InventoryReport.inventoryValueAvailable`'s
+      // own doc comment: no authoritative unit cost exists anywhere in
+      // this system today, so this is never computed as a fabricated
+      // zero. `inventoryValueByCurrency`/`inventory_value` on the
+      // repository are intentionally left in place, unused here, for
+      // whenever a real costing method lands.
+      inventoryValueAvailable: false,
+      inventoryValueUnavailableReason:
+        'No existe un costo unitario confiable todavía: el costo promedio de inventario nunca se ha calculado y el costo estándar del catálogo no está conectado al inventario.',
+      inventoryValue: [],
       movementVolume,
     };
   }

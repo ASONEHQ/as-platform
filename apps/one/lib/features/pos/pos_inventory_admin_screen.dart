@@ -1095,7 +1095,12 @@ class _ExistenciasTable extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            balance.displayName,
+                            // TASK 17.5 §10.1 — this table has its own
+                            // dedicated SKU column right next to this
+                            // cell (below), so the name itself omits the
+                            // redundant "(sku)" suffix `displayName`
+                            // would otherwise repeat.
+                            balance.nameWithoutSku,
                             overflow: TextOverflow.ellipsis,
                             maxLines: 1,
                             style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 12.5),
@@ -1117,7 +1122,16 @@ class _ExistenciasTable extends StatelessWidget {
                   DataCell(_TipoPill(tipo: balance.tipo)),
                   DataCell(Text(_compactQuantity(balance.quantityOnHand))),
                   DataCell(Text(balance.minStock == null ? '—' : _compactQuantity(balance.minStock!))),
-                  DataCell(Text(balance.unitOfMeasureCode, style: TextStyle(color: palette.textSecondary, fontSize: 12))),
+                  DataCell(
+                    // TASK 17.5 §10.2 — reuses the same real, pluralization-
+                    // aware unit-label resolver every other movement/
+                    // transfer/count line in this file already uses,
+                    // instead of showing the raw backend code verbatim.
+                    Text(
+                      _unitLabel(balance.unitOfMeasureCode, double.tryParse(balance.quantityOnHand) ?? 0),
+                      style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                    ),
+                  ),
                   DataCell(_StockStatusPill(status: balance.stockStatus)),
                   DataCell(
                     ConstrainedBox(
@@ -1386,8 +1400,29 @@ class _Quantity extends StatelessWidget {
 String _compactQuantity(String raw) {
   final value = double.tryParse(raw);
   if (value == null) return raw;
-  return value == value.truncateToDouble() ? value.truncate().toString() : value.toString();
+  final compact = value == value.truncateToDouble() ? value.truncate().toString() : value.toString();
+  return _withThousandsSeparators(compact);
 }
+
+// TASK 17.5 §10.3 — humanizes a quantity like "1000" into "1,000" for
+// display only; the stored/API precision (`_compactQuantity`'s own
+// truncation logic above) is unchanged, and the negative sign/decimal
+// point are preserved untouched.
+String _withThousandsSeparators(String compact) {
+  final negative = compact.startsWith('-');
+  final unsigned = negative ? compact.substring(1) : compact;
+  final dot = unsigned.indexOf('.');
+  final wholePart = dot == -1 ? unsigned : unsigned.substring(0, dot);
+  final fractionPart = dot == -1 ? '' : unsigned.substring(dot);
+  if (wholePart.length <= 3) return compact;
+  final buffer = StringBuffer();
+  for (var i = 0; i < wholePart.length; i++) {
+    if (i > 0 && (wholePart.length - i) % 3 == 0) buffer.write(',');
+    buffer.write(wholePart[i]);
+  }
+  return '${negative ? '-' : ''}$buffer$fractionPart';
+}
+
 
 /// A small reusable "action button that requires a free-text reason" —
 /// every mutating action in this file that the backend requires a

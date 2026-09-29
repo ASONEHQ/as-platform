@@ -316,6 +316,12 @@ class PosInventoryBalance {
 
   String get displayName => variantName == null ? '$productName ($sku)' : '$productName — $variantName ($sku)';
 
+  /// Same identity, without the trailing `(sku)` — for a context that
+  /// already shows the SKU as its own separate field right next to this
+  /// one (TASK 17.5 §10.1: avoids "calcetas (calcetas)" next to a
+  /// dedicated SKU column showing "calcetas" again).
+  String get nameWithoutSku => variantName == null ? productName : '$productName — $variantName';
+
   /// TASK 17.2 §6/§16 — the only two real, evidence-backed classifications:
   /// an ingredient (`is_sellable=false`, never sold directly) or a directly
   /// sold product. Never invent a third category like "Consumible"/"Otro" —

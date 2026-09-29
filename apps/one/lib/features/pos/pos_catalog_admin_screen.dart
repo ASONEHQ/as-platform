@@ -46,6 +46,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
+import 'money.dart';
 import 'pos_catalog_admin_gateway.dart';
 import 'pos_reports_csv_download.dart';
 import 'pos_tokens.dart';
@@ -382,7 +383,13 @@ class _ProductPriceRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  price == null ? 'Sin precio vigente' : '${price.amount} ${price.currencyCode}',
+                  // TASK 17.5 §9.4 — presentation only: the backend's raw
+                  // 4-decimal wire format (e.g. "50.0000") read as a
+                  // 2-decimal display amount via `Money.toDisplayString`,
+                  // never a change to the stored/calculated precision.
+                  price == null
+                      ? 'Sin precio vigente'
+                      : '\$${Money.parse(price.amount, price.currencyCode).toDisplayString()} ${price.currencyCode}',
                   key: Key('pos-catalog-admin-price-value-${product.id}'),
                   style: TextStyle(
                     color: price == null ? palette.textMuted : palette.text,

@@ -68,6 +68,36 @@ void main() {
       expect(find.text('2'), findsOneWidget); // outOfStockVariantCount
       expect(find.text('340.000000'), findsOneWidget); // quantityOnHandTotal
       expect(find.text('restock'), findsOneWidget); // movementType
+      // TASK 17.5 §10.6 — no authoritative unit cost exists anywhere in
+      // this system, so "Valor de inventario" says so honestly instead
+      // of implying zero-value inventory.
+      expect(find.text('No existe un costo unitario confiable todavía.'), findsOneWidget);
+      expect(find.textContaining(r'$0.00'), findsNothing);
+    });
+
+    testWidgets('Inventario: a real inventory value, once authoritative, renders as real money', (tester) async {
+      final gateway = _RecordingReportsGateway(
+        inventoryReportResult: const PosInventoryReport(
+          dateFrom: '2026-01-01',
+          dateTo: '2026-01-07',
+          branchId: 'branch-id',
+          trackedVariantCount: 12,
+          quantityOnHandTotal: '340.000000',
+          quantityReservedTotal: '5.000000',
+          quantityInTransitTotal: '0.000000',
+          outOfStockVariantCount: 2,
+          inventoryValueAvailable: true,
+          inventoryValueUnavailableReason: null,
+          inventoryValue: [PosReportCurrencyAmount(currencyCode: 'MXN', amount: '8400.0000')],
+          movementVolume: [],
+        ),
+      );
+      await _pump(tester, gateway: gateway);
+      gateway.inventoryCalls.clear();
+      await _tapArea(tester, 'inventory');
+
+      expect(find.text('8400.00 MXN'), findsOneWidget);
+      expect(find.text('No existe un costo unitario confiable todavía.'), findsNothing);
     });
 
     testWidgets('Clientes: company-scoped totals render with no branch_id sent', (tester) async {
@@ -230,6 +260,8 @@ void main() {
           quantityReservedTotal: '5.000000',
           quantityInTransitTotal: '0.000000',
           outOfStockVariantCount: 5,
+          inventoryValueAvailable: false,
+          inventoryValueUnavailableReason: null,
           inventoryValue: [],
           movementVolume: [],
         ),
@@ -667,7 +699,11 @@ const _fixtureInventoryReport = PosInventoryReport(
   quantityReservedTotal: '5.000000',
   quantityInTransitTotal: '0.000000',
   outOfStockVariantCount: 2,
-  inventoryValue: [PosReportCurrencyAmount(currencyCode: 'MXN', amount: '8400.0000')],
+  // TASK 17.5 §10.6 — matches real production behavior: no authoritative
+  // unit cost exists, so the backend never sends a non-empty value.
+  inventoryValueAvailable: false,
+  inventoryValueUnavailableReason: 'No existe un costo unitario confiable todavía.',
+  inventoryValue: [],
   movementVolume: [
     PosInventoryMovementVolume(movementType: 'restock', movementCount: 4, totalBaseQuantity: '120.000000'),
   ],
@@ -752,6 +788,8 @@ const _emptyInventoryReport = PosInventoryReport(
   quantityReservedTotal: '0.000000',
   quantityInTransitTotal: '0.000000',
   outOfStockVariantCount: 0,
+  inventoryValueAvailable: false,
+  inventoryValueUnavailableReason: null,
   inventoryValue: [],
   movementVolume: [],
 );

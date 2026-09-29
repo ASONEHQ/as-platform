@@ -1456,7 +1456,19 @@ class _InventoryReportPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        _ReportsMoneySection(title: 'Valor de inventario', amounts: report.inventoryValue),
+        // TASK 17.5 §10.6 — no authoritative unit cost exists anywhere in
+        // this system today, so this is never a fabricated "$0.00"; the
+        // backend is now explicit about it (`inventoryValueAvailable`),
+        // and this honestly says so rather than implying zero-value
+        // inventory.
+        report.inventoryValueAvailable
+            ? _ReportsMoneySection(title: 'Valor de inventario', amounts: report.inventoryValue)
+            : _ReportsCard(
+                title: 'Valor de inventario',
+                child: _ReportsEmptyNote(
+                  message: report.inventoryValueUnavailableReason ?? 'Valor de inventario no disponible.',
+                ),
+              ),
         const SizedBox(height: 12),
         _ReportsCard(
           title: 'Movimiento de inventario en el rango',

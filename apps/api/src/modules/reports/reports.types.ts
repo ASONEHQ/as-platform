@@ -216,6 +216,16 @@ export interface InventoryReport {
    * `STOCK_STATUS_EXPR` (`min_stock is not null and available <= min_stock`,
    * never counted twice with out-of-stock). */
   readonly lowStockVariantCount: number;
+  /** TASK 17.5 §10.6 — `average_unit_cost` is hardcoded to `0` on every
+   * inventory write path in this codebase today (no costing method is
+   * implemented), so a sum of `quantity_on_hand * average_unit_cost` is
+   * arithmetically real but always zero — indistinguishable from "this
+   * company genuinely holds zero-value inventory," which would be a
+   * fabricated claim. `inventoryValueAvailable: false` makes that
+   * explicit, mirroring `InventoryOverviewRepository`'s own honest
+   * `valuation: { available: false, reason }` for the same reason. */
+  readonly inventoryValueAvailable: boolean;
+  readonly inventoryValueUnavailableReason: string | null;
   readonly inventoryValue: readonly CurrencyAmount[];
   readonly movementVolume: readonly InventoryMovementVolume[];
 }

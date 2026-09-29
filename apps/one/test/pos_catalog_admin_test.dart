@@ -39,7 +39,10 @@ void main() {
       await _pump(tester, gateway: gateway, permissions: _readOnly);
 
       expect(find.byKey(const Key('pos-catalog-admin-price-row-p-1')), findsOneWidget);
-      expect(find.text('199.0000 MXN'), findsOneWidget);
+      // TASK 17.5 §9.4 — the raw 4-decimal backend wire format displays
+      // rounded to 2 decimals now, never the stored precision itself.
+      expect(find.text(r'$199.00 MXN'), findsOneWidget);
+      expect(find.text('199.0000 MXN'), findsNothing);
       expect(find.text('Sin precio vigente'), findsOneWidget);
     });
 

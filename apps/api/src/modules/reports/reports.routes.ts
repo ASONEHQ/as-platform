@@ -176,6 +176,8 @@ function inventoryReportHttp(report: InventoryReport): Readonly<Record<string, u
     quantity_in_transit_total: report.quantityInTransitTotal,
     out_of_stock_variant_count: report.outOfStockVariantCount,
     low_stock_variant_count: report.lowStockVariantCount,
+    inventory_value_available: report.inventoryValueAvailable,
+    inventory_value_unavailable_reason: report.inventoryValueUnavailableReason,
     inventory_value: report.inventoryValue.map(currencyAmountHttp),
     movement_volume: report.movementVolume.map((entry) => ({
       movement_type: entry.movementType,
