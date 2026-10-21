@@ -3985,6 +3985,286 @@ void main() {
     });
   });
 
+  // TASK 17.5.4 — POS product-card VISUAL parity with the original POS
+  // reference. Structural assertions only (no pixel goldens): the card must
+  // read IMAGE/fallback → real badge → name → real description → price + "+",
+  // use only real data, and never overflow, in CAJERO, CLIENTE and Cafetería.
+  group('POS product cards — visual parity (TASK 17.5.4)', () {
+    Future<void> pumpCards(WidgetTester tester, {Size size = const Size(1440, 900)}) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        PlatformScope(
+          posReadGateway: const _CardParityGateway(),
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(const _CardParityGateway()),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: _FakeCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              authGateway: _FakeAuthGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (size.width < 700) {
+        await tester.tap(find.byKey(const Key('pos-hamburger')));
+        await tester.pumpAndSettle();
+      }
+      await _navigateToPos(tester);
+    }
+
+    Finder card(String id) => find.byKey(Key('pos-product-$id'));
+    Finder inCard(String id, Finder matching) => find.descendant(of: card(id), matching: matching);
+
+    testWidgets('the card reads IMAGE → badge → name → description → price + "+" in that vertical order', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+
+      // The reference image URL cannot load in the test environment, so the
+      // real <Image> falls back to the polished fallback in the SAME area.
+      final image = tester.getRect(inCard('card-full', find.byKey(const Key('pos-product-image-card-full'))));
+      final badge = tester.getRect(find.byKey(const Key('pos-product-badge-card-full')));
+      final name = tester.getRect(inCard('card-full', find.text('Family 2 Pack')));
+      final description = tester.getRect(find.byKey(const Key('pos-product-description-card-full')));
+      final price = tester.getRect(find.byKey(const Key('pos-product-price-card-full')));
+      final add = tester.getRect(find.byKey(const Key('pos-product-add-card-full')));
+
+      expect(image.bottom, lessThanOrEqualTo(badge.top));
+      expect(badge.bottom, lessThanOrEqualTo(name.top));
+      expect(name.bottom, lessThanOrEqualTo(description.top));
+      expect(description.bottom, lessThanOrEqualTo(price.top + 1));
+      // Price bottom-left, round "+" bottom-right, on the same row.
+      expect(add.left, greaterThan(price.right));
+      expect((add.center.dy - price.center.dy).abs(), lessThan(8));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the image is the visual hero and the card has a substantial, consistent size', (tester) async {
+      await pumpCards(tester);
+
+      final cardSize = tester.getSize(card('card-full'));
+      expect(cardSize.height, inInclusiveRange(235, 280));
+      expect(cardSize.width, inInclusiveRange(130, 176));
+      // Every card in the grid shares the exact same rhythm.
+      expect(tester.getSize(card('card-bare')), cardSize);
+      expect(tester.getSize(card('card-long')), cardSize);
+
+      final imageSize = tester.getSize(inCard('card-full', find.byKey(const Key('pos-product-image-card-full'))));
+      expect(imageSize.height, inInclusiveRange(110, 140));
+      // The image occupies (almost) the whole card width, never a tiny icon slot.
+      expect(imageSize.width, greaterThan(cardSize.width * .8));
+    });
+
+    testWidgets('a real image URL is rendered as a real network image', (tester) async {
+      await pumpCards(tester);
+      expect(
+        inCard(
+          'card-full',
+          find.byWidgetPredicate(
+            (widget) =>
+                widget is Image &&
+                widget.image is NetworkImage &&
+                (widget.image as NetworkImage).url == 'https://cdn.example.test/products/family.png',
+          ),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a product with no image gets a polished fallback in the SAME image area — never a blank box', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      final fallback = find.byKey(const Key('pos-product-fallback-card-bare'));
+      expect(fallback, findsOneWidget);
+      expect(inCard('card-bare', find.byType(Image)), findsNothing);
+      expect(inCard('card-bare', find.byType(Icon)), findsWidgets);
+      // Same hero height as a card that does have an image.
+      expect(tester.getSize(fallback).height, tester.getSize(find.byKey(const Key('pos-product-image-card-full'))).height);
+    });
+
+    testWidgets('a broken/unavailable image falls back to the same polished state with no layout shift', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      // `card-full`'s URL 404s in the test environment.
+      expect(find.byKey(const Key('pos-product-fallback-card-full')), findsOneWidget);
+      expect(tester.getSize(find.byKey(const Key('pos-product-fallback-card-full'))).height, 118);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the badge is the REAL category name — and absent (not fabricated) without one', (tester) async {
+      await pumpCards(tester);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('pos-product-badge-card-full')),
+          matching: find.text('PAQUETES'),
+        ),
+        findsOneWidget,
+      );
+      // No category -> no badge at all, and no raw ids leaking through.
+      expect(find.byKey(const Key('pos-product-badge-card-bare')), findsNothing);
+      expect(find.text('cat-pack'), findsNothing);
+    });
+
+    testWidgets('a real description renders; a product without one has no description and no placeholder text', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      expect(find.byKey(const Key('pos-product-description-card-full')), findsOneWidget);
+      expect(
+        inCard('card-full', find.text('2 Day Pass + Calcetas antiderrapantes.')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('pos-product-description-card-bare')), findsNothing);
+      expect(find.text('Sin descripción'), findsNothing);
+    });
+
+    testWidgets('the real sale price is shown prominently; the SKU no longer competes on the card face', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      expect(inCard('card-full', find.text('\$499.00')), findsOneWidget);
+      // SKU/code is not on the card face any more...
+      expect(find.text('P-FULL'), findsNothing);
+      // ...but is still reachable (tooltip) — presentation only, data intact.
+      expect(find.byTooltip('Family 2 Pack · P-FULL'), findsOneWidget);
+    });
+
+    testWidgets('"Sin precio" stays honest but is visually quieter than a real price', (tester) async {
+      await pumpCards(tester);
+      final missing = tester.widget<Text>(find.byKey(const Key('pos-product-price-card-noprice')));
+      final valid = tester.widget<Text>(find.byKey(const Key('pos-product-price-card-full')));
+      expect(missing.data, 'Sin precio');
+      expect(inCard('card-noprice', find.text('\$0.00')), findsNothing);
+      expect(missing.style!.fontSize!, lessThan(valid.style!.fontSize!));
+      expect(missing.style!.fontWeight!.value, lessThan(valid.style!.fontWeight!.value));
+      // Existing sale-eligibility semantics preserved: tapping explains why.
+      await tester.tap(card('card-noprice'));
+      await tester.pump();
+      expect(find.text('Este producto aún no tiene un precio asignado.'), findsOneWidget);
+      expect(find.byKey(const Key('pos-ticket-line-card-noprice')), findsNothing);
+    });
+
+    testWidgets('an out-of-stock product keeps its honest "Sin existencia" signal on the image', (tester) async {
+      await pumpCards(tester);
+      expect(find.text('Sin existencia'), findsOneWidget);
+      expect(inCard('card-oos', find.text('Sin existencia')), findsOneWidget);
+      expect(inCard('card-full', find.text('Sin existencia')), findsNothing);
+    });
+
+    testWidgets('the round "+" is a real circular affordance; the card tap still adds to the ticket', (tester) async {
+      await pumpCards(tester);
+      final add = tester.getSize(find.byKey(const Key('pos-product-add-card-full')));
+      expect(add.width, inInclusiveRange(28, 36));
+      expect(add.width, add.height);
+
+      await tester.tap(card('card-full'));
+      await tester.pump();
+      expect(find.byKey(const Key('pos-ticket-line-card-full')), findsOneWidget);
+    });
+
+    testWidgets('a product configured with a solid card color keeps readable (white) text — no regression of the admin feature', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      final name = tester.widget<Text>(inCard('card-solid', find.text('Producto azul sólido')));
+      expect(name.style!.color, Colors.white);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('non-sellable (inactive) products stay hidden — sellability is untouched', (tester) async {
+      await pumpCards(tester);
+      expect(card('card-inactive'), findsNothing);
+      expect(find.text('Producto inactivo'), findsNothing);
+    });
+
+    testWidgets('long name, long description, long category, long SKU and a huge price never overflow or get cut', (
+      tester,
+    ) async {
+      await pumpCards(tester);
+      expect(card('card-long'), findsOneWidget);
+      // A price is never ellipsized: the full amount is present.
+      expect(inCard('card-long', find.text('\$1234567.89')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final size in [
+      const Size(1440, 900),
+      const Size(1365, 768),
+      const Size(1024, 768),
+      const Size(390, 844),
+    ]) {
+      testWidgets('the card grid renders every edge case with no overflow at ${size.width.toInt()}x${size.height.toInt()}', (
+        tester,
+      ) async {
+        await pumpCards(tester, size: size);
+        expect(card('card-full'), findsOneWidget);
+        expect(find.byKey(const Key('pos-product-add-card-full')), findsOneWidget);
+        final width = tester.getSize(card('card-full')).width;
+        // Never absurdly narrow, never wider than the target ceiling.
+        expect(width, inInclusiveRange(110, 190));
+        expect(tester.takeException(), isNull);
+      });
+    }
+
+    testWidgets('CLIENTE uses the same improved card (badge, fallback, price, round "+")', (tester) async {
+      await pumpCards(tester);
+      await tester.tap(find.byKey(const Key('pos-product-card-full')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-cliente-catalog')), findsOneWidget);
+      expect(card('card-full'), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-badge-card-full')), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-add-card-full')), findsOneWidget);
+      expect(inCard('card-full', find.text('\$499.00')), findsOneWidget);
+      // The 17.5.3 fix is intact: the categoryless product is still there
+      // (the catalog is a lazy scroll view, so scroll down to its section).
+      await tester.scrollUntilVisible(
+        card('card-bare'),
+        300,
+        scrollable: find
+            .descendant(of: find.byKey(const Key('pos-cliente-catalog')), matching: find.byType(Scrollable))
+            .first,
+      );
+      expect(card('card-bare'), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-fallback-card-bare')), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-badge-card-bare')), findsNothing);
+      expect(find.text('Sin categoría'), findsOneWidget);
+      expect(card('card-inactive'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Cafetería shares the same improved card, scoped to Cafetería categories only', (tester) async {
+      await pumpCards(tester);
+      await tester.tap(find.byKey(const Key('nav-cafeteria')));
+      await tester.pumpAndSettle();
+
+      expect(card('card-cafe'), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-add-card-cafe')), findsOneWidget);
+      expect(find.byKey(const Key('pos-product-fallback-card-cafe')), findsOneWidget);
+      expect(inCard('card-cafe', find.text('\$35.00')), findsOneWidget);
+      expect(card('card-full'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('Canonical CLIENTE locked surface (TASK 12.3B)', () {
     Future<void> enterCliente(WidgetTester tester) async {
       await _navigateToPos(tester);
@@ -12822,6 +13102,126 @@ class _ClienteUncategorizedProductGateway implements PosReadGateway {
 
   @override
   Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
+}
+
+/// TASK 17.5.4 — one catalog covering every product-card state the visual
+/// parity pass has to handle: a rich card (image URL, real category,
+/// description, price), a bare one (no image/category/description), long
+/// name/description/category/SKU with a very large price, a product with no
+/// sale price, an out-of-stock one, an admin-configured solid-color card, an
+/// inactive (non-sellable) product that must stay hidden, and a Cafetería
+/// product.
+class _CardParityGateway implements PosReadGateway {
+  const _CardParityGateway();
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async => [
+    _pricedProduct(
+      id: 'card-full',
+      code: 'P-FULL',
+      name: 'Family 2 Pack',
+      categoryId: 'cat-pack',
+      amount: '499.00',
+      imageUrl: 'https://cdn.example.test/products/family.png',
+      description: '2 Day Pass + Calcetas antiderrapantes.',
+    ),
+    _pricedProduct(id: 'card-bare', code: 'P-BARE', name: 'Producto simple', amount: '25.00'),
+    _pricedProduct(
+      id: 'card-long',
+      code: 'P-LONG-0000000000000000000000',
+      name:
+          'Paquete familiar premium con acceso ilimitado a todas las atracciones, '
+          'calcetas antiderrapantes y botella de agua para cada integrante',
+      categoryId: 'cat-long',
+      amount: '1234567.89',
+      description:
+          'Incluye dos pases de día completo, calcetas antiderrapantes para toda '
+          'la familia, una botella de agua por persona y acceso a la zona de snacks '
+          'con descuento especial durante todo el evento.',
+    ),
+    const PosProduct(
+      id: 'card-noprice',
+      code: 'P-NOPRICE',
+      name: 'Producto sin precio',
+      type: 'simple',
+      status: 'active',
+      tracksInventory: false,
+      categoryId: 'cat-pack',
+    ),
+    _pricedProduct(
+      id: 'card-oos',
+      code: 'P-OOS',
+      name: 'Producto agotado',
+      categoryId: 'cat-pack',
+      tracksInventory: true,
+      defaultVariantId: 'variant-oos',
+    ),
+    PosProduct(
+      id: 'card-solid',
+      code: 'P-SOLID',
+      name: 'Producto azul sólido',
+      type: 'simple',
+      status: 'active',
+      tracksInventory: false,
+      categoryId: 'cat-pack',
+      taxCode: 'IVA_GENERAL',
+      pricing: PosPricing.fromJson({'amount': '80.00', 'currency_code': 'MXN'}),
+      cardStyle: 'solid',
+      cardColorHex: '#1E3A8A',
+    ),
+    PosProduct(
+      id: 'card-inactive',
+      code: 'P-INACTIVE',
+      name: 'Producto inactivo',
+      type: 'simple',
+      status: 'inactive',
+      tracksInventory: false,
+      categoryId: 'cat-pack',
+      taxCode: 'IVA_GENERAL',
+      pricing: PosPricing.fromJson({'amount': '10.00', 'currency_code': 'MXN'}),
+    ),
+    _pricedProduct(
+      id: 'card-cafe',
+      code: 'P-CAFE',
+      name: 'Café americano',
+      categoryId: 'cat-cafe',
+      amount: '35.00',
+      description: 'Taza de 12 oz.',
+    ),
+  ];
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-pack', name: 'Paquetes', status: 'active'),
+    PosCategory(
+      id: 'cat-long',
+      name: 'Categoría con un nombre extraordinariamente largo para probar el recorte',
+      status: 'active',
+    ),
+    PosCategory(id: 'cat-cafe', name: 'Cafetería', status: 'active', operationalGroup: 'cafeteria'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [
+    PosInventoryBalance(
+      id: 'balance-oos',
+      branchId: 'branch-id',
+      locationId: 'location-id',
+      variantId: 'variant-oos',
+      onHand: '0',
+      reserved: '0',
+      inTransit: '0',
+    ),
+  ];
 
   @override
   Future<List<PosUser>> users() async => const [];

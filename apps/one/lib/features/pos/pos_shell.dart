@@ -6570,19 +6570,17 @@ class _PosProductGrid extends StatelessWidget {
     if (items.isEmpty) {
       return const _EmptyState(message: 'Sin productos en esta categoría.');
     }
-    // TASK 17.4.1 — widened from the original 100/120 to give the new
-    // image area, category badge, and optional description room without
-    // making individual cards enormous; still a fluid multi-column tile
-    // grid, not a fixed column count.
+    // TASK 17.5.4 — shared card geometry (see `_kPosCardMainAxisExtent`):
+    // still a fluid multi-column tile grid, never a forced column count.
     return LayoutBuilder(
       builder: (context, constraints) {
-        final tileWidth = constraints.maxWidth >= 900 ? 168.0 : 144.0;
+        final tileWidth = _posCardMaxExtent(constraints.maxWidth);
         return GridView.builder(
           gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
             maxCrossAxisExtent: tileWidth,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            mainAxisExtent: 232,
+            crossAxisSpacing: _kPosCardGridSpacing,
+            mainAxisSpacing: _kPosCardGridSpacing,
+            mainAxisExtent: _kPosCardMainAxisExtent,
           ),
           itemCount: items.length,
           itemBuilder: (context, index) {
@@ -6750,6 +6748,16 @@ class _WeightEntryDialogState extends State<_WeightEntryDialog> {
   }
 }
 
+/// TASK 17.5.4 — one shared card geometry for CAJERO, CLIENTE and Cafetería
+/// (all three render [_PosProductCard] through a max-cross-axis-extent
+/// grid): a fixed card height keeps every row on the same rhythm, and the
+/// per-width tile extent keeps cards substantial instead of letting a
+/// phone-width grid squeeze them into three skinny columns.
+const double _kPosCardMainAxisExtent = 268;
+const double _kPosCardGridSpacing = 12;
+
+double _posCardMaxExtent(double availableWidth) => availableWidth >= 560 ? 172.0 : 184.0;
+
 class _PosProductCard extends StatelessWidget {
   const _PosProductCard({
     required this.item,
@@ -6761,7 +6769,7 @@ class _PosProductCard extends StatelessWidget {
   // TASK 12.3C: `null` means addable; any other value is why it is not
   // (see `pos_models.dart`'s `posAddabilityBlock`) — out of stock keeps
   // its own dedicated visual treatment below, matching the canonical
-  // reference; a missing/malformed price reuses the same red-caption
+  // reference; a missing/malformed price reuses the same muted-caption
   // convention, since the canonical HTML has no equivalent state to match.
   final PosAddabilityBlock? block;
   // TASK 12.3: adds the product to the shared ticket (or, when it cannot
@@ -6779,7 +6787,8 @@ class _PosProductCard extends StatelessWidget {
     final blocked = block != null;
     // TASK 16.6 — real card-appearance parity (legacy `prodCard()`): a
     // configured `card_style`/`card_color_hex` tints the whole card, not
-    // just an icon badge, matching the legacy's own visual intent.
+    // just an icon badge, matching the legacy's own visual intent. That is
+    // a deliberate, admin-configured per-product setting — unchanged here.
     final fill = posProductCardFill(
       cardStyle: item.cardStyle,
       cardColorHex: item.cardColorHex,
@@ -6790,118 +6799,165 @@ class _PosProductCard extends StatelessWidget {
       cardColorHex: item.cardColorHex,
       fallback: palette.action,
     );
-    final description = item.description;
-    // TASK 17.4.1 — friendlier card structure (image / category badge /
-    // name / optional description / price + add glyph), the whole card
-    // stays the ONE tap target (never a second, nested hit-target for the
-    // "+" — a large touch area is more forgiving than a small isolated
-    // button, and this keeps `onTap`/addability-blocking logic untouched).
-    // Out-of-stock/missing-price/malformed-price keep their existing
-    // caption treatment on the last line — no cart/pricing/stock logic
-    // changed here at all.
-    return Material(
-      key: Key('pos-product-${item.id}'),
-      color: fill.background ?? palette.surface,
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: fill.gradient,
-            border: Border.all(color: palette.border, width: 1.5),
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: .04),
-                blurRadius: 4,
-                offset: const Offset(0, 1),
-              ),
-            ],
+    final solidFill = fill.background;
+    final onDarkFill =
+        solidFill != null && ThemeData.estimateBrightnessForColor(solidFill) == Brightness.dark;
+    final textColor = onDarkFill ? Colors.white : palette.text;
+    final mutedColor = onDarkFill ? Colors.white70 : palette.textMuted;
+    final rawDescription = item.description?.trim();
+    final description = (rawDescription == null || rawDescription.isEmpty) ? null : rawDescription;
+    final category = categoryName;
+    final hasPrice = item.pricing.isSellable;
+    // TASK 17.5.4 — visual order: IMAGE / fallback, real badge, name, real
+    // description, price + round "+". The SKU no longer competes with
+    // name/price on the card face (it stays on the product, the model and
+    // the API, and is still reachable through the hover tooltip). The whole
+    // card remains the ONE tap target; the "+" is a purely visual
+    // affordance, so `onTap`/addability-blocking logic is untouched.
+    return Tooltip(
+      message: item.code.isEmpty ? item.name : '${item.name} · ${item.code}',
+      waitDuration: const Duration(milliseconds: 700),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Material(
+          key: Key('pos-product-${item.id}'),
+          color: fill.background ?? palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: palette.border),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Stack(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            hoverColor: palette.action.withValues(alpha: .05),
+            child: DecoratedBox(
+              decoration: BoxDecoration(gradient: fill.gradient),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _PosProductImageArea(
-                    imageUrl: item.imageUrl,
-                    iconKey: item.iconKey,
-                    iconColor: iconColor,
-                  ),
-                  if (item.isFeatured)
-                    const Positioned(top: 4, right: 4, child: PosProductFeaturedBadge()),
-                ],
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // A fixed-height slot regardless of whether a category
-                    // resolved — keeps every card in the row the same
-                    // height (`mainAxisExtent` above is fixed too).
-                    SizedBox(
-                      height: 16,
-                      child: categoryName == null
-                          ? null
-                          : _PosProductCategoryBadge(label: categoryName!),
-                    ),
-                    Text(
-                      item.name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: palette.text,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        height: 1.3,
-                      ),
-                    ),
-                    SizedBox(
-                      height: 14,
-                      child: (description == null || description.isEmpty)
-                          ? null
-                          : Text(
-                              description,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: palette.textMuted, fontSize: 10),
-                            ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                    child: Stack(
                       children: [
-                        Expanded(
-                          child: Text(
-                            _priceCaption(item.pricing),
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: item.pricing.isSellable ? palette.action : palette.textMuted,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 13,
-                            ),
-                          ),
+                        _PosProductImageArea(
+                          productId: item.id,
+                          imageUrl: item.imageUrl,
+                          iconKey: item.iconKey,
+                          iconColor: iconColor,
+                          onDarkFill: onDarkFill,
                         ),
-                        const SizedBox(width: 4),
-                        _PosProductAddGlyph(color: blocked ? palette.textMuted : palette.action),
+                        if (outOfStock)
+                          Positioned(
+                            left: 6,
+                            bottom: 6,
+                            child: _PosProductStatusChip(label: 'Sin existencia', color: palette.error),
+                          ),
+                        if (item.isFeatured)
+                          const Positioned(top: 6, right: 6, child: PosProductFeaturedBadge()),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      outOfStock ? 'Sin existencia' : item.code,
-                      style: TextStyle(
-                        color: blocked ? palette.error : palette.textMuted,
-                        fontWeight: blocked ? FontWeight.w700 : FontWeight.w400,
-                        fontSize: 9,
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // A fixed-height slot regardless of whether a
+                          // category resolved — keeps every name in the row
+                          // on the same baseline.
+                          SizedBox(
+                            height: 22,
+                            child: category == null
+                                ? null
+                                : Align(
+                                    alignment: Alignment.topLeft,
+                                    child: _PosProductCategoryBadge(
+                                      key: Key('pos-product-badge-${item.id}'),
+                                      label: category,
+                                    ),
+                                  ),
+                          ),
+                          Text(
+                            item.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              height: 1.2,
+                            ),
+                          ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: description == null
+                                  ? const SizedBox.shrink()
+                                  : Text(
+                                      description,
+                                      key: Key('pos-product-description-${item.id}'),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(color: mutedColor, fontSize: 11, height: 1.25),
+                                    ),
+                            ),
+                          ),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Expanded(
+                                // A price is never ellipsized — a huge
+                                // amount scales down instead of being cut.
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      _priceCaption(item.pricing),
+                                      key: Key('pos-product-price-${item.id}'),
+                                      maxLines: 1,
+                                      style: hasPrice
+                                          ? TextStyle(
+                                              color: textColor,
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 16,
+                                              height: 1.1,
+                                            )
+                                          : TextStyle(
+                                              color: mutedColor,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 11,
+                                            ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              _PosProductAddButton(
+                                key: Key('pos-product-add-${item.id}'),
+                                enabled: !blocked,
+                                onDarkFill: onDarkFill,
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -6909,58 +6965,86 @@ class _PosProductCard extends StatelessWidget {
   }
 }
 
-/// TASK 17.4.1 — the card's image area: a real uploaded/linked photo
-/// (`BoxFit.cover`, filling the whole width, never squeezed into a small
-/// square icon slot) when one exists, else the same fallback icon
-/// [PosProductCardVisual] already uses, centered on a neutral tint — the
-/// underlying icon resolution (`posProductIconFor`) is reused, not
-/// duplicated; only the SHAPE it fills differs from the compact
-/// admin-grid tile [PosProductCardVisual] itself renders.
+/// TASK 17.5.4 — the card's hero image: a real uploaded/linked photo
+/// (`BoxFit.cover`, rounded, fixed height so a slow or broken image never
+/// shifts the layout) when one exists, else a polished fallback that fills
+/// the SAME area — a soft tinted surface with the product's real icon in a
+/// centered disc. The icon resolution (`posProductIconFor`) is reused, not
+/// duplicated; a broken/unavailable URL falls back to the exact same widget.
 class _PosProductImageArea extends StatelessWidget {
-  const _PosProductImageArea({required this.imageUrl, required this.iconKey, required this.iconColor});
+  const _PosProductImageArea({
+    required this.productId,
+    required this.imageUrl,
+    required this.iconKey,
+    required this.iconColor,
+    required this.onDarkFill,
+  });
+  final String productId;
   final String? imageUrl;
   final String? iconKey;
   final Color iconColor;
+  final bool onDarkFill;
 
-  static const double _height = 76;
+  static const double _height = 118;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     final url = imageUrl;
-    if (url != null && url.isNotEmpty) {
-      return Image.network(
-        url,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
         width: double.infinity,
         height: _height,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) => _fallback(palette),
-      );
-    }
-    return _fallback(palette);
+        child: (url != null && url.isNotEmpty)
+            ? Image.network(
+                url,
+                key: Key('pos-product-image-$productId'),
+                width: double.infinity,
+                height: _height,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => _fallback(palette),
+              )
+            : _fallback(palette),
+      ),
+    );
   }
 
   Widget _fallback(PosPalette palette) => Container(
+    key: Key('pos-product-fallback-$productId'),
     width: double.infinity,
     height: _height,
-    color: palette.background,
+    color: onDarkFill ? Colors.white.withValues(alpha: .18) : palette.background,
     alignment: Alignment.center,
-    child: Icon(posProductIconFor(iconKey), size: 30, color: iconColor),
+    child: Container(
+      width: 64,
+      height: 64,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: onDarkFill ? Colors.white.withValues(alpha: .25) : palette.surface.withValues(alpha: .85),
+      ),
+      alignment: Alignment.center,
+      child: Icon(posProductIconFor(iconKey), size: 32, color: iconColor),
+    ),
   );
 }
 
-/// TASK 17.4.1 — a compact category badge, real name only (never a raw
+/// TASK 17.5.4 — a compact pill, real category name only (never a raw
 /// category id, never shown at all when unresolved — see
 /// `_PosProductGrid.categoryNameById`).
 class _PosProductCategoryBadge extends StatelessWidget {
-  const _PosProductCategoryBadge({required this.label});
+  const _PosProductCategoryBadge({required this.label, super.key});
   final String label;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    return Align(
-      alignment: Alignment.centerLeft,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: palette.actionTint,
+        borderRadius: BorderRadius.circular(99),
+      ),
       child: Text(
         label.toUpperCase(),
         maxLines: 1,
@@ -6969,27 +7053,58 @@ class _PosProductCategoryBadge extends StatelessWidget {
           color: palette.textSecondary,
           fontWeight: FontWeight.w700,
           fontSize: 9,
-          letterSpacing: .4,
+          letterSpacing: .5,
+          height: 1.1,
         ),
       ),
     );
   }
 }
 
-/// TASK 17.4.1 — a purely visual "add" affordance; the whole card is
-/// still the real tap target (see `_PosProductCard`'s own doc comment).
-class _PosProductAddGlyph extends StatelessWidget {
-  const _PosProductAddGlyph({required this.color});
+/// TASK 17.5.4 — a small status pill laid over the image (used for the real
+/// "Sin existencia" out-of-stock signal, which previously shared the SKU's
+/// tiny footer line).
+class _PosProductStatusChip extends StatelessWidget {
+  const _PosProductStatusChip({required this.label, required this.color});
+  final String label;
   final Color color;
 
   @override
   Widget build(BuildContext context) => Container(
-    width: 22,
-    height: 22,
-    decoration: BoxDecoration(color: color.withValues(alpha: .14), shape: BoxShape.circle),
-    alignment: Alignment.center,
-    child: Icon(Icons.add, size: 15, color: color),
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(99)),
+    child: Text(
+      label,
+      maxLines: 1,
+      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 10, height: 1.1),
+    ),
   );
+}
+
+/// TASK 17.5.4 — the round "+" affordance, bottom-right of the card. Purely
+/// visual: the whole card is still the real tap target (see
+/// `_PosProductCard`'s own comment), so a blocked product keeps surfacing
+/// its honest notice on tap exactly as before.
+class _PosProductAddButton extends StatelessWidget {
+  const _PosProductAddButton({required this.enabled, required this.onDarkFill, super.key});
+  final bool enabled;
+  final bool onDarkFill;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = PosPalette.of(context);
+    final background = enabled
+        ? palette.action
+        : (onDarkFill ? Colors.white.withValues(alpha: .25) : palette.textMuted.withValues(alpha: .18));
+    final foreground = enabled ? Colors.white : (onDarkFill ? Colors.white70 : palette.textMuted);
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(color: background, shape: BoxShape.circle),
+      alignment: Alignment.center,
+      child: Icon(Icons.add, size: 20, color: foreground),
+    );
+  }
 }
 
 /// The small price caption shown on every product tile — TASK 12.3C. A
@@ -7766,10 +7881,9 @@ class _ClienteLockedShell extends StatelessWidget {
                   controller: controller,
                   saleSession: saleSession,
                   onRequestCajeroReturn: onRequestCajeroReturn,
-                  // TASK 17.4.1 — matches `_PosProductGrid`'s own widened
-                  // tile size (the redesigned `_PosProductCard` needs more
-                  // room for the image area/category badge/description).
-                  tileWidth: wide ? 168.0 : 144.0,
+                  // TASK 17.5.4 — the same shared tile extent
+                  // `_PosProductGrid` (CAJERO/Cafetería) uses.
+                  tileWidth: _posCardMaxExtent(constraints.maxWidth),
                 );
                 final ticket = _ClienteTicketPreview(
                   saleSession: saleSession,
@@ -8248,10 +8362,10 @@ class _ClienteCategorySections extends StatelessWidget {
     return SliverGrid(
       gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: tileWidth,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
-        // TASK 17.4.1 — matches `_PosProductGrid`'s own card height.
-        mainAxisExtent: 232,
+        crossAxisSpacing: _kPosCardGridSpacing,
+        mainAxisSpacing: _kPosCardGridSpacing,
+        // TASK 17.5.4 — matches `_PosProductGrid`'s own card height.
+        mainAxisExtent: _kPosCardMainAxisExtent,
       ),
       delegate: SliverChildBuilderDelegate((context, index) {
         final item = categoryItems[index];
