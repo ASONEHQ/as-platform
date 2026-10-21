@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show SliverConstraints, SliverGridGeometry, SliverGridLayout;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -6569,18 +6570,14 @@ class _PosProductGrid extends StatelessWidget {
     if (items.isEmpty) {
       return const _EmptyState(message: 'Sin productos en esta categoría.');
     }
-    // TASK 17.5.4 — shared card geometry (see `_kPosCardMainAxisExtent`):
-    // still a fluid multi-column tile grid, never a forced column count.
+    // TASK 17.5.4 / 17.5.4.3 — shared card geometry (see
+    // `_PosCardGridDelegate`): still a fluid multi-column tile grid, never a
+    // forced column count, with per-row adaptive height.
     return LayoutBuilder(
       builder: (context, constraints) {
         final tileWidth = _posCardMaxExtent(constraints.maxWidth);
         return GridView.builder(
-          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: tileWidth,
-            crossAxisSpacing: _kPosCardGridSpacing,
-            mainAxisSpacing: _kPosCardGridSpacing,
-            mainAxisExtent: _kPosCardMainAxisExtent,
-          ),
+          gridDelegate: _PosCardGridDelegate(maxCrossAxisExtent: tileWidth, items: items),
           itemCount: items.length,
           itemBuilder: (context, index) {
             final item = items[index];
@@ -6747,15 +6744,122 @@ class _WeightEntryDialogState extends State<_WeightEntryDialog> {
   }
 }
 
-/// TASK 17.5.4 — one shared card geometry for CAJERO, CLIENTE and Cafetería
-/// (all three render [_PosProductCard] through a max-cross-axis-extent
-/// grid): a fixed card height keeps every row on the same rhythm, and the
-/// per-width tile extent keeps cards substantial instead of letting a
-/// phone-width grid squeeze them into three skinny columns.
-const double _kPosCardMainAxisExtent = 268;
+/// TASK 17.5.4 / 17.5.4.3 — one shared card geometry for CAJERO, CLIENTE and
+/// Cafetería (all three render [_PosProductCard] through
+/// [_PosCardGridDelegate]). The per-width tile extent keeps cards substantial
+/// instead of letting a phone-width grid squeeze them into three skinny
+/// columns, and the card HEIGHT adapts to its content: a product with a real
+/// description needs the roomy height, one without needs only the compact
+/// height (name and price sit together, no dead space). A row always shares
+/// ONE height — its tallest card's — so rows never look ragged, prices stay
+/// aligned across the row, and a row of only compact cards is genuinely
+/// shorter than a row that contains a description.
+const double _kPosCardCompactExtent = 240;
+const double _kPosCardRichExtent = 268;
 const double _kPosCardGridSpacing = 12;
 
 double _posCardMaxExtent(double availableWidth) => availableWidth >= 560 ? 172.0 : 184.0;
+
+/// The product's real description, trimmed, or `null` when it has none — the
+/// single source of truth for both the card body and its row height.
+String? _posCardDescription(PosProduct item) {
+  final text = item.description?.trim();
+  return (text == null || text.isEmpty) ? null : text;
+}
+
+/// Same column math as `SliverGridDelegateWithMaxCrossAxisExtent` (so card
+/// width and column count are exactly what they already were), but each ROW
+/// gets its own height: roomy when any card in the row has a description,
+/// compact otherwise.
+class _PosCardGridDelegate extends SliverGridDelegate {
+  const _PosCardGridDelegate({required this.maxCrossAxisExtent, required this.items});
+  final double maxCrossAxisExtent;
+  final List<PosProduct> items;
+
+  @override
+  SliverGridLayout getLayout(SliverConstraints constraints) {
+    final fitted = (constraints.crossAxisExtent / (maxCrossAxisExtent + _kPosCardGridSpacing)).ceil();
+    final columns = fitted < 1 ? 1 : fitted;
+    final remaining = constraints.crossAxisExtent - _kPosCardGridSpacing * (columns - 1);
+    final usable = remaining < 0 ? 0.0 : remaining;
+    final rowCount = (items.length / columns).ceil();
+    final rowExtents = <double>[
+      for (var row = 0; row < rowCount; row++)
+        items.skip(row * columns).take(columns).any((item) => _posCardDescription(item) != null)
+            ? _kPosCardRichExtent
+            : _kPosCardCompactExtent,
+    ];
+    return _PosCardGridLayout(columns: columns, childWidth: usable / columns, rowExtents: rowExtents);
+  }
+
+  @override
+  bool shouldRelayout(covariant _PosCardGridDelegate oldDelegate) =>
+      oldDelegate.maxCrossAxisExtent != maxCrossAxisExtent || oldDelegate.items != items;
+}
+
+class _PosCardGridLayout extends SliverGridLayout {
+  _PosCardGridLayout({required this.columns, required this.childWidth, required this.rowExtents})
+    : _rowStarts = _startsOf(rowExtents);
+
+  final int columns;
+  final double childWidth;
+  final List<double> rowExtents;
+  final List<double> _rowStarts;
+
+  static List<double> _startsOf(List<double> extents) {
+    final starts = <double>[];
+    var offset = 0.0;
+    for (final extent in extents) {
+      starts.add(offset);
+      offset += extent + _kPosCardGridSpacing;
+    }
+    return starts;
+  }
+
+  int _rowAt(double scrollOffset) {
+    var row = 0;
+    while (row + 1 < _rowStarts.length && _rowStarts[row + 1] <= scrollOffset) {
+      row++;
+    }
+    return row;
+  }
+
+  @override
+  int getMinChildIndexForScrollOffset(double scrollOffset) =>
+      _rowStarts.isEmpty ? 0 : _rowAt(scrollOffset) * columns;
+
+  @override
+  int getMaxChildIndexForScrollOffset(double scrollOffset) {
+    // Every row that starts before the offset is at least partly visible.
+    var visibleRows = 0;
+    for (final start in _rowStarts) {
+      if (start < scrollOffset) {
+        visibleRows++;
+      }
+    }
+    final last = visibleRows * columns - 1;
+    return last < 0 ? 0 : last;
+  }
+
+  @override
+  SliverGridGeometry getGeometryForChildIndex(int index) {
+    final row = index ~/ columns;
+    return SliverGridGeometry(
+      scrollOffset: _rowStarts[row],
+      crossAxisOffset: (index % columns) * (childWidth + _kPosCardGridSpacing),
+      mainAxisExtent: rowExtents[row],
+      crossAxisExtent: childWidth,
+    );
+  }
+
+  @override
+  double computeMaxScrollOffset(int childCount) {
+    if (childCount == 0 || rowExtents.isEmpty) return 0;
+    final rows = (childCount / columns).ceil();
+    final last = (rows < rowExtents.length ? rows : rowExtents.length) - 1;
+    return _rowStarts[last] + rowExtents[last];
+  }
+}
 
 class _PosProductCard extends StatelessWidget {
   const _PosProductCard({
@@ -6802,8 +6906,7 @@ class _PosProductCard extends StatelessWidget {
     );
     final textColor = palette.text;
     final mutedColor = palette.textMuted;
-    final rawDescription = item.description?.trim();
-    final description = (rawDescription == null || rawDescription.isEmpty) ? null : rawDescription;
+    final description = _posCardDescription(item);
     final category = categoryName;
     final hasPrice = item.pricing.isSellable;
     // TASK 17.5.4 — visual order: IMAGE / fallback, real badge, name, real
@@ -6890,6 +6993,7 @@ class _PosProductCard extends StatelessWidget {
                           ),
                           Text(
                             item.name,
+                            key: Key('pos-product-name-${item.id}'),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -8099,30 +8203,59 @@ class _ClienteVolverButton extends StatelessWidget {
 /// matching `_scrollACategoriaCliente()`/`_scrollSuaveA()`'s 400ms
 /// cubic ease-out (`Curves.easeOut` here — see `_clienteJumpToCategory`).
 class _ClienteJumpbar extends StatelessWidget {
-  const _ClienteJumpbar({required this.categories});
-  final List<PosCategory> categories;
+  const _ClienteJumpbar({required this.sections});
+  final List<({String id, String label})> sections;
 
   @override
   Widget build(BuildContext context) {
-    if (categories.isEmpty) return const SizedBox.shrink();
+    if (sections.isEmpty) return const SizedBox.shrink();
     return SingleChildScrollView(
       key: const Key('pos-cliente-jumpbar'),
       scrollDirection: Axis.horizontal,
       child: Row(
         children: [
-          for (final category in categories)
+          for (final section in sections)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: _JumpbarPill(
-                key: Key('pos-cliente-jump-${category.id}'),
-                label: category.name,
-                onTap: () => _clienteJumpToCategory(category.id),
+                key: Key('pos-cliente-jump-${section.id}'),
+                label: section.label,
+                onTap: () => _clienteJumpToCategory(section.id),
               ),
             ),
         ],
       ),
     );
   }
+}
+
+/// TASK 17.5.4.3 — what CLIENTE actually shows the customer: only the active
+/// categories that currently hold at least one visible/sellable product, plus
+/// the TASK 17.5.3 "Sin categoría" catch-all (products with no category or an
+/// orphaned/inactive one). Built from the SAME authoritative sellable set
+/// CAJERO's "Todas" uses (`_PosSaleBody._filter`) — nothing is deleted,
+/// deactivated or reassigned; an empty category is simply not presented to a
+/// customer as a dead-end section.
+typedef _ClienteSections = ({
+  List<({PosCategory category, List<PosProduct> items})> categories,
+  List<PosProduct> uncategorized,
+});
+
+_ClienteSections _clienteSections(List<PosCategory> categories, List<PosProduct> items) {
+  final sellable = _PosSaleBody._filter(items, null, '');
+  final categoryIds = categories.map((category) => category.id).toSet();
+  return (
+    categories: [
+      for (final category in categories)
+        (
+          category: category,
+          items: sellable.where((item) => item.categoryId == category.id).toList(growable: false),
+        ),
+    ].where((section) => section.items.isNotEmpty).toList(growable: false),
+    uncategorized: sellable
+        .where((item) => item.categoryId == null || !categoryIds.contains(item.categoryId))
+        .toList(growable: false),
+  );
 }
 
 class _JumpbarPill extends StatelessWidget {
@@ -8205,6 +8338,7 @@ class _ClienteStackedCatalog extends StatelessWidget {
         .toList(growable: false);
     final phase = controller.products.phase;
     final Widget body;
+    var jumpSections = const <({String id, String label})>[];
     if (phase == PosReadPhase.idle || phase == PosReadPhase.loading) {
       body = const _LoadingState();
     } else if (phase == PosReadPhase.failure) {
@@ -8215,30 +8349,37 @@ class _ClienteStackedCatalog extends StatelessWidget {
         onRetry: () => controller.loadProducts(refresh: true),
       );
     } else {
-      // `ready` or `empty` — both preserve the canonical category
-      // sections rather than collapsing to a single generic empty card:
-      // V1 always renders every active category's sticky header, with an
-      // honest "Sin productos en esta categoría" message for whichever
-      // ones have no matching items, instead of hiding the whole catalog
-      // structure. TASK 17.5.3 — a product with no active category (or an
-      // inactive/deleted category) now still renders, in a final "Sin
-      // categoría" catch-all section, matching CAJERO's own "Todas" view
-      // (which never filtered by category at all) — see
-      // `_ClienteCategorySections.build`'s own doc comment for the real
-      // production bug this closes.
-      body = _ClienteCategorySections(
-        categories: categories,
-        items: controller.products.items,
-        balances: controller.balances.items,
-        saleSession: saleSession,
-        tileWidth: tileWidth,
-      );
+      // `ready` or `empty`. TASK 17.5.3 — a product with no active category
+      // (or an inactive/deleted one) still renders, in a final "Sin
+      // categoría" catch-all section, matching CAJERO's own "Todas" view.
+      // TASK 17.5.4.3 — customer-facing mode only presents sections that
+      // actually hold a visible product (see `_clienteSections`); when the
+      // WHOLE catalog has none, ONE honest global empty state replaces what
+      // used to be a stack of "Sin productos en esta categoría" dead ends.
+      final sections = _clienteSections(categories, controller.products.items);
+      if (sections.categories.isEmpty && sections.uncategorized.isEmpty) {
+        body = const _EmptyState(message: 'No hay productos disponibles.');
+      } else {
+        body = _ClienteCategorySections(
+          sections: sections,
+          balances: controller.balances.items,
+          saleSession: saleSession,
+          tileWidth: tileWidth,
+        );
+        jumpSections = [
+          for (final section in sections.categories) (id: section.category.id, label: section.category.name),
+          // A "Sin categoría" shortcut only makes sense next to other
+          // sections; on its own the jumpbar has nothing to jump between.
+          if (sections.categories.isNotEmpty && sections.uncategorized.isNotEmpty)
+            (id: 'uncategorized', label: 'Sin categoría'),
+        ];
+      }
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (categories.isNotEmpty) ...[
-          _ClienteJumpbar(categories: categories),
+        if (jumpSections.isNotEmpty) ...[
+          _ClienteJumpbar(sections: jumpSections),
           const SizedBox(height: 6),
         ],
         Expanded(child: body),
@@ -8249,44 +8390,32 @@ class _ClienteStackedCatalog extends StatelessWidget {
 
 class _ClienteCategorySections extends StatelessWidget {
   const _ClienteCategorySections({
-    required this.categories,
-    required this.items,
+    required this.sections,
     required this.balances,
     required this.saleSession,
     required this.tileWidth,
   });
-  final List<PosCategory> categories;
-  final List<PosProduct> items;
+  final _ClienteSections sections;
   final List<PosInventoryBalance> balances;
   final SaleSession saleSession;
   final double tileWidth;
 
   @override
   Widget build(BuildContext context) {
-    final categoryNameById = {for (final category in categories) category.id: category.name};
+    final categoryNameById = {
+      for (final section in sections.categories) section.category.id: section.category.name,
+    };
+    final categorySections = sections.categories;
+    final uncategorized = sections.uncategorized;
     // TASK 17.5.3 — production root cause: CLIENTE's own catalog used to
     // be driven ENTIRELY by category sections, with no catch-all — a
     // product whose `categoryId` is `null`, or points at a category that
     // isn't currently `active`, never appeared in ANY section, even
-    // though CAJERO's own default "Todas" view (`_PosSaleBody._filter`
-    // with `categoryId: null`) shows every such product just fine (it
-    // never filters by category at all there). The two views silently
-    // diverged: CAJERO showed the real catalog, CLIENTE showed an empty
-    // one, for the exact same branch/session. `sellable` below is the
-    // SAME authoritative set CAJERO's own "Todas" already computes (same
-    // `status == 'active'` sellability check, same function, never a
-    // second filter reimplementation) — CLIENTE now organizes that exact
-    // set into category sections, plus one honest "Sin categoría"
-    // catch-all for anything that doesn't match an active category, so
-    // the union of every section always equals CAJERO's own real catalog.
-    final sellable = _PosSaleBody._filter(items, null, '');
-    final categoryIds = categories.map((category) => category.id).toSet();
-    final uncategorized = sellable
-        .where((item) => item.categoryId == null || !categoryIds.contains(item.categoryId))
-        .toList(growable: false);
-    if (categories.isEmpty && uncategorized.isEmpty) {
-      return const _EmptyState(message: 'No hay productos disponibles.');
-    }
+    // though CAJERO's own default "Todas" view shows every such product
+    // just fine. `_clienteSections` organizes that exact same sellable
+    // set into category sections plus one honest "Sin categoría"
+    // catch-all, so the union of every section always equals CAJERO's own
+    // real catalog (TASK 17.5.4.3 only drops sections that are EMPTY).
     return CustomScrollView(
       key: const Key('pos-cliente-catalog'),
       // Generous but bounded cache extent: keeps every section's sticky
@@ -8303,22 +8432,18 @@ class _ClienteCategorySections extends StatelessWidget {
       // ignore: deprecated_member_use
       cacheExtent: 5000,
       slivers: [
-        for (var i = 0; i < categories.length; i++) ...[
+        for (var i = 0; i < categorySections.length; i++) ...[
           SliverPersistentHeader(
             pinned: true,
             delegate: _ClienteSectionHeaderDelegate(
-              sectionKey: _clienteSectionKey(categories[i].id),
-              title: categories[i].name,
+              sectionKey: _clienteSectionKey(categorySections[i].category.id),
+              title: categorySections[i].category.name,
               showTopBorder: i > 0,
             ),
           ),
           SliverPadding(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            sliver: _sectionSliver(
-              context,
-              sellable.where((item) => item.categoryId == categories[i].id).toList(growable: false),
-              categoryNameById,
-            ),
+            sliver: _sectionSliver(context, categorySections[i].items, categoryNameById),
           ),
         ],
         if (uncategorized.isNotEmpty) ...[
@@ -8327,7 +8452,7 @@ class _ClienteCategorySections extends StatelessWidget {
             delegate: _ClienteSectionHeaderDelegate(
               sectionKey: _clienteSectionKey('uncategorized'),
               title: 'Sin categoría',
-              showTopBorder: categories.isNotEmpty,
+              showTopBorder: categorySections.isNotEmpty,
             ),
           ),
           SliverPadding(
@@ -8344,30 +8469,11 @@ class _ClienteCategorySections extends StatelessWidget {
     List<PosProduct> categoryItems,
     Map<String, String> categoryNameById,
   ) {
-    final palette = PosPalette.of(context);
-    if (categoryItems.isEmpty) {
-      // Matches `_renderSeccionProductos([])`'s exact copy — the same
-      // "no products" string CAJERO's own empty category uses.
-      return SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          child: Center(
-            child: Text(
-              'Sin productos en esta categoría',
-              style: TextStyle(color: palette.textMuted, fontSize: 13),
-            ),
-          ),
-        ),
-      );
-    }
+    // TASK 17.5.4.3 — `categoryItems` is never empty here (empty sections
+    // are not generated at all, see `_clienteSections`); the same adaptive
+    // card geometry CAJERO/Cafetería use.
     return SliverGrid(
-      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: tileWidth,
-        crossAxisSpacing: _kPosCardGridSpacing,
-        mainAxisSpacing: _kPosCardGridSpacing,
-        // TASK 17.5.4 — matches `_PosProductGrid`'s own card height.
-        mainAxisExtent: _kPosCardMainAxisExtent,
-      ),
+      gridDelegate: _PosCardGridDelegate(maxCrossAxisExtent: tileWidth, items: categoryItems),
       delegate: SliverChildBuilderDelegate((context, index) {
         final item = categoryItems[index];
         // TASK 12.3C: the exact same shared function CAJERO uses — see

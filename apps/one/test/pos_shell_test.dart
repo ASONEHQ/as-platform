@@ -4253,7 +4253,10 @@ void main() {
       expect(card('card-bare'), findsOneWidget);
       expect(find.byKey(const Key('pos-product-fallback-card-bare')), findsOneWidget);
       expect(find.byKey(const Key('pos-product-badge-card-bare')), findsNothing);
-      expect(find.text('Sin categoría'), findsOneWidget);
+      expect(
+        find.descendant(of: find.byKey(const Key('pos-cliente-catalog')), matching: find.text('Sin categoría')),
+        findsOneWidget,
+      );
       expect(card('card-inactive'), findsNothing);
       expect(tester.takeException(), isNull);
     });
@@ -4531,6 +4534,390 @@ void main() {
         });
       }
     });
+
+    // TASK 17.5.4.3 — card HEIGHT adapts to content. A row shares ONE height
+    // (its tallest card's): a row of only description-less cards is compact,
+    // a row containing any description is roomy, so prices stay aligned
+    // across a row and a row never looks ragged. Mixed rows stretch their
+    // compact cards to the row height (price/"+" stay anchored at the bottom).
+    group('adaptive card density (TASK 17.5.4.3)', () {
+      const gateway = _CardDensityGateway();
+      const allIds = [
+        'dens-a', 'dens-b', 'dens-c', 'dens-f', 'dens-g', // row 1: compact only
+        'dens-d', 'dens-e', 'dens-h', 'dens-i', 'dens-j', // row 2: contains descriptions
+      ];
+
+      double gapNameToAdd(WidgetTester tester, String id) =>
+          tester.getRect(find.byKey(Key('pos-product-add-$id'))).top -
+          tester.getRect(inCard(id, find.byKey(Key('pos-product-name-$id')))).bottom;
+
+      testWidgets('a row of only description-less cards is compact (235-245); a row with a description is roomy (255-270)', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        // Five columns at 1440: row 1 = a,b,c,f,g — row 2 = d,e,h,i,j.
+        expect(tester.getTopLeft(card('dens-a')).dy, tester.getTopLeft(card('dens-g')).dy);
+        expect(tester.getTopLeft(card('dens-d')).dy, tester.getTopLeft(card('dens-j')).dy);
+        expect(tester.getTopLeft(card('dens-d')).dy, greaterThan(tester.getTopLeft(card('dens-a')).dy));
+
+        for (final id in ['dens-a', 'dens-b', 'dens-c', 'dens-f', 'dens-g']) {
+          expect(tester.getSize(card(id)).height, inInclusiveRange(235, 245), reason: id);
+        }
+        for (final id in ['dens-d', 'dens-e', 'dens-h', 'dens-i', 'dens-j']) {
+          expect(tester.getSize(card(id)).height, inInclusiveRange(255, 270), reason: id);
+        }
+        // Compact rows are genuinely shorter than content-rich rows.
+        expect(tester.getSize(card('dens-a')).height, lessThan(tester.getSize(card('dens-d')).height));
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('mixed row: description-less cards (accent, out-of-stock) stretch to the row height — no ragged row', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        final rowHeight = tester.getSize(card('dens-d')).height;
+        for (final id in ['dens-e', 'dens-h', 'dens-i', 'dens-j']) {
+          expect(tester.getSize(card(id)).height, rowHeight, reason: id);
+        }
+        // Prices/"+" stay on one line across the row (anchored at the bottom).
+        final addBottoms = {
+          for (final id in ['dens-d', 'dens-e', 'dens-h', 'dens-i', 'dens-j'])
+            tester.getRect(find.byKey(Key('pos-product-add-$id'))).bottom,
+        };
+        expect(addBottoms.length, 1);
+      });
+
+      testWidgets('a description-less card keeps name and price together: no big empty gap (was 38-54px)', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        for (final id in ['dens-a', 'dens-b', 'dens-c', 'dens-f', 'dens-g']) {
+          expect(gapNameToAdd(tester, id), lessThanOrEqualTo(30), reason: id);
+        }
+      });
+
+      testWidgets('a described card still shows both description lines fully, without touching the price row', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        for (final id in ['dens-d', 'dens-e', 'dens-i']) {
+          final description = tester.getRect(find.byKey(Key('pos-product-description-$id')));
+          final add = tester.getRect(find.byKey(Key('pos-product-add-$id')));
+          expect(description.height, greaterThanOrEqualTo(27), reason: '$id has room for two full lines');
+          expect(description.bottom, lessThanOrEqualTo(add.top + 1), reason: id);
+        }
+      });
+
+      testWidgets('image/fallback keep their 118px hero in compact and roomy cards; price and "+" stay inside every card', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        for (final id in allIds) {
+          final box = tester.getRect(card(id));
+          final media = tester.getRect(
+            find.byKey(Key(id == 'dens-f' ? 'pos-product-image-$id' : 'pos-product-fallback-$id')).first,
+          );
+          // The real image URL cannot load in tests, so even dens-f falls back — either way the hero keeps its box.
+          expect(media.height, 118, reason: id);
+          expect(media.width, greaterThan(box.width * .8), reason: id);
+          for (final part in ['price', 'add']) {
+            final rect = tester.getRect(find.byKey(Key('pos-product-$part-$id')));
+            expect(rect.bottom, lessThanOrEqualTo(box.bottom), reason: '$id $part');
+            expect(rect.left, greaterThanOrEqualTo(box.left), reason: '$id $part');
+            expect(rect.right, lessThanOrEqualTo(box.right), reason: '$id $part');
+          }
+          expect(tester.getRect(inCard(id, find.byKey(Key('pos-product-name-$id')))).bottom, lessThanOrEqualTo(box.bottom), reason: id);
+        }
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('sale price, "Sin precio", blocked add and accent are unchanged by the new height', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(inCard('dens-a', find.text('\$45.00')), findsOneWidget);
+        expect(tester.widget<Text>(find.byKey(const Key('pos-product-price-dens-b'))).data, 'Sin precio');
+        expect(inCard('dens-j', find.text('Sin existencia')), findsOneWidget);
+        final accent = posProductCardAccent(cardStyle: 'solid', cardColorHex: '#2563EB', palette: PosPalette.light)!;
+        final shape = tester.widget<Material>(card('dens-h')).shape! as RoundedRectangleBorder;
+        expect(shape.side.color, accent.color);
+        expect(tester.widget<Material>(card('dens-h')).color, PosPalette.light.surface);
+        await tester.tap(card('dens-a'));
+        await tester.pump();
+        expect(find.byKey(const Key('pos-ticket-line-dens-a')), findsOneWidget);
+      });
+
+      for (final size in [
+        const Size(1440, 900),
+        const Size(1365, 768),
+        const Size(1024, 768),
+        const Size(390, 844),
+      ]) {
+        testWidgets('density holds with no overflow or clipping at ${size.width.toInt()}x${size.height.toInt()}', (
+          tester,
+        ) async {
+          await pumpCards(tester, size: size, gateway: gateway);
+          final a = tester.getRect(card('dens-a'));
+          expect(a.width, inInclusiveRange(110, 190));
+          expect(a.height, inInclusiveRange(235, 245));
+          // Anything built must keep its price and "+" inside the card.
+          for (final id in allIds) {
+            if (card(id).evaluate().isEmpty) continue;
+            final box = tester.getRect(card(id));
+            for (final part in ['price', 'add']) {
+              final rect = tester.getRect(find.byKey(Key('pos-product-$part-$id')));
+              expect(rect.bottom, lessThanOrEqualTo(box.bottom), reason: '$id $part');
+            }
+          }
+          expect(tester.takeException(), isNull);
+        });
+      }
+
+      testWidgets('mobile keeps two substantial columns (never three skinny ones)', (tester) async {
+        await pumpCards(tester, size: const Size(390, 844), gateway: gateway);
+        final a = tester.getRect(card('dens-a'));
+        final b = tester.getRect(card('dens-b'));
+        final c = tester.getRect(card('dens-c'));
+        expect(a.top, b.top);
+        expect(b.left, greaterThan(a.left));
+        expect(c.top, greaterThan(a.top));
+        expect(c.left, a.left);
+        expect(a.width, greaterThanOrEqualTo(150));
+      });
+
+      testWidgets('CLIENTE uses the same adaptive heights', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+        expect(tester.getSize(card('dens-a')).height, inInclusiveRange(235, 245));
+        expect(tester.takeException(), isNull);
+      });
+    });
+
+  });
+
+  // TASK 17.5.4.3 — CLIENTE is customer-facing: it presents only categories
+  // that currently hold a visible/sellable product (plus the TASK 17.5.3
+  // "Sin categoría" catch-all), never an empty "Sin productos" dead end.
+  // Nothing is deleted, deactivated or reassigned; CAJERO/Cafetería unchanged.
+  group('CLIENTE shows only useful sections (TASK 17.5.4.3)', () {
+    Future<void> pumpCliente(
+      WidgetTester tester,
+      _ConfigurableReadGateway gateway, {
+      Size size = const Size(1440, 900),
+      bool enter = true,
+    }) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        PlatformScope(
+          posReadGateway: gateway,
+          child: MaterialApp(
+            home: PosShell(
+              context: _context,
+              controller: PosReadController(gateway),
+              salesGateway: _FakeSalesGateway(),
+              paymentsGateway: _FakePaymentsGateway(),
+              cashGateway: _FakeCashGateway(),
+              refundsGateway: const EmptyPosRefundsGateway(),
+              promotionsGateway: const EmptyPosPromotionsGateway(),
+              customersGateway: const EmptyPosCustomersGateway(),
+              membershipsGateway: const EmptyPosMembershipsGateway(),
+              loyaltyGateway: const EmptyPosLoyaltyGateway(),
+              rewardsGateway: const EmptyPosRewardsGateway(),
+              partiesGateway: const EmptyPosPartiesGateway(),
+              authGateway: _FakeAuthGateway(),
+              onLogout: () {},
+              onBranchSelected: _noopBranchSelected,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (size.width < 700) {
+        await tester.tap(find.byKey(const Key('pos-hamburger')));
+        await tester.pumpAndSettle();
+      }
+      await _navigateToPos(tester);
+      if (enter) {
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+      }
+    }
+
+    const entradas = PosCategory(id: 'cat-ent', name: 'Entradas', status: 'active');
+    const bebidas = PosCategory(id: 'cat-beb', name: 'Bebidas', status: 'active');
+    const postres = PosCategory(id: 'cat-pos', name: 'Postres', status: 'active');
+    const antigua = PosCategory(id: 'cat-old', name: 'Antigua', status: 'inactive');
+
+    Finder inCatalog(Finder matching) =>
+        find.descendant(of: find.byKey(const Key('pos-cliente-catalog')), matching: matching);
+    Finder product(String id) => find.byKey(Key('pos-product-$id'));
+
+    PosProduct bebida() => _pricedProduct(id: 'p-beb', code: 'B-1', name: 'Agua', categoryId: 'cat-beb');
+    PosProduct libre() => _pricedProduct(id: 'p-free', code: 'F-1', name: 'Calcetas');
+
+    testWidgets('A: an active category with products is rendered (section title, jump pill, cards)', (tester) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [bebida()], categories: [entradas, bebidas]));
+      expect(inCatalog(find.text('Bebidas')), findsOneWidget);
+      expect(find.byKey(const Key('pos-cliente-jump-cat-beb')), findsOneWidget);
+      expect(product('p-beb'), findsOneWidget);
+    });
+
+    testWidgets('B: an active category with zero visible products is NOT rendered — no section, no pill, no empty message', (
+      tester,
+    ) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [bebida()], categories: [entradas, bebidas]));
+      expect(find.text('Entradas'), findsNothing);
+      expect(find.byKey(const Key('pos-cliente-jump-cat-ent')), findsNothing);
+      expect(find.text('Sin productos en esta categoría'), findsNothing);
+    });
+
+    testWidgets('C: several categories, only one non-empty -> only that section (and its pill) is shown', (tester) async {
+      await pumpCliente(
+        tester,
+        _ConfigurableReadGateway(products: [bebida()], categories: [entradas, bebidas, postres]),
+      );
+      expect(inCatalog(find.text('Bebidas')), findsOneWidget);
+      for (final hidden in ['Entradas', 'Postres']) {
+        expect(find.text(hidden), findsNothing, reason: hidden);
+      }
+      expect(find.byKey(const Key('pos-cliente-jump-cat-ent')), findsNothing);
+      expect(find.byKey(const Key('pos-cliente-jump-cat-pos')), findsNothing);
+      expect(find.byKey(const Key('pos-cliente-jump-cat-beb')), findsOneWidget);
+    });
+
+    testWidgets('D: uncategorized sellable products -> "Sin categoría" is shown', (tester) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [libre()], categories: [bebidas]));
+      expect(inCatalog(find.text('Sin categoría')), findsOneWidget);
+      expect(product('p-free'), findsOneWidget);
+    });
+
+    testWidgets('E: empty category + uncategorized products -> no empty-category message, products visible, no useless jumpbar', (
+      tester,
+    ) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [libre()], categories: [entradas]));
+      expect(find.text('Entradas'), findsNothing);
+      expect(find.text('Sin productos en esta categoría'), findsNothing);
+      expect(inCatalog(find.text('Sin categoría')), findsOneWidget);
+      expect(product('p-free'), findsOneWidget);
+      // "Sin categoría" is the only section: nothing to jump between.
+      expect(find.byKey(const Key('pos-cliente-jumpbar')), findsNothing);
+    });
+
+    testWidgets('F: a product pointing at an unknown/orphan category stays visible under "Sin categoría" (17.5.3)', (
+      tester,
+    ) async {
+      final orphan = _pricedProduct(id: 'p-orphan', code: 'O-1', name: 'Huérfano', categoryId: 'cat-deleted');
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [orphan], categories: [bebidas]));
+      expect(inCatalog(find.text('Sin categoría')), findsOneWidget);
+      expect(product('p-orphan'), findsOneWidget);
+    });
+
+    testWidgets('G: a product in an INACTIVE category stays visible under "Sin categoría" (17.5.3 semantics preserved)', (
+      tester,
+    ) async {
+      final inactiveCat = _pricedProduct(id: 'p-old', code: 'X-1', name: 'De categoría inactiva', categoryId: 'cat-old');
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [inactiveCat], categories: [antigua, bebidas]));
+      expect(find.text('Antigua'), findsNothing);
+      expect(inCatalog(find.text('Sin categoría')), findsOneWidget);
+      expect(product('p-old'), findsOneWidget);
+    });
+
+    testWidgets('H: zero visible products in the whole catalog -> ONE honest global empty state', (tester) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: const [], categories: [entradas, bebidas]));
+      expect(find.text('No hay productos disponibles.'), findsOneWidget);
+      expect(find.text('Sin productos en esta categoría'), findsNothing);
+      expect(find.text('Entradas'), findsNothing);
+      expect(find.text('Bebidas'), findsNothing);
+      expect(find.byKey(const Key('pos-cliente-jumpbar')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('H2: only NON-sellable (inactive) products -> the same single global empty state', (tester) async {
+      const inactive = PosProduct(
+        id: 'p-inactive',
+        code: 'I-1',
+        name: 'Inactivo',
+        type: 'simple',
+        status: 'inactive',
+        tracksInventory: false,
+        categoryId: 'cat-beb',
+      );
+      await pumpCliente(tester, _ConfigurableReadGateway(products: const [inactive], categories: [bebidas]));
+      expect(find.text('No hay productos disponibles.'), findsOneWidget);
+      expect(find.text('Sin productos en esta categoría'), findsNothing);
+      expect(product('p-inactive'), findsNothing);
+    });
+
+    testWidgets('a "Sin categoría" shortcut appears next to other sections, and tapping it works', (tester) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [bebida(), libre()], categories: [bebidas]));
+      expect(find.byKey(const Key('pos-cliente-jump-cat-beb')), findsOneWidget);
+      expect(find.byKey(const Key('pos-cliente-jump-uncategorized')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-cliente-jump-uncategorized')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('I: CAJERO availability is unchanged — the empty category chip and every sellable product remain', (
+      tester,
+    ) async {
+      final orphan = _pricedProduct(id: 'p-orphan', code: 'O-1', name: 'Huérfano', categoryId: 'cat-deleted');
+      await pumpCliente(
+        tester,
+        _ConfigurableReadGateway(products: [bebida(), libre(), orphan], categories: [entradas, bebidas]),
+        enter: false,
+      );
+      // Cajero is an operational view: the (empty) Entradas chip is still there...
+      expect(find.byKey(const Key('pos-category-cat-ent')), findsOneWidget);
+      // ...and every sellable product shows under "Todas".
+      for (final id in ['p-beb', 'p-free', 'p-orphan']) {
+        expect(product(id), findsOneWidget, reason: id);
+      }
+    });
+
+    testWidgets('J: Cafetería product inclusion is unchanged', (tester) async {
+      const cafeCat = PosCategory(id: 'cat-cafe', name: 'Cafetería', status: 'active', operationalGroup: 'cafeteria');
+      final cafe = _pricedProduct(id: 'p-cafe', code: 'C-1', name: 'Café', categoryId: 'cat-cafe');
+      await pumpCliente(
+        tester,
+        _ConfigurableReadGateway(products: [cafe, bebida(), libre()], categories: [cafeCat, bebidas]),
+        enter: false,
+      );
+      await tester.tap(find.byKey(const Key('nav-cafeteria')));
+      await tester.pumpAndSettle();
+      expect(product('p-cafe'), findsOneWidget);
+      expect(product('p-beb'), findsNothing);
+      expect(product('p-free'), findsNothing);
+    });
+
+    testWidgets('adding a product from a visible section still works', (tester) async {
+      await pumpCliente(tester, _ConfigurableReadGateway(products: [bebida(), libre()], categories: [entradas, bebidas]));
+      await tester.tap(product('p-free'));
+      await tester.pump();
+      expect(find.byKey(const Key('pos-cliente-ticket-line-p-free')), findsOneWidget);
+    });
+
+    for (final size in [
+      const Size(1440, 900),
+      const Size(1365, 768),
+      const Size(1024, 768),
+      const Size(390, 844),
+    ]) {
+      testWidgets('the cleaned-up CLIENTE layout is intact at ${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        await pumpCliente(
+          tester,
+          _ConfigurableReadGateway(products: [bebida(), libre()], categories: [entradas, bebidas]),
+          size: size,
+        );
+        expect(tester.takeException(), isNull);
+        expect(find.text('Entradas'), findsNothing);
+        expect(product('p-beb'), findsOneWidget);
+        expect(find.byKey(const Key('pos-cliente-ayuda-bar')), findsOneWidget);
+        if (size.width >= 900) {
+          expect(find.byKey(const Key('pos-cliente-ticket-preview')), findsOneWidget);
+          // The catalog never runs under the 400px ticket column.
+          final catalog = tester.getRect(find.byKey(const Key('pos-cliente-catalog')));
+          final ticket = tester.getRect(find.byKey(const Key('pos-cliente-ticket-preview')));
+          expect(catalog.right, lessThanOrEqualTo(ticket.left));
+        }
+      });
+    }
   });
 
   group('Canonical CLIENTE locked surface (TASK 12.3B)', () {
@@ -4618,8 +5005,9 @@ void main() {
     );
 
     testWidgets(
-      'shows the honest per-category empty state without collapsing the '
-      'section structure, and does not fabricate demonstration products',
+      'hides a category that has no visible products (TASK 17.5.4.3) instead '
+      'of showing a dead-end "Sin productos" section, and does not fabricate '
+      'demonstration products',
       (tester) async {
         tester.view.physicalSize = const Size(1440, 900);
         tester.view.devicePixelRatio = 1;
@@ -4655,11 +5043,15 @@ void main() {
         await tester.pumpAndSettle();
         await enterCliente(tester);
 
-        // Postres (cat-3) has zero matching products — the section title
-        // still renders, with the canonical empty-category copy, instead
-        // of the whole catalog collapsing to a single generic message.
-        expect(find.text('Postres'), findsWidgets);
-        expect(find.text('Sin productos en esta categoría'), findsOneWidget);
+        // Postres (cat-3) has zero matching products — CLIENTE is
+        // customer-facing, so it is neither a section nor a jumpbar pill
+        // (the category itself is untouched; it just isn't presented empty).
+        expect(find.text('Postres'), findsNothing);
+        expect(find.byKey(const Key('pos-cliente-jump-cat-3')), findsNothing);
+        expect(find.text('Sin productos en esta categoría'), findsNothing);
+        // The categories that DO hold products are still presented.
+        expect(find.text('Bebidas'), findsWidgets);
+        expect(find.text('Snacks'), findsWidgets);
         expect(tester.takeException(), isNull);
       },
     );
@@ -4784,7 +5176,10 @@ void main() {
         expect(find.byKey(const Key('pos-product-product-1')), findsOneWidget);
         // THE FIX: the categoryless product is no longer dropped.
         expect(find.byKey(const Key('pos-product-product-orphan')), findsOneWidget);
-        expect(find.text('Sin categoría'), findsOneWidget);
+        expect(
+        find.descendant(of: find.byKey(const Key('pos-cliente-catalog')), matching: find.text('Sin categoría')),
+        findsOneWidget,
+      );
         expect(tester.takeException(), isNull);
       },
     );
@@ -13485,6 +13880,108 @@ class _CardParityGateway implements PosReadGateway {
       branchId: 'branch-id',
       locationId: 'location-id',
       variantId: 'variant-oos',
+      onHand: '0',
+      reserved: '0',
+      inTransit: '0',
+    ),
+  ];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
+}
+
+/// TASK 17.5.4.3 — a configurable catalog for the CLIENTE empty-section tests.
+class _ConfigurableReadGateway implements PosReadGateway {
+  const _ConfigurableReadGateway({required List<PosProduct> products, required List<PosCategory> categories})
+    : _productList = products,
+      _categoryList = categories;
+  final List<PosProduct> _productList;
+  final List<PosCategory> _categoryList;
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async => _productList;
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
+  @override
+  Future<List<PosCategory>> categories() async => _categoryList;
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
+}
+
+/// TASK 17.5.4.3 — the ten card-content cases of the adaptive-density tests.
+/// Order matters: the first five (row 1 on desktop) have NO description, the
+/// rest (row 2) include described cards plus description-less ones.
+class _CardDensityGateway implements PosReadGateway {
+  const _CardDensityGateway();
+
+  static const _twoLines =
+      'Incluye dos pases de día completo y calcetas antiderrapantes para toda la familia durante todo el evento.';
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async => [
+    _pricedProduct(id: 'dens-a', code: 'A', name: 'Agua', categoryId: 'cat-pack', amount: '45.00'),
+    _coloredProduct('dens-b', 'Sin precio corto', style: 'default', priced: false),
+    _pricedProduct(
+      id: 'dens-c',
+      code: 'C',
+      name: 'Paquete familiar premium con acceso ilimitado a todas las atracciones y botella de agua',
+      categoryId: 'cat-pack',
+    ),
+    _pricedProduct(
+      id: 'dens-f',
+      code: 'F',
+      name: 'Con imagen',
+      categoryId: 'cat-pack',
+      imageUrl: 'https://cdn.example.test/products/agua.png',
+    ),
+    _pricedProduct(id: 'dens-g', code: 'G', name: 'Fallback', categoryId: 'cat-pack'),
+    _coloredProduct('dens-h', 'Acento azul', hex: '#2563EB'),
+    _pricedProduct(
+      id: 'dens-j',
+      code: 'J',
+      name: 'Agotado',
+      categoryId: 'cat-pack',
+      tracksInventory: true,
+      defaultVariantId: 'variant-dens-j',
+    ),
+    _pricedProduct(id: 'dens-d', code: 'D', name: 'Con descripción', categoryId: 'cat-pack', description: _twoLines),
+    _pricedProduct(
+      id: 'dens-e',
+      code: 'E',
+      name: 'Paquete familiar premium con acceso ilimitado a todas las atracciones y botella de agua',
+      categoryId: 'cat-pack',
+      description: _twoLines,
+    ),
+    _coloredProduct('dens-i', 'Degradado', style: 'gradient', hex: '#16A34A', description: _twoLines),
+  ];
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-pack', name: 'Paquetes', status: 'active'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [
+    PosInventoryBalance(
+      id: 'balance-dens-j',
+      branchId: 'branch-id',
+      locationId: 'location-id',
+      variantId: 'variant-dens-j',
       onHand: '0',
       reserved: '0',
       inTransit: '0',
