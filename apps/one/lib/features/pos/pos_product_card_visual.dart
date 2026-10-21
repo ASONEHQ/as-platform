@@ -124,56 +124,98 @@ Color? posProductColorFromHex(String? hex) {
   return Color(0xFF000000 | value);
 }
 
-/// TASK 16.6 — mirrors the legacy's own genuinely functional 3-mode
-/// `mpColorSetModo()`/`prodCard()` background (`AS POS V1.html:4980-4990,
-/// 7557-7565`): `solid` = a flat fill of the configured color; `gradient`
-/// = a soft diagonal tint fading into the palette's own neutral surface
-/// (never a hardcoded tenant color); `default` (or a missing/invalid hex
-/// on a non-default style) = the platform's own neutral surface — unlike
-/// the legacy, which hardcoded a single hex (`#6B3FA0`) as its "default"
-/// color, this platform never bakes one tenant's color into shared
-/// application logic. Returns a `(background, gradient)` pair — exactly
-/// one is non-null when [cardStyle] is a real color mode, both `null`
-/// (render the palette's own neutral surface) otherwise — so callers can
-/// feed either straight into a `BoxDecoration` (`_PosProductCard`) or
-/// `_PosCard`'s own `background`/`gradient` parameters without a second
-/// `Decoration`-unwrapping step.
-({Color? background, Gradient? gradient}) posProductCardFill({
+/// TASK 16.6 — the `gradient` card style, mirroring the legacy's own
+/// `mpColorSetModo()`/`prodCard()` (`AS POS V1.html:4980-4990, 7557-7565`):
+/// a soft diagonal tint of the configured color fading into the palette's
+/// own neutral surface (never a hardcoded tenant color). Returns `null` for
+/// every other style (including `solid`, which TASK 17.5.4.1 renders as an
+/// accent — see [posProductCardAccent] — instead of a flat fill) and for a
+/// missing/invalid hex, i.e. "render the palette's own neutral surface".
+Gradient? posProductCardGradient({
   required String cardStyle,
   required String? cardColorHex,
   required PosPalette palette,
 }) {
   final color = posProductColorFromHex(cardColorHex);
-  if (cardStyle == 'solid' && color != null) {
-    return (background: color, gradient: null);
-  }
-  if (cardStyle == 'gradient' && color != null) {
-    return (
-      background: null,
-      gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [color.withValues(alpha: .18), palette.surface],
-        stops: const [0, .65],
-      ),
-    );
-  }
-  return (background: null, gradient: null);
+  if (cardStyle != 'gradient' || color == null) return null;
+  return LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [color.withValues(alpha: .18), palette.surface],
+    stops: const [0, .65],
+  );
 }
 
-/// A readable foreground color (for the icon/text sitting on top of
-/// [posProductCardDecoration]) — the palette's own accent normally, but
-/// switches to white on a genuinely dark `solid` fill so the icon stays
-/// legible instead of nearly invisible.
-Color posProductCardForeground({
+/// TASK 17.5.4.1 — how a `solid` card style is expressed on the premium POS
+/// card: the card body stays the normal surface and the configured color
+/// becomes a restrained ACCENT (border, a soft tint behind the image/icon
+/// area, and a faint badge tint) instead of a saturated full-card fill.
+/// One helper feeds the POS card, the admin catalog card and the product
+/// dialog's live preview, so they can never drift apart.
+@immutable
+class PosProductCardAccent {
+  const PosProductCardAccent({
+    required this.color,
+    required this.mediaTint,
+    required this.badgeTint,
+  });
+
+  /// The configured color, nudged only as far as needed to stay visible on
+  /// the card surface (a pale yellow on white is darkened, a navy on a dark
+  /// surface is lightened) — used for the border and the fallback icon.
+  final Color color;
+
+  /// Opaque soft tint for the image/icon area (blended over the surface).
+  final Color mediaTint;
+
+  /// Opaque, fainter tint for the category badge.
+  final Color badgeTint;
+}
+
+/// `null` unless [cardStyle] is `solid` with a valid configured color.
+PosProductCardAccent? posProductCardAccent({
   required String cardStyle,
   required String? cardColorHex,
-  required Color fallback,
+  required PosPalette palette,
 }) {
-  if (cardStyle != 'solid') return fallback;
-  final color = posProductColorFromHex(cardColorHex);
-  if (color == null) return fallback;
-  return ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : fallback;
+  if (cardStyle != 'solid') return null;
+  final configured = posProductColorFromHex(cardColorHex);
+  if (configured == null) return null;
+  final accent = _visibleOn(configured, palette.surface);
+  return PosProductCardAccent(
+    color: accent,
+    mediaTint: Color.alphaBlend(accent.withValues(alpha: .16), palette.surface),
+    badgeTint: Color.alphaBlend(accent.withValues(alpha: .12), palette.surface),
+  );
+}
+
+/// Minimum contrast between the accent and the card surface — enough for a
+/// clearly visible border without demanding text-level (4.5:1) contrast.
+const double _kAccentMinContrast = 2.0;
+
+double _contrastRatio(Color a, Color b) {
+  final la = a.computeLuminance();
+  final lb = b.computeLuminance();
+  final lighter = la > lb ? la : lb;
+  final darker = la > lb ? lb : la;
+  return (lighter + .05) / (darker + .05);
+}
+
+/// Moves [color]'s HSL lightness away from [surface] (darker on a light
+/// surface, lighter on a dark one) until it reaches [_kAccentMinContrast],
+/// keeping hue and saturation so "blue" stays blue and "yellow" stays gold.
+Color _visibleOn(Color color, Color surface) {
+  if (_contrastRatio(color, surface) >= _kAccentMinContrast) return color;
+  final hsl = HSLColor.fromColor(color);
+  final towardDark = ThemeData.estimateBrightnessForColor(surface) == Brightness.light;
+  var lightness = hsl.lightness;
+  var result = color;
+  while (_contrastRatio(result, surface) < _kAccentMinContrast) {
+    lightness += towardDark ? -.04 : .04;
+    if (lightness <= 0 || lightness >= 1) break;
+    result = hsl.withLightness(lightness).toColor();
+  }
+  return result;
 }
 
 /// Real photo, falling back to the [iconKey]-mapped icon, falling back to

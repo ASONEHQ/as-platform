@@ -3832,22 +3832,21 @@ class _PosCard extends StatelessWidget {
   const _PosCard({
     required this.child,
     this.padding = const EdgeInsets.all(14),
-    this.background,
+    this.borderColor,
     this.gradient,
     super.key,
   });
   final Widget child;
   final EdgeInsets padding;
 
-  /// TASK 16.6 — overrides the card's own flat fill (e.g. a parsed
-  /// `card_color_hex`) while keeping the same border/shadow/radius every
-  /// other `_PosCard` call site already relies on. `null` (every
-  /// pre-existing call site) keeps the original `palette.surface` fill.
-  /// Ignored when [gradient] is set.
-  final Color? background;
+  /// TASK 17.5.4.1 — overrides the card's border color (the product's
+  /// configured card-color accent) while keeping the same fill/shadow/radius
+  /// every other `_PosCard` call site already relies on. `null` (every
+  /// pre-existing call site) keeps the original `palette.border`.
+  final Color? borderColor;
 
   /// TASK 16.6 — overrides the card's fill with a gradient (legacy
-  /// `mpColorSetModo('degradado')` parity) instead of a flat [background].
+  /// `mpColorSetModo('degradado')` parity) instead of the flat surface.
   final Gradient? gradient;
 
   @override
@@ -3856,9 +3855,9 @@ class _PosCard extends StatelessWidget {
     return Container(
       padding: padding,
       decoration: BoxDecoration(
-        color: gradient == null ? (background ?? palette.surface) : null,
+        color: gradient == null ? palette.surface : null,
         gradient: gradient,
-        border: Border.all(color: palette.border),
+        border: Border.all(color: borderColor ?? palette.border),
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -6785,25 +6784,24 @@ class _PosProductCard extends StatelessWidget {
     final palette = PosPalette.of(context);
     final outOfStock = block == PosAddabilityBlock.outOfStock;
     final blocked = block != null;
-    // TASK 16.6 — real card-appearance parity (legacy `prodCard()`): a
-    // configured `card_style`/`card_color_hex` tints the whole card, not
-    // just an icon badge, matching the legacy's own visual intent. That is
-    // a deliberate, admin-configured per-product setting — unchanged here.
-    final fill = posProductCardFill(
+    // TASK 16.6 / 17.5.4.1 — the admin-configured per-product card color
+    // (`card_style`/`card_color_hex`) is kept, but a `solid` color is now a
+    // refined ACCENT on the normal card (border + soft tint behind the
+    // image/icon area + a faint badge tint), never a saturated full-card
+    // fill; `gradient` keeps its soft whole-card tint. Text therefore keeps
+    // the standard card text colors in every style.
+    final gradient = posProductCardGradient(
       cardStyle: item.cardStyle,
       cardColorHex: item.cardColorHex,
       palette: palette,
     );
-    final iconColor = posProductCardForeground(
+    final accent = posProductCardAccent(
       cardStyle: item.cardStyle,
       cardColorHex: item.cardColorHex,
-      fallback: palette.action,
+      palette: palette,
     );
-    final solidFill = fill.background;
-    final onDarkFill =
-        solidFill != null && ThemeData.estimateBrightnessForColor(solidFill) == Brightness.dark;
-    final textColor = onDarkFill ? Colors.white : palette.text;
-    final mutedColor = onDarkFill ? Colors.white70 : palette.textMuted;
+    final textColor = palette.text;
+    final mutedColor = palette.textMuted;
     final rawDescription = item.description?.trim();
     final description = (rawDescription == null || rawDescription.isEmpty) ? null : rawDescription;
     final category = categoryName;
@@ -6830,17 +6828,19 @@ class _PosProductCard extends StatelessWidget {
         ),
         child: Material(
           key: Key('pos-product-${item.id}'),
-          color: fill.background ?? palette.surface,
+          color: palette.surface,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: palette.border),
+            side: accent == null
+                ? BorderSide(color: palette.border)
+                : BorderSide(color: accent.color, width: 1.5),
           ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
             hoverColor: palette.action.withValues(alpha: .05),
             child: DecoratedBox(
-              decoration: BoxDecoration(gradient: fill.gradient),
+              decoration: BoxDecoration(gradient: gradient),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -6852,8 +6852,8 @@ class _PosProductCard extends StatelessWidget {
                           productId: item.id,
                           imageUrl: item.imageUrl,
                           iconKey: item.iconKey,
-                          iconColor: iconColor,
-                          onDarkFill: onDarkFill,
+                          iconColor: accent?.color ?? palette.action,
+                          tint: accent?.mediaTint,
                         ),
                         if (outOfStock)
                           Positioned(
@@ -6884,6 +6884,7 @@ class _PosProductCard extends StatelessWidget {
                                     child: _PosProductCategoryBadge(
                                       key: Key('pos-product-badge-${item.id}'),
                                       label: category,
+                                      tint: accent?.badgeTint,
                                     ),
                                   ),
                           ),
@@ -6947,7 +6948,6 @@ class _PosProductCard extends StatelessWidget {
                               _PosProductAddButton(
                                 key: Key('pos-product-add-${item.id}'),
                                 enabled: !blocked,
-                                onDarkFill: onDarkFill,
                               ),
                             ],
                           ),
@@ -6971,19 +6971,22 @@ class _PosProductCard extends StatelessWidget {
 /// the SAME area — a soft tinted surface with the product's real icon in a
 /// centered disc. The icon resolution (`posProductIconFor`) is reused, not
 /// duplicated; a broken/unavailable URL falls back to the exact same widget.
+/// TASK 17.5.4.1 — [tint] (the configured card color's soft accent, `null`
+/// without one) only ever colors the FALLBACK surface; a real photo is never
+/// overlaid or filtered, so it stays visually truthful.
 class _PosProductImageArea extends StatelessWidget {
   const _PosProductImageArea({
     required this.productId,
     required this.imageUrl,
     required this.iconKey,
     required this.iconColor,
-    required this.onDarkFill,
+    this.tint,
   });
   final String productId;
   final String? imageUrl;
   final String? iconKey;
   final Color iconColor;
-  final bool onDarkFill;
+  final Color? tint;
 
   static const double _height = 118;
 
@@ -7014,15 +7017,12 @@ class _PosProductImageArea extends StatelessWidget {
     key: Key('pos-product-fallback-$productId'),
     width: double.infinity,
     height: _height,
-    color: onDarkFill ? Colors.white.withValues(alpha: .18) : palette.background,
+    color: tint ?? palette.background,
     alignment: Alignment.center,
     child: Container(
       width: 64,
       height: 64,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: onDarkFill ? Colors.white.withValues(alpha: .25) : palette.surface.withValues(alpha: .85),
-      ),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: palette.surface.withValues(alpha: .85)),
       alignment: Alignment.center,
       child: Icon(posProductIconFor(iconKey), size: 32, color: iconColor),
     ),
@@ -7033,8 +7033,12 @@ class _PosProductImageArea extends StatelessWidget {
 /// category id, never shown at all when unresolved — see
 /// `_PosProductGrid.categoryNameById`).
 class _PosProductCategoryBadge extends StatelessWidget {
-  const _PosProductCategoryBadge({required this.label, super.key});
+  const _PosProductCategoryBadge({required this.label, this.tint, super.key});
   final String label;
+
+  /// TASK 17.5.4.1 — a faint tint from the product's configured card color;
+  /// the label keeps its standard readable color either way.
+  final Color? tint;
 
   @override
   Widget build(BuildContext context) {
@@ -7042,7 +7046,7 @@ class _PosProductCategoryBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: palette.actionTint,
+        color: tint ?? palette.actionTint,
         borderRadius: BorderRadius.circular(99),
       ),
       child: Text(
@@ -7086,17 +7090,14 @@ class _PosProductStatusChip extends StatelessWidget {
 /// `_PosProductCard`'s own comment), so a blocked product keeps surfacing
 /// its honest notice on tap exactly as before.
 class _PosProductAddButton extends StatelessWidget {
-  const _PosProductAddButton({required this.enabled, required this.onDarkFill, super.key});
+  const _PosProductAddButton({required this.enabled, super.key});
   final bool enabled;
-  final bool onDarkFill;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final background = enabled
-        ? palette.action
-        : (onDarkFill ? Colors.white.withValues(alpha: .25) : palette.textMuted.withValues(alpha: .18));
-    final foreground = enabled ? Colors.white : (onDarkFill ? Colors.white70 : palette.textMuted);
+    final background = enabled ? palette.action : palette.textMuted.withValues(alpha: .18);
+    final foreground = enabled ? Colors.white : palette.textMuted;
     return Container(
       width: 32,
       height: 32,
@@ -11391,21 +11392,20 @@ class _ProductCardLivePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final fill = posProductCardFill(cardStyle: cardStyle, cardColorHex: cardColorHex, palette: palette);
-    final iconColor = posProductCardForeground(
-      cardStyle: cardStyle,
-      cardColorHex: cardColorHex,
-      fallback: palette.action,
-    );
+    // TASK 17.5.4.1 — the SAME accent semantics the real POS card uses
+    // (`posProductCardAccent`): normal surface + colored border + a soft tint
+    // behind the image/icon, never a saturated full-card block.
+    final gradient = posProductCardGradient(cardStyle: cardStyle, cardColorHex: cardColorHex, palette: palette);
+    final accent = posProductCardAccent(cardStyle: cardStyle, cardColorHex: cardColorHex, palette: palette);
     return SizedBox(
       key: const Key('pos-product-card-preview'),
       width: 140,
       child: Container(
         padding: const EdgeInsets.fromLTRB(10, 16, 10, 12),
         decoration: BoxDecoration(
-          color: fill.background ?? palette.surface,
-          gradient: fill.gradient,
-          border: Border.all(color: palette.border, width: 1.5),
+          color: palette.surface,
+          gradient: gradient,
+          border: Border.all(color: accent?.color ?? palette.border, width: 1.5),
           borderRadius: BorderRadius.circular(14),
         ),
         child: Stack(
@@ -11413,7 +11413,20 @@ class _ProductCardLivePreview extends StatelessWidget {
             Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                PosProductCardVisual(imageUrl: imageUrl, iconKey: iconKey, size: 34, color: iconColor),
+                Container(
+                  key: const Key('pos-product-card-preview-media'),
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(color: accent?.mediaTint, borderRadius: BorderRadius.circular(12)),
+                  clipBehavior: Clip.antiAlias,
+                  alignment: Alignment.center,
+                  child: PosProductCardVisual(
+                    imageUrl: imageUrl,
+                    iconKey: iconKey,
+                    size: 34,
+                    color: accent?.color ?? palette.action,
+                  ),
+                ),
                 const SizedBox(height: 7),
                 Text(
                   name.isEmpty ? 'Nombre del producto' : name,
@@ -13295,20 +13308,21 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final fill = posProductCardFill(
+    // TASK 17.5.4.1 — same shared accent semantics as the POS card/preview.
+    final gradient = posProductCardGradient(
       cardStyle: item.cardStyle,
       cardColorHex: item.cardColorHex,
       palette: palette,
     );
-    final iconColor = posProductCardForeground(
+    final accent = posProductCardAccent(
       cardStyle: item.cardStyle,
       cardColorHex: item.cardColorHex,
-      fallback: palette.blueDeep,
+      palette: palette,
     );
     return _PosCard(
       padding: const EdgeInsets.all(10),
-      background: fill.background,
-      gradient: fill.gradient,
+      borderColor: accent?.color,
+      gradient: gradient,
       child: Stack(
         children: [
           Column(
@@ -13318,7 +13332,9 @@ class _ProductCard extends StatelessWidget {
                 width: 48,
                 height: 48,
                 decoration: BoxDecoration(
-                  color: item.imageUrl == null || item.imageUrl!.isEmpty ? palette.blueTint : null,
+                  color: item.imageUrl == null || item.imageUrl!.isEmpty
+                      ? (accent?.mediaTint ?? palette.blueTint)
+                      : null,
                   shape: BoxShape.circle,
                 ),
                 clipBehavior: Clip.antiAlias,
@@ -13326,7 +13342,7 @@ class _ProductCard extends StatelessWidget {
                   imageUrl: item.imageUrl,
                   iconKey: item.iconKey,
                   size: 48,
-                  color: iconColor,
+                  color: accent?.color ?? palette.blueDeep,
                 ),
               ),
               const SizedBox(height: 9),

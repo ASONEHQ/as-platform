@@ -38,6 +38,7 @@ import 'package:as_one/features/pos/pos_rewards_gateway.dart';
 import 'package:as_one/features/pos/pos_sales_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
 import 'package:as_one/features/pos/pos_suppliers_gateway.dart';
+import 'package:as_one/features/pos/pos_tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
@@ -140,6 +141,75 @@ void main() {
       expect(input.cardColorHex, isNotNull);
       expect(input.imageUrl, 'https://cdn.example.test/pizza.png');
       expect(input.minStock, '2');
+    });
+  });
+
+  // TASK 17.5.4.1 — the admin surfaces must tell the same story as the POS
+  // card: a `solid` color is a refined accent on a normal card, never a
+  // saturated full-card block (the old behavior).
+  group('TASK 17.5.4.1 — card color accent: admin preview + catalog card match the POS card', () {
+    final palette = PosPalette.light;
+    final accent = posProductCardAccent(cardStyle: 'solid', cardColorHex: '#2563EB', palette: palette)!;
+    const raw = Color(0xFF2563EB);
+
+    bool hasBorderColor(Widget widget, Color color) =>
+        widget is Container &&
+        widget.decoration is BoxDecoration &&
+        (widget.decoration! as BoxDecoration).border?.top.color == color;
+    bool hasFullFill(Widget widget, Color color) =>
+        widget is Container && widget.decoration is BoxDecoration && (widget.decoration! as BoxDecoration).color == color;
+
+    testWidgets('the product dialog preview shows a normal card with a colored accent for "Sólido"', (tester) async {
+      await _pump(tester, catalogAdminGateway: _RecordingCatalogAdminGateway());
+      await _navigateToProducts(tester);
+      await tester.tap(find.byKey(const Key('pos-product-new-button')));
+      await tester.pumpAndSettle();
+
+      final preview = find.byKey(const Key('pos-product-card-preview'));
+      Container outer() => tester.widget<Container>(find.descendant(of: preview, matching: find.byType(Container)).first);
+      BoxDecoration decoration() => outer().decoration! as BoxDecoration;
+
+      // Predeterminado: neutral card.
+      await tester.ensureVisible(preview);
+      expect(decoration().color, palette.surface);
+      expect(decoration().border!.top.color, palette.border);
+
+      await tester.ensureVisible(find.text('Sólido').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sólido').last);
+      await tester.pumpAndSettle();
+
+      final presetAccent = posProductCardAccent(
+        cardStyle: 'solid',
+        cardColorHex: posProductHexFromColor(posProductColorPresets.first),
+        palette: palette,
+      )!;
+      // Normal surface body (never the saturated preset), accent border, tinted media area.
+      expect(decoration().color, palette.surface);
+      expect(decoration().color, isNot(posProductColorPresets.first));
+      expect(decoration().border!.top.color, presetAccent.color);
+      expect(decoration().border!.top.color, isNot(palette.border));
+      final media = tester.widget<Container>(find.byKey(const Key('pos-product-card-preview-media')));
+      expect((media.decoration! as BoxDecoration).color, presetAccent.mediaTint);
+
+      // Degradado keeps its own (unchanged) whole-card gradient and a neutral border.
+      await tester.ensureVisible(find.text('Degradado').last);
+      await tester.tap(find.text('Degradado').last);
+      await tester.pumpAndSettle();
+      expect(decoration().gradient, isNotNull);
+      expect(decoration().border!.top.color, palette.border);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the admin catalog card uses the accent (tinted icon, colored border), not a solid block', (tester) async {
+      await _pump(tester, readGateway: const _FixtureReadGateway([_solidBlueProduct]));
+      await _navigateToProducts(tester);
+
+      // Admin catalog card: accent border + tinted icon circle, never a full-color card.
+      expect(find.byWidgetPredicate((w) => hasBorderColor(w, accent.color)), findsWidgets);
+      expect(find.byWidgetPredicate((w) => hasFullFill(w, raw)), findsNothing);
+      expect(find.byWidgetPredicate((w) => hasFullFill(w, accent.mediaTint)), findsWidgets);
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -754,6 +824,18 @@ const _iconOnlyProduct = PosProduct(
   status: 'active',
   tracksInventory: false,
   iconKey: 'pizza',
+);
+
+const _solidBlueProduct = PosProduct(
+  id: 'solid-blue-product',
+  code: 'BLUE-1',
+  name: 'Producto azul sólido',
+  type: 'simple',
+  status: 'active',
+  tracksInventory: false,
+  iconKey: 'pizza',
+  cardStyle: 'solid',
+  cardColorHex: '#2563EB',
 );
 
 const _plainProduct = PosProduct(

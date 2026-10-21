@@ -18,6 +18,7 @@ import 'package:as_one/features/pos/pos_navigation.dart';
 import 'package:as_one/features/pos/pos_parties_gateway.dart';
 import 'package:as_one/features/pos/pos_parties_models.dart';
 import 'package:as_one/features/pos/pos_payments_gateway.dart';
+import 'package:as_one/features/pos/pos_product_card_visual.dart';
 import 'package:as_one/features/pos/pos_product_variants_gateway.dart';
 import 'package:as_one/features/pos/pos_promotions_gateway.dart';
 import 'package:as_one/features/pos/pos_read_controller.dart';
@@ -28,6 +29,7 @@ import 'package:as_one/features/pos/pos_rewards_gateway.dart';
 import 'package:as_one/features/pos/pos_sales_gateway.dart';
 import 'package:as_one/features/pos/pos_settings_gateway.dart';
 import 'package:as_one/features/pos/pos_shell.dart';
+import 'package:as_one/features/pos/pos_tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -3990,17 +3992,21 @@ void main() {
   // read IMAGE/fallback → real badge → name → real description → price + "+",
   // use only real data, and never overflow, in CAJERO, CLIENTE and Cafetería.
   group('POS product cards — visual parity (TASK 17.5.4)', () {
-    Future<void> pumpCards(WidgetTester tester, {Size size = const Size(1440, 900)}) async {
+    Future<void> pumpCards(
+      WidgetTester tester, {
+      Size size = const Size(1440, 900),
+      PosReadGateway gateway = const _CardParityGateway(),
+    }) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
         PlatformScope(
-          posReadGateway: const _CardParityGateway(),
+          posReadGateway: gateway,
           child: MaterialApp(
             home: PosShell(
               context: _context,
-              controller: PosReadController(const _CardParityGateway()),
+              controller: PosReadController(gateway),
               salesGateway: _FakeSalesGateway(),
               paymentsGateway: _FakePaymentsGateway(),
               cashGateway: _FakeCashGateway(),
@@ -4178,12 +4184,13 @@ void main() {
       expect(find.byKey(const Key('pos-ticket-line-card-full')), findsOneWidget);
     });
 
-    testWidgets('a product configured with a solid card color keeps readable (white) text — no regression of the admin feature', (
+    testWidgets('a product configured with a solid card color keeps the normal card body and standard text (TASK 17.5.4.1)', (
       tester,
     ) async {
       await pumpCards(tester);
       final name = tester.widget<Text>(inCard('card-solid', find.text('Producto azul sólido')));
-      expect(name.style!.color, Colors.white);
+      expect(name.style!.color, PosPalette.light.text);
+      expect(tester.widget<Material>(card('card-solid')).color, PosPalette.light.surface);
       expect(tester.takeException(), isNull);
     });
 
@@ -4262,6 +4269,267 @@ void main() {
       expect(inCard('card-cafe', find.text('\$35.00')), findsOneWidget);
       expect(card('card-full'), findsNothing);
       expect(tester.takeException(), isNull);
+    });
+    // TASK 17.5.4.1 — a product's admin-configured `solid` card color must
+    // read as a refined ACCENT on the normal card (colored border + soft tint
+    // behind the image/icon area + faint badge tint), never a saturated
+    // full-card block, in every mode and theme.
+    group('configured card color is a refined accent, never a full-card block (TASK 17.5.4.1)', () {
+      const gateway = _CardColorGateway();
+      final light = PosPalette.light;
+
+      PosProductCardAccent accentOf(String hex, [PosPalette? palette]) =>
+          posProductCardAccent(cardStyle: 'solid', cardColorHex: hex, palette: palette ?? PosPalette.light)!;
+      Color bodyOf(WidgetTester tester, String id) => tester.widget<Material>(card(id)).color!;
+      BorderSide borderOf(WidgetTester tester, String id) =>
+          (tester.widget<Material>(card(id)).shape! as RoundedRectangleBorder).side;
+      Color? fallbackOf(WidgetTester tester, String id) =>
+          tester.widget<Container>(find.byKey(Key('pos-product-fallback-$id'))).color;
+      Color? badgeOf(WidgetTester tester, String id) =>
+          (tester
+                      .widget<Container>(
+                        find
+                            .descendant(of: find.byKey(Key('pos-product-badge-$id')), matching: find.byType(Container))
+                            .first,
+                      )
+                      .decoration!
+                  as BoxDecoration)
+              .color;
+      Color nameColorOf(WidgetTester tester, String id, String name) =>
+          tester.widget<Text>(inCard(id, find.text(name))).style!.color!;
+
+      testWidgets('A: no configured color -> the normal TASK 17.5.4 card (neutral border, media and badge)', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(bodyOf(tester, 'card-plain'), light.surface);
+        expect(borderOf(tester, 'card-plain').color, light.border);
+        expect(borderOf(tester, 'card-plain').width, 1);
+        expect(fallbackOf(tester, 'card-plain'), light.background);
+        expect(badgeOf(tester, 'card-plain'), light.actionTint);
+      });
+
+      for (final entry in [('card-blue', '#2563EB', 'Producto azul'), ('card-red', '#DC2626', 'Producto rojo')]) {
+        testWidgets('B/C: solid ${entry.$2} -> normal card body + refined accent (border, media tint, badge tint)', (
+          tester,
+        ) async {
+          await pumpCards(tester, gateway: gateway);
+          final accent = accentOf(entry.$2);
+          final configured = posProductColorFromHex(entry.$2)!;
+
+          // The card BODY is the normal surface — never the raw configured color.
+          expect(bodyOf(tester, entry.$1), light.surface);
+          expect(bodyOf(tester, entry.$1), isNot(configured));
+          // The color still matters: it drives the border, media tint and badge tint.
+          expect(borderOf(tester, entry.$1).color, accent.color);
+          expect(borderOf(tester, entry.$1).width, 1.5);
+          expect(fallbackOf(tester, entry.$1), accent.mediaTint);
+          expect(fallbackOf(tester, entry.$1), isNot(light.background));
+          expect(badgeOf(tester, entry.$1), accent.badgeTint);
+          // The media tint is soft (a tint of the color, not the color itself).
+          expect(fallbackOf(tester, entry.$1), isNot(configured));
+          // Text keeps the standard card colors (readable).
+          expect(nameColorOf(tester, entry.$1, entry.$3), light.text);
+          expect(tester.takeException(), isNull);
+        });
+      }
+
+      testWidgets('the configured color still distinguishes products: blue and red accents differ', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(borderOf(tester, 'card-blue').color, isNot(borderOf(tester, 'card-red').color));
+        expect(fallbackOf(tester, 'card-blue'), isNot(fallbackOf(tester, 'card-red')));
+        expect(borderOf(tester, 'card-blue').color, isNot(borderOf(tester, 'card-plain').color));
+      });
+
+      testWidgets('D: a very light color (pale yellow) is darkened just enough that the accent stays visible', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        final raw = posProductColorFromHex('#FFF59D')!;
+        final accent = accentOf('#FFF59D');
+        // The raw color would be nearly invisible on a white card...
+        expect(_testContrast(raw, light.surface), lessThan(2.0));
+        // ...so the accent is nudged to a visible one, keeping its hue (still "yellow").
+        expect(accent.color, isNot(raw));
+        expect(_testContrast(accent.color, light.surface), greaterThanOrEqualTo(2.0));
+        expect(HSLColor.fromColor(accent.color).hue, closeTo(HSLColor.fromColor(raw).hue, 6));
+        // The card really uses it, with the normal body and standard text.
+        expect(borderOf(tester, 'card-light').color, accent.color);
+        expect(bodyOf(tester, 'card-light'), light.surface);
+        expect(nameColorOf(tester, 'card-light', 'Producto amarillo claro'), light.text);
+        expect(fallbackOf(tester, 'card-light'), isNot(light.background));
+      });
+
+      testWidgets('E: a very dark color keeps its accent without turning the text hierarchy white', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        final raw = posProductColorFromHex('#0B1B3A')!;
+        final accent = accentOf('#0B1B3A');
+        expect(accent.color, raw);
+        expect(borderOf(tester, 'card-navy').color, raw);
+        expect(bodyOf(tester, 'card-navy'), light.surface);
+        expect(nameColorOf(tester, 'card-navy', 'Producto azul marino'), light.text);
+        // A soft tint, not a dark block.
+        expect(fallbackOf(tester, 'card-navy'), isNot(raw));
+        expect(_testContrast(fallbackOf(tester, 'card-navy')!, light.surface), lessThan(1.5));
+      });
+
+      testWidgets('F: configured color + real image -> the photo is rendered as-is (no overlay, filter or tint)', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        final imageFinder = find.byKey(const Key('pos-product-image-card-blue-img'));
+        expect(imageFinder, findsOneWidget);
+        final image = tester.widget<Image>(imageFinder);
+        expect(image.color, isNull);
+        expect(image.colorBlendMode, isNull);
+        for (final overlay in [ColorFiltered, Opacity, BackdropFilter]) {
+          expect(inCard('card-blue-img', find.byType(overlay)), findsNothing);
+        }
+        // The accent lives on the border, not on the photo.
+        expect(borderOf(tester, 'card-blue-img').color, accentOf('#2563EB').color);
+        expect(bodyOf(tester, 'card-blue-img'), light.surface);
+      });
+
+      testWidgets('G: configured color + no image -> a polished tinted fallback with the centered icon', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(find.byKey(const Key('pos-product-fallback-card-blue')), findsOneWidget);
+        expect(inCard('card-blue', find.byType(Image)), findsNothing);
+        final icon = tester.widget<Icon>(
+          find.descendant(of: find.byKey(const Key('pos-product-fallback-card-blue')), matching: find.byType(Icon)),
+        );
+        expect(icon.color, accentOf('#2563EB').color);
+        expect(fallbackOf(tester, 'card-blue'), accentOf('#2563EB').mediaTint);
+      });
+
+      testWidgets('H: configured color + no price -> "Sin precio" stays honest and restrained', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        final missing = tester.widget<Text>(find.byKey(const Key('pos-product-price-card-blue-noprice')));
+        final valid = tester.widget<Text>(find.byKey(const Key('pos-product-price-card-blue')));
+        expect(missing.data, 'Sin precio');
+        expect(missing.style!.color, light.textMuted);
+        expect(missing.style!.fontSize!, lessThan(valid.style!.fontSize!));
+        expect(borderOf(tester, 'card-blue-noprice').color, accentOf('#2563EB').color);
+        expect(bodyOf(tester, 'card-blue-noprice'), light.surface);
+      });
+
+      testWidgets('the `gradient` style is preserved as-is (soft whole-card tint, neutral border)', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(bodyOf(tester, 'card-grad'), light.surface);
+        expect(borderOf(tester, 'card-grad').color, light.border);
+        bool hasGradient(Widget w) => w is DecoratedBox && w.decoration is BoxDecoration && (w.decoration as BoxDecoration).gradient != null;
+        expect(inCard('card-grad', find.byWidgetPredicate(hasGradient)), findsOneWidget);
+        expect(inCard('card-blue', find.byWidgetPredicate(hasGradient)), findsNothing);
+      });
+
+      testWidgets('the accent never changes geometry: size, image area, text and "+" sit exactly where a plain card has them', (
+        tester,
+      ) async {
+        await pumpCards(tester, gateway: gateway);
+        Offset fromCorner(String id, Finder target, {bool bottomRight = false}) {
+          final box = tester.getRect(card(id));
+          final rect = tester.getRect(target);
+          return bottomRight ? box.bottomRight - rect.bottomRight : rect.topLeft - box.topLeft;
+        }
+
+        final plainSize = tester.getSize(card('card-plain'));
+        for (final id in ['card-blue', 'card-red', 'card-light', 'card-navy']) {
+          expect(tester.getSize(card(id)), plainSize, reason: id);
+          expect(
+            tester.getSize(find.byKey(Key('pos-product-fallback-$id'))),
+            tester.getSize(find.byKey(const Key('pos-product-fallback-card-plain'))),
+            reason: id,
+          );
+          expect(
+            fromCorner(id, find.byKey(Key('pos-product-add-$id')), bottomRight: true),
+            fromCorner('card-plain', find.byKey(const Key('pos-product-add-card-plain')), bottomRight: true),
+            reason: id,
+          );
+          expect(
+            fromCorner(id, find.byKey(Key('pos-product-badge-$id'))),
+            fromCorner('card-plain', find.byKey(const Key('pos-product-badge-card-plain'))),
+            reason: id,
+          );
+        }
+      });
+
+      testWidgets('I: long name, description and category with a configured color never overflow', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        expect(card('card-blue-long'), findsOneWidget);
+        expect(borderOf(tester, 'card-blue-long').color, accentOf('#2563EB').color);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('J: dark mode keeps the dark surface, a visible accent and standard (light) text', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        await tester.tap(find.byKey(const Key('pos-dark-mode-toggle')));
+        await tester.pumpAndSettle();
+        final dark = PosPalette.dark;
+
+        for (final entry in [('card-blue', '#2563EB'), ('card-navy', '#0B1B3A'), ('card-light', '#FFF59D')]) {
+          final accent = accentOf(entry.$2, dark);
+          expect(bodyOf(tester, entry.$1), dark.surface, reason: entry.$1);
+          expect(borderOf(tester, entry.$1).color, accent.color, reason: entry.$1);
+          expect(_testContrast(accent.color, dark.surface), greaterThanOrEqualTo(2.0), reason: entry.$1);
+          expect(fallbackOf(tester, entry.$1), accent.mediaTint, reason: entry.$1);
+        }
+        // A very dark configured color is LIFTED on a dark surface (never dark-on-dark).
+        expect(accentOf('#0B1B3A', dark).color, isNot(posProductColorFromHex('#0B1B3A')));
+        expect(nameColorOf(tester, 'card-blue', 'Producto azul'), dark.text);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('CAJERO: tapping a colored card still adds it to the ticket (behavior unchanged)', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        await tester.tap(card('card-blue'));
+        await tester.pump();
+        expect(find.byKey(const Key('pos-ticket-line-card-blue')), findsOneWidget);
+      });
+
+      testWidgets('CLIENTE: the same accent card renders, and adding still works', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        await tester.tap(card('card-plain'));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('pos-mode-cliente')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('pos-cliente-catalog')), findsOneWidget);
+        expect(bodyOf(tester, 'card-blue'), light.surface);
+        expect(borderOf(tester, 'card-blue').color, accentOf('#2563EB').color);
+        expect(fallbackOf(tester, 'card-blue'), accentOf('#2563EB').mediaTint);
+        await tester.tap(card('card-blue'));
+        await tester.pump();
+        expect(find.byKey(const Key('pos-cliente-ticket-line-card-blue')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('CAFETERÍA: the same accent card renders in the Cafetería section', (tester) async {
+        await pumpCards(tester, gateway: gateway);
+        await tester.tap(find.byKey(const Key('nav-cafeteria')));
+        await tester.pumpAndSettle();
+
+        expect(card('card-cafe-red'), findsOneWidget);
+        expect(bodyOf(tester, 'card-cafe-red'), light.surface);
+        expect(borderOf(tester, 'card-cafe-red').color, accentOf('#DC2626').color);
+        expect(fallbackOf(tester, 'card-cafe-red'), accentOf('#DC2626').mediaTint);
+        expect(card('card-blue'), findsNothing);
+      });
+
+      for (final size in [
+        const Size(1440, 900),
+        const Size(1365, 768),
+        const Size(1024, 768),
+        const Size(390, 844),
+      ]) {
+        testWidgets('accent cards keep the TASK 17.5.4 geometry with no overflow at ${size.width.toInt()}x${size.height.toInt()}', (
+          tester,
+        ) async {
+          await pumpCards(tester, size: size, gateway: gateway);
+          expect(tester.getSize(card('card-blue')), tester.getSize(card('card-plain')));
+          expect(tester.getSize(card('card-red')), tester.getSize(card('card-plain')));
+          expect(tester.getSize(card('card-blue')).width, inInclusiveRange(110, 190));
+          expect(tester.takeException(), isNull);
+        });
+      }
     });
   });
 
@@ -13222,6 +13490,98 @@ class _CardParityGateway implements PosReadGateway {
       inTransit: '0',
     ),
   ];
+
+  @override
+  Future<List<PosUser>> users() async => const [];
+
+  @override
+  Future<String> businessDate({required String timezone}) async => '2026-01-01';
+}
+
+/// WCAG-style contrast ratio, mirroring the one `posProductCardAccent` uses.
+double _testContrast(Color a, Color b) {
+  final la = a.computeLuminance();
+  final lb = b.computeLuminance();
+  return ((la > lb ? la : lb) + .05) / ((la > lb ? lb : la) + .05);
+}
+
+PosProduct _coloredProduct(
+  String id,
+  String name, {
+  String style = 'solid',
+  String? hex,
+  String? categoryId = 'cat-pack',
+  String? imageUrl,
+  String? description,
+  bool priced = true,
+}) => PosProduct(
+  id: id,
+  code: 'C-$id',
+  name: name,
+  type: 'simple',
+  status: 'active',
+  tracksInventory: false,
+  categoryId: categoryId,
+  taxCode: 'IVA_GENERAL',
+  pricing: priced
+      ? PosPricing.fromJson({'amount': '45.00', 'currency_code': 'MXN'})
+      : const PosPricing.missing(),
+  imageUrl: imageUrl,
+  description: description,
+  cardStyle: style,
+  cardColorHex: hex,
+);
+
+/// TASK 17.5.4.1 — one catalog covering every configured-card-color case:
+/// no color, solid blue/red/very-light/very-dark, blue + real image, blue +
+/// no price, blue + long content, the untouched `gradient` style, and a red
+/// Cafetería product. Ten products so every card is built (two rows at 1440).
+class _CardColorGateway implements PosReadGateway {
+  const _CardColorGateway();
+
+  @override
+  Future<List<PosProduct>> products({String? branchId}) async => [
+    _coloredProduct('card-plain', 'Producto liso', style: 'default'),
+    _coloredProduct('card-blue', 'Producto azul', hex: '#2563EB'),
+    _coloredProduct('card-red', 'Producto rojo', hex: '#DC2626'),
+    _coloredProduct('card-light', 'Producto amarillo claro', hex: '#FFF59D'),
+    _coloredProduct('card-navy', 'Producto azul marino', hex: '#0B1B3A'),
+    _coloredProduct(
+      'card-blue-img',
+      'Azul con imagen',
+      hex: '#2563EB',
+      imageUrl: 'https://cdn.example.test/products/azul.png',
+    ),
+    _coloredProduct('card-blue-noprice', 'Azul sin precio', hex: '#2563EB', priced: false),
+    _coloredProduct(
+      'card-blue-long',
+      'Paquete familiar premium con acceso ilimitado a todas las atracciones, calcetas antiderrapantes y botella de agua',
+      hex: '#2563EB',
+      categoryId: 'cat-long',
+      description:
+          'Incluye dos pases de día completo, calcetas antiderrapantes para toda la familia, una botella de agua '
+          'por persona y acceso a la zona de snacks con descuento especial durante todo el evento.',
+    ),
+    _coloredProduct('card-grad', 'Producto degradado', style: 'gradient', hex: '#16A34A'),
+    _coloredProduct('card-cafe-red', 'Café rojo', hex: '#DC2626', categoryId: 'cat-cafe'),
+  ];
+
+  @override
+  Future<PosProduct?> productByBarcode(String barcode, {String? branchId}) async => null;
+
+  @override
+  Future<List<PosCategory>> categories() async => const [
+    PosCategory(id: 'cat-pack', name: 'Paquetes', status: 'active'),
+    PosCategory(
+      id: 'cat-long',
+      name: 'Categoría con un nombre extraordinariamente largo para probar el recorte',
+      status: 'active',
+    ),
+    PosCategory(id: 'cat-cafe', name: 'Cafetería', status: 'active', operationalGroup: 'cafeteria'),
+  ];
+
+  @override
+  Future<List<PosInventoryBalance>> inventoryBalances({String? branchId}) async => const [];
 
   @override
   Future<List<PosUser>> users() async => const [];
