@@ -904,62 +904,89 @@ void main() {
   });
 
   group('Nómina', () {
+    PosPayrollPeriodDetail calculated({List<PosPayrollCurrencyTotals> totals = const []}) =>
+        PosPayrollPeriodDetail(period: _draftPeriod, lines: [_payrollLine()], totals: totals);
+
+    Future<void> openWeek(
+      WidgetTester tester,
+      _RecordingPayrollGateway gateway, {
+      String periodKey = 'period-1',
+      List<String>? permissions,
+      Size size = const Size(1440, 1000),
+    }) async {
+      await _pump(tester, payrollGateway: gateway, permissions: permissions, size: size);
+      await _navigateToTab(tester, 'Nómina');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('pos-payroll-period-row-$periodKey')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openEmployee(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('pos-payroll-line-row-line-1')));
+      await tester.pumpAndSettle();
+    }
+
     testWidgets('Calcular shows the real computed lines from the backend — never client-computed figures', (
       tester,
     ) async {
-      final payrollGateway = _RecordingPayrollGateway(
-        periods: [_draftPeriod],
-        calculateResult: PosPayrollPeriodDetail(
-          period: _draftPeriod,
-          lines: [
-            PosPayrollPeriodLine(
-              id: 'line-1',
-              employeeId: 'employee-1',
-              scheduledMinutes: 2400,
-              workedMinutes: 2350,
-              lateMinutes: 15,
-              overtimeMinutes: 0,
-              baseSalarySnapshot: '1500.0000',
-              deductionAmount: '9.3750',
-              bonusAmount: '0.0000',
-              totalAmount: '1490.6250',
-              currencyCode: 'MXN',
-              computedAt: DateTime.utc(2026, 9, 7),
-              computedBy: 'user-id',
-            ),
-          ],
-        ),
-      );
-      await _pump(tester, payrollGateway: payrollGateway);
-      await _navigateToTab(tester, 'Nómina');
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-payroll-period-row-period-1')));
-      await tester.pumpAndSettle();
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], calculateResult: calculated());
+      await openWeek(tester, payrollGateway);
 
       await tester.tap(find.byKey(const Key('pos-payroll-calculate')));
       await tester.pumpAndSettle();
 
       expect(payrollGateway.calculateCalls, ['period-1']);
-      expect(find.text('2400 min'), findsOneWidget);
-      expect(find.text('15 min'), findsOneWidget);
+      expect(find.text('40h'), findsOneWidget); // 2400 scheduled minutes
+      expect(find.text('39h 10m'), findsOneWidget); // 2350 worked minutes
+      expect(find.text('15m'), findsOneWidget); // late
       expect(find.text('\$1490.63'), findsOneWidget);
     });
 
-    testWidgets('Cerrar periodo requires an explicit confirmation, then calls the real endpoint', (tester) async {
-      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod]);
-      await _pump(tester, payrollGateway: payrollGateway);
-      await _navigateToTab(tester, 'Nómina');
-      await tester.pumpAndSettle();
+    testWidgets('the weekly table has the target columns, frozen employee names and the SERVER column totals', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine()],
+        totals: const [_payrollTotals],
+      );
+      await openWeek(tester, payrollGateway);
 
-      await tester.tap(find.byKey(const Key('pos-payroll-period-row-period-1')));
-      await tester.pumpAndSettle();
+      for (final header in ['Empleado', 'Programado', 'Trabajado', 'Retardo', 'Extra', 'Base', 'Ajuste', 'Total']) {
+        expect(find.text(header), findsWidgets, reason: header);
+      }
+      // The name comes from the frozen snapshot on the line, not the live list.
+      expect(find.text('Ana Torres'), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-totals-MXN')), findsOneWidget);
+      expect(find.text('Total MXN · 1 empleado'), findsOneWidget);
+      // The row total and the server's column total are both displayed.
+      expect(find.text('\$1490.63'), findsNWidgets(2));
+      expect(find.byKey(const Key('pos-payroll-print-week')), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-history')), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-close')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a week with no calculated lines is an honest empty state, and close/PDF stay disabled', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod]);
+      await openWeek(tester, payrollGateway);
+
+      expect(find.byKey(const Key('pos-payroll-empty')), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-table')), findsNothing);
+      expect(tester.widget<OutlinedButton>(find.byKey(const Key('pos-payroll-close'))).onPressed, isNull);
+      expect(tester.widget<OutlinedButton>(find.byKey(const Key('pos-payroll-print-week'))).onPressed, isNull);
+    });
+
+    testWidgets('Cerrar nómina requires an explicit confirmation, then calls the real endpoint', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], lines: [_payrollLine()]);
+      await openWeek(tester, payrollGateway);
 
       await tester.tap(find.byKey(const Key('pos-payroll-close')));
       await tester.pumpAndSettle();
 
       expect(payrollGateway.closeCalls, isEmpty);
       expect(find.byKey(const Key('pos-payroll-close-confirm')), findsOneWidget);
+      expect(find.textContaining('1 empleado'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('pos-payroll-close-confirm')));
       await tester.pumpAndSettle();
@@ -967,39 +994,31 @@ void main() {
       expect(payrollGateway.closeCalls, ['period-1']);
     });
 
-    testWidgets('Reabrir requires its own distinct confirmation, then calls the real endpoint', (tester) async {
-      final payrollGateway = _RecordingPayrollGateway(periods: [_closedPeriod]);
-      await _pump(tester, payrollGateway: payrollGateway);
-      await _navigateToTab(tester, 'Nómina');
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-payroll-period-row-period-2')));
-      await tester.pumpAndSettle();
+    testWidgets('Reabrir demands a reason (recorded with the call) and does nothing without one', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_closedPeriod], lines: [_payrollLine()]);
+      await openWeek(tester, payrollGateway, periodKey: 'period-2');
 
       await tester.tap(find.byKey(const Key('pos-payroll-reopen')));
       await tester.pumpAndSettle();
-
       expect(payrollGateway.reopenCalls, isEmpty);
-      expect(find.byKey(const Key('pos-payroll-reopen-confirm')), findsOneWidget);
 
+      // No reason: the dialog stays open, nothing is sent.
+      await tester.tap(find.byKey(const Key('pos-payroll-reopen-confirm')));
+      await tester.pumpAndSettle();
+      expect(payrollGateway.reopenCalls, isEmpty);
+      expect(find.text('Escribe un motivo (mínimo 3 caracteres).'), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-payroll-reopen-reason')), 'Se corrigió una checada fuera de lugar');
       await tester.tap(find.byKey(const Key('pos-payroll-reopen-confirm')));
       await tester.pumpAndSettle();
 
       expect(payrollGateway.reopenCalls, ['period-2']);
+      expect(payrollGateway.reopenReasons, ['Se corrigió una checada fuera de lugar']);
     });
 
     testWidgets('an actor without payroll.close cannot see/trigger close or reopen', (tester) async {
-      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod, _closedPeriod]);
-      await _pump(
-        tester,
-        payrollGateway: payrollGateway,
-        permissions: const ['payroll.read', 'payroll.manage'],
-      );
-      await _navigateToTab(tester, 'Nómina');
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.byKey(const Key('pos-payroll-period-row-period-1')));
-      await tester.pumpAndSettle();
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod, _closedPeriod], lines: [_payrollLine()]);
+      await openWeek(tester, payrollGateway, permissions: const ['payroll.read', 'payroll.manage']);
 
       final closeButton = tester.widget<OutlinedButton>(find.byKey(const Key('pos-payroll-close')));
       expect(closeButton.onPressed, isNull);
@@ -1011,6 +1030,277 @@ void main() {
       expect(payrollGateway.closeCalls, isEmpty);
       expect(find.byKey(const Key('pos-payroll-close-confirm')), findsNothing);
     });
+
+    testWidgets('a backend error on calculate is shown honestly (never a silent failure)', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], calculateFailure: 'La nómina ya está cerrada.');
+      await openWeek(tester, payrollGateway);
+
+      await tester.tap(find.byKey(const Key('pos-payroll-calculate')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('La nómina ya está cerrada.'), findsOneWidget);
+    });
+
+    testWidgets('"PDF de la semana" is a real action: it builds the document and says so if the browser blocks the window', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine()],
+        totals: const [_payrollTotals],
+      );
+      await openWeek(tester, payrollGateway);
+
+      await tester.tap(find.byKey(const Key('pos-payroll-print-week')));
+      await tester.pump();
+
+      // The VM has no browser print window, so the honest outcome is the notice.
+      expect(find.textContaining('bloqueó la ventana de impresión'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping an employee opens their week: daily breakdown (frozen), money summary and adjustments', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], lines: [_payrollLine()], days: _payrollDays);
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+
+      expect(payrollGateway.employeeDetailCalls, ['period-1/employee-1']);
+      expect(find.byKey(const Key('pos-payroll-employee-dialog')), findsOneWidget);
+      expect(find.text('Ana Torres'), findsWidgets);
+      expect(find.textContaining('Código EMP-1'), findsOneWidget);
+      expect(find.textContaining('Cajera'), findsOneWidget);
+      // All 7 days are present with the backend's own classification.
+      for (final date in ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06', '2026-09-07']) {
+        expect(find.byKey(Key('pos-payroll-day-row-$date')), findsOneWidget, reason: date);
+      }
+      expect(find.text('09:12'), findsOneWidget); // first entry
+      expect(find.text('17:30'), findsOneWidget); // last exit
+      expect(find.text('09:00 – 17:00'), findsWidgets);
+      expect(find.text('Completo'), findsOneWidget);
+      expect(find.text('Descanso'), findsWidgets);
+      expect(find.text('Sin registro'), findsOneWidget);
+      expect(find.text('Trabajó sin horario'), findsOneWidget);
+      expect(find.text('Falta salida'), findsOneWidget);
+      expect(find.text('Sin horario'), findsWidgets);
+      // A day with no punch shows an honest dash, never an invented time.
+      expect(find.text('—'), findsWidgets);
+      expect(find.byKey(const Key('pos-payroll-summary-total')), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-no-adjustments')), findsOneWidget);
+    });
+
+    testWidgets('a line computed before Payroll V2 says its name/title are the current ones and that no daily detail exists', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine(snapshot: false)],
+      );
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+
+      expect(find.byKey(const Key('pos-payroll-no-snapshot')), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-no-days')), findsOneWidget);
+    });
+
+    testWidgets('adding an adjustment validates locally, then sends kind/amount/reason with ONE idempotency key', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], lines: [_payrollLine()], days: _payrollDays);
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-payroll-add-adjustment')));
+      await tester.tap(find.byKey(const Key('pos-payroll-add-adjustment')));
+      await tester.pumpAndSettle();
+
+      // Zero amount and a missing reason never reach the backend.
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-amount')), '0');
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-reason')), 'Bono');
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-save')));
+      await tester.pumpAndSettle();
+      expect(find.text('Captura un monto mayor a cero (hasta 4 decimales).'), findsOneWidget);
+      expect(payrollGateway.adjustmentCalls, isEmpty);
+
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-amount')), '200.50');
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-reason')), 'ab');
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-save')));
+      await tester.pumpAndSettle();
+      expect(find.text('Escribe el motivo del ajuste (mínimo 3 caracteres).'), findsOneWidget);
+      expect(payrollGateway.adjustmentCalls, isEmpty);
+
+      await tester.tap(find.text('Deducción (-)'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-reason')), 'Faltante de caja');
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-save')));
+      await tester.pumpAndSettle();
+
+      expect(payrollGateway.adjustmentCalls, hasLength(1));
+      final call = payrollGateway.adjustmentCalls.single;
+      expect(call.kind, 'deduction');
+      expect(call.amount, '200.50');
+      expect(call.reason, 'Faltante de caja');
+      expect(call.employeeId, 'employee-1');
+      expect(call.key, isNotEmpty);
+      // The detail reloads and now lists the recorded adjustment (kind + reason).
+      expect(find.text('Faltante de caja'), findsOneWidget);
+      expect(find.byKey(const Key('pos-payroll-no-adjustments')), findsNothing);
+    });
+
+    testWidgets('a failed submission keeps the SAME idempotency key on retry — a lost response can never double-record', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine()],
+        days: _payrollDays,
+        adjustmentFailures: 1,
+      );
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+      await tester.ensureVisible(find.byKey(const Key('pos-payroll-add-adjustment')));
+      await tester.tap(find.byKey(const Key('pos-payroll-add-adjustment')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-amount')), '50');
+      await tester.enterText(find.byKey(const Key('pos-payroll-adjustment-reason')), 'Bono de puntualidad');
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-save')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-payroll-adjustment-error')), findsOneWidget); // dialog stays open
+
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-save')));
+      await tester.pumpAndSettle();
+
+      expect(payrollGateway.adjustmentCalls, hasLength(2));
+      expect(payrollGateway.adjustmentCalls[0].key, payrollGateway.adjustmentCalls[1].key);
+    });
+
+    testWidgets('voiding an adjustment asks for a reason, keeps the row (marked ANULADO) and never deletes it', (
+      tester,
+    ) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine(adjustmentAmount: '200.0000')],
+        days: _payrollDays,
+        adjustments: [_bonusAdjustment()],
+      );
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+
+      expect(find.text('Bono de puntualidad'), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('pos-payroll-adjustment-void-adj-1')));
+      await tester.tap(find.byKey(const Key('pos-payroll-adjustment-void-adj-1')));
+      await tester.pumpAndSettle();
+      expect(payrollGateway.voidCalls, isEmpty);
+
+      await tester.tap(find.byKey(const Key('pos-payroll-void-confirm')));
+      await tester.pumpAndSettle();
+      expect(payrollGateway.voidCalls, isEmpty); // no reason -> nothing sent
+
+      await tester.enterText(find.byKey(const Key('pos-payroll-void-reason')), 'Capturado por error');
+      await tester.tap(find.byKey(const Key('pos-payroll-void-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(payrollGateway.voidCalls, hasLength(1));
+      expect(payrollGateway.voidCalls.single.reason, 'Capturado por error');
+      expect(find.byKey(const Key('pos-payroll-adjustment-voided-adj-1')), findsOneWidget);
+      expect(find.text('Bono de puntualidad'), findsOneWidget); // still listed
+    });
+
+    testWidgets('a CLOSED week accepts no adjustments: the add button and every void are disabled', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_closedPeriod],
+        lines: [_payrollLine(adjustmentAmount: '200.0000')],
+        days: _payrollDays,
+        adjustments: [_bonusAdjustment()],
+      );
+      await openWeek(tester, payrollGateway, periodKey: 'period-2');
+      expect(find.byKey(const Key('pos-payroll-calculate')), findsNothing);
+      await openEmployee(tester);
+
+      expect(tester.widget<FilledButton>(find.byKey(const Key('pos-payroll-add-adjustment'))).onPressed, isNull);
+      expect(tester.widget<TextButton>(find.byKey(const Key('pos-payroll-adjustment-void-adj-1'))).onPressed, isNull);
+    });
+
+    testWidgets('without payroll.manage the actor can read the week but cannot add or void adjustments', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine()],
+        days: _payrollDays,
+        adjustments: [_bonusAdjustment()],
+      );
+      await openWeek(tester, payrollGateway, permissions: const ['payroll.read']);
+      await openEmployee(tester);
+
+      expect(tester.widget<FilledButton>(find.byKey(const Key('pos-payroll-add-adjustment'))).onPressed, isNull);
+      expect(tester.widget<TextButton>(find.byKey(const Key('pos-payroll-adjustment-void-adj-1'))).onPressed, isNull);
+      expect(find.byKey(const Key('pos-payroll-print-receipt')), findsOneWidget); // reading/printing stays available
+    });
+
+    testWidgets('"Recibo / PDF" is a real action and says so if the browser blocks the window', (tester) async {
+      final payrollGateway = _RecordingPayrollGateway(periods: [_draftPeriod], lines: [_payrollLine()], days: _payrollDays);
+      await openWeek(tester, payrollGateway);
+      await openEmployee(tester);
+
+      await tester.ensureVisible(find.byKey(const Key('pos-payroll-print-receipt')));
+      await tester.tap(find.byKey(const Key('pos-payroll-print-receipt')));
+      await tester.pump();
+
+      expect(find.textContaining('bloqueó la ventana de impresión'), findsOneWidget);
+    });
+
+    testWidgets('a new payroll period defaults to the CURRENT Monday–Sunday week', (tester) async {
+      await _pump(tester, payrollGateway: _RecordingPayrollGateway(periods: [_draftPeriod]));
+      await _navigateToTab(tester, 'Nómina');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-payroll-new')));
+      await tester.pumpAndSettle();
+
+      final now = DateTime.now();
+      final monday = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - DateTime.monday));
+      String iso(DateTime value) =>
+          '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-payroll-form-start'))).controller!.text, iso(monday));
+      expect(
+        tester.widget<TextField>(find.byKey(const Key('pos-payroll-form-end'))).controller!.text,
+        iso(monday.add(const Duration(days: 6))),
+      );
+    });
+
+    for (final size in [
+      const Size(1440, 900),
+      const Size(1365, 768),
+      const Size(1024, 768),
+      const Size(390, 844),
+    ]) {
+      testWidgets('the weekly workspace and the employee detail render with no overflow at ${size.width.toInt()}x${size.height.toInt()}', (
+        tester,
+      ) async {
+        final payrollGateway = _RecordingPayrollGateway(
+          periods: [_draftPeriod],
+          lines: [_payrollLine()],
+          totals: const [_payrollTotals],
+          days: _payrollDays,
+          adjustments: [_bonusAdjustment()],
+        );
+        await openWeek(tester, payrollGateway, size: size);
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-payroll-table')), findsOneWidget);
+        expect(find.byKey(const Key('pos-payroll-calculate')), findsOneWidget);
+
+        await tester.ensureVisible(find.byKey(const Key('pos-payroll-line-row-line-1')));
+        await openEmployee(tester);
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-payroll-days-table')), findsOneWidget);
+        await tester.ensureVisible(find.byKey(const Key('pos-payroll-add-adjustment')));
+        await tester.tap(find.byKey(const Key('pos-payroll-add-adjustment')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const Key('pos-payroll-adjustment-save')), findsOneWidget);
+      });
+    }
   });
 }
 
@@ -1431,14 +1721,197 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
   }
 }
 
+/// A payroll line fixture. `snapshot: false` simulates a line computed before
+/// Payroll V2 (no frozen employee identity).
+PosPayrollPeriodLine _payrollLine({String adjustmentAmount = '0.0000', bool snapshot = true}) => PosPayrollPeriodLine(
+  id: 'line-1',
+  employeeId: 'employee-1',
+  scheduledMinutes: 2400,
+  workedMinutes: 2350,
+  lateMinutes: 15,
+  overtimeMinutes: 0,
+  baseSalarySnapshot: '1500.0000',
+  deductionAmount: '9.3750',
+  bonusAmount: '0.0000',
+  totalAmount: '1490.6250',
+  currencyCode: 'MXN',
+  computedAt: DateTime.utc(2026, 9, 7),
+  computedBy: 'user-id',
+  adjustmentAmount: adjustmentAmount,
+  employeeName: snapshot ? 'Ana Torres' : null,
+  employeeCode: snapshot ? 'EMP-1' : null,
+  jobTitle: snapshot ? 'Cajera' : null,
+  snapshotAvailable: snapshot,
+);
+
+const _payrollTotals = PosPayrollCurrencyTotals(
+  currencyCode: 'MXN',
+  employeeCount: 1,
+  baseSalary: '1500.0000',
+  deduction: '9.3750',
+  bonus: '0.0000',
+  adjustment: '0.0000',
+  total: '1490.6250',
+);
+
+/// One payroll week as the backend would freeze it: a worked day, a day off,
+/// a scheduled day with no punches, work without a schedule, an open punch and
+/// two unscheduled days.
+const _payrollDays = [
+  PosPayrollDay(
+    workDate: '2026-09-01',
+    scheduledStart: '09:00:00',
+    scheduledEnd: '17:00:00',
+    isDayOff: false,
+    scheduledMinutes: 480,
+    workedMinutes: 498,
+    lateMinutes: 2,
+    overtimeMinutes: 30,
+    firstInMinute: 552,
+    lastOutMinute: 1050,
+    attendanceState: 'complete',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-02',
+    scheduledStart: null,
+    scheduledEnd: null,
+    isDayOff: true,
+    scheduledMinutes: 0,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: null,
+    lastOutMinute: null,
+    attendanceState: 'day_off',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-03',
+    scheduledStart: '09:00:00',
+    scheduledEnd: '17:00:00',
+    isDayOff: false,
+    scheduledMinutes: 480,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: null,
+    lastOutMinute: null,
+    attendanceState: 'no_punches',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-04',
+    scheduledStart: null,
+    scheduledEnd: null,
+    isDayOff: false,
+    scheduledMinutes: 0,
+    workedMinutes: 240,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: 600,
+    lastOutMinute: 840,
+    attendanceState: 'unscheduled_work',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-05',
+    scheduledStart: '09:00:00',
+    scheduledEnd: '17:00:00',
+    isDayOff: false,
+    scheduledMinutes: 480,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: 540,
+    lastOutMinute: null,
+    attendanceState: 'missing_clock_out',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-06',
+    scheduledStart: null,
+    scheduledEnd: null,
+    isDayOff: false,
+    scheduledMinutes: 0,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: null,
+    lastOutMinute: null,
+    attendanceState: 'no_schedule',
+  ),
+  PosPayrollDay(
+    workDate: '2026-09-07',
+    scheduledStart: null,
+    scheduledEnd: null,
+    isDayOff: false,
+    scheduledMinutes: 0,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    overtimeMinutes: 0,
+    firstInMinute: null,
+    lastOutMinute: null,
+    attendanceState: 'no_schedule',
+  ),
+];
+
+PosPayrollAdjustment _bonusAdjustment() => PosPayrollAdjustment(
+  id: 'adj-1',
+  payrollPeriodId: 'period-1',
+  employeeId: 'employee-1',
+  kind: 'bonus',
+  amount: '200.0000',
+  currencyCode: 'MXN',
+  reason: 'Bono de puntualidad',
+  createdBy: 'user-id',
+  createdAt: DateTime.utc(2026, 9, 6),
+);
+
+class _RecordedAdjustment {
+  const _RecordedAdjustment({
+    required this.employeeId,
+    required this.kind,
+    required this.amount,
+    required this.reason,
+    required this.key,
+  });
+  final String employeeId;
+  final String kind;
+  final String amount;
+  final String reason;
+  final String key;
+}
+
+class _RecordedVoid {
+  const _RecordedVoid({required this.adjustmentId, required this.reason});
+  final String adjustmentId;
+  final String reason;
+}
+
 class _RecordingPayrollGateway implements PosPayrollGateway {
-  _RecordingPayrollGateway({List<PosPayrollPeriod> periods = const [], this.calculateResult}) : _periods = [...periods];
+  _RecordingPayrollGateway({
+    List<PosPayrollPeriod> periods = const [],
+    this.calculateResult,
+    this.calculateFailure,
+    this.lines = const [],
+    this.totals = const [],
+    this.days = const [],
+    List<PosPayrollAdjustment> adjustments = const [],
+    this.adjustmentFailures = 0,
+  }) : _periods = [...periods],
+       _adjustments = [...adjustments];
   final List<PosPayrollPeriod> _periods;
   final PosPayrollPeriodDetail? calculateResult;
+  final String? calculateFailure;
+  final List<PosPayrollPeriodLine> lines;
+  final List<PosPayrollCurrencyTotals> totals;
+  final List<PosPayrollDay> days;
+  final List<PosPayrollAdjustment> _adjustments;
+  int adjustmentFailures;
 
   final List<String> calculateCalls = [];
   final List<String> closeCalls = [];
   final List<String> reopenCalls = [];
+  final List<String> reopenReasons = [];
+  final List<String> employeeDetailCalls = [];
+  final List<_RecordedAdjustment> adjustmentCalls = [];
+  final List<_RecordedVoid> voidCalls = [];
 
   @override
   Future<PosPayrollPeriod> createPeriod({
@@ -1450,7 +1923,7 @@ class _RecordingPayrollGateway implements PosPayrollGateway {
   @override
   Future<PosPayrollPeriodDetail> period(String id) async {
     final period = _periods.firstWhere((value) => value.id == id);
-    return PosPayrollPeriodDetail(period: period, lines: const []);
+    return PosPayrollPeriodDetail(period: period, lines: lines, totals: totals);
   }
 
   @override
@@ -1460,7 +1933,10 @@ class _RecordingPayrollGateway implements PosPayrollGateway {
   @override
   Future<PosPayrollPeriodDetail> calculate(String id) async {
     calculateCalls.add(id);
-    return calculateResult ?? PosPayrollPeriodDetail(period: _periods.firstWhere((value) => value.id == id), lines: const []);
+    final failure = calculateFailure;
+    if (failure != null) throw ApiException(AppFailure(AppErrorKind.unknown, failure));
+    return calculateResult ??
+        PosPayrollPeriodDetail(period: _periods.firstWhere((value) => value.id == id), lines: lines, totals: totals);
   }
 
   @override
@@ -1484,8 +1960,9 @@ class _RecordingPayrollGateway implements PosPayrollGateway {
   }
 
   @override
-  Future<PosPayrollPeriod> reopen(String id) async {
+  Future<PosPayrollPeriod> reopen(String id, {required String reason}) async {
     reopenCalls.add(id);
+    reopenReasons.add(reason);
     final index = _periods.indexWhere((value) => value.id == id);
     final existing = _periods[index];
     final updated = PosPayrollPeriod(
@@ -1502,6 +1979,77 @@ class _RecordingPayrollGateway implements PosPayrollGateway {
     _periods[index] = updated;
     return updated;
   }
+
+  @override
+  Future<PosPayrollEmployeeDetail> employeeDetail({required String periodId, required String employeeId}) async {
+    employeeDetailCalls.add('$periodId/$employeeId');
+    final period = _periods.firstWhere((value) => value.id == periodId);
+    return PosPayrollEmployeeDetail(
+      period: period,
+      line: lines.firstWhere((line) => line.employeeId == employeeId),
+      days: days,
+      adjustments: List.of(_adjustments),
+    );
+  }
+
+  @override
+  Future<PosPayrollAdjustmentChange> createAdjustment({
+    required String periodId,
+    required String employeeId,
+    required String kind,
+    required String amount,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    adjustmentCalls.add(
+      _RecordedAdjustment(employeeId: employeeId, kind: kind, amount: amount, reason: reason, key: idempotencyKey),
+    );
+    if (adjustmentFailures > 0) {
+      adjustmentFailures -= 1;
+      throw const ApiException(AppFailure(AppErrorKind.unknown, 'Fallo simulado al registrar el ajuste.'));
+    }
+    final adjustment = PosPayrollAdjustment(
+      id: 'adj-new-${_adjustments.length + 1}',
+      payrollPeriodId: periodId,
+      employeeId: employeeId,
+      kind: kind,
+      amount: amount,
+      currencyCode: 'MXN',
+      reason: reason,
+      createdBy: 'user-id',
+      createdAt: DateTime.utc(2026, 9, 7),
+    );
+    _adjustments.add(adjustment);
+    return PosPayrollAdjustmentChange(adjustment: adjustment, line: lines.first);
+  }
+
+  @override
+  Future<PosPayrollAdjustmentChange> voidAdjustment({
+    required String periodId,
+    required String adjustmentId,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    voidCalls.add(_RecordedVoid(adjustmentId: adjustmentId, reason: reason));
+    final index = _adjustments.indexWhere((value) => value.id == adjustmentId);
+    final existing = _adjustments[index];
+    final voided = PosPayrollAdjustment(
+      id: existing.id,
+      payrollPeriodId: existing.payrollPeriodId,
+      employeeId: existing.employeeId,
+      kind: existing.kind,
+      amount: existing.amount,
+      currencyCode: existing.currencyCode,
+      reason: existing.reason,
+      createdBy: existing.createdBy,
+      createdAt: existing.createdAt,
+      voidedAt: DateTime.utc(2026, 9, 7),
+      voidedBy: 'user-id',
+      voidReason: reason,
+    );
+    _adjustments[index] = voided;
+    return PosPayrollAdjustmentChange(adjustment: voided, line: lines.first);
+  }
 }
 
 Future<void> _pump(
@@ -1512,8 +2060,9 @@ Future<void> _pump(
   PosPayrollGateway? payrollGateway,
   PosReadGateway? readGateway,
   List<String>? permissions,
+  Size size = const Size(1440, 1000),
 }) async {
-  tester.view.physicalSize = const Size(1440, 1000);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   final effectiveContext = permissions == null

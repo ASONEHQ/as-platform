@@ -5,7 +5,7 @@ import { requireAuthenticatedUser, requireBranchAccess, requirePermission } from
 import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withPeopleErrors } from './people.http-errors.js';
-import type { PayrollService } from './payroll.service.js';
+import { payrollTotals, type PayrollService } from './payroll.service.js';
 import type {
   PayrollAdjustmentRow,
   PayrollLineDayRow,
@@ -127,7 +127,21 @@ function dayHttp(value: PayrollLineDayRow): Readonly<Record<string, unknown>> {
   };
 }
 function periodWithLinesHttp(value: { period: PayrollPeriodRow; lines: PayrollPeriodLineRow[] }): Readonly<Record<string, unknown>> {
-  return { ...periodHttp(value.period), lines: value.lines.map(lineHttp) };
+  return {
+    ...periodHttp(value.period),
+    lines: value.lines.map(lineHttp),
+    // TASK 17.6 — column totals computed by the server (grouped by currency);
+    // the client only displays them.
+    totals: payrollTotals(value.lines).map((item) => ({
+      currency_code: item.currencyCode,
+      employee_count: item.employeeCount,
+      base_salary: item.baseSalary,
+      deduction: item.deduction,
+      bonus: item.bonus,
+      adjustment: item.adjustment,
+      total: item.total,
+    })),
+  };
 }
 
 /**

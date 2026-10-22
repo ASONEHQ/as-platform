@@ -820,6 +820,11 @@ class PosPayrollPeriodLine {
     required this.currencyCode,
     required this.computedAt,
     required this.computedBy,
+    this.adjustmentAmount = '0.0000',
+    this.employeeName,
+    this.employeeCode,
+    this.jobTitle,
+    this.snapshotAvailable = false,
   });
 
   factory PosPayrollPeriodLine.fromJson(Map<String, Object?> json) => PosPayrollPeriodLine(
@@ -836,6 +841,11 @@ class PosPayrollPeriodLine {
     currencyCode: json['currency_code']! as String,
     computedAt: DateTime.parse(json['computed_at']! as String),
     computedBy: json['computed_by']! as String,
+    adjustmentAmount: json['adjustment_amount'] as String? ?? '0.0000',
+    employeeName: json['employee_name'] as String?,
+    employeeCode: json['employee_code'] as String?,
+    jobTitle: json['job_title'] as String?,
+    snapshotAvailable: json['snapshot_available'] == true,
   );
 
   final String id;
@@ -851,22 +861,216 @@ class PosPayrollPeriodLine {
   final String currencyCode;
   final DateTime computedAt;
   final String computedBy;
+
+  /// TASK 17.6 — signed NET of the non-voided manual adjustments
+  /// (bonus adds, deduction subtracts); [totalAmount] already includes it.
+  final String adjustmentAmount;
+
+  /// TASK 17.6 — who this line is for, FROZEN when the week was calculated
+  /// (never re-read from the live employee). `null` only for a line computed
+  /// before Payroll V2 existed ([snapshotAvailable] is then `false` and the UI
+  /// falls back to the live employee list, saying so).
+  final String? employeeName;
+  final String? employeeCode;
+  final String? jobTitle;
+  final bool snapshotAvailable;
+}
+
+/// Server-computed column totals of a payroll period for ONE currency — this
+/// app only ever displays these, it never adds payroll money itself.
+class PosPayrollCurrencyTotals {
+  const PosPayrollCurrencyTotals({
+    required this.currencyCode,
+    required this.employeeCount,
+    required this.baseSalary,
+    required this.deduction,
+    required this.bonus,
+    required this.adjustment,
+    required this.total,
+  });
+
+  factory PosPayrollCurrencyTotals.fromJson(Map<String, Object?> json) => PosPayrollCurrencyTotals(
+    currencyCode: json['currency_code']! as String,
+    employeeCount: json['employee_count']! as int,
+    baseSalary: json['base_salary']! as String,
+    deduction: json['deduction']! as String,
+    bonus: json['bonus']! as String,
+    adjustment: json['adjustment']! as String,
+    total: json['total']! as String,
+  );
+
+  final String currencyCode;
+  final int employeeCount;
+  final String baseSalary;
+  final String deduction;
+  final String bonus;
+  final String adjustment;
+  final String total;
 }
 
 class PosPayrollPeriodDetail {
-  const PosPayrollPeriodDetail({required this.period, required this.lines});
+  const PosPayrollPeriodDetail({required this.period, required this.lines, this.totals = const []});
   final PosPayrollPeriod period;
   final List<PosPayrollPeriodLine> lines;
+  final List<PosPayrollCurrencyTotals> totals;
 
   factory PosPayrollPeriodDetail.fromJson(Map<String, Object?> json) {
     final rawLines = json['lines'];
+    final rawTotals = json['totals'];
     return PosPayrollPeriodDetail(
       period: PosPayrollPeriod.fromJson(json),
       lines: rawLines is List<Object?>
           ? rawLines.whereType<Map<String, Object?>>().map(PosPayrollPeriodLine.fromJson).toList(growable: false)
           : const [],
+      totals: rawTotals is List<Object?>
+          ? rawTotals.whereType<Map<String, Object?>>().map(PosPayrollCurrencyTotals.fromJson).toList(growable: false)
+          : const [],
     );
   }
+}
+
+/// A manual payroll adjustment. [amount] is ALWAYS a positive magnitude; the
+/// effect on pay is explicit in [kind] (`bonus` adds, `deduction` subtracts).
+/// A voided adjustment is never deleted — it stays, marked, with who/why.
+class PosPayrollAdjustment {
+  const PosPayrollAdjustment({
+    required this.id,
+    required this.payrollPeriodId,
+    required this.employeeId,
+    required this.kind,
+    required this.amount,
+    required this.currencyCode,
+    required this.reason,
+    required this.createdBy,
+    required this.createdAt,
+    this.voidedAt,
+    this.voidedBy,
+    this.voidReason,
+  });
+
+  factory PosPayrollAdjustment.fromJson(Map<String, Object?> json) => PosPayrollAdjustment(
+    id: json['id']! as String,
+    payrollPeriodId: json['payroll_period_id']! as String,
+    employeeId: json['employee_id']! as String,
+    kind: json['kind']! as String,
+    amount: json['amount']! as String,
+    currencyCode: json['currency_code']! as String,
+    reason: json['reason']! as String,
+    createdBy: json['created_by']! as String,
+    createdAt: DateTime.parse(json['created_at']! as String),
+    voidedAt: json['voided_at'] == null ? null : DateTime.parse(json['voided_at']! as String),
+    voidedBy: json['voided_by'] as String?,
+    voidReason: json['void_reason'] as String?,
+  );
+
+  final String id;
+  final String payrollPeriodId;
+  final String employeeId;
+
+  /// `bonus` | `deduction`.
+  final String kind;
+  final String amount;
+  final String currencyCode;
+  final String reason;
+  final String createdBy;
+  final DateTime createdAt;
+  final DateTime? voidedAt;
+  final String? voidedBy;
+  final String? voidReason;
+
+  bool get isVoided => voidedAt != null;
+  bool get isDeduction => kind == 'deduction';
+}
+
+/// The result of creating/voiding an adjustment: the adjustment itself and
+/// the employee's refreshed payroll line (the server re-derived the total).
+class PosPayrollAdjustmentChange {
+  const PosPayrollAdjustmentChange({required this.adjustment, required this.line});
+
+  factory PosPayrollAdjustmentChange.fromJson(Map<String, Object?> json) => PosPayrollAdjustmentChange(
+    adjustment: PosPayrollAdjustment.fromJson(json),
+    line: PosPayrollPeriodLine.fromJson(json['line']! as Map<String, Object?>),
+  );
+
+  final PosPayrollAdjustment adjustment;
+  final PosPayrollPeriodLine line;
+}
+
+/// One day of an employee's payroll week, exactly as calculated (and frozen)
+/// by the backend. [firstInMinute]/[lastOutMinute] are minutes since LOCAL
+/// (branch) midnight.
+class PosPayrollDay {
+  const PosPayrollDay({
+    required this.workDate,
+    required this.scheduledStart,
+    required this.scheduledEnd,
+    required this.isDayOff,
+    required this.scheduledMinutes,
+    required this.workedMinutes,
+    required this.lateMinutes,
+    required this.overtimeMinutes,
+    required this.firstInMinute,
+    required this.lastOutMinute,
+    required this.attendanceState,
+  });
+
+  factory PosPayrollDay.fromJson(Map<String, Object?> json) => PosPayrollDay(
+    workDate: json['work_date']! as String,
+    scheduledStart: json['scheduled_start'] as String?,
+    scheduledEnd: json['scheduled_end'] as String?,
+    isDayOff: json['is_day_off'] == true,
+    scheduledMinutes: json['scheduled_minutes']! as int,
+    workedMinutes: json['worked_minutes']! as int,
+    lateMinutes: json['late_minutes']! as int,
+    overtimeMinutes: json['overtime_minutes']! as int,
+    firstInMinute: json['first_in_minute'] as int?,
+    lastOutMinute: json['last_out_minute'] as int?,
+    attendanceState: json['attendance_state']! as String,
+  );
+
+  final String workDate;
+  final String? scheduledStart;
+  final String? scheduledEnd;
+  final bool isDayOff;
+  final int scheduledMinutes;
+  final int workedMinutes;
+  final int lateMinutes;
+  final int overtimeMinutes;
+  final int? firstInMinute;
+  final int? lastOutMinute;
+
+  /// `complete` | `unscheduled_work` | `missing_clock_out` |
+  /// `missing_clock_in` | `no_punches` | `day_off` | `no_schedule`.
+  final String attendanceState;
+}
+
+class PosPayrollEmployeeDetail {
+  const PosPayrollEmployeeDetail({
+    required this.period,
+    required this.line,
+    required this.days,
+    required this.adjustments,
+  });
+
+  factory PosPayrollEmployeeDetail.fromJson(Map<String, Object?> json) {
+    final rawDays = json['days'];
+    final rawAdjustments = json['adjustments'];
+    return PosPayrollEmployeeDetail(
+      period: PosPayrollPeriod.fromJson(json['period']! as Map<String, Object?>),
+      line: PosPayrollPeriodLine.fromJson(json['line']! as Map<String, Object?>),
+      days: rawDays is List<Object?>
+          ? rawDays.whereType<Map<String, Object?>>().map(PosPayrollDay.fromJson).toList(growable: false)
+          : const [],
+      adjustments: rawAdjustments is List<Object?>
+          ? rawAdjustments.whereType<Map<String, Object?>>().map(PosPayrollAdjustment.fromJson).toList(growable: false)
+          : const [],
+    );
+  }
+
+  final PosPayrollPeriod period;
+  final PosPayrollPeriodLine line;
+  final List<PosPayrollDay> days;
+  final List<PosPayrollAdjustment> adjustments;
 }
 
 abstract interface class PosPayrollGateway {
@@ -891,7 +1095,35 @@ abstract interface class PosPayrollGateway {
 
   /// `POST /api/v1/payroll-periods/{id}/reopen` (`payroll.close`) — its own
   /// distinct, separately-audited action, never a silent flip of `close`.
-  Future<PosPayrollPeriod> reopen(String id);
+  /// TASK 17.6: a reopen must say WHY (recorded in the audit log).
+  Future<PosPayrollPeriod> reopen(String id, {required String reason});
+
+  /// `GET /api/v1/payroll-periods/{id}/employees/{employeeId}` (`payroll.read`)
+  /// — one employee's frozen week: the line, its per-day breakdown and the
+  /// adjustments (voided ones included).
+  Future<PosPayrollEmployeeDetail> employeeDetail({required String periodId, required String employeeId});
+
+  /// `POST /api/v1/payroll-periods/{id}/adjustments` (`payroll.manage`).
+  /// [amount] is a positive decimal string; [kind] is `bonus` or `deduction`.
+  /// [idempotencyKey] is created ONCE per user submission by the caller so a
+  /// double click or a retry can never record the adjustment twice.
+  Future<PosPayrollAdjustmentChange> createAdjustment({
+    required String periodId,
+    required String employeeId,
+    required String kind,
+    required String amount,
+    required String reason,
+    required String idempotencyKey,
+  });
+
+  /// `POST /api/v1/payroll-periods/{id}/adjustments/{adjustmentId}/void`
+  /// (`payroll.manage`) — never a delete; the row stays, marked voided.
+  Future<PosPayrollAdjustmentChange> voidAdjustment({
+    required String periodId,
+    required String adjustmentId,
+    required String reason,
+    required String idempotencyKey,
+  });
 }
 
 class ApiPosPayrollGateway implements PosPayrollGateway {
@@ -955,12 +1187,63 @@ class ApiPosPayrollGateway implements PosPayrollGateway {
   }
 
   @override
-  Future<PosPayrollPeriod> reopen(String id) async {
+  Future<PosPayrollPeriod> reopen(String id, {required String reason}) async {
     final envelope = await _client.postJson(
       '/api/v1/payroll-periods/$id/reopen',
       idempotencyKey: _idempotencyKey(),
+      body: {'reason': reason},
     );
     return _decodePeriod(envelope);
+  }
+
+  @override
+  Future<PosPayrollEmployeeDetail> employeeDetail({required String periodId, required String employeeId}) async {
+    final envelope = await _client.getJson('/api/v1/payroll-periods/$periodId/employees/$employeeId');
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing payroll employee detail data.');
+    }
+    return PosPayrollEmployeeDetail.fromJson(data);
+  }
+
+  @override
+  Future<PosPayrollAdjustmentChange> createAdjustment({
+    required String periodId,
+    required String employeeId,
+    required String kind,
+    required String amount,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/payroll-periods/$periodId/adjustments',
+      idempotencyKey: idempotencyKey,
+      body: {'employee_id': employeeId, 'kind': kind, 'amount': amount, 'reason': reason},
+    );
+    return _decodeAdjustmentChange(envelope);
+  }
+
+  @override
+  Future<PosPayrollAdjustmentChange> voidAdjustment({
+    required String periodId,
+    required String adjustmentId,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/payroll-periods/$periodId/adjustments/$adjustmentId/void',
+      idempotencyKey: idempotencyKey,
+      body: {'reason': reason},
+    );
+    return _decodeAdjustmentChange(envelope);
+  }
+
+  PosPayrollAdjustmentChange _decodeAdjustmentChange(Map<String, Object?> envelope) {
+    final data = envelope['data'];
+    if (data is! Map<String, Object?>) {
+      throw const FormatException('Missing payroll adjustment data.');
+    }
+    return PosPayrollAdjustmentChange.fromJson(data);
   }
 
   PosPayrollPeriod _decodePeriod(Map<String, Object?> envelope) {
@@ -1005,5 +1288,28 @@ class EmptyPosPayrollGateway implements PosPayrollGateway {
   Future<PosPayrollPeriod> close(String id) => Future.error(StateError('No payroll gateway is configured.'));
 
   @override
-  Future<PosPayrollPeriod> reopen(String id) => Future.error(StateError('No payroll gateway is configured.'));
+  Future<PosPayrollPeriod> reopen(String id, {required String reason}) =>
+      Future.error(StateError('No payroll gateway is configured.'));
+
+  @override
+  Future<PosPayrollEmployeeDetail> employeeDetail({required String periodId, required String employeeId}) =>
+      Future.error(StateError('No payroll gateway is configured.'));
+
+  @override
+  Future<PosPayrollAdjustmentChange> createAdjustment({
+    required String periodId,
+    required String employeeId,
+    required String kind,
+    required String amount,
+    required String reason,
+    required String idempotencyKey,
+  }) => Future.error(StateError('No payroll gateway is configured.'));
+
+  @override
+  Future<PosPayrollAdjustmentChange> voidAdjustment({
+    required String periodId,
+    required String adjustmentId,
+    required String reason,
+    required String idempotencyKey,
+  }) => Future.error(StateError('No payroll gateway is configured.'));
 }

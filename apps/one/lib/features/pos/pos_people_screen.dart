@@ -42,8 +42,15 @@ import '../../app/app.dart' show PlatformScope;
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
 import 'money.dart';
+import 'payroll_html.dart';
 import 'pos_people_gateway.dart';
 import 'pos_tokens.dart';
+import 'receipt_print.dart';
+
+// TASK 17.6 (Payroll V2): the weekly payroll workspace, the employee-week detail,
+// manual adjustments and the printable report/receipt live in their own file
+// but share this file's private helpers (`_Card`, `_StatusPill`, `_formatMoney`).
+part 'pos_payroll_workspace.dart';
 
 /// The public entry point — importable from `pos_shell.dart`'s
 /// `PosModule.employees` switch case (see this module's own report-back).
@@ -359,6 +366,12 @@ class _DialogButtons extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Monday of the (local) week containing [value].
+DateTime _mondayOfWeek(DateTime value) {
+  final local = DateTime(value.year, value.month, value.day);
+  return local.subtract(Duration(days: local.weekday - DateTime.monday));
 }
 
 String _isoDate(DateTime value) {
@@ -2934,6 +2947,8 @@ class _NominaTabState extends State<_NominaTab> {
         employeeNames: _employeeNames,
         canManage: _canManage,
         canClose: _canClose,
+        companyName: widget.context.currentCompany?.name ?? 'AS ONE',
+        branchLabel: widget.context.currentBranch?.name ?? 'Sucursal actual',
       ),
     );
     if (changed == true) unawaited(_load());
@@ -2950,7 +2965,13 @@ class _NominaTabState extends State<_NominaTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
+        // TASK 17.6 — a Wrap, not a Row: the status filter + "Nuevo periodo"
+        // overflowed a phone-width screen (pre-existing); they now flow onto two lines.
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 8,
           children: [
             SizedBox(
               width: 170,
@@ -2970,7 +2991,6 @@ class _NominaTabState extends State<_NominaTab> {
                 },
               ),
             ),
-            const Spacer(),
             Tooltip(
               message: newDisabledReason,
               child: FilledButton.icon(
@@ -3046,8 +3066,12 @@ class _PayrollPeriodFormDialog extends StatefulWidget {
 }
 
 class _PayrollPeriodFormDialogState extends State<_PayrollPeriodFormDialog> {
-  late final _startController = TextEditingController(text: _isoDate(DateTime.now()));
-  late final _endController = TextEditingController(text: _isoDate(DateTime.now().add(const Duration(days: 6))));
+  // TASK 17.6 — a payroll week is Monday..Sunday: default to the CURRENT week
+  // (still editable — the backend accepts any valid range).
+  late final _startController = TextEditingController(text: _isoDate(_mondayOfWeek(DateTime.now())));
+  late final _endController = TextEditingController(
+    text: _isoDate(_mondayOfWeek(DateTime.now()).add(const Duration(days: 6))),
+  );
   bool _busy = false;
   String? _error;
 
@@ -3140,370 +3164,6 @@ class _PayrollPeriodFormDialogState extends State<_PayrollPeriodFormDialog> {
           ),
         ),
       ),
-    );
-  }
-}
-
-enum _DetailPhase { loading, ready, failure }
-
-/// The payroll period detail — always reachable with `payroll.read`;
-/// "Calcular" (`payroll.manage`) and "Cerrar periodo"/"Reabrir"
-/// (`payroll.close`, its own distinct action per direction — see
-/// `payroll.service.ts`'s own doc comment) each stay individually gated,
-/// disabled+`Tooltip`'d buttons. Every figure shown here is exactly what
-/// [PosPayrollGateway.period]/`calculate` returned — never recomputed
-/// client-side.
-class _PayrollPeriodDetailDialog extends StatefulWidget {
-  const _PayrollPeriodDetailDialog({
-    required this.period,
-    required this.gateway,
-    required this.employeeNames,
-    required this.canManage,
-    required this.canClose,
-  });
-  final PosPayrollPeriod period;
-  final PosPayrollGateway gateway;
-  final Map<String, String> employeeNames;
-  final bool canManage;
-  final bool canClose;
-
-  @override
-  State<_PayrollPeriodDetailDialog> createState() => _PayrollPeriodDetailDialogState();
-}
-
-class _PayrollPeriodDetailDialogState extends State<_PayrollPeriodDetailDialog> {
-  _DetailPhase _phase = _DetailPhase.loading;
-  late PosPayrollPeriod _period = widget.period;
-  List<PosPayrollPeriodLine> _lines = const [];
-  String? _errorMessage;
-  bool _busy = false;
-  bool _changed = false;
-
-  static const _manageTooltip = 'Se requiere el permiso payroll.manage.';
-  static const _closeTooltip = 'Se requiere el permiso payroll.close.';
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_load());
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      _phase = _DetailPhase.loading;
-      _errorMessage = null;
-    });
-    try {
-      final detail = await widget.gateway.period(_period.id);
-      if (!mounted) return;
-      setState(() {
-        _period = detail.period;
-        _lines = detail.lines;
-        _phase = _DetailPhase.ready;
-      });
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _phase = _DetailPhase.failure;
-        _errorMessage = error.failure.message;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() {
-        _phase = _DetailPhase.failure;
-        _errorMessage = 'No fue posible cargar el periodo.';
-      });
-    }
-  }
-
-  Future<void> _calculate() async {
-    setState(() {
-      _busy = true;
-      _errorMessage = null;
-    });
-    try {
-      final detail = await widget.gateway.calculate(_period.id);
-      if (!mounted) return;
-      setState(() {
-        _period = detail.period;
-        _lines = detail.lines;
-        _busy = false;
-        _changed = true;
-        _phase = _DetailPhase.ready;
-      });
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = error.failure.message;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = 'No fue posible calcular la nómina.';
-      });
-    }
-  }
-
-  Future<void> _close() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Cerrar periodo'),
-        content: const Text(
-          'Al cerrar este periodo, sus líneas quedarán permanentemente inmutables. Esta acción no se puede deshacer.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancelar')),
-          FilledButton(
-            key: const Key('pos-payroll-close-confirm'),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Cerrar periodo'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    setState(() {
-      _busy = true;
-      _errorMessage = null;
-    });
-    try {
-      final updated = await widget.gateway.close(_period.id);
-      if (!mounted) return;
-      setState(() {
-        _period = updated;
-        _busy = false;
-        _changed = true;
-      });
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = error.failure.message;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = 'No fue posible cerrar el periodo.';
-      });
-    }
-  }
-
-  Future<void> _reopen() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Reabrir periodo'),
-        content: const Text(
-          'Reabrir este periodo lo regresa a borrador para poder recalcularlo. Esta acción queda registrada de forma '
-          'independiente al cierre.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancelar')),
-          FilledButton(
-            key: const Key('pos-payroll-reopen-confirm'),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Reabrir periodo'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    setState(() {
-      _busy = true;
-      _errorMessage = null;
-    });
-    try {
-      final updated = await widget.gateway.reopen(_period.id);
-      if (!mounted) return;
-      setState(() {
-        _period = updated;
-        _busy = false;
-        _changed = true;
-      });
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = error.failure.message;
-      });
-    } on Object {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _errorMessage = 'No fue posible reabrir el periodo.';
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return Dialog(
-      backgroundColor: palette.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640, maxHeight: 700),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${_period.periodStart} – ${_period.periodEnd}',
-                        style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16),
-                      ),
-                    ),
-                    _StatusPill(label: _period.status),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                if (_phase == _DetailPhase.loading)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else if (_phase == _DetailPhase.failure)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Text(_errorMessage ?? 'No fue posible cargar el periodo.', style: TextStyle(color: palette.error)),
-                  )
-                else if (_lines.isEmpty)
-                  Text('Este periodo aún no ha sido calculado.', style: TextStyle(color: palette.textSecondary, fontSize: 12))
-                else
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final line in _lines) _PayrollLineRow(line: line, employeeName: widget.employeeNames[line.employeeId]),
-                    ],
-                  ),
-                if (_errorMessage != null && _phase == _DetailPhase.ready) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    _errorMessage!,
-                    key: const Key('pos-payroll-detail-error'),
-                    style: TextStyle(color: palette.error, fontSize: 12),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    if (!_period.isClosed)
-                      Tooltip(
-                        message: widget.canManage ? '' : _manageTooltip,
-                        child: FilledButton.icon(
-                          key: const Key('pos-payroll-calculate'),
-                          onPressed: _busy || !widget.canManage ? null : () => unawaited(_calculate()),
-                          style: FilledButton.styleFrom(backgroundColor: palette.action),
-                          icon: const Icon(Icons.calculate_outlined, size: 16),
-                          label: const Text('Calcular'),
-                        ),
-                      ),
-                    if (!_period.isClosed)
-                      Tooltip(
-                        message: widget.canClose ? '' : _closeTooltip,
-                        child: OutlinedButton.icon(
-                          key: const Key('pos-payroll-close'),
-                          onPressed: _busy || !widget.canClose ? null : () => unawaited(_close()),
-                          icon: const Icon(Icons.lock_clock_outlined, size: 16),
-                          label: const Text('Cerrar periodo'),
-                        ),
-                      ),
-                    if (_period.isClosed)
-                      Tooltip(
-                        message: widget.canClose ? '' : _closeTooltip,
-                        child: OutlinedButton.icon(
-                          key: const Key('pos-payroll-reopen'),
-                          onPressed: _busy || !widget.canClose ? null : () => unawaited(_reopen()),
-                          icon: const Icon(Icons.lock_open_outlined, size: 16),
-                          label: const Text('Reabrir'),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Center(child: TextButton(onPressed: () => Navigator.of(context).pop(_changed), child: const Text('Cerrar'))),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PayrollLineRow extends StatelessWidget {
-  const _PayrollLineRow({required this.line, this.employeeName});
-  final PosPayrollPeriodLine line;
-  final String? employeeName;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: _Card(
-        key: Key('pos-payroll-line-row-${line.id}'),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              employeeName ?? line.employeeId,
-              style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 13),
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 14,
-              runSpacing: 4,
-              children: [
-                _MiniStat(label: 'Programado', value: '${line.scheduledMinutes} min'),
-                _MiniStat(label: 'Trabajado', value: '${line.workedMinutes} min'),
-                _MiniStat(label: 'Retardo', value: '${line.lateMinutes} min'),
-                _MiniStat(label: 'Extra', value: '${line.overtimeMinutes} min'),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 14,
-              runSpacing: 4,
-              children: [
-                _MiniStat(label: 'Base', value: _formatMoney(line.baseSalarySnapshot, line.currencyCode)),
-                _MiniStat(label: 'Deducción', value: _formatMoney(line.deductionAmount, line.currencyCode)),
-                _MiniStat(label: 'Bono', value: _formatMoney(line.bonusAmount, line.currencyCode)),
-                _MiniStat(label: 'Total', value: _formatMoney(line.totalAmount, line.currencyCode)),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniStat extends StatelessWidget {
-  const _MiniStat({required this.label, required this.value});
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = PosPalette.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: TextStyle(color: palette.textMuted, fontSize: 9)),
-        Text(value, style: TextStyle(color: palette.text, fontSize: 11, fontWeight: FontWeight.w700)),
-      ],
     );
   }
 }

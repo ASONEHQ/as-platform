@@ -222,6 +222,54 @@ export function totalsWithAdjustmentNet(
   };
 }
 
+/** Server-side column totals for a period, grouped by currency (a period has no
+ * single currency: each employee carries their own). The client only ever
+ * DISPLAYS these — it never adds payroll money itself. */
+export interface PayrollCurrencyTotals {
+  currencyCode: string;
+  employeeCount: number;
+  baseSalary: string;
+  deduction: string;
+  bonus: string;
+  adjustment: string;
+  total: string;
+}
+
+export function payrollTotals(lines: readonly PayrollPeriodLineRow[]): PayrollCurrencyTotals[] {
+  const byCurrency = new Map<
+    string,
+    { count: number; base: bigint; deduction: bigint; bonus: bigint; adjustment: bigint; total: bigint }
+  >();
+  for (const line of lines) {
+    const acc = byCurrency.get(line.currencyCode) ?? {
+      count: 0,
+      base: 0n,
+      deduction: 0n,
+      bonus: 0n,
+      adjustment: 0n,
+      total: 0n,
+    };
+    acc.count += 1;
+    acc.base += moneyUnits(line.baseSalarySnapshot, 'base_salary_snapshot');
+    acc.deduction += moneyUnits(line.deductionAmount, 'deduction_amount');
+    acc.bonus += moneyUnits(line.bonusAmount, 'bonus_amount');
+    acc.adjustment += signedMoneyUnits(line.adjustmentAmount, 'adjustment_amount');
+    acc.total += moneyUnits(line.totalAmount, 'total_amount');
+    byCurrency.set(line.currencyCode, acc);
+  }
+  return [...byCurrency.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currencyCode, acc]) => ({
+      currencyCode,
+      employeeCount: acc.count,
+      baseSalary: formatMoney(acc.base),
+      deduction: formatMoney(acc.deduction),
+      bonus: formatMoney(acc.bonus),
+      adjustment: formatSignedMoney(acc.adjustment),
+      total: formatMoney(acc.total),
+    }));
+}
+
 const PERIOD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 
 type PeriodDecoded = Omit<PayrollPeriodRow, 'closedAt' | 'createdAt' | 'updatedAt'> & {

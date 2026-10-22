@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   computePayrollLine,
   payrollDayDetail,
+  payrollTotals,
   sumDailyFacts,
   sumDayDetails,
   totalsWithAdjustmentNet,
 } from './payroll.service.js';
 import type { PayrollDailyFactRow } from './people.repository.js';
+import type { PayrollPeriodLineRow } from './people.types.js';
 
 /**
  * TASK 17.6 (Payroll V2) — pure unit coverage of the calculation core. The
@@ -130,5 +132,64 @@ describe('computePayrollLine + adjustments (TASK 17.6)', () => {
     expect(totalsWithAdjustmentNet(stored, '149.5000')).toEqual({ adjustmentAmount: '149.5000', totalAmount: '890.3333' });
     expect(totalsWithAdjustmentNet(stored, '-50.5000')).toEqual({ adjustmentAmount: '-50.5000', totalAmount: '690.3333' });
     expect(totalsWithAdjustmentNet(stored, '0')).toEqual({ adjustmentAmount: '0.0000', totalAmount: '740.8333' });
+  });
+});
+
+describe('payrollTotals (TASK 17.6)', () => {
+  function line(overrides: Partial<PayrollPeriodLineRow>): PayrollPeriodLineRow {
+    return {
+      id: 'line',
+      companyId: 'company',
+      payrollPeriodId: 'period',
+      employeeId: 'employee',
+      scheduledMinutes: 0,
+      workedMinutes: 0,
+      lateMinutes: 0,
+      overtimeMinutes: 0,
+      baseSalarySnapshot: '700.0000',
+      deductionAmount: '0.0000',
+      bonusAmount: '0.0000',
+      totalAmount: '700.0000',
+      currencyCode: 'MXN',
+      computedAt: new Date(0),
+      computedBy: 'actor',
+      adjustmentAmount: '0.0000',
+      employeeNameSnapshot: null,
+      employeeCodeSnapshot: null,
+      jobTitleSnapshot: null,
+      ...overrides,
+    };
+  }
+
+  it('sums every column exactly (signed adjustments included) and groups by currency', () => {
+    const totals = payrollTotals([
+      line({ deductionAmount: '2.9167', bonusAmount: '43.7500', adjustmentAmount: '149.5000', totalAmount: '890.3333' }),
+      line({ baseSalarySnapshot: '1000.0000', adjustmentAmount: '-50.5000', totalAmount: '949.5000' }),
+      line({ currencyCode: 'USD', baseSalarySnapshot: '10.0000', totalAmount: '10.0000' }),
+    ]);
+    expect(totals).toEqual([
+      {
+        currencyCode: 'MXN',
+        employeeCount: 2,
+        baseSalary: '1700.0000',
+        deduction: '2.9167',
+        bonus: '43.7500',
+        adjustment: '99.0000',
+        total: '1839.8333',
+      },
+      {
+        currencyCode: 'USD',
+        employeeCount: 1,
+        baseSalary: '10.0000',
+        deduction: '0.0000',
+        bonus: '0.0000',
+        adjustment: '0.0000',
+        total: '10.0000',
+      },
+    ]);
+  });
+
+  it('an empty period has no totals (never a fabricated zero row)', () => {
+    expect(payrollTotals([])).toEqual([]);
   });
 });

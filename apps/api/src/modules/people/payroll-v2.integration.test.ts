@@ -713,5 +713,18 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
       [companyId, periodId, employeeId],
     );
     expect(total.rows[0]?.total).toBe('1013.6111'); // 713.6111 formula + 300.0000 adjustment
+
+    // The server's own column totals agree with the stored lines (the client never adds money).
+    const sqlTotal = await database.pool.query<{ total: string; adjustment: string }>(
+      `select coalesce(sum(total_amount),0)::text total, coalesce(sum(adjustment_amount),0)::text adjustment
+       from payroll_period_lines where company_id=$1 and payroll_period_id=$2`,
+      [companyId, periodId],
+    );
+    const period = await get(`/api/v1/payroll-periods/${periodId}`);
+    const totals = period.json<{ data: { totals: { currency_code: string; total: string; adjustment: string; employee_count: number }[] } }>().data.totals;
+    expect(totals).toHaveLength(1);
+    expect(totals[0]).toMatchObject({ currency_code: 'MXN' });
+    expect(Number(totals[0]?.total)).toBeCloseTo(Number(sqlTotal.rows[0]?.total), 4);
+    expect(Number(totals[0]?.adjustment)).toBeCloseTo(Number(sqlTotal.rows[0]?.adjustment), 4);
   });
 });
