@@ -175,6 +175,7 @@ export function registerPartyReservationRoutes(
       extra_half_hours?: number;
       seller_user_id?: string;
       notes?: string;
+      quote_id?: string;
     };
   }>(
     '/api/v1/party-reservations',
@@ -202,6 +203,7 @@ export function registerPartyReservationRoutes(
             extra_half_hours: { type: 'integer', minimum: 0 },
             seller_user_id: { type: 'string', format: 'uuid' },
             notes: { type: 'string', maxLength: 2000 },
+            quote_id: { type: 'string', format: 'uuid' },
           },
         },
         response: { 201: responseSchema, ...commonErrors },
@@ -233,6 +235,7 @@ export function registerPartyReservationRoutes(
             ...(body.extra_half_hours === undefined ? {} : { extraHalfHours: body.extra_half_hours }),
             ...(body.seller_user_id === undefined ? {} : { sellerUserId: body.seller_user_id }),
             ...(body.notes === undefined ? {} : { notes: body.notes }),
+            ...(body.quote_id === undefined ? {} : { quoteId: body.quote_id }),
           },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');

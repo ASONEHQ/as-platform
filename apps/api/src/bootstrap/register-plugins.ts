@@ -102,6 +102,8 @@ import { registerPartyRoomRoutes } from '../modules/parties/party-rooms.routes.j
 import { PartyRoomsService } from '../modules/parties/party-rooms.service.js';
 import { registerPartyPackageRoutes } from '../modules/parties/party-packages.routes.js';
 import { PartyPackagesService } from '../modules/parties/party-packages.service.js';
+import { registerPartyQuoteRoutes } from '../modules/parties/party-quotes.routes.js';
+import { PartyQuotesService } from '../modules/parties/party-quotes.service.js';
 import { registerPartyReservationRoutes } from '../modules/parties/party-reservations.routes.js';
 import { PartyReservationsService } from '../modules/parties/party-reservations.service.js';
 import { PurchasingRepository } from '../modules/purchasing/purchasing.repository.js';
@@ -513,6 +515,7 @@ export async function registerPlugins(
       registerPartyRoomRoutes(app, authentication, partyRoomsService);
       registerPartyPackageRoutes(app, authentication, new PartyPackagesService(partiesRepository));
       registerPartyReservationRoutes(app, authentication, partyReservationsService);
+      registerPartyQuoteRoutes(app, authentication, new PartyQuotesService(partiesRepository));
       registerCustomerRoutes(app, authentication, customersService);
       registerMembershipRoutes(app, authentication, membershipsService);
       registerLoyaltyRoutes(app, authentication, loyaltyService);

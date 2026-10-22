@@ -225,6 +225,76 @@ export interface PartyMutationContext {
   deviceId?: string | undefined;
 }
 
+export const partyQuoteStatuses = ['draft', 'cancelled', 'converted'] as const;
+export type PartyQuoteStatus = (typeof partyQuoteStatuses)[number];
+
+/** TASK 17.6 — the package terms that PRICED a saved quote, frozen at save
+ * time so a later package price/name change never rewrites an old quote. */
+export interface PartyQuotePackageSnapshot {
+  package_id: string;
+  package_code: string;
+  package_name: string;
+  package_version: string;
+  description: string | null;
+  currency_code: string;
+  price: string;
+  child_extra_cost: string;
+  adult_extra_cost: string;
+  extra_half_hour_cost: string;
+  children_included: number;
+  adults_included: number;
+  duration_minutes: number;
+  tax_code: string;
+  tax_basis_points: number;
+  includes: Readonly<Record<string, unknown>> | null;
+  included_consumables: readonly PartyPackageIncludedConsumable[] | null;
+}
+
+export interface PartyQuoteBreakdownSnapshot {
+  base: string;
+  children_extra: string;
+  adults_extra: string;
+  time_extra: string;
+}
+
+export interface PartyQuoteRow {
+  id: string;
+  companyId: string;
+  branchId: string;
+  quoteNumber: string;
+  status: PartyQuoteStatus;
+  customerId: string | null;
+  customerDisplayName: string | null;
+  customerPhone: string | null;
+  sellerUserId: string | null;
+  packageId: string;
+  packageSnapshot: PartyQuotePackageSnapshot;
+  childrenCount: number;
+  adultsCount: number;
+  extraHalfHours: number;
+  currencyCode: string;
+  subtotalAmount: string;
+  discountTotal: string;
+  taxTotal: string;
+  totalAmount: string;
+  breakdown: PartyQuoteBreakdownSnapshot;
+  roomId: string | null;
+  eventDate: string | null;
+  startTime: string | null;
+  notes: string | null;
+  convertedReservationId: string | null;
+  convertedAt: Date | null;
+  convertedBy: string | null;
+  cancelledAt: Date | null;
+  cancelledBy: string | null;
+  cancelReason: string | null;
+  createdBy: string;
+  updatedBy: string;
+  version: bigint;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export type PartyErrorCode =
   | 'validation_error'
   | 'idempotency_conflict'
@@ -241,7 +311,10 @@ export type PartyErrorCode =
   // TASK 16.20 (Part L1)
   | 'coupon_inactive'
   | 'coupon_min_subtotal_not_met'
-  | 'coupon_usage_limit_reached';
+  | 'coupon_usage_limit_reached'
+  // TASK 17.6 — an edit/cancel/convert attempted on a quote that is no longer
+  // a draft (already converted into a reservation, or cancelled).
+  | 'quote_not_editable';
 
 export class PartyError extends Error {
   constructor(

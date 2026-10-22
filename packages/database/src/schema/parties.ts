@@ -663,6 +663,151 @@ export const partyReservationSocks = pgTable(
   ],
 );
 
+export const partyQuoteStatuses = ['draft', 'cancelled', 'converted'] as const;
+
+/**
+ * TASK 17.6 — SAVED party quotations. Until now `POST /party-packages/:id/
+ * quote` was a pure, stateless calculation: nothing survived between opening
+ * the Cotizador and creating a reservation. A saved quote persists what was
+ * ACTUALLY quoted, frozen:
+ *  - `package_snapshot` keeps the package terms that priced it (name, code,
+ *    price, extra costs, included counts, tax code/basis points, currency) so
+ *    a later package price change never rewrites an old quote;
+ *  - `subtotal/discount/tax/total` and `breakdown` are the exact amounts
+ *    computed at save time (`computePartyQuote`), never recomputed on read.
+ * Statuses stay minimal and honest: `draft` (editable) -> `converted` (an
+ * explicit "Convertir en fiesta" created a reservation; read-only, linked to
+ * it) or `cancelled` (read-only, with who/when/why). There is deliberately no
+ * automatic expiry: the business has not defined one (see
+ * docs/PARTIES_COMMERCIAL_FLOW_IMPLEMENTATION.md). A quote is NEVER a
+ * reservation — saving one blocks no room and records no payment.
+ */
+export const partyQuotes = pgTable(
+  'party_quotes',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    branchId: uuid('branch_id').notNull(),
+    quoteNumber: text('quote_number').notNull(),
+    status: text('status').notNull().default('draft'),
+    customerId: uuid('customer_id'),
+    customerDisplayName: text('customer_display_name'),
+    customerPhone: text('customer_phone'),
+    sellerUserId: uuid('seller_user_id'),
+    packageId: uuid('package_id').notNull(),
+    packageSnapshot: jsonb('package_snapshot').notNull(),
+    childrenCount: integer('children_count').notNull().default(0),
+    adultsCount: integer('adults_count').notNull().default(0),
+    extraHalfHours: integer('extra_half_hours').notNull().default(0),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    subtotalAmount: numeric('subtotal_amount', { precision: 19, scale: 4 }).notNull(),
+    discountTotal: numeric('discount_total', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    taxTotal: numeric('tax_total', { precision: 19, scale: 4 }).notNull(),
+    totalAmount: numeric('total_amount', { precision: 19, scale: 4 }).notNull(),
+    breakdown: jsonb('breakdown').notNull(),
+    roomId: uuid('room_id'),
+    eventDate: date('event_date', { mode: 'string' }),
+    startTime: time('start_time'),
+    notes: text('notes'),
+    convertedReservationId: uuid('converted_reservation_id'),
+    convertedAt: timestamp('converted_at', { withTimezone: true, mode: 'date' }),
+    convertedBy: uuid('converted_by'),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true, mode: 'date' }),
+    cancelledBy: uuid('cancelled_by'),
+    cancelReason: text('cancel_reason'),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by').notNull(),
+    version: bigint('version', { mode: 'bigint' }).notNull().default(sql`1`),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    unique('party_quotes_company_id_id_uq').on(table.companyId, table.id),
+    unique('party_quotes_company_quote_number_uq').on(table.companyId, table.quoteNumber),
+    // One quote becomes AT MOST one reservation, and a reservation comes from
+    // AT MOST one quote — the DB-level guard behind the idempotent conversion.
+    uniqueIndex('party_quotes_converted_reservation_uq')
+      .on(table.companyId, table.convertedReservationId)
+      .where(sql`${table.convertedReservationId} is not null`),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'party_quotes_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.customerId],
+      foreignColumns: [customers.companyId, customers.id],
+      name: 'party_quotes_customer_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.packageId],
+      foreignColumns: [partyPackages.companyId, partyPackages.id],
+      name: 'party_quotes_package_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.branchId, table.roomId],
+      foreignColumns: [partyRooms.companyId, partyRooms.branchId, partyRooms.id],
+      name: 'party_quotes_room_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.convertedReservationId],
+      foreignColumns: [partyReservations.companyId, partyReservations.id],
+      name: 'party_quotes_converted_reservation_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.sellerUserId],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_quotes_seller_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.createdBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_quotes_created_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.updatedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_quotes_updated_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.convertedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_quotes_converted_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.cancelledBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_quotes_cancelled_by_membership_fk',
+    }).onDelete('restrict'),
+    index('party_quotes_company_branch_created_idx').on(table.companyId, table.branchId, table.createdAt),
+    index('party_quotes_company_status_idx').on(table.companyId, table.status),
+    check('party_quotes_status_ck', sql`${table.status} in ('draft', 'cancelled', 'converted')`),
+    check(
+      'party_quotes_counts_ck',
+      sql`${table.childrenCount} >= 0 and ${table.adultsCount} >= 0 and ${table.extraHalfHours} >= 0`,
+    ),
+    check(
+      'party_quotes_amounts_ck',
+      sql`${table.subtotalAmount} >= 0 and ${table.discountTotal} >= 0 and ${table.taxTotal} >= 0 and ${table.totalAmount} >= 0`,
+    ),
+    check('party_quotes_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
+    check(
+      'party_quotes_converted_fields_ck',
+      sql`(${table.status} = 'converted') = (${table.convertedReservationId} is not null and ${table.convertedAt} is not null and ${table.convertedBy} is not null)`,
+    ),
+    check(
+      'party_quotes_cancelled_fields_ck',
+      sql`(${table.status} = 'cancelled') = (${table.cancelledAt} is not null and ${table.cancelledBy} is not null and ${table.cancelReason} is not null)`,
+    ),
+    check(
+      'party_quotes_cancel_reason_ck',
+      sql`${table.cancelReason} is null or char_length(btrim(${table.cancelReason})) between 3 and 500`,
+    ),
+  ],
+);
+
+export type PartyQuoteRecord = typeof partyQuotes.$inferSelect;
+
 /**
  * TASK 14.3 Part A.8 (Deposits/balances) — deliberately NOT a parallel
  * financial ledger. Each row is a thin, auditable link from a

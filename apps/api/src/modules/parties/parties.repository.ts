@@ -10,6 +10,10 @@ import {
   type PartyPackageIncludedConsumable,
   type PartyPackageRow,
   type PartyPackageStatus,
+  type PartyQuoteBreakdownSnapshot,
+  type PartyQuotePackageSnapshot,
+  type PartyQuoteRow,
+  type PartyQuoteStatus,
   type PartyReservationDocumentRow,
   type PartyReservationPaymentPurpose,
   type PartyReservationPaymentRow,
@@ -390,6 +394,87 @@ export interface ReservationListFilter {
   sellerUserId?: string;
   eventDateFrom?: string;
   eventDateTo?: string;
+}
+
+const QUOTE_COLUMNS =
+  'id,company_id,branch_id,quote_number,status,customer_id,customer_display_name,customer_phone,seller_user_id,package_id,package_snapshot,children_count,adults_count,extra_half_hours,currency_code,subtotal_amount,discount_total,tax_total,total_amount,breakdown,room_id,event_date,start_time,notes,converted_reservation_id,converted_at,converted_by,cancelled_at,cancelled_by,cancel_reason,created_by,updated_by,version,created_at,updated_at';
+
+interface QuoteDb {
+  id: string;
+  company_id: string;
+  branch_id: string;
+  quote_number: string;
+  status: string;
+  customer_id: string | null;
+  customer_display_name: string | null;
+  customer_phone: string | null;
+  seller_user_id: string | null;
+  package_id: string;
+  package_snapshot: PartyQuotePackageSnapshot;
+  children_count: number;
+  adults_count: number;
+  extra_half_hours: number;
+  currency_code: string;
+  subtotal_amount: string;
+  discount_total: string;
+  tax_total: string;
+  total_amount: string;
+  breakdown: PartyQuoteBreakdownSnapshot;
+  room_id: string | null;
+  event_date: Date | string | null;
+  start_time: string | null;
+  notes: string | null;
+  converted_reservation_id: string | null;
+  converted_at: Date | string | null;
+  converted_by: string | null;
+  cancelled_at: Date | string | null;
+  cancelled_by: string | null;
+  cancel_reason: string | null;
+  created_by: string;
+  updated_by: string;
+  version: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+function quote(row: QuoteDb): PartyQuoteRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    branchId: row.branch_id,
+    quoteNumber: row.quote_number,
+    status: row.status as PartyQuoteStatus,
+    customerId: row.customer_id,
+    customerDisplayName: row.customer_display_name,
+    customerPhone: row.customer_phone,
+    sellerUserId: row.seller_user_id,
+    packageId: row.package_id,
+    packageSnapshot: row.package_snapshot,
+    childrenCount: row.children_count,
+    adultsCount: row.adults_count,
+    extraHalfHours: row.extra_half_hours,
+    currencyCode: row.currency_code,
+    subtotalAmount: row.subtotal_amount,
+    discountTotal: row.discount_total,
+    taxTotal: row.tax_total,
+    totalAmount: row.total_amount,
+    breakdown: row.breakdown,
+    roomId: row.room_id,
+    eventDate: row.event_date === null ? null : dateOnly(row.event_date),
+    startTime: row.start_time,
+    notes: row.notes,
+    convertedReservationId: row.converted_reservation_id,
+    convertedAt: row.converted_at === null ? null : new Date(row.converted_at),
+    convertedBy: row.converted_by,
+    cancelledAt: row.cancelled_at === null ? null : new Date(row.cancelled_at),
+    cancelledBy: row.cancelled_by,
+    cancelReason: row.cancel_reason,
+    createdBy: row.created_by,
+    updatedBy: row.updated_by,
+    version: BigInt(row.version),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
 }
 
 export class PartiesRepository {
@@ -1511,6 +1596,262 @@ export class PartiesRepository {
     return rows.map(payment);
   }
 
+  // --- Saved quotations (TASK 17.6) ------------------------------------------------
+
+  public async insertQuote(
+    client: PartyTransaction,
+    input: {
+      id: string;
+      companyId: string;
+      branchId: string;
+      quoteNumber: string;
+      customerId: string | null;
+      customerDisplayName: string | null;
+      customerPhone: string | null;
+      sellerUserId: string | null;
+      packageId: string;
+      packageSnapshot: PartyQuotePackageSnapshot;
+      childrenCount: number;
+      adultsCount: number;
+      extraHalfHours: number;
+      currencyCode: string;
+      subtotalAmount: string;
+      discountTotal: string;
+      taxTotal: string;
+      totalAmount: string;
+      breakdown: PartyQuoteBreakdownSnapshot;
+      roomId: string | null;
+      eventDate: string | null;
+      startTime: string | null;
+      notes: string | null;
+      actorId: string;
+      timestamp: Date;
+    },
+  ): Promise<PartyQuoteRow> {
+    const row = result<QuoteDb>(
+      await client.query(
+        `insert into party_quotes
+         (id,company_id,branch_id,quote_number,status,customer_id,customer_display_name,customer_phone,seller_user_id,
+          package_id,package_snapshot,children_count,adults_count,extra_half_hours,currency_code,subtotal_amount,
+          discount_total,tax_total,total_amount,breakdown,room_id,event_date,start_time,notes,created_by,updated_by,
+          version,created_at,updated_at)
+         values ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,$22,$23,
+                 $24,$24,1,$25,$25)
+         returning ${QUOTE_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.branchId,
+          input.quoteNumber,
+          input.customerId,
+          input.customerDisplayName,
+          input.customerPhone,
+          input.sellerUserId,
+          input.packageId,
+          JSON.stringify(input.packageSnapshot),
+          input.childrenCount,
+          input.adultsCount,
+          input.extraHalfHours,
+          input.currencyCode,
+          input.subtotalAmount,
+          input.discountTotal,
+          input.taxTotal,
+          input.totalAmount,
+          JSON.stringify(input.breakdown),
+          input.roomId,
+          input.eventDate,
+          input.startTime,
+          input.notes,
+          input.actorId,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Quote insertion did not return a row.');
+    return quote(row);
+  }
+
+  public async quote(companyId: string, id: string): Promise<PartyQuoteRow | null> {
+    const row = result<QuoteDb>(
+      await this.database.pool.query(`select ${QUOTE_COLUMNS} from party_quotes where company_id=$1 and id=$2`, [
+        companyId,
+        id,
+      ]),
+    ).rows[0];
+    return row === undefined ? null : quote(row);
+  }
+
+  /** Locks the quote row for the rest of the transaction — every quote
+   * mutation (edit/cancel/convert) starts here so two users can never
+   * interleave on the same quote (financial state is never last-click-wins). */
+  public async lockQuote(client: PartyTransaction, companyId: string, id: string): Promise<PartyQuoteRow | null> {
+    const row = result<QuoteDb>(
+      await client.query(`select ${QUOTE_COLUMNS} from party_quotes where company_id=$1 and id=$2 for update`, [
+        companyId,
+        id,
+      ]),
+    ).rows[0];
+    return row === undefined ? null : quote(row);
+  }
+
+  public async listQuotes(
+    companyId: string,
+    branchIds: readonly string[],
+    filter: { branchId?: string; status?: PartyQuoteStatus; customerId?: string; limit: number; cursor?: string },
+  ): Promise<{ items: PartyQuoteRow[]; nextCursor: string | null }> {
+    const values: unknown[] = [companyId, branchIds];
+    const where = ['company_id=$1', 'branch_id=any($2::uuid[])'];
+    if (filter.branchId !== undefined) {
+      values.push(filter.branchId);
+      where.push(`branch_id=$${String(values.length)}`);
+    }
+    if (filter.status !== undefined) {
+      values.push(filter.status);
+      where.push(`status=$${String(values.length)}`);
+    }
+    if (filter.customerId !== undefined) {
+      values.push(filter.customerId);
+      where.push(`customer_id=$${String(values.length)}`);
+    }
+    if (filter.cursor !== undefined) {
+      const cursor = decodePartyQuoteCursor(filter.cursor);
+      values.push(cursor.createdAt, cursor.id);
+      where.push(`(created_at, id) < ($${String(values.length - 1)}, $${String(values.length)})`);
+    }
+    values.push(filter.limit + 1);
+    const rows = result<QuoteDb>(
+      await this.database.pool.query(
+        `select ${QUOTE_COLUMNS} from party_quotes where ${where.join(' and ')}
+         order by created_at desc, id desc limit $${String(values.length)}`,
+        values,
+      ),
+    ).rows;
+    const page = rows.slice(0, filter.limit).map(quote);
+    const last = page.at(-1);
+    return {
+      items: page,
+      nextCursor: rows.length > filter.limit && last !== undefined ? encodePartyQuoteCursor(last.createdAt, last.id) : null,
+    };
+  }
+
+  /** Whitelisted partial update of a DRAFT quote (the service has already
+   * locked and validated the row); bumps `version`. */
+  public async updateQuote(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    patch: Readonly<Record<string, unknown>>,
+    actorId: string,
+    timestamp: Date,
+  ): Promise<PartyQuoteRow> {
+    const columns: Readonly<Record<string, string>> = {
+      customerId: 'customer_id',
+      customerDisplayName: 'customer_display_name',
+      customerPhone: 'customer_phone',
+      packageId: 'package_id',
+      packageSnapshot: 'package_snapshot',
+      childrenCount: 'children_count',
+      adultsCount: 'adults_count',
+      extraHalfHours: 'extra_half_hours',
+      currencyCode: 'currency_code',
+      subtotalAmount: 'subtotal_amount',
+      discountTotal: 'discount_total',
+      taxTotal: 'tax_total',
+      totalAmount: 'total_amount',
+      breakdown: 'breakdown',
+      roomId: 'room_id',
+      eventDate: 'event_date',
+      startTime: 'start_time',
+      notes: 'notes',
+    };
+    const jsonColumns = new Set(['package_snapshot', 'breakdown']);
+    const values: unknown[] = [companyId, id];
+    const sets: string[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      const column = columns[key];
+      if (column === undefined) throw new Error(`Unsupported quote field: ${key}`);
+      values.push(jsonColumns.has(column) ? JSON.stringify(value) : value);
+      sets.push(`${column}=$${String(values.length)}${jsonColumns.has(column) ? '::jsonb' : ''}`);
+    }
+    values.push(actorId, timestamp);
+    sets.push(`updated_by=$${String(values.length - 1)}`, `updated_at=$${String(values.length)}`, 'version=version+1');
+    const row = result<QuoteDb>(
+      await client.query(
+        `update party_quotes set ${sets.join(', ')} where company_id=$1 and id=$2 and status='draft'
+         returning ${QUOTE_COLUMNS}`,
+        values,
+      ),
+    ).rows[0];
+    if (row === undefined) throw new PartyError('quote_not_editable', 'Only a draft quote can be edited.');
+    return quote(row);
+  }
+
+  public async cancelQuote(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    input: { actorId: string; reason: string; timestamp: Date },
+  ): Promise<PartyQuoteRow> {
+    const row = result<QuoteDb>(
+      await client.query(
+        `update party_quotes set status='cancelled',cancelled_at=$3,cancelled_by=$4,cancel_reason=$5,
+           updated_by=$4,updated_at=$3,version=version+1
+         where company_id=$1 and id=$2 and status='draft' returning ${QUOTE_COLUMNS}`,
+        [companyId, id, input.timestamp, input.actorId, input.reason],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new PartyError('quote_not_editable', 'Only a draft quote can be cancelled.');
+    return quote(row);
+  }
+
+  /** The ONE place a quote becomes converted: links it to the reservation
+   * created in the SAME transaction. The conditional `status='draft'` plus the
+   * partial unique index on `converted_reservation_id` make a duplicate
+   * conversion impossible even under concurrent requests. */
+  public async markQuoteConverted(
+    client: PartyTransaction,
+    companyId: string,
+    id: string,
+    input: { reservationId: string; actorId: string; timestamp: Date },
+  ): Promise<PartyQuoteRow> {
+    const row = result<QuoteDb>(
+      await client.query(
+        `update party_quotes set status='converted',converted_reservation_id=$3,converted_at=$4,converted_by=$5,
+           updated_by=$5,updated_at=$4,version=version+1
+         where company_id=$1 and id=$2 and status='draft' returning ${QUOTE_COLUMNS}`,
+        [companyId, id, input.reservationId, input.timestamp, input.actorId],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new PartyError('quote_not_editable', 'Only a draft quote can be converted.');
+    return quote(row);
+  }
+
+  public async organizationForBranch(
+    companyId: string,
+    branchId: string,
+  ): Promise<{ companyName: string; branchName: string } | null> {
+    const row = result<{ company_name: string; branch_name: string }>(
+      await this.database.pool.query(
+        `select c.display_name as company_name, b.name as branch_name
+         from branches b join companies c on c.id = b.company_id
+         where b.company_id=$1 and b.id=$2`,
+        [companyId, branchId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : { companyName: row.company_name, branchName: row.branch_name };
+  }
+
+  public async memberDisplayName(companyId: string, userId: string): Promise<string | null> {
+    const row = result<{ display_name: string }>(
+      await this.database.pool.query(
+        `select u.display_name from company_memberships m join users u on u.id = m.user_id
+         where m.company_id=$1 and m.user_id=$2`,
+        [companyId, userId],
+      ),
+    ).rows[0];
+    return row?.display_name ?? null;
+  }
+
   // --- Documents -----------------------------------------------------------------
 
   public async insertDocumentAudit(
@@ -1743,11 +2084,37 @@ export class PartiesRepository {
         return new PartyError('validation_error', 'This room code was already used.');
       case 'party_packages_company_code_uq':
         return new PartyError('validation_error', 'This package code was already used.');
+      case 'party_quotes_company_quote_number_uq':
+        return new PartyError('resource_conflict', 'This quote number was already used; retry.');
+      case 'party_quotes_converted_reservation_uq':
+        return new PartyError('quote_not_editable', 'This quote or reservation is already linked.');
       case 'party_reservations_company_number_uq':
         return new PartyError('validation_error', 'This reservation number was already used.');
       default:
         return error;
     }
+  }
+}
+
+/** Opaque `(created_at, id)` cursor for the newest-first quote list. */
+export function encodePartyQuoteCursor(createdAt: Date, id: string): string {
+  return Buffer.from(JSON.stringify([createdAt.toISOString(), id]), 'utf8').toString('base64url');
+}
+export function decodePartyQuoteCursor(cursor: string): { createdAt: Date; id: string } {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (
+      !Array.isArray(decoded) ||
+      decoded.length !== 2 ||
+      typeof decoded[0] !== 'string' ||
+      typeof decoded[1] !== 'string'
+    )
+      throw new Error('malformed');
+    const createdAt = new Date(decoded[0]);
+    if (Number.isNaN(createdAt.getTime())) throw new Error('malformed');
+    return { createdAt, id: decoded[1] };
+  } catch {
+    throw new PartyError('validation_error', 'The cursor is invalid.');
   }
 }
 

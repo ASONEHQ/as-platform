@@ -29,6 +29,7 @@ import {
   partyReservationTransitions,
   type PartyMutationContext,
   type PartyPackageRow,
+  type PartyQuoteRow,
   type PartyReservationDocumentRow,
   type PartyReservationPaymentPurpose,
   type PartyReservationPaymentRow,
@@ -129,6 +130,8 @@ export class PartyReservationsService {
       extraHalfHours?: number;
       sellerUserId?: string;
       notes?: string;
+      /** TASK 17.6 — explicit conversion of a saved DRAFT quote into this reservation. */
+      quoteId?: string;
     },
   ): Promise<{ value: PartyReservationRow; replayed: boolean }> {
     if (!branchIds.includes(input.branchId))
@@ -157,6 +160,7 @@ export class PartyReservationsService {
       adultsCount,
       extraHalfHours,
       id: input.id ?? null,
+      quoteId: input.quoteId ?? null,
     });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
@@ -168,6 +172,30 @@ export class PartyReservationsService {
         'party_reservation',
         decodeReservation,
         async () => {
+          // TASK 17.6 — a quote conversion is explicit and atomic: lock the quote
+          // first, require it to still be a draft of THIS branch/package/guest
+          // count (the reservation must be exactly what was quoted), and take the
+          // money from the quote's FROZEN amounts, never from the live package.
+          let sourceQuote: PartyQuoteRow | null = null;
+          if (input.quoteId !== undefined) {
+            sourceQuote = await this.repository.lockQuote(client, context.companyId, input.quoteId);
+            if (sourceQuote === null || !branchIds.includes(sourceQuote.branchId))
+              throw new PartyError('resource_not_found', 'The quote was not found.');
+            if (sourceQuote.status !== 'draft')
+              throw new PartyError('quote_not_editable', 'Only a draft quote can be converted into a reservation.');
+            if (
+              sourceQuote.branchId !== input.branchId ||
+              sourceQuote.packageId !== input.packageId ||
+              sourceQuote.childrenCount !== childrenCount ||
+              sourceQuote.adultsCount !== adultsCount ||
+              sourceQuote.extraHalfHours !== extraHalfHours
+            )
+              throw new PartyError(
+                'validation_error',
+                'The reservation must match the quote (branch, package, guests and extra time); edit the quote first.',
+              );
+          }
+
           // Real party.room lookup, scoped to this exact branch — a
           // room/branch mismatch is an honest 404, never a raw FK
           // violation (recovery doc: rooms are branch-scoped entities).
@@ -191,8 +219,9 @@ export class PartyReservationsService {
 
           let customerDisplayName: string | null = null;
           let customerPhone: string | null = null;
-          if (input.customerId !== undefined) {
-            const customer = await this.repository.customerForSnapshot(context.companyId, input.customerId);
+          const customerId = input.customerId ?? sourceQuote?.customerId ?? undefined;
+          if (customerId !== undefined) {
+            const customer = await this.repository.customerForSnapshot(context.companyId, customerId);
             if (customer === null) throw new PartyError('resource_not_found', 'The customer was not found.');
             customerDisplayName = customer.displayName;
             customerPhone = customer.phone;
@@ -200,25 +229,33 @@ export class PartyReservationsService {
 
           await this.rejectRoomConflict(client, context.companyId, input.roomId, eventDate, startTime, endTime);
 
-          const quote = computePartyQuote({
-            price: pkg.price,
-            childrenIncluded: pkg.childrenIncluded,
-            adultsIncluded: pkg.adultsIncluded,
-            childExtraCost: pkg.childExtraCost,
-            adultExtraCost: pkg.adultExtraCost,
-            extraHalfHourCost: pkg.extraHalfHourCost,
-            children: childrenCount,
-            adults: adultsCount,
-            extraHalfHours,
-            taxCode: pkg.taxCode,
-          });
+          const quote =
+            sourceQuote === null
+              ? computePartyQuote({
+                  price: pkg.price,
+                  childrenIncluded: pkg.childrenIncluded,
+                  adultsIncluded: pkg.adultsIncluded,
+                  childExtraCost: pkg.childExtraCost,
+                  adultExtraCost: pkg.adultExtraCost,
+                  extraHalfHourCost: pkg.extraHalfHourCost,
+                  children: childrenCount,
+                  adults: adultsCount,
+                  extraHalfHours,
+                  taxCode: pkg.taxCode,
+                })
+              : {
+                  subtotal: sourceQuote.subtotalAmount,
+                  discountTotal: sourceQuote.discountTotal,
+                  taxTotal: sourceQuote.taxTotal,
+                  total: sourceQuote.totalAmount,
+                };
 
           const created = await this.repository.insertReservation(client, {
             id,
             companyId: context.companyId,
             branchId: input.branchId,
             reservationNumber: reservationNumberFor(id),
-            customerId: input.customerId ?? null,
+            customerId: customerId ?? null,
             customerDisplayName,
             customerPhone,
             celebrantName,
@@ -226,22 +263,44 @@ export class PartyReservationsService {
             roomId: input.roomId,
             packageId: input.packageId,
             roomNameSnapshot: room.name,
-            packageNameSnapshot: pkg.name,
+            packageNameSnapshot: sourceQuote?.packageSnapshot.package_name ?? pkg.name,
             eventDate,
             startTime,
             endTime,
             childrenCount,
             adultsCount,
-            sellerUserId: input.sellerUserId ?? null,
+            sellerUserId: input.sellerUserId ?? sourceQuote?.sellerUserId ?? null,
             subtotalAmount: quote.subtotal,
             discountTotal: quote.discountTotal,
             taxTotal: quote.taxTotal,
             quotedTotal: quote.total,
-            currencyCode: pkg.currencyCode,
+            currencyCode: sourceQuote?.currencyCode ?? pkg.currencyCode,
             notes,
             actorId: context.actorId,
             timestamp: context.timestamp,
           });
+          if (sourceQuote !== null) {
+            const converted = await this.repository.markQuoteConverted(client, context.companyId, sourceQuote.id, {
+              reservationId: created.id,
+              actorId: context.actorId,
+              timestamp: context.timestamp,
+            });
+            await this.repository.auditAndPublish(client, context, {
+              action: 'party_quote.converted',
+              resourceType: 'party_quote',
+              resourceId: converted.id,
+              eventType: 'party_quote.converted',
+              branchId: converted.branchId,
+              version: converted.version,
+              payload: {
+                quote_id: converted.id,
+                quote_number: converted.quoteNumber,
+                reservation_id: created.id,
+                reservation_number: created.reservationNumber,
+                total_amount: converted.totalAmount,
+              },
+            });
+          }
           // TASK 16.20 (Part D4/E) — auto-populate the PLANNED
           // socks/snacks from the package's own `includedConsumables`, at
           // booking time, inside this exact same transaction. This never
@@ -250,8 +309,11 @@ export class PartyReservationsService {
           // consumption moment is the operator's later explicit
           // `deductSock`/`deductSnack` call. A reservation/quote must
           // never consume stock merely by existing (Part D3).
-          if (pkg.includedConsumables !== null) {
-            for (const entry of pkg.includedConsumables) {
+          // A converted quote plans the consumables it FROZE, not the package's
+          // current list (the package may have changed since it was quoted).
+          const plannedConsumables = sourceQuote === null ? pkg.includedConsumables : sourceQuote.packageSnapshot.included_consumables;
+          if (plannedConsumables !== null) {
+            for (const entry of plannedConsumables) {
               if (entry.quantity <= 0) continue;
               if (entry.kind === 'sock') {
                 const variant = await this.resolveConsumableVariant(context.companyId, entry.productId, entry.productVariantId);

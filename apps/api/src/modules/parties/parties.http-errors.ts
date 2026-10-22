@@ -30,6 +30,9 @@ const partyErrorStatus: Readonly<Record<string, number>> = {
   coupon_inactive: 422,
   coupon_min_subtotal_not_met: 422,
   coupon_usage_limit_reached: 422,
+  // TASK 17.6 — a quote that is already converted/cancelled can no longer be
+  // edited, cancelled or converted: a state conflict, not a validation error.
+  quote_not_editable: 409,
 };
 
 // Mirrors `cash.http-errors.ts`'s own table exactly — recording a

@@ -358,6 +358,13 @@
       "when": 1792680919788,
       "tag": "0050_add_payroll_v2_adjustments_and_daily_detail",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792683315425,
+      "tag": "0051_add_party_quotes",
+      "breakpoints": true
     }
   ]
 }
