@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PAYROLL_LATE_TOLERANCE_MINUTES,
   computePayrollLine,
   payrollDayDetail,
   payrollTotals,
@@ -100,6 +101,55 @@ describe('payrollDayDetail (TASK 17.6)', () => {
   });
 });
 
+describe('late tolerance (TASK 17.6.1: official policy, 10 minutes)', () => {
+  const lateFor = (clockIn: string): number =>
+    payrollDayDetail(punched(`2026-02-02T${clockIn}:00.000Z`, '2026-02-02T17:00:00.000Z')).lateMinutes;
+
+  it('has one authoritative definition of 10 minutes', () => {
+    expect(PAYROLL_LATE_TOLERANCE_MINUTES).toBe(10);
+  });
+
+  it.each([
+    ['09:00', 0],
+    ['09:09', 0],
+    ['09:10', 0], // exactly at the tolerance: NOT late
+    ['09:11', 1], // one minute beyond: late by the minutes past the tolerance
+    ['09:12', 2],
+    ['09:20', 10],
+    ['08:30', 0], // early is never negative lateness
+  ])('scheduled 09:00, clock-in %s → %i late minutes', (clockIn, expected) => {
+    expect(lateFor(clockIn)).toBe(expected);
+  });
+
+  it('a missing punch is incomplete, not "on time"', () => {
+    const noIn = payrollDayDetail(
+      day({ lastClockOut: new Date('2026-02-02T17:00:00.000Z'), lastClockOutMinutes: 1020 }),
+    );
+    expect(noIn.attendanceState).toBe('missing_clock_in');
+    expect(noIn.workedMinutes).toBe(0);
+    const noPunches = payrollDayDetail(day());
+    expect(noPunches.attendanceState).toBe('no_punches');
+    expect(noPunches.lateMinutes).toBe(0);
+  });
+});
+
+describe('overtime is information, not money (TASK 17.6.1)', () => {
+  const withOvertime = { scheduledMinutes: 480, workedMinutes: 600, lateMinutes: 0, overtimeMinutes: 120 };
+  const withoutOvertime = { scheduledMinutes: 480, workedMinutes: 480, lateMinutes: 0, overtimeMinutes: 0 };
+
+  it('overtime minutes never change the monetary result', () => {
+    const a = computePayrollLine(withOvertime, '700.0000', 'MXN');
+    const b = computePayrollLine(withoutOvertime, '700.0000', 'MXN');
+    expect(a.bonusAmount).toBe('0.0000');
+    expect(a.totalAmount).toBe('700.0000');
+    expect(a.totalAmount).toBe(b.totalAmount);
+  });
+
+  it('only an explicit adjustment moves the total', () => {
+    expect(computePayrollLine(withOvertime, '700.0000', 'MXN', 1_000_000n).totalAmount).toBe('800.0000');
+  });
+});
+
 describe('computePayrollLine + adjustments (TASK 17.6)', () => {
   const totals = { scheduledMinutes: 480, workedMinutes: 498, lateMinutes: 2, overtimeMinutes: 30 };
 
@@ -107,9 +157,9 @@ describe('computePayrollLine + adjustments (TASK 17.6)', () => {
     expect(computePayrollLine(totals, '700.0000', 'MXN')).toEqual({
       baseSalarySnapshot: '700.0000',
       deductionAmount: '2.9167',
-      bonusAmount: '43.7500',
+      bonusAmount: '0.0000', // TASK 17.6.1: overtime never adds money by itself
       adjustmentAmount: '0.0000',
-      totalAmount: '740.8333',
+      totalAmount: '697.0833',
       currencyCode: 'MXN',
     });
   });
@@ -117,10 +167,10 @@ describe('computePayrollLine + adjustments (TASK 17.6)', () => {
   it('adds the signed adjustment net on top of the formula result', () => {
     const withBonus = computePayrollLine(totals, '700.0000', 'MXN', 1_500_000n); // +150.0000
     expect(withBonus.adjustmentAmount).toBe('150.0000');
-    expect(withBonus.totalAmount).toBe('890.8333');
+    expect(withBonus.totalAmount).toBe('847.0833');
     const withDeduction = computePayrollLine(totals, '700.0000', 'MXN', -500_000n); // -50.0000
     expect(withDeduction.adjustmentAmount).toBe('-50.0000');
-    expect(withDeduction.totalAmount).toBe('690.8333');
+    expect(withDeduction.totalAmount).toBe('647.0833');
   });
 
   it('never lets a total go negative (DB check) even with a huge deduction', () => {

@@ -1398,6 +1398,12 @@ export class PartyReservationsService {
       throw new PartyError('validation_error', 'cash_session_id is required for a cash payment.');
     if (method !== 'cash' && input.cashSessionId !== undefined)
       throw new PartyError('validation_error', 'cash_session_id is only valid for a cash payment.');
+    // TASK 17.6.1 — a transfer must carry the operator-entered reference
+    // (bank folio / tracking key). It is an audit requirement, NOT a
+    // verification: the system never checks it against a bank. Trimmed; an
+    // empty or whitespace-only value is as good as none.
+    if (method === 'transfer' && (input.reference === undefined || input.reference.trim().length === 0))
+      throw new PartyError('validation_error', 'reference is required for a transfer payment.');
     const reference = input.reference === undefined ? null : nonBlank(input.reference, 'reference', 120);
     const notes = input.notes === undefined ? null : nonBlank(input.notes, 'notes', 500);
     const requestHash = hash({

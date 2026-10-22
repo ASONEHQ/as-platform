@@ -409,6 +409,10 @@ const Map<String, PermissionPresentation> _permissionPresentations = {
     label: 'Registrar pagos de fiestas',
     description: 'Permite registrar un anticipo, saldo o pago adicional de una reservación de fiesta/evento.',
   ),
+  'party.payment.void': PermissionPresentation(
+    label: 'Anular pagos de fiestas',
+    description: 'Permite anular un pago ya registrado de una reservación (queda en el historial con su motivo). Es independiente de cancelar la reservación.',
+  ),
   // -- Ventas en espera / Compras ------------------------------------------
   'held_sale.manage': PermissionPresentation(
     label: 'Suspender y reanudar ventas',

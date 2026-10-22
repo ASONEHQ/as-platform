@@ -6,7 +6,7 @@ import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabaseClient, type DatabaseClient } from '../client.js';
-import { seedTechnicalPermissions } from '../seeds/technical-permissions.js';
+import { seedTechnicalPermissions, technicalPermissionCodes } from '../seeds/technical-permissions.js';
 import { assertCategoryParentIsAcyclic } from './category-cycle.js';
 import { generateOptionSignature } from './option-signature.js';
 import { validateProductVariantState } from './product-state.js';
@@ -99,7 +99,8 @@ integration('catalog PostgreSQL foundation', () => {
     const permissionCount = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from permissions',
     );
-    expect(permissionCount.rows[0]?.count).toBe('101');
+    // TASK 17.6.1: derived from the catalogue itself instead of a hard-coded total.
+    expect(permissionCount.rows[0]?.count).toBe(String(technicalPermissionCodes.length));
   });
 
   it('rejects cross-company category, product, option, variant, and barcode references', async () => {

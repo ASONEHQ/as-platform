@@ -1090,6 +1090,50 @@ void main() {
       expect(find.byKey(const Key('pos-payroll-no-adjustments')), findsOneWidget);
     });
 
+    testWidgets('overtime is shown as attendance information only: an honest note, no overtime pay row, and the server total is untouched', (
+      tester,
+    ) async {
+      final withoutOvertime = _RecordingPayrollGateway(periods: [_draftPeriod], lines: [_payrollLine()], days: _payrollDays);
+      await openWeek(tester, withoutOvertime);
+      await openEmployee(tester);
+      final baselineTotal = tester.widget<Text>(find.byKey(const Key('pos-payroll-summary-total'))).data;
+
+      await tester.pumpWidget(const SizedBox()); // drop the first scenario's dialogs
+      await tester.pumpAndSettle();
+      final withOvertime = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine(overtimeMinutes: 120)],
+        days: _payrollDays,
+      );
+      await openWeek(tester, withOvertime);
+      expect(find.byKey(const Key('pos-payroll-overtime-note')), findsOneWidget);
+      expect(find.textContaining('No generan un pago automático'), findsOneWidget);
+      await openEmployee(tester);
+
+      expect(find.byKey(const Key('pos-payroll-detail-overtime')), findsOneWidget);
+      expect(find.text('Tiempo extra (solo asistencia)'), findsOneWidget);
+      expect(find.text('2h'), findsWidgets); // the duration the backend reported
+      expect(find.byKey(const Key('pos-payroll-detail-overtime-note')), findsOneWidget);
+      // No "pago por tiempo extra" for a new calculation, and the total is exactly the server's.
+      expect(find.byKey(const Key('pos-payroll-detail-legacy-overtime-pay')), findsNothing);
+      expect(find.textContaining('Pago por tiempo extra'), findsNothing);
+      expect(tester.widget<Text>(find.byKey(const Key('pos-payroll-summary-total'))).data, baselineTotal);
+    });
+
+    testWidgets('a period calculated before this policy still shows its old overtime money, labeled as the previous calculation', (
+      tester,
+    ) async {
+      final gateway = _RecordingPayrollGateway(
+        periods: [_draftPeriod],
+        lines: [_payrollLine(overtimeMinutes: 30, bonusAmount: '43.7500')],
+        days: _payrollDays,
+      );
+      await openWeek(tester, gateway);
+      await openEmployee(tester);
+      expect(find.byKey(const Key('pos-payroll-detail-legacy-overtime-pay')), findsOneWidget);
+      expect(find.text('Pago por tiempo extra (cálculo anterior)'), findsOneWidget);
+    });
+
     testWidgets('a line computed before Payroll V2 says its name/title are the current ones and that no daily detail exists', (
       tester,
     ) async {
@@ -1723,16 +1767,21 @@ class _RecordingTimeClockGateway implements PosTimeClockGateway {
 
 /// A payroll line fixture. `snapshot: false` simulates a line computed before
 /// Payroll V2 (no frozen employee identity).
-PosPayrollPeriodLine _payrollLine({String adjustmentAmount = '0.0000', bool snapshot = true}) => PosPayrollPeriodLine(
+PosPayrollPeriodLine _payrollLine({
+  String adjustmentAmount = '0.0000',
+  bool snapshot = true,
+  int overtimeMinutes = 0,
+  String bonusAmount = '0.0000',
+}) => PosPayrollPeriodLine(
   id: 'line-1',
   employeeId: 'employee-1',
   scheduledMinutes: 2400,
   workedMinutes: 2350,
   lateMinutes: 15,
-  overtimeMinutes: 0,
+  overtimeMinutes: overtimeMinutes,
   baseSalarySnapshot: '1500.0000',
   deductionAmount: '9.3750',
-  bonusAmount: '0.0000',
+  bonusAmount: bonusAmount,
   totalAmount: '1490.6250',
   currencyCode: 'MXN',
   computedAt: DateTime.utc(2026, 9, 7),

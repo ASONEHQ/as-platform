@@ -6,7 +6,7 @@
 ///
 /// [_technicalPermissionCodes] below is a HAND-COPIED, hardcoded mirror of
 /// `packages/database/src/seeds/technical-permissions.ts`'s own
-/// `technicalPermissionCodes` array (104 codes as of this task) — a Flutter
+/// `technicalPermissionCodes` array (105 codes as of TASK 17.6.1) — a Flutter
 /// test cannot import TypeScript, so this list must be kept in sync by hand
 /// whenever that backend file changes. This mirrors the already-accepted
 /// maintenance pattern this codebase already uses elsewhere for the same
@@ -17,7 +17,7 @@ import 'package:as_one/features/pos/pos_permission_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // Keep in sync with `packages/database/src/seeds/technical-permissions.ts`'s
-// `technicalPermissionCodes` — verbatim order/content, 104 entries.
+// `technicalPermissionCodes` — verbatim order/content, 105 entries.
 const _technicalPermissionCodes = [
   'company.read',
   'company.update',
@@ -103,6 +103,7 @@ const _technicalPermissionCodes = [
   'party.manage',
   'party.cancel',
   'party.payment.record',
+  'party.payment.void',
   'held_sale.manage',
   'purchase.read',
   'purchase.create',
@@ -132,9 +133,9 @@ const _technicalPermissionCodes = [
 Set<String> get _technicalDomains => _technicalPermissionCodes.map((code) => code.split('.').first).toSet();
 
 void main() {
-  test('_technicalPermissionCodes mirrors the backend seed — exactly 104 codes, no duplicates', () {
-    expect(_technicalPermissionCodes.length, 104);
-    expect(_technicalPermissionCodes.toSet().length, 104, reason: 'no duplicate codes');
+  test('_technicalPermissionCodes mirrors the backend seed — exactly 105 codes, no duplicates', () {
+    expect(_technicalPermissionCodes.length, 105);
+    expect(_technicalPermissionCodes.toSet().length, 105, reason: 'no duplicate codes');
   });
 
   group('permissionLabel', () {

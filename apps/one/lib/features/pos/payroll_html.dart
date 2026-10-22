@@ -161,6 +161,7 @@ String buildPayrollWeeklyHtml({
       '<th class="num">Retardo</th><th class="num">Extra</th><th class="num">Base</th>'
       '<th class="num">Ajuste</th><th class="num">Total</th></tr></thead>'
       '<tbody>$rowsHtml$totalsHtml</tbody></table>'
+      '<p class="foot">Las horas extra se muestran como información de asistencia. No generan un pago automático.</p>'
       '${closed ? '' : '<p class="note">Documento preliminar: la semana sigue abierta y sus cifras pueden cambiar hasta que se cierre la nómina.</p>'}'
       '<p class="foot">Generado el ${_escape(_formatDateTime(generatedAt))}</p>';
   return _shell(title: 'Nómina $periodLabel', body: body);
@@ -247,6 +248,7 @@ String buildPayrollReceiptHtml({
       '<table><thead><tr><th>Fecha</th><th>Horario</th><th class="num">Entrada</th><th class="num">Salida</th>'
       '<th class="num">Trabajado</th><th class="num">Retardo</th><th class="num">Extra</th><th>Estado</th></tr></thead>'
       '<tbody>$daysHtml</tbody></table>'
+      '<p class="foot">Las horas extra se muestran como información de asistencia. No generan un pago automático.</p>'
       '<h2>Resumen</h2><table><tbody>$summaryHtml</tbody></table>'
       '$adjustmentsHtml'
       '${closed ? '' : '<p class="note">Recibo preliminar: la semana sigue abierta y sus cifras pueden cambiar hasta que se cierre la nómina.</p>'}'

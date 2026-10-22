@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabaseClient, type DatabaseClient } from '../client.js';
+import { journalMigrationCount } from './migration-journal.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integrationDatabaseUrl = databaseUrl ?? 'postgresql://integration-test-disabled';
@@ -26,16 +27,12 @@ integration('PostgreSQL auth login challenge foundation', () => {
 
   afterAll(async () => client.close());
 
-  // TASK 15.0 (RC certification, Phase 15 final regression) — this test's
-  // migration count was written when the journal held 11 entries (ending
-  // at migration 0010) and was never updated as later waves (through
-  // migration 0028) grew it; the login-challenge table's continued
-  // presence, which is this test's real intent, is unaffected and
-  // unchanged. TASK 16.10B: corrected again, 29 -> 33 (0000-0032),
-  // same drift, same fix, same precedent — see this test's own doc
-  // comment history. TASK 16.11: corrected again, 33 -> 34 (0000-0033),
-  // same drift, same fix.
-  it('applies 0000-0032 and retains the login challenge table', async () => {
+  // TASK 17.6.1 — this used to pin an exact migration count (11 → 29 → 33 →
+  // 34 …) and went stale every time a migration was added. The real
+  // invariant is "every migration in the journal is applied (and nothing
+  // else), and the login-challenge table is retained", so the expected
+  // number is derived from the journal instead of hard-coded.
+  it('applies every journaled migration and retains the login challenge table', async () => {
     const table = await client.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables
        where table_schema = 'public' and table_name = 'auth_login_challenges'`,
@@ -44,7 +41,7 @@ integration('PostgreSQL auth login challenge foundation', () => {
     const migrations = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(migrations.rows[0]?.count).toBe('34');
+    expect(migrations.rows[0]?.count).toBe(String(journalMigrationCount()));
   });
 
   it('persists a valid pending challenge without plaintext token or floating columns', async () => {
@@ -177,6 +174,11 @@ integration('PostgreSQL auth login challenge foundation', () => {
 
   it('represents multiple eligible companies without creating a session', async () => {
     await withFixture(client, async (connection, fixture) => {
+      // The shared test database may hold committed sessions from other
+      // suites; the invariant is that creating a challenge adds none.
+      const sessionsBefore = await connection.query<{ count: string }>(
+        'select count(*)::text as count from sessions',
+      );
       const id = await insertPending(connection, fixture);
       const result = await connection.query<{ eligible_company_ids: string[] }>(
         'select eligible_company_ids from auth_login_challenges where id=$1',
@@ -189,7 +191,7 @@ integration('PostgreSQL auth login challenge foundation', () => {
       const sessions = await connection.query<{ count: string }>(
         'select count(*)::text as count from sessions',
       );
-      expect(sessions.rows[0]?.count).toBe('0');
+      expect(sessions.rows[0]?.count).toBe(sessionsBefore.rows[0]?.count);
     });
   });
 

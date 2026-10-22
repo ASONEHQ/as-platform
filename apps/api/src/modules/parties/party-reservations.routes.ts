@@ -951,9 +951,10 @@ export function registerPartyReservationRoutes(
       }),
   );
 
-  // TASK 17.6 — voids (never deletes) a payment; party.cancel is the
-  // cancellation-level authority this domain already has, deliberately stricter
-  // than party.payment.record. A cash void needs the open session that returns the money.
+  // TASK 17.6 — voids (never deletes) a payment. TASK 17.6.1: gated by its OWN
+  // dedicated `party.payment.void` (cancelling a reservation and reversing a
+  // financial record are separate powers). A cash void needs the open session
+  // that returns the money.
   app.post<{ Params: Params & { paymentId: string }; Body: { reason: string; cash_session_id?: string } }>(
     '/api/v1/party-reservations/:id/payments/:paymentId/void',
     {
@@ -980,7 +981,7 @@ export function registerPartyReservationRoutes(
     async (request, reply) =>
       withPartyErrors(async () => {
         const auth = await requireAuthenticatedUser(request, authentication);
-        requirePermission(authentication, auth, 'party.cancel');
+        requirePermission(authentication, auth, 'party.payment.void');
         const result = await service.voidPayment(
           mutationContext(request, auth.companyId, auth.userId),
           auth.permittedBranchIds,

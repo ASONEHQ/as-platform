@@ -279,8 +279,9 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
     // baseSalarySnapshot = 700.0000 -> units 7,000,000 (scale 10_000).
     // deductionAmount = round_half_up(2 * 7,000,000 / 480) = round_half_up(14,000,000/480)
     //                 = floor((28,000,000+480)/960) = floor(29167.1666...) = 29167 units = 2.9167.
-    // bonusAmount     = round_half_up(30 * 7,000,000 / 480) = 210,000,000/480 = 437500 units exactly = 43.7500.
-    // totalAmount     = 7,000,000 - 29167 + 437500 = 7,408,333 units = 740.8333.
+    // bonusAmount     = 0.0000 — TASK 17.6.1: overtime (30 minutes here) is attendance
+    //                   information only; it never adds money automatically.
+    // totalAmount     = 7,000,000 - 29167 = 6,970,833 units = 697.0833.
     const period = await call('POST', '/api/v1/payroll-periods', `payroll-period-${randomUUID()}`, {
       branch_id: branchId,
       period_start: '2026-02-02',
@@ -302,8 +303,8 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
       overtime_minutes: 30,
       base_salary_snapshot: '700.0000',
       deduction_amount: '2.9167',
-      bonus_amount: '43.7500',
-      total_amount: '740.8333',
+      bonus_amount: '0.0000',
+      total_amount: '697.0833',
     });
 
     // --- Recalculation while still draft replaces the lines wholesale ---
@@ -327,9 +328,9 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
       .data.lines.find((item) => item.employee_id === employeeId);
     // Doubling the salary exactly doubles every money figure (the minute
     // totals are unchanged, so this is a clean way to prove a REAL
-    // recompute happened, not a stale replay).
+    // recompute happened, not a stale replay): 1400 - 5.8333 late deduction.
     expect(recalculatedLine?.base_salary_snapshot).toBe('1400.0000');
-    expect(recalculatedLine?.total_amount).toBe('1481.6667');
+    expect(recalculatedLine?.total_amount).toBe('1394.1667');
 
     const linesCount = await database.pool.query<{ count: string }>(
       'select count(*)::text count from payroll_period_lines where company_id=$1 and payroll_period_id=$2',

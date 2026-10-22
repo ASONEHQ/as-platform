@@ -43,6 +43,17 @@ describe('role templates (TASK 16.16)', () => {
     expect(administrator?.permissionCodes).toEqual(technicalPermissionCodes);
   });
 
+  // TASK 17.6.1 — voiding a party payment is its own power. It is in the
+  // catalogue (so the full-catalogue Administrator template and the Owner role,
+  // via syncSystemRolePermissions, hold it) but NO other template is widened.
+  it('party.payment.void exists in the catalogue and is granted only by the full-catalogue Administrator template', () => {
+    expect(catalogue.has('party.payment.void')).toBe(true);
+    for (const template of roleTemplates) {
+      const has = template.permissionCodes.includes('party.payment.void');
+      expect(has, template.key).toBe(template.key === 'administrator');
+    }
+  });
+
   it('the Cashier template stays small — the whole point is avoiding a 20+ manual-pick role setup', () => {
     const cashier = roleTemplates.find((template) => template.key === 'cashier');
     expect(cashier?.permissionCodes.length ?? 0).toBeLessThan(20);

@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabaseClient, type DatabaseClient } from '../client.js';
+import { journalMigrationCount } from '../testing/migration-journal.js';
 import {
   inventoryReconciliationFindingSeverities,
   inventoryReconciliationFindingStatuses,
@@ -58,7 +59,7 @@ integration('inventory reconciliation findings physical foundation', () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('34');
+    expect(journal.rows[0]?.count).toBe(String(journalMigrationCount()));
 
     const columns = await client.pool.query<{ column_name: string; data_type: string }>(
       `select column_name,data_type from information_schema.columns

@@ -469,6 +469,14 @@ class _PayrollPeriodDetailDialogState extends State<_PayrollPeriodDetailDialog> 
                     employeeNames: widget.employeeNames,
                     onOpen: (line) => unawaited(_openEmployee(line)),
                   ),
+                if (_lines.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Las horas extra se muestran como información de asistencia. No generan un pago automático.',
+                    key: const Key('pos-payroll-overtime-note'),
+                    style: TextStyle(color: palette.textMuted, fontSize: 11),
+                  ),
+                ],
                 if (_errorMessage != null && _phase == _DetailPhase.ready) ...[
                   const SizedBox(height: 10),
                   Text(
@@ -700,6 +708,10 @@ class _PayrollEmployeeDetailDialog extends StatefulWidget {
 class _PayrollEmployeeDetailDialogState extends State<_PayrollEmployeeDetailDialog> {
   _DetailPhase _phase = _DetailPhase.loading;
   late PosPayrollPeriodLine _line = widget.line;
+
+  /// Only a period calculated before overtime stopped being paid automatically
+  /// (TASK 17.6.1) can still carry overtime money; it is shown, labeled as such.
+  bool get _hasLegacyOvertimePay => (double.tryParse(_line.bonusAmount) ?? 0) > 0;
   List<PosPayrollDay> _days = const [];
   List<PosPayrollAdjustment> _adjustments = const [];
   String? _errorMessage;
@@ -837,7 +849,8 @@ class _PayrollEmployeeDetailDialogState extends State<_PayrollEmployeeDetailDial
         summary: [
           MapEntry('Sueldo base', _formatMoney(_line.baseSalarySnapshot, currency)),
           MapEntry('Descuento por retardos', _formatMoney(_line.deductionAmount, currency)),
-          MapEntry('Pago por tiempo extra', _formatMoney(_line.bonusAmount, currency)),
+          MapEntry('Tiempo extra (solo asistencia)', payrollMinutesLabel(_line.overtimeMinutes)),
+          if (_hasLegacyOvertimePay) MapEntry('Pago por tiempo extra (cálculo anterior)', _formatMoney(_line.bonusAmount, currency)),
           MapEntry('Ajustes manuales', _formatMoney(_line.adjustmentAmount, currency)),
           MapEntry('Total', _formatMoney(_line.totalAmount, currency)),
         ],
@@ -918,9 +931,24 @@ class _PayrollEmployeeDetailDialogState extends State<_PayrollEmployeeDetailDial
                     label: 'Descuento por retardos (${payrollMinutesLabel(_line.lateMinutes)})',
                     value: _formatMoney(_line.deductionAmount, currency),
                   ),
-                  _DetailRow(
-                    label: 'Pago por tiempo extra (${payrollMinutesLabel(_line.overtimeMinutes)})',
-                    value: _formatMoney(_line.bonusAmount, currency),
+                  KeyedSubtree(
+                    key: const Key('pos-payroll-detail-overtime'),
+                    child: _DetailRow(label: 'Tiempo extra (solo asistencia)', value: payrollMinutesLabel(_line.overtimeMinutes)),
+                  ),
+                  // Only a period calculated before TASK 17.6.1 can carry money
+                  // here; new calculations never turn overtime into pay.
+                  if (_hasLegacyOvertimePay)
+                    KeyedSubtree(
+                      key: const Key('pos-payroll-detail-legacy-overtime-pay'),
+                      child: _DetailRow(label: 'Pago por tiempo extra (cálculo anterior)', value: _formatMoney(_line.bonusAmount, currency)),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      'Las horas extra se muestran como información de asistencia. No generan un pago automático.',
+                      key: const Key('pos-payroll-detail-overtime-note'),
+                      style: TextStyle(color: palette.textMuted, fontSize: 11),
+                    ),
                   ),
                   _DetailRow(label: 'Ajustes manuales', value: _formatMoney(_line.adjustmentAmount, currency)),
                   Padding(

@@ -112,7 +112,8 @@ From `packages/database/src/seeds/technical-permissions.ts`:
   `refund.read`, `refund.create`, `refund.approve`, `refund.complete`, `refund.cancel`
 - **Inventory adjustment:** `inventory.adjust`, `inventory.approve`, `inventory.count`,
   `inventory.reverse`, `inventory.reconcile`, `inventory.transfer`, `inventory.receive`
-- **Party payments:** `party.payment.record`
+- **Party payments:** `party.payment.record`, `party.payment.void` (voiding is separate from
+  recording and from cancelling a reservation; only Owner/Administrador hold it by default)
 - **Employee data:** `employee.read`, `employee.manage` (payroll/schedule — distinct
   from `staff_credential.manage`)
 

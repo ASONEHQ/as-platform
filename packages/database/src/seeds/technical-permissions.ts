@@ -175,6 +175,14 @@ export const technicalPermissionCodes = [
   'party.manage',
   'party.cancel',
   'party.payment.record',
+  // TASK 17.6.1 — voiding a recorded party payment is a financial
+  // correction, deliberately NOT `party.cancel` (cancelling a reservation)
+  // nor `party.payment.record` (taking a payment). Added to the catalogue
+  // only: the Owner (`is_system`) role receives it through
+  // `syncSystemRolePermissions`, the "Administrador" template through
+  // being the full catalogue, and NO other template or custom role is
+  // widened — an admin must grant it explicitly.
+  'party.payment.void',
   // TASK 14.3 (Wave 1, Part B.1) — suspended/held sales. Deliberately
   // its own code rather than reusing `sale.create`: holding/resuming a
   // cart is a distinct cashier action a business may want to permit or

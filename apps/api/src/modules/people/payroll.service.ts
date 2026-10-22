@@ -53,13 +53,16 @@ function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
 }
 
 /**
- * The exact recovered legacy tolerance constant
- * (`TOLERANCIA_RETARDO_MIN = 10` in `AS POS V1.html`'s
- * `calcularNominaEmpleado`, line ~13008) — a global constant in the
- * legacy source, NOT tenant-configurable (no evidence the legacy ever
- * varied it), so it is hardcoded here rather than exposed as a setting.
+ * The official payroll late tolerance: 10 minutes (recovered from the
+ * legacy `TOLERANCIA_RETARDO_MIN = 10`, confirmed as the business policy in
+ * TASK 17.6.1). The ONE authoritative definition — nothing else (API
+ * responses, Flutter) re-implements it; Flutter only shows the backend's
+ * `late_minutes`. Semantics: `late = max(0, clock_in − scheduled_start −
+ * 10)`, so with a 09:00 start 09:10 is NOT late, 09:11 is 1 late minute
+ * and 09:20 is 10. Not tenant-configurable.
  */
-const TOLERANCIA_RETARDO_MIN = 10;
+export const PAYROLL_LATE_TOLERANCE_MINUTES = 10;
+const TOLERANCIA_RETARDO_MIN = PAYROLL_LATE_TOLERANCE_MINUTES;
 
 interface DailyTotals {
   scheduledMinutes: number;
@@ -185,11 +188,14 @@ export function computePayrollLine(
 } {
   const baseUnits = moneyUnits(weeklySalary, 'weekly_salary');
   let deductionUnits = 0n;
-  let bonusUnits = 0n;
+  const bonusUnits = 0n;
   if (totals.scheduledMinutes > 0) {
     const scheduled = BigInt(totals.scheduledMinutes);
     deductionUnits = roundHalfUp(BigInt(totals.lateMinutes) * baseUnits, scheduled);
-    bonusUnits = roundHalfUp(BigInt(totals.overtimeMinutes) * baseUnits, scheduled);
+    // TASK 17.6.1 — overtime is attendance INFORMATION only: no automatic
+    // premium or proportional pay. `bonusUnits` stays 0 for every new
+    // calculation (the column is kept for periods closed before this
+    // decision); extra pay can only enter through an explicit adjustment.
   }
   return {
     baseSalarySnapshot: formatMoney(baseUnits),

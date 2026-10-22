@@ -45,7 +45,7 @@ reports), both local to `release/as-pos-v1`, nothing pushed or deployed.
   government filing. Totals are an internal operational figure.
 - Hourly or per-day salary schemes. The salary model is still a flat weekly
   amount.
-- Holiday / rest-day / overtime-premium multipliers.
+- Holiday / rest-day multipliers, and any overtime premium (a closed decision: none).
 - Payment of the payroll (no money movement is created by closing a period).
 - Server-generated binary PDF. The PDF is the browser's print-to-PDF of the
   generated HTML.
@@ -70,21 +70,50 @@ Purely additive: no drop, no backfill, existing rows are untouched.
   {complete, unscheduled_work, missing_clock_out, missing_clock_in, no_punches,
   day_off, no_schedule}`. Unique per `(company, period, employee, work_date)`.
 
-## 4. Calculation rules (unchanged formula, now explicit per day)
+## 4. Calculation rules (business decisions closed in TASK 17.6.1)
+
+### Late tolerance — 10 minutes (official policy)
+
+- One authoritative definition: `PAYROLL_LATE_TOLERANCE_MINUTES = 10` in
+  `payroll.service.ts`. Nothing else re-implements it; the API returns
+  `late_minutes` and Flutter only displays it.
+- Semantics: `late = max(0, clock_in − scheduled_start − 10)` (the tolerance is
+  *subtracted*; the first minutes are forgiven, they are not a cliff). With a
+  09:00 start: 09:00 / 09:09 / **09:10 → 0 late minutes**; **09:11 → 1**;
+  09:12 → 2; 09:20 → 10. Arriving early is never negative.
+- Not tenant-configurable. Overnight shifts are **not supported**: a schedule
+  must end after it starts (API validation and the `employee_schedules_range_ck`
+  CHECK), so the day-bucketing never has to split a shift across midnight.
+- A missing punch is **never** read as "on time": the day is flagged
+  (`missing_clock_in`, `missing_clock_out`, `no_punches`) and worked minutes stay
+  0 — the manager decides, e.g. with an explicit adjustment.
+
+### Overtime — information, not money
+
+- Overtime minutes (clock-out past the scheduled end) are calculated and shown as
+  attendance information ("Extra" / "Tiempo extra (solo asistencia)").
+- **No automatic monetary premium.** `bonus_amount` is 0 for every calculation
+  made since TASK 17.6.1; nothing is multiplied (no 1.5×, 2× or hourly
+  equivalent) and no labor-law formula is applied. Extra pay enters a payroll
+  only through an explicit manual **adjustment** (with reason and audit trail).
+- The column `bonus_amount` and the Flutter model are kept so a period calculated
+  *before* this decision still shows what it paid. Such a period is labeled
+  "Pago por tiempo extra (cálculo anterior)"; it is never recalculated unless it
+  is still a draft, and recalculating a draft drops the old automatic overtime
+  pay (that is the new policy). The UI, the weekly PDF and the receipt state:
+  "Las horas extra se muestran como información de asistencia. No generan un pago
+  automático."
+
+### The rest of the formula (unchanged)
 
 - Days are bucketed in the **branch timezone**; the first `clock_in` and the
-  last `clock_out` of the local day are used.
-- Lateness = minutes after `scheduled_start`, minus the 10-minute tolerance
-  (never negative). Overtime = minutes after `scheduled_end`.
-- `deduction = late_minutes × weekly_salary / scheduled_minutes` and
-  `bonus = overtime_minutes × weekly_salary / scheduled_minutes`, in fixed-point
+  last `clock_out` of the local day are used; worked minutes are the elapsed time
+  between them.
+- `deduction = late_minutes × weekly_salary / scheduled_minutes`, in fixed-point
   `BigInt` (scale 10 000), rounded half up.
-- `total = max(0, base − deduction + bonus + adjustment_net)`.
+- `total = max(0, base − deduction + adjustment_net)`.
 - The period totals are the sum of the per-day facts and the line figures; the
   Flutter client performs **no** money arithmetic.
-- A day with a punch problem is **flagged** (`missing_clock_out`,
-  `missing_clock_in`, `no_punches`, `unscheduled_work`) — it is shown to the
-  manager as such. Nothing is guessed or filled in.
 
 ## 5. Permissions and scoping
 
@@ -114,32 +143,33 @@ never sends a company or scope it could forge.
 
 ## 7. Tests
 
-- `payroll.service.test.ts` — 11 unit tests (day facts, rounding, clamping,
-  adjustment folding, totals).
-- `payroll-v2.integration.test.ts` — 15 integration tests on Postgres
-  (calculation, daily detail, adjustments incl. void, recalculation keeps
+- `payroll.service.test.ts` — 22 unit tests (day facts, rounding, clamping,
+  adjustment folding, totals, the late-tolerance boundaries 09:00/09:09/09:10/09:11/09:20,
+  and "overtime never adds money").
+- `payroll-v2.integration.test.ts` — 19 integration tests on Postgres
+  (late tolerance end to end, overtime-is-information, overnight shifts rejected,
+  calculation, daily detail, adjustments incl. void, recalculation keeps
   adjustments, close/reopen rules, frozen snapshot, scope, permissions).
 - `payroll.integration.test.ts` updated for the reason-bearing reopen.
 - Flutter: `payroll_html_test.dart`, `pos_payroll_gateway_test.dart`,
   `pos_people_test.dart` (Nómina group, incl. 1440 / 1365 / 1024 / 390 widths).
 
-## 8. Open business decisions (not decided here)
+## 8. Open business decisions
 
-1. **Late tolerance and rounding.** 10 minutes is recovered from the legacy
-   formula; confirm it is the policy, and whether it should be configurable per
-   company/branch.
-2. **Overtime pay.** Overtime is paid at the straight proportional rate, with no
-   premium. Confirm.
-3. **Missing punches.** A day with a missing clock-out counts zero worked
+Closed in TASK 17.6.1 (no longer open): **late tolerance = 10 minutes**, **no
+automatic overtime premium**.
+
+
+1. **Missing punches.** A day with a missing clock-out counts zero worked
    minutes and is flagged for the manager to fix with a manual adjustment.
    Confirm whether a punch-correction workflow is wanted instead.
-4. **Holidays / rest days / vacations / sick leave** are not modeled.
-5. **Salary scheme** beyond a flat weekly amount (hourly, per-day, mixed).
-6. **Legal deductions** (taxes, social security) and who owns that calculation.
-7. **Payroll payment** (cash out of the drawer, transfer, receipt signature)
+2. **Holidays / rest days / vacations / sick leave** are not modeled.
+3. **Salary scheme** beyond a flat weekly amount (hourly, per-day, mixed).
+4. **Legal deductions** (taxes, social security) and who owns that calculation.
+5. **Payroll payment** (cash out of the drawer, transfer, receipt signature)
    and its accounting.
-8. **Retention** of daily-detail rows for old periods.
-9. **Multi-currency** payroll: totals are per currency, but employees are
+6. **Retention** of daily-detail rows for old periods.
+7. **Multi-currency** payroll: totals are per currency, but employees are
    assumed to be paid in the company currency.
-10. **Pre-0050 periods** have no snapshot or daily detail; they can be
+8. **Pre-0050 periods** have no snapshot or daily detail; they can be
     recalculated while draft, but closed ones stay as they were.

@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDatabaseClient, type DatabaseClient } from '../client.js';
+import { journalMigrationCount } from '../testing/migration-journal.js';
 
 const databaseUrl = process.env.DATABASE_TEST_URL;
 const integrationDatabaseUrl = databaseUrl ?? 'postgresql://integration-test-disabled';
@@ -67,7 +68,7 @@ integration('inventory physical foundation', () => {
     const journal = await client.pool.query<{ count: string }>(
       'select count(*)::text as count from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows[0]?.count).toBe('34');
+    expect(journal.rows[0]?.count).toBe(String(journalMigrationCount()));
   });
 
   it('enforces location scope, lifecycle, types, codes, and one active default', async () => {

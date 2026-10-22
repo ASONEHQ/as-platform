@@ -227,4 +227,33 @@ void main() {
       }
     });
   });
+
+  group('overtime wording (TASK 17.6.1)', () {
+    test('both documents say overtime is attendance information, not an automatic payment', () {
+      final weekly = buildPayrollWeeklyHtml(
+        companyName: 'Empresa',
+        branchLabel: 'Sucursal',
+        periodLabel: '01/09 – 07/09',
+        closed: true,
+        rows: const [],
+        totals: const [],
+        generatedAt: DateTime.utc(2026, 9, 8),
+      );
+      final receipt = buildPayrollReceiptHtml(
+        companyName: 'Empresa',
+        branchLabel: 'Sucursal',
+        periodLabel: '01/09 – 07/09',
+        closed: true,
+        employeeName: 'Ana',
+        days: const [],
+        summary: const [],
+        adjustments: const [],
+        generatedAt: DateTime.utc(2026, 9, 8),
+      );
+      for (final document in [weekly, receipt]) {
+        expect(document, contains('No generan un pago automático'));
+        expect(document, isNot(contains('Pago por horas extra')));
+      }
+    });
+  });
 }

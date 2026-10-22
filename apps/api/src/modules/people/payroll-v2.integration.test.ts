@@ -376,10 +376,80 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
     expect(missing.status).toBe(404);
   });
 
+  it('late tolerance (10 minutes) end to end: 09:00 start — 09:09 and 09:10 are not late, 09:11 is 1 minute, 09:20 is 10', async () => {
+    asFull();
+    weekCounter += 1;
+    const monday = dayOf('2027-01-04', 7 * weekCounter);
+    const cases: [string, number][] = [['09:00', 0], ['09:09', 0], ['09:10', 0], ['09:11', 1], ['09:20', 10]];
+    const employees: [string, number][] = [];
+    for (const [clockIn, expectedLate] of cases) {
+      const employeeId = await createEmployee(branchId);
+      await schedule(employeeId, monday, '09:00', '17:00');
+      await punch(branchId, employeeId, 'clock_in', `${monday}T${clockIn}:00.000Z`);
+      await punch(branchId, employeeId, 'clock_out', `${monday}T17:00:00.000Z`);
+      employees.push([employeeId, expectedLate]);
+    }
+    const periodId = await createPeriod(branchId, monday, dayOf(monday, 6));
+    const calculated = await calculate(periodId);
+    for (const [employeeId, expectedLate] of employees) {
+      const line = lineOf(calculated, employeeId);
+      expect(line.late_minutes).toBe(expectedLate);
+      expect(line.overtime_minutes).toBe(0);
+      // The deduction follows only the (post-tolerance) late minutes.
+      expect(line.deduction_amount === '0.0000').toBe(expectedLate === 0);
+    }
+  });
+
+  it('a punch problem stays incomplete (flagged), never reported as on time', async () => {
+    asFull();
+    weekCounter += 1;
+    const monday = dayOf('2027-01-04', 7 * weekCounter);
+    const employeeId = await createEmployee(branchId);
+    await schedule(employeeId, monday, '09:00', '17:00');
+    await schedule(employeeId, dayOf(monday, 1), '09:00', '17:00');
+    await punch(branchId, employeeId, 'clock_out', `${monday}T17:00:00.000Z`); // no clock-in
+    const periodId = await createPeriod(branchId, monday, dayOf(monday, 6));
+    await calculate(periodId);
+    const result = await detail(periodId, employeeId);
+    expect(result.days[0]).toMatchObject({ attendance_state: 'missing_clock_in', worked_minutes: 0 });
+    expect(result.days[1]).toMatchObject({ attendance_state: 'no_punches', worked_minutes: 0 });
+  });
+
+  it('overnight shifts are not supported: a schedule that ends before it starts is rejected at the API', async () => {
+    asFull();
+    const employeeId = await createEmployee(branchId);
+    const response = await call('PUT', '/api/v1/schedules', {
+      employee_id: employeeId,
+      work_date: '2027-06-01',
+      is_day_off: false,
+      scheduled_start: '22:00',
+      scheduled_end: '06:00',
+    });
+    expect([400, 422]).toContain(response.statusCode);
+  });
+
+  it('overtime is attendance information only: it adds no money, and only an explicit adjustment changes the total', async () => {
+    const { employeeId, periodId } = await weekWithDetail();
+    const line = lineOf(await calculate(periodId), employeeId);
+    expect(line.overtime_minutes).toBe(30);
+    expect(line.bonus_amount).toBe('0.0000');
+    expect(line.total_amount).toBe('699.0278'); // 700.0000 base − 0.9722 late deduction, nothing for overtime
+    const adjusted = await call('POST', `/api/v1/payroll-periods/${periodId}/adjustments`, {
+      employee_id: employeeId,
+      kind: 'bonus',
+      amount: '100.0000',
+      reason: 'Horas extra acordadas',
+    });
+    expect(adjusted.statusCode).toBe(201);
+    const after = adjusted.json<{ data: { line: LineJson } }>().data.line;
+    expect(after.bonus_amount).toBe('0.0000');
+    expect(after.total_amount).toBe('799.0278');
+  });
+
   it('manual adjustments: bonus/deduction change the total with exact money, survive recalculation, and a void never deletes the record', async () => {
     const { employeeId, periodId } = await weekWithDetail();
     const base = lineOf(await calculate(periodId), employeeId); // formula-only total
-    expect(base.total_amount).toBe('713.6111');
+    expect(base.total_amount).toBe('699.0278');
 
     const bonus = await call('POST', `/api/v1/payroll-periods/${periodId}/adjustments`, {
       employee_id: employeeId,
@@ -390,7 +460,7 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
     expect(bonus.statusCode).toBe(201);
     const bonusBody = bonus.json<{ data: AdjustmentJson & { line: LineJson } }>().data;
     expect(bonusBody).toMatchObject({ kind: 'bonus', amount: '200.0000', status: 'active', created_by: userId });
-    expect(bonusBody.line).toMatchObject({ adjustment_amount: '200.0000', total_amount: '913.6111' });
+    expect(bonusBody.line).toMatchObject({ adjustment_amount: '200.0000', total_amount: '899.0278' });
 
     const deduction = await call('POST', `/api/v1/payroll-periods/${periodId}/adjustments`, {
       employee_id: employeeId,
@@ -401,12 +471,12 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
     expect(deduction.statusCode).toBe(201);
     expect(deduction.json<{ data: { line: LineJson } }>().data.line).toMatchObject({
       adjustment_amount: '149.5000',
-      total_amount: '863.1111',
+      total_amount: '848.5278',
     });
 
     // A recalculation REPLACES the lines wholesale but must keep the adjustments.
     const recalculated = lineOf(await calculate(periodId), employeeId);
-    expect(recalculated).toMatchObject({ adjustment_amount: '149.5000', total_amount: '863.1111' });
+    expect(recalculated).toMatchObject({ adjustment_amount: '149.5000', total_amount: '848.5278' });
     expect((await detail(periodId, employeeId)).adjustments).toHaveLength(2);
 
     // Voiding the bonus: the row stays (status voided + who/why), the total follows.
@@ -418,7 +488,7 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
       status: 'voided',
       voided_by: userId,
       void_reason: 'Capturado por error',
-      line: { adjustment_amount: '-50.5000', total_amount: '663.1111' },
+      line: { adjustment_amount: '-50.5000', total_amount: '648.5278' },
     });
     const after = await detail(periodId, employeeId);
     expect(after.adjustments.map((item) => item.status).sort()).toEqual(['active', 'voided']);
@@ -712,7 +782,7 @@ integration('PostgreSQL Payroll V2 (TASK 17.6)', { concurrent: false, timeout: 6
        where l.company_id=$1 and p.id=$2 and l.employee_id=$3 and p.status='closed'`,
       [companyId, periodId, employeeId],
     );
-    expect(total.rows[0]?.total).toBe('1013.6111'); // 713.6111 formula + 300.0000 adjustment
+    expect(total.rows[0]?.total).toBe('999.0278'); // 699.0278 formula + 300.0000 adjustment
 
     // The server's own column totals agree with the stored lines (the client never adds money).
     const sqlTotal = await database.pool.query<{ total: string; adjustment: string }>(

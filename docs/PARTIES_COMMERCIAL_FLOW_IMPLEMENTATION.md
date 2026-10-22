@@ -63,8 +63,9 @@ records no money.
 
 ### Payment ledger (migration `0052`)
 
-- Every payment now has a `method`: `cash`, `card` or `transfer`, an optional
-  `reference` (≤ 120) and `notes` (≤ 500).
+- Every payment now has a `method`: `cash`, `card` or `transfer`, a `reference`
+  (≤ 120; **required for a transfer**, optional for card/cash) and optional `notes`
+  (≤ 500).
 - **Cash** requires an open cash session of the same branch and still posts the
   `cash_in` movement. **Card and transfer post no cash movement and take no
   cash session** (supplying one is a validation error). They are **records of
@@ -76,7 +77,7 @@ records no money.
   (`method = 'cash'` ⇔ movement present).
 - `GET …/party-reservations/:id/payments` returns the whole history, oldest
   first, voided payments included and flagged.
-- `POST …/payments/:paymentId/void` (reason ≥ 3 chars) **never deletes**: the
+- `POST …/payments/:paymentId/void` (needs `party.payment.void`; reason ≥ 3 chars) **never deletes**: the
   row keeps `voided_at / voided_by / void_reason`. Voiding a **cash** payment
   posts a compensating `cash_out` linked to the original movement through
   `reversal_of_id` (which also prevents a second reversal) into the **open
@@ -114,7 +115,7 @@ All four SQL consumers of `party_reservation_payments` were updated:
 | Read quotes / history / balance / print a quote | `party.read` |
 | Create, edit, cancel a quote; create the reservation (incl. conversion) | `party.manage` |
 | Record a payment | `party.payment.record` |
-| **Void** a payment | `party.cancel` (the strongest party authority that already exists; no new permission was invented) |
+| **Void** a payment | `party.payment.void` (dedicated; **not** `party.cancel`, `party.manage` or `party.payment.record`) |
 
 Scope is enforced on the server (`permittedBranchIds` from the token). A quote,
 reservation or payment outside the actor's branches — or in another company —
@@ -122,18 +123,18 @@ answers 404. Creating a quote for a branch outside the scope is rejected.
 
 ## 4. Tests
 
-- `party-quotes.integration.test.ts` — 16 tests: persistence across a fresh
+- `party-quotes.integration.test.ts` — 17 tests: persistence across a fresh
   repository, snapshot immutability when the package changes, re-pricing rules,
   stale-edit guard, cancel, scope / company isolation, pagination, conversion
   (frozen amounts, duplicate protection, replay, mismatch, failed conversion),
   printable document (snapshot, escaping, audit), and the HTTP layer.
-- `party-payments.integration.test.ts` — 18 tests: cash vs card vs transfer,
+- `party-payments.integration.test.ts` — 34 tests (incl. the dedicated void permission matrix, required transfer reference and the database-level CHECK invariants): cash vs card vs transfer,
   validation, double submit, balance (remaining / overpaid), history, voids
   (cash compensation, wrong session, twice, replay, non-cash), generic-reversal
   guard, audit, scope isolation, downstream sums, and the HTTP layer incl.
   permissions.
 - The pre-existing parties, cash, dashboard and reports suites keep passing.
-- Flutter: 22 new tests in `pos_shell_test.dart` (saved quotes, conversion with
+- Flutter: 27 tests in `pos_shell_test.dart` (TASK 17.6 group) (saved quotes, conversion with
   locked pricing, payment dialog per method, stable idempotency key, history,
   voids, balance, and layout at 1440 / 1365 / 1024 / 390).
 
@@ -150,23 +151,65 @@ answers 404. Creating a quote for a branch outside the scope is rejected.
 - Customer selection while quoting reuses the customer picker; a quote cannot be
   created for a customer that does not exist.
 
-## 6. Open business decisions
+## 6. Business decisions
+
+### Closed in TASK 17.6.1
+
+- **Payment void permission — dedicated `party.payment.void`.** Cancelling a
+  reservation and reversing a financial record are separate powers, so
+  `party.cancel` (and `party.manage`, `party.payment.record`) can no longer void
+  a payment; the endpoint answers 403 without the dedicated code. It was added to
+  the permission catalogue only (`technicalPermissionCodes`, now 105 codes) — no
+  schema migration. Who holds it:
+  - the **Owner** (`is_system`) role, through `syncSystemRolePermissions` on the
+    next `db:seed`;
+  - the **Administrador** role template, because that template is the whole
+    catalogue;
+  - **nobody else**: the Gerente and Cajero templates, the beta-tester template
+    and every custom role are *not* widened. An administrator must grant it
+    explicitly (the existing self-escalation guard still applies). Production
+    needs `pnpm db:seed` to insert the code and give it to Owner roles; no
+    migration.
+  The void still records who / when / why and keeps the original row.
+- **Transfer reference — required.** A transfer without a reference (missing,
+  empty or whitespace-only) is rejected with `validation_error` by the service
+  (trimmed first), independent of the client; nothing is persisted. The reference
+  is an operator-entered audit identifier: **the system does not verify it
+  against a bank.** Card and cash do not require one.
+- **Card — recorded, not processed.** The method is a record that the operator
+  states a card payment was taken elsewhere. No authorization code, processor
+  status or settlement is ever fabricated.
+- **Transfer — recorded, not bank-verified.** Nothing in the API or UI says a
+  transfer was verified or confirmed by the bank.
+
+### Still open
 
 1. **Quote validity**: expiry date, and whether an expired quote may convert.
-2. **Void authority**: `party.cancel` is reused; confirm or define a dedicated
-   `party.payment.void` permission (needs role seeding).
-3. **Reference required?** Today `reference` is optional for card / transfer;
-   decide whether a transfer must carry a folio.
-4. **Overpayment**: allowed and flagged (`overpaid_amount`); decide whether to
+2. **Overpayment**: allowed and flagged (`overpaid_amount`); decide whether to
    block it or require a refund flow.
-5. **Refund of a voided cash payment from a closed session**: the compensating
+3. **Refund of a voided cash payment from a closed session**: the compensating
    `cash_out` is posted in the *current* open session by design; confirm the
    accounting treatment.
-6. **Cancelled reservations with payments** still only warn ("has prior
+4. **Cancelled reservations with payments** still only warn ("has prior
    payments"); automatic refunds were deliberately not added.
-7. **Cash-session policy**: cash still requires an open session at the same
+5. **Cash-session policy**: cash still requires an open session at the same
    branch; decide whether a deposit may be taken when the drawer is closed
    (today: no).
-8. **Quote document content**: logo, address, validity text, payment terms.
-9. **Direct reservations**: whether every reservation must come from a saved
+6. **Quote document content**: logo, address, validity text, payment terms.
+7. **Direct reservations**: whether every reservation must come from a saved
    quote.
+
+## 7. Payment invariants (database and service)
+
+- `party_reservation_payments_method_movement_ck`: `method = 'cash'` **iff**
+  `cash_movement_id IS NOT NULL`. `cash_movement_id` was made nullable in
+  migration `0052` solely because card/transfer payments have no cash movement;
+  the CHECK keeps the invalid states (a cash payment with no movement, a
+  card/transfer payment with a fake one) impossible at the database level, and the
+  service creates the movement and the payment in one transaction.
+- `party_reservation_payments_void_ck`: the void columns are all-or-none, the
+  reason is 3–500 chars, and a voided cash payment must point at its
+  compensating movement (a non-cash one never has one).
+- The transfer-reference rule is enforced by the service, not by a CHECK: adding
+  one would be a new migration for a rule that cannot be violated through any
+  supported path, and existing rows would have to be audited first.

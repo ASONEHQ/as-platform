@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createDatabaseClient, roleTemplates, syncSystemRolePermissions, type DatabaseClient } from '@asone/database';
+import {
+  createDatabaseClient,
+  roleTemplates,
+  seedTechnicalPermissions,
+  syncSystemRolePermissions,
+  type DatabaseClient,
+} from '@asone/database';
 
 import { AdministrationService } from '../admin/shared/admin.service.js';
 import { AdminRepository } from '../admin/shared/admin.repository.js';
@@ -157,6 +163,11 @@ integration('PostgreSQL workspace/register-branch scope (TASK 16.16)', { concurr
              ($4,$2,'Register Operator','register_operator','active',false)`,
       [ownerRoleId, companyId, managerRoleId, cashierRoleId],
     );
+    // TASK 17.6.1 — other suites on the shared test database truncate or
+    // delete rows from `permissions`; this suite needs the approved
+    // catalogue, so it seeds it itself (idempotent) instead of assuming a
+    // previous suite left it intact.
+    await seedTechnicalPermissions(database.db);
     const permissionRows = await database.pool.query<{ id: string; code: string }>(
       `select id,code from permissions where code = any($1::text[])`,
       [cashierTemplate.permissionCodes],

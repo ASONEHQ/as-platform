@@ -335,8 +335,9 @@ describe('database foundation schema', () => {
   // uniqueness check and the specific spot-checked codes are the test's
   // real intent and are unchanged.
   it('contains exactly the current approved permission definitions, each unique', () => {
-    expect(technicalPermissionCodes).toHaveLength(104);
-    expect(new Set(technicalPermissionCodes).size).toBe(104);
+    expect(technicalPermissionCodes).toHaveLength(105);
+    expect(new Set(technicalPermissionCodes).size).toBe(105);
+    expect(technicalPermissionCodes).toContain('party.payment.void');
     expect(technicalPermissionCodes).toContain('inventory.cost.read');
     expect(technicalPermissionCodes).toContain('inventory.approve');
     expect(technicalPermissionCodes).toContain('inventory.reservation.manage');

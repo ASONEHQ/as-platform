@@ -10942,12 +10942,13 @@ void main() {
       _FakePartiesGateway gateway, {
       bool cancel = false,
       bool recordPayment = true,
+      bool voidPayment = false,
       Size size = const Size(1440, 900),
     }) async {
       await _pump(
         tester,
         size,
-        context: _contextWithParties(manage: true, cancel: cancel, recordPayment: recordPayment),
+        context: _contextWithParties(manage: true, cancel: cancel, recordPayment: recordPayment, voidPayment: voidPayment),
         partiesGateway: gateway,
       );
       await goFiestas(tester);
@@ -11178,6 +11179,60 @@ void main() {
         expect(find.textContaining('verificad'), findsNothing);
       });
 
+      testWidgets('transfer requires its reference: the field is marked required, submit is blocked without it, and a valid one is sent', (
+        tester,
+      ) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-method')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Transferencia').last);
+        await tester.pumpAndSettle();
+        expect(find.text('Referencia de transferencia *'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '900');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls, isEmpty);
+        expect(find.text('Captura la referencia de la transferencia.'), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-reference')), '   ');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls, isEmpty);
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-reference')), 'SPEI-4821');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        final call = gateway.recordPaymentCalls.single;
+        expect(call.method, 'transfer');
+        expect(call.reference, 'SPEI-4821');
+        expect(call.cashSessionId, isNull);
+      });
+
+      testWidgets('transfer copy never claims the bank confirmed or verified anything', (tester) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-method')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Transferencia').last);
+        await tester.pumpAndSettle();
+        expect(find.textContaining('no verifica el depósito'), findsWidgets);
+        expect(find.textContaining('verificada'), findsNothing);
+        expect(find.textContaining('confirmad'), findsNothing);
+        expect(find.textContaining('banco'), findsNothing);
+      });
+
+      testWidgets('cash and card do not require a reference', (tester) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '100');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls.single.method, 'cash');
+        expect(gateway.recordPaymentCalls.single.reference, isNull);
+      });
+
       testWidgets('a retry after a failure re-sends the SAME idempotency key, and editing the amount renews it', (tester) async {
         final gateway = paymentsGateway();
         gateway.recordPaymentFailure = const ApiException(
@@ -11225,6 +11280,22 @@ void main() {
         expect(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')), findsNothing);
       });
 
+      testWidgets('party.cancel alone does not show "Anular pago"; only party.payment.void does', (tester) async {
+        final gateway = paymentsGateway(payments: [payment(id: 'pay-cash')]);
+        await openReservationDetail(tester, gateway, cancel: true); // cancel, but NOT the void permission
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-row-pay-cash')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-fiestas-payment-row-pay-cash')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')), findsNothing);
+      });
+
+      testWidgets('with party.payment.void the action is offered', (tester) async {
+        final gateway = paymentsGateway(payments: [payment(id: 'pay-cash')]);
+        await openReservationDetail(tester, gateway, voidPayment: true);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')));
+        expect(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')), findsOneWidget);
+      });
+
       testWidgets('an empty history says so honestly', (tester) async {
         await openReservationDetail(tester, paymentsGateway());
         await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payments-empty')));
@@ -11233,7 +11304,7 @@ void main() {
 
       testWidgets('voiding a cash payment needs a reason, sends the open cash session and a stable key, then shows it voided', (tester) async {
         final gateway = paymentsGateway(payments: [payment(id: 'pay-cash')]);
-        await openReservationDetail(tester, gateway, cancel: true);
+        await openReservationDetail(tester, gateway, voidPayment: true);
         await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')));
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')));
@@ -11259,7 +11330,7 @@ void main() {
 
       testWidgets('voiding a card payment sends no cash session', (tester) async {
         final gateway = paymentsGateway(payments: [payment(id: 'pay-card', method: 'card')]);
-        await openReservationDetail(tester, gateway, cancel: true);
+        await openReservationDetail(tester, gateway, voidPayment: true);
         await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-void-pay-card')));
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-pay-card')));
@@ -11318,7 +11389,7 @@ void main() {
         ],
       );
       final errors = await commercialLayoutErrors(() async {
-        await openReservationDetail(tester, gateway, cancel: true, size: const Size(390, 844));
+        await openReservationDetail(tester, gateway, voidPayment: true, size: const Size(390, 844));
         await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payments-history')));
         await tester.pumpAndSettle();
       });
@@ -12668,6 +12739,7 @@ AuthenticatedContext _contextWithParties({
   bool manage = false,
   bool cancel = false,
   bool recordPayment = false,
+  bool voidPayment = false,
 }) => AuthenticatedContext(
   session: _context.session,
   user: _context.user,
@@ -12680,6 +12752,7 @@ AuthenticatedContext _contextWithParties({
     if (manage) 'party.manage',
     if (cancel) 'party.cancel',
     if (recordPayment) 'party.payment.record',
+    if (voidPayment) 'party.payment.void',
   ],
 );
 

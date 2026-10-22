@@ -31529,6 +31529,12 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
     }
     final reference = _referenceController.text.trim();
     final notes = _notesController.text.trim();
+    // TASK 17.6.1 — a transfer must carry the operator-entered reference. The
+    // server enforces it too; this just avoids a round trip.
+    if (_method == 'transfer' && reference.isEmpty) {
+      setState(() => _error = 'Captura la referencia de la transferencia.');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -31634,7 +31640,9 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
                       maxLength: 120,
                       decoration: InputDecoration(
                         isDense: true,
-                        labelText: _method == 'card' ? 'Autorización / referencia (opcional)' : 'Referencia / folio de la transferencia (opcional)',
+                        labelText: _method == 'card' ? 'Autorización / referencia (opcional)' : 'Referencia de transferencia *',
+                        helperText: _method == 'transfer' ? 'Folio o clave que tú capturas. El sistema no verifica el depósito.' : null,
+                        helperMaxLines: 2,
                       ),
                       onChanged: (_) => _edited(),
                     ),
@@ -32444,6 +32452,10 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
   bool get _canCancel => widget.context.permissions.contains('party.cancel');
   bool get _canRecordPayment => widget.context.permissions.contains('party.payment.record');
 
+  /// TASK 17.6.1 — voiding a payment is its own power (not cancelling the
+  /// reservation). The server enforces it; this only hides the action.
+  bool get _canVoidPayment => widget.context.permissions.contains('party.payment.void');
+
   /// TASK 16.19 — the seller/responsible-user name for this reservation.
   /// Mirrors `_FiestasCalendario._sellerLabel`'s exact pattern: a plain
   /// lookup against the already-loaded `controller.users` roster, never a
@@ -32969,7 +32981,7 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
         _PartyPaymentHistory(
           payments: _payments,
           currency: reservation.currencyCode,
-          canVoid: _canCancel,
+          canVoid: _canVoidPayment,
           onVoid: (payment) => unawaited(_voidPayment(payment)),
         ),
         if (_cancelled) ...[

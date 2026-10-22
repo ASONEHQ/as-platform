@@ -205,6 +205,53 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
     await database.close();
   });
 
+  // The same HTTP harness as the 'HTTP layer' block, hoisted so the
+  // authorization / transfer-reference blocks can use it too.
+  function buildVoidApp(permissions: string[], permitted: string[], forCompanyId: string): FastifyInstance {
+    const authContext: AuthContext = {
+      sessionId: randomUUID(),
+      userId,
+      membershipId: randomUUID(),
+      companyId: forCompanyId,
+      branchId,
+      expiresAt: new Date(Date.now() + 60_000),
+      companyWideAccess: false,
+      permissions,
+      permittedBranchIds: permitted,
+    };
+    const authentication = {
+      authenticate: vi.fn(() => Promise.resolve(authContext)),
+      requirePermission: vi.fn((_context: AuthContext, permission: string) => {
+        if (!authContext.permissions.includes(permission))
+          throw new AppError({ code: 'permission_denied', message: 'Permission denied.', statusCode: 403 });
+      }),
+      requireBranchAccess: vi.fn(() => undefined),
+    } as unknown as AuthService;
+    const app = Fastify();
+    app.addHook('onRequest', (request, _reply, done) => {
+      request.requestContext = {
+        requestId: randomUUID(),
+        correlationId: randomUUID(),
+        companyId: undefined,
+        branchId: undefined,
+        userId: undefined,
+        sessionId: undefined,
+        deviceId: undefined,
+      };
+      done();
+    });
+    app.setErrorHandler((error, request, reply) => {
+      if (error instanceof AppError)
+        return reply.code(error.statusCode).send({
+          error: { code: error.code, message: error.message },
+          meta: { request_id: request.requestContext.requestId, correlation_id: request.requestContext.correlationId },
+        });
+      return reply.code(500).send({ error: { code: 'internal_error', message: (error as Error).message } });
+    });
+    registerPartyReservationRoutes(app, authentication, reservations);
+    return app;
+  }
+
   async function movementsOf(sessionId: string, reservationId: string): Promise<Awaited<ReturnType<CashRepository['listMovements']>>['items']> {
     const all = await cashRepository.listMovements(companyId, sessionId, { limit: 100 });
     return all.items.filter((m) => m.referenceType === 'party_reservation' && m.referenceId === reservationId);
@@ -363,7 +410,7 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
     it('requires an open session of the same branch to void a cash payment, and a non-cash void must not name one', async () => {
       const reservationId = await newReservation();
       const cashPayment = await pay(reservationId);
-      const transfer = await pay(reservationId, { method: 'transfer', cashSessionId: null, amount: '200.0000' });
+      const transfer = await pay(reservationId, { method: 'transfer', cashSessionId: null, amount: '200.0000', reference: 'SPEI-T1' });
       const ctx = (): PartyMutationContext => context(companyId, userId);
       await expectError(
         reservations.voidPayment(ctx(), branchIds, `v-${randomUUID()}`, reservationId, cashPayment.value.id, { reason: 'sin sesion' }),
@@ -495,6 +542,7 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
           purpose: 'deposit',
           amount: '10.0000',
           method: 'transfer',
+          reference: 'SPEI-S1',
         }),
         'resource_not_found',
       );
@@ -595,7 +643,7 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
     });
 
     it('records a card payment, lists history, and voids it over HTTP with honest recorded_only semantics', async () => {
-      const app = buildApp(['party.read', 'party.payment.record', 'party.cancel'], [branchId]);
+      const app = buildApp(['party.read', 'party.payment.record', 'party.payment.void'], [branchId]);
       await app.ready();
       try {
         const reservationId = await newReservation();
@@ -644,7 +692,7 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
       }
     });
 
-    it('enforces permissions: record needs party.payment.record, void needs party.cancel, history needs party.read', async () => {
+    it('enforces permissions: record needs party.payment.record, history needs party.read', async () => {
       const recordOnly = buildApp(['party.read', 'party.payment.record'], [branchId]);
       const noRead = buildApp([], [branchId]);
       await recordOnly.ready();
@@ -666,7 +714,7 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
               method: 'POST',
               url: `/api/v1/party-reservations/${reservationId}/payments`,
               headers: headers(),
-              payload: { purpose: 'deposit', amount: '10.0000', method: 'transfer' },
+              payload: { purpose: 'deposit', amount: '10.0000', method: 'transfer', reference: 'SPEI-P1' },
             })
           ).statusCode,
         ).toBe(403);
@@ -675,6 +723,158 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
         await recordOnly.close();
         await noRead.close();
       }
+    });
+  });
+
+  describe('payment void authorization (TASK 17.6.1: dedicated party.payment.void)', () => {
+    async function voidWith(
+      permissions: string[],
+      options: { permitted?: string[]; company?: string } = {},
+    ): Promise<{ status: number; reservationId: string; paymentId: string }> {
+      const reservationId = await newReservation();
+      const payment = await pay(reservationId, { method: 'card', cashSessionId: null, reference: 'AUT-V' });
+      const app = buildVoidApp(permissions, options.permitted ?? [branchId], options.company ?? companyId);
+      await app.ready();
+      try {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/party-reservations/${reservationId}/payments/${payment.value.id}/void`,
+          headers: { authorization: 'Bearer x', 'idempotency-key': `v-${randomUUID()}`, 'content-type': 'application/json' },
+          payload: { reason: 'Prueba de autorizacion' },
+        });
+        return { status: response.statusCode, reservationId, paymentId: payment.value.id };
+      } finally {
+        await app.close();
+      }
+    }
+    const stillActive = async (reservationId: string, paymentId: string): Promise<boolean> => {
+      const rows = await reservations.listPayments(companyId, branchIds, reservationId);
+      return rows.find((row) => row.id === paymentId)?.voidedAt === null;
+    };
+
+    it('party.cancel alone cannot void a payment', async () => {
+      const result = await voidWith(['party.read', 'party.cancel']);
+      expect(result.status).toBe(403);
+      expect(await stillActive(result.reservationId, result.paymentId)).toBe(true);
+    });
+
+    it('party.manage and party.payment.record (even together with party.cancel) cannot void a payment', async () => {
+      const result = await voidWith(['party.read', 'party.manage', 'party.payment.record', 'party.cancel']);
+      expect(result.status).toBe(403);
+      expect(await stillActive(result.reservationId, result.paymentId)).toBe(true);
+    });
+
+    it('party.payment.void can void, and the void keeps who / when / why', async () => {
+      const result = await voidWith(['party.read', 'party.payment.void']);
+      expect(result.status).toBe(200);
+      const row = (await reservations.listPayments(companyId, branchIds, result.reservationId)).find((item) => item.id === result.paymentId);
+      expect(row?.voidedAt).toBeInstanceOf(Date);
+      expect(row?.voidedBy).toBe(userId);
+      expect(row?.voidReason).toBe('Prueba de autorizacion');
+    });
+
+    it('party.payment.void in a branch outside the reservation scope is a 404 and voids nothing', async () => {
+      const result = await voidWith(['party.read', 'party.payment.void'], { permitted: [otherBranchId] });
+      expect(result.status).toBe(404);
+      expect(await stillActive(result.reservationId, result.paymentId)).toBe(true);
+    });
+
+    it('party.payment.void from a foreign company is a 404 and voids nothing', async () => {
+      const result = await voidWith(['party.read', 'party.payment.void'], { permitted: [otherCompanyBranchId], company: otherCompanyId });
+      expect(result.status).toBe(404);
+      expect(await stillActive(result.reservationId, result.paymentId)).toBe(true);
+    });
+  });
+
+  describe('transfer reference is required (TASK 17.6.1)', () => {
+    const rowCount = async (reservationId: string): Promise<number> =>
+      (await reservations.listPayments(companyId, branchIds, reservationId)).length;
+
+    it('accepts a transfer with a reference and stores it trimmed, without any cash movement', async () => {
+      const reservationId = await newReservation();
+      const payment = await pay(reservationId, { method: 'transfer', cashSessionId: null, reference: '  SPEI-0042  ' });
+      expect(payment.value.reference).toBe('SPEI-0042');
+      expect(payment.value.cashMovementId).toBeNull();
+    });
+
+    it.each([
+      ['no reference', undefined],
+      ['an empty reference', ''],
+      ['a whitespace-only reference', '   \t  '],
+    ])('rejects a transfer with %s and persists nothing', async (_name, reference) => {
+      const reservationId = await newReservation();
+      await expectError(
+        pay(reservationId, { method: 'transfer', cashSessionId: null, ...(reference === undefined ? {} : { reference }) }),
+        'validation_error',
+      );
+      expect(await rowCount(reservationId)).toBe(0);
+    });
+
+    it('does not require a reference for cash or card', async () => {
+      const reservationId = await newReservation();
+      await pay(reservationId, { method: 'cash' });
+      await pay(reservationId, { method: 'card', cashSessionId: null });
+      expect(await rowCount(reservationId)).toBe(2);
+    });
+
+    it('is enforced by the API, not only by the client', async () => {
+      const app = buildVoidApp(['party.read', 'party.payment.record'], [branchId], companyId);
+      await app.ready();
+      try {
+        const reservationId = await newReservation();
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/v1/party-reservations/${reservationId}/payments`,
+          headers: { authorization: 'Bearer x', 'idempotency-key': `p-${randomUUID()}`, 'content-type': 'application/json' },
+          payload: { purpose: 'deposit', amount: '50.0000', method: 'transfer' },
+        });
+        expect(response.statusCode).toBeGreaterThanOrEqual(400);
+        expect(await rowCount(reservationId)).toBe(0);
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe('database-level payment invariants (migration 0052)', () => {
+    // Direct SQL, each statement rolled back: the CHECK constraints are the
+    // last line of defence behind the service.
+    async function rejects(statement: string, params: unknown[]): Promise<string | undefined> {
+      const connection = await database.pool.connect();
+      try {
+        await connection.query('begin');
+        await connection.query(statement, params);
+        return undefined;
+      } catch (error) {
+        return (error as { code?: string }).code;
+      } finally {
+        await connection.query('rollback');
+        connection.release();
+      }
+    }
+    const insert = `insert into party_reservation_payments
+      (id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,method,created_by,created_at)
+      values ($1,$2,$3,$4,$5,'deposit','10.0000',$6,$7,now())`;
+
+    it('a cash payment cannot exist without its cash movement', async () => {
+      const reservationId = await newReservation();
+      expect(await rejects(insert, [randomUUID(), companyId, branchId, reservationId, null, 'cash', userId])).toBe('23514');
+    });
+
+    it('a card or transfer payment cannot carry a (fake) cash movement', async () => {
+      const reservationId = await newReservation();
+      const movement = await pay(reservationId);
+      for (const method of ['card', 'transfer']) {
+        expect(
+          await rejects(insert, [randomUUID(), companyId, branchId, reservationId, movement.value.cashMovementId, method, userId]),
+        ).toBe('23514');
+      }
+    });
+
+    it('a half-filled void is rejected', async () => {
+      const reservationId = await newReservation();
+      const payment = await pay(reservationId, { method: 'card', cashSessionId: null });
+      expect(await rejects('update party_reservation_payments set voided_at=now() where id=$1', [payment.value.id])).toBe('23514');
     });
   });
 
