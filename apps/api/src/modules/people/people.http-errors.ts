@@ -25,6 +25,7 @@ const peopleErrorStatus: Readonly<Record<string, number>> = {
   duplicate_clock_in: 409,
   invalid_clock_out: 409,
   payroll_period_closed: 409,
+  payroll_incomplete: 409,
 };
 
 export function mapPeopleError(error: unknown): Error {

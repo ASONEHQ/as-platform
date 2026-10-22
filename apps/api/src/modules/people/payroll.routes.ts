@@ -6,11 +6,26 @@ import type { AuthService } from '../auth/auth.service.js';
 import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withPeopleErrors } from './people.http-errors.js';
 import type { PayrollService } from './payroll.service.js';
-import type { PayrollPeriodLineRow, PayrollPeriodRow, PeopleMutationContext } from './people.types.js';
+import type {
+  PayrollAdjustmentRow,
+  PayrollLineDayRow,
+  PayrollPeriodLineRow,
+  PayrollPeriodRow,
+  PeopleMutationContext,
+} from './people.types.js';
 
 interface Params {
   id: string;
 }
+interface EmployeeParams extends Params {
+  employeeId: string;
+}
+interface AdjustmentParams extends Params {
+  adjustmentId: string;
+}
+
+const uuidParam = { type: 'string', format: 'uuid' } as const;
+const moneyPattern = '^\\d{1,15}(\\.\\d{1,4})?$';
 
 const errorSchema = { type: 'object', additionalProperties: true } as const;
 const commonErrors = {
@@ -66,6 +81,49 @@ function lineHttp(value: PayrollPeriodLineRow): Readonly<Record<string, unknown>
     currency_code: value.currencyCode,
     computed_at: value.computedAt.toISOString(),
     computed_by: value.computedBy,
+    // TASK 17.6 — the signed NET of the non-voided manual adjustments
+    // (`total_amount` already includes it) and the employee identity frozen
+    // at calculation time. `snapshot_available` is false ONLY for lines
+    // computed before Payroll V2 existed; the client then falls back to the
+    // live employee record and must say so.
+    adjustment_amount: value.adjustmentAmount,
+    employee_name: value.employeeNameSnapshot,
+    employee_code: value.employeeCodeSnapshot,
+    job_title: value.jobTitleSnapshot,
+    snapshot_available: value.employeeNameSnapshot !== null,
+  };
+}
+function adjustmentHttp(value: PayrollAdjustmentRow): Readonly<Record<string, unknown>> {
+  return {
+    id: value.id,
+    payroll_period_id: value.payrollPeriodId,
+    branch_id: value.branchId,
+    employee_id: value.employeeId,
+    kind: value.kind,
+    amount: value.amount,
+    currency_code: value.currencyCode,
+    reason: value.reason,
+    created_by: value.createdBy,
+    created_at: value.createdAt.toISOString(),
+    voided_at: value.voidedAt?.toISOString() ?? null,
+    voided_by: value.voidedBy,
+    void_reason: value.voidReason,
+    status: value.voidedAt === null ? 'active' : 'voided',
+  };
+}
+function dayHttp(value: PayrollLineDayRow): Readonly<Record<string, unknown>> {
+  return {
+    work_date: value.workDate,
+    scheduled_start: value.scheduledStart,
+    scheduled_end: value.scheduledEnd,
+    is_day_off: value.isDayOff,
+    scheduled_minutes: value.scheduledMinutes,
+    worked_minutes: value.workedMinutes,
+    late_minutes: value.lateMinutes,
+    overtime_minutes: value.overtimeMinutes,
+    first_in_minute: value.firstInMinute,
+    last_out_minute: value.lastOutMinute,
+    attendance_state: value.attendanceState,
   };
 }
 function periodWithLinesHttp(value: { period: PayrollPeriodRow; lines: PayrollPeriodLineRow[] }): Readonly<Record<string, unknown>> {
@@ -165,6 +223,136 @@ export function registerPayrollRoutes(app: FastifyInstance, authentication: Auth
       }),
   );
 
+  app.get<{ Params: EmployeeParams }>(
+    '/api/v1/payroll-periods/:id/employees/:employeeId',
+    {
+      schema: {
+        tags: ['people'],
+        params: { type: 'object', required: ['id', 'employeeId'], properties: { id: uuidParam, employeeId: uuidParam } },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'payroll.read');
+        const detail = await service.employeeDetail(
+          auth.companyId,
+          auth.permittedBranchIds,
+          request.params.id,
+          request.params.employeeId,
+        );
+        return reply.send(
+          successResponse(
+            {
+              period: periodHttp(detail.period),
+              line: lineHttp(detail.line),
+              days: detail.days.map(dayHttp),
+              adjustments: detail.adjustments.map(adjustmentHttp),
+            },
+            request.requestContext,
+          ),
+        );
+      }),
+  );
+
+  app.get<{ Params: Params }>(
+    '/api/v1/payroll-periods/:id/adjustments',
+    {
+      schema: {
+        tags: ['people'],
+        params: { type: 'object', required: ['id'], properties: { id: uuidParam } },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'payroll.read');
+        const items = await service.adjustments(auth.companyId, auth.permittedBranchIds, request.params.id);
+        return reply.send({ data: items.map(adjustmentHttp), meta: responseMeta(request.requestContext) });
+      }),
+  );
+
+  app.post<{ Params: Params; Body: { employee_id: string; kind: string; amount: string; reason: string } }>(
+    '/api/v1/payroll-periods/:id/adjustments',
+    {
+      schema: {
+        tags: ['people'],
+        headers: idempotencyHeaders,
+        params: { type: 'object', required: ['id'], properties: { id: uuidParam } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['employee_id', 'kind', 'amount', 'reason'],
+          properties: {
+            employee_id: uuidParam,
+            kind: { type: 'string', enum: ['bonus', 'deduction'] },
+            amount: { type: 'string', pattern: moneyPattern },
+            reason: { type: 'string', minLength: 3, maxLength: 500 },
+          },
+        },
+        response: { 201: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'payroll.manage');
+        const created = await service.createAdjustment(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.params.id,
+          {
+            employeeId: request.body.employee_id,
+            kind: request.body.kind,
+            amount: request.body.amount,
+            reason: request.body.reason,
+          },
+        );
+        if (created.replayed) reply.header('idempotency-replayed', 'true');
+        const { line, ...row } = created.value;
+        return reply.code(201).send(
+          successResponse({ ...adjustmentHttp(row), line: lineHttp(line) }, request.requestContext),
+        );
+      }),
+  );
+
+  app.post<{ Params: AdjustmentParams; Body: { reason: string } }>(
+    '/api/v1/payroll-periods/:id/adjustments/:adjustmentId/void',
+    {
+      schema: {
+        tags: ['people'],
+        headers: idempotencyHeaders,
+        params: { type: 'object', required: ['id', 'adjustmentId'], properties: { id: uuidParam, adjustmentId: uuidParam } },
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['reason'],
+          properties: { reason: { type: 'string', minLength: 3, maxLength: 500 } },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPeopleErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'payroll.manage');
+        const voided = await service.voidAdjustment(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.params.id,
+          request.params.adjustmentId,
+          request.body.reason,
+        );
+        if (voided.replayed) reply.header('idempotency-replayed', 'true');
+        const { line, ...row } = voided.value;
+        return reply.send(successResponse({ ...adjustmentHttp(row), line: lineHttp(line) }, request.requestContext));
+      }),
+  );
+
   app.post<{ Params: Params }>(
     '/api/v1/payroll-periods/:id/calculate',
     {
@@ -215,13 +403,21 @@ export function registerPayrollRoutes(app: FastifyInstance, authentication: Auth
       }),
   );
 
-  app.post<{ Params: Params }>(
+  app.post<{ Params: Params; Body: { reason: string } }>(
     '/api/v1/payroll-periods/:id/reopen',
     {
       schema: {
         tags: ['people'],
         headers: idempotencyHeaders,
         params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } },
+        // TASK 17.6 — reopening a CLOSED payroll is a privileged, audited
+        // correction: it must say why (recorded in the audit log).
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['reason'],
+          properties: { reason: { type: 'string', minLength: 3, maxLength: 500 } },
+        },
         response: { 200: responseSchema, ...commonErrors },
       },
     },
@@ -234,6 +430,7 @@ export function registerPayrollRoutes(app: FastifyInstance, authentication: Auth
           auth.permittedBranchIds,
           idempotencyKey(request.headers['idempotency-key']),
           request.params.id,
+          request.body.reason,
         );
         if (reopened.replayed) reply.header('idempotency-replayed', 'true');
         return reply.send(successResponse(periodHttp(reopened.value), request.requestContext));

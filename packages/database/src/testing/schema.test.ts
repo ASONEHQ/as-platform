@@ -100,11 +100,11 @@ describe('database foundation schema', () => {
     const journal = JSON.parse(
       readFileSync(resolve(import.meta.dirname, '../../drizzle/meta/_journal.json'), 'utf8'),
     ) as { entries: { idx: number; tag: string }[] };
-    expect(journal.entries).toHaveLength(50);
+    expect(journal.entries).toHaveLength(51);
     expect(journal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 50 }, (_, index) => index),
+      Array.from({ length: 51 }, (_, index) => index),
     );
-    expect(journal.entries.at(-1)?.tag).toBe('0049_add_product_variant_is_sellable');
+    expect(journal.entries.at(-1)?.tag).toBe('0050_add_payroll_v2_adjustments_and_daily_detail');
   });
 
   it('keeps migration 0010 additive and limited to the session transport column', () => {

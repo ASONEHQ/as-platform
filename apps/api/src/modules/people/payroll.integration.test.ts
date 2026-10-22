@@ -111,6 +111,8 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
     await applyIfMissing(database, 'loyalty_program_reward_categories', ['0023_tan_luke_cage.sql']);
     await applyIfMissing(database, 'direct_purchases', ['0024_vengeful_metal_master.sql']);
     await applyIfMissing(database, 'employees', ['0025_worried_the_captain.sql']);
+    // TASK 17.6 (Payroll V2): adjustments + per-day detail + line snapshot columns.
+    await applyIfMissing(database, 'payroll_period_adjustments', ['0050_add_payroll_v2_adjustments_and_daily_detail.sql']);
 
     await database.pool.query(
       `insert into companies(id,legal_name,display_name,slug,status,timezone,currency_code,locale)
@@ -182,6 +184,8 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
   afterAll(async () => {
     await app.close();
     const ids = [companyId, otherCompanyId];
+    await database.pool.query('delete from payroll_period_adjustments where company_id=any($1::uuid[])', [ids]);
+    await database.pool.query('delete from payroll_period_line_days where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from payroll_period_lines where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from payroll_periods where company_id=any($1::uuid[])', [ids]);
     await database.pool.query('delete from time_clock_punches where company_id=any($1::uuid[])', [ids]);
@@ -366,7 +370,9 @@ integration('PostgreSQL payroll operations (TASK 14.4, Wave 2)', { concurrent: f
     expect(stillFrozenLine?.base_salary_snapshot).toBe('1400.0000'); // unchanged by the post-close salary edit.
 
     // --- Reopen (payroll.close), distinguishable from an ordinary close ---
-    const reopened = await call('POST', `/api/v1/payroll-periods/${periodId}/reopen`, `payroll-reopen-${randomUUID()}`, {});
+    const reopened = await call('POST', `/api/v1/payroll-periods/${periodId}/reopen`, `payroll-reopen-${randomUUID()}`, {
+      reason: 'Correccion: se registro una checada fuera de lugar.',
+    });
     expect(reopened.statusCode).toBe(200);
     expect(reopened.json<{ data: { status: string } }>().data.status).toBe('draft');
 

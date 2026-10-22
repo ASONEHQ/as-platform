@@ -351,6 +351,13 @@
       "when": 1790603804391,
       "tag": "0049_add_product_variant_is_sellable",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792680919788,
+      "tag": "0050_add_payroll_v2_adjustments_and_daily_detail",
+      "breakpoints": true
     }
   ]
 }

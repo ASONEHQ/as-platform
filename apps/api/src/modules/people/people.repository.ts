@@ -6,6 +6,8 @@ import {
   PeopleError,
   type EmployeeRow,
   type EmployeeScheduleRow,
+  type PayrollAdjustmentRow,
+  type PayrollLineDayRow,
   type PayrollPeriodLineRow,
   type PayrollPeriodRow,
   type PeopleMutationContext,
@@ -58,7 +60,11 @@ const PUNCH_COLUMNS =
 const PERIOD_COLUMNS =
   'id,company_id,branch_id,period_start,period_end,status,closed_at,closed_by,created_by,created_at,updated_at';
 const LINE_COLUMNS =
-  'id,company_id,payroll_period_id,employee_id,scheduled_minutes,worked_minutes,late_minutes,overtime_minutes,base_salary_snapshot,deduction_amount,bonus_amount,total_amount,currency_code,computed_at,computed_by';
+  'id,company_id,payroll_period_id,employee_id,scheduled_minutes,worked_minutes,late_minutes,overtime_minutes,base_salary_snapshot,deduction_amount,bonus_amount,total_amount,currency_code,computed_at,computed_by,adjustment_amount,employee_name_snapshot,employee_code_snapshot,job_title_snapshot';
+const ADJUSTMENT_COLUMNS =
+  'id,company_id,branch_id,payroll_period_id,employee_id,kind,amount,currency_code,reason,created_by,created_at,voided_at,voided_by,void_reason';
+const LINE_DAY_COLUMNS =
+  'work_date,scheduled_start,scheduled_end,is_day_off,scheduled_minutes,worked_minutes,late_minutes,overtime_minutes,first_in_minute,last_out_minute,attendance_state';
 
 interface EmployeeDb {
   id: string;
@@ -141,6 +147,39 @@ interface LineDb {
   currency_code: string;
   computed_at: Date | string;
   computed_by: string;
+  adjustment_amount: string;
+  employee_name_snapshot: string | null;
+  employee_code_snapshot: string | null;
+  job_title_snapshot: string | null;
+}
+interface AdjustmentDb {
+  id: string;
+  company_id: string;
+  branch_id: string;
+  payroll_period_id: string;
+  employee_id: string;
+  kind: string;
+  amount: string;
+  currency_code: string;
+  reason: string;
+  created_by: string;
+  created_at: Date | string;
+  voided_at: Date | string | null;
+  voided_by: string | null;
+  void_reason: string | null;
+}
+interface LineDayDb {
+  work_date: Date | string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  is_day_off: boolean;
+  scheduled_minutes: number;
+  worked_minutes: number;
+  late_minutes: number;
+  overtime_minutes: number;
+  first_in_minute: number | null;
+  last_out_minute: number | null;
+  attendance_state: string;
 }
 interface IdempotencyDb {
   request_hash: string;
@@ -237,6 +276,43 @@ function line(row: LineDb): PayrollPeriodLineRow {
     currencyCode: row.currency_code,
     computedAt: new Date(row.computed_at),
     computedBy: row.computed_by,
+    adjustmentAmount: row.adjustment_amount,
+    employeeNameSnapshot: row.employee_name_snapshot,
+    employeeCodeSnapshot: row.employee_code_snapshot,
+    jobTitleSnapshot: row.job_title_snapshot,
+  };
+}
+function adjustment(row: AdjustmentDb): PayrollAdjustmentRow {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    branchId: row.branch_id,
+    payrollPeriodId: row.payroll_period_id,
+    employeeId: row.employee_id,
+    kind: row.kind as PayrollAdjustmentRow['kind'],
+    amount: row.amount,
+    currencyCode: row.currency_code,
+    reason: row.reason,
+    createdBy: row.created_by,
+    createdAt: new Date(row.created_at),
+    voidedAt: row.voided_at === null ? null : new Date(row.voided_at),
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
+  };
+}
+function lineDay(row: LineDayDb): PayrollLineDayRow {
+  return {
+    workDate: dateOnly(row.work_date),
+    scheduledStart: row.scheduled_start,
+    scheduledEnd: row.scheduled_end,
+    isDayOff: row.is_day_off,
+    scheduledMinutes: row.scheduled_minutes,
+    workedMinutes: row.worked_minutes,
+    lateMinutes: row.late_minutes,
+    overtimeMinutes: row.overtime_minutes,
+    firstInMinute: row.first_in_minute,
+    lastOutMinute: row.last_out_minute,
+    attendanceState: row.attendance_state as PayrollLineDayRow['attendanceState'],
   };
 }
 
@@ -344,7 +420,7 @@ export class PeopleRepository {
     context: PeopleMutationContext,
     input: {
       action: string;
-      resourceType: 'employee' | 'employee_schedule' | 'time_clock_punch' | 'payroll_period';
+      resourceType: 'employee' | 'employee_schedule' | 'time_clock_punch' | 'payroll_period' | 'payroll_adjustment';
       resourceId: string;
       eventType: string;
       branchId: string;
@@ -826,16 +902,39 @@ export class PeopleRepository {
   public async activeEmployeesForBranch(
     companyId: string,
     branchId: string,
-  ): Promise<{ id: string; weeklySalary: string; currencyCode: string }[]> {
-    const rows = result<{ id: string; weekly_salary: string; currency_code: string }>(
+  ): Promise<
+    {
+      id: string;
+      weeklySalary: string;
+      currencyCode: string;
+      code: string;
+      displayName: string;
+      jobTitle: string | null;
+    }[]
+  > {
+    const rows = result<{
+      id: string;
+      weekly_salary: string;
+      currency_code: string;
+      code: string;
+      display_name: string;
+      job_title: string | null;
+    }>(
       await this.database.pool.query(
-        `select id,weekly_salary,currency_code from employees
+        `select id,weekly_salary,currency_code,code,display_name,job_title from employees
          where company_id=$1 and branch_id=$2 and status='active'
          order by code asc`,
         [companyId, branchId],
       ),
     ).rows;
-    return rows.map((row) => ({ id: row.id, weeklySalary: row.weekly_salary, currencyCode: row.currency_code }));
+    return rows.map((row) => ({
+      id: row.id,
+      weeklySalary: row.weekly_salary,
+      currencyCode: row.currency_code,
+      code: row.code,
+      displayName: row.display_name,
+      jobTitle: row.job_title,
+    }));
   }
 
   /** Per LOCAL calendar date in `[periodStart, periodEnd]`: that day's
@@ -994,6 +1093,10 @@ export class PeopleRepository {
       currencyCode: string;
       computedBy: string;
       timestamp: Date;
+      adjustmentAmount: string;
+      employeeNameSnapshot: string;
+      employeeCodeSnapshot: string;
+      jobTitleSnapshot: string | null;
     }[],
   ): Promise<PayrollPeriodLineRow[]> {
     await client.query(`delete from payroll_period_lines where company_id=$1 and payroll_period_id=$2`, [
@@ -1007,8 +1110,8 @@ export class PeopleRepository {
           `insert into payroll_period_lines
            (id,company_id,payroll_period_id,employee_id,scheduled_minutes,worked_minutes,late_minutes,
             overtime_minutes,base_salary_snapshot,deduction_amount,bonus_amount,total_amount,currency_code,
-            computed_at,computed_by)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            computed_at,computed_by,adjustment_amount,employee_name_snapshot,employee_code_snapshot,job_title_snapshot)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            returning ${LINE_COLUMNS}`,
           [
             randomUUID(),
@@ -1026,6 +1129,10 @@ export class PeopleRepository {
             item.currencyCode,
             item.timestamp,
             item.computedBy,
+            item.adjustmentAmount,
+            item.employeeNameSnapshot,
+            item.employeeCodeSnapshot,
+            item.jobTitleSnapshot,
           ],
         ),
       ).rows[0];
@@ -1033,6 +1140,247 @@ export class PeopleRepository {
       inserted.push(line(row));
     }
     return inserted;
+  }
+
+  /** Locks the period row for the rest of the transaction and returns it
+   * (scoped to the actor's permitted branches). EVERY payroll mutation
+   * (calculate/close/reopen/adjustments) starts here so two managers can
+   * never interleave on the same period (TASK 17.6: closes the calculate-vs-
+   * close race the Payroll V2 audit found — the status check used to run
+   * OUTSIDE the transaction). */
+  public async lockPayrollPeriod(
+    client: PeopleTransaction,
+    companyId: string,
+    branchIds: readonly string[],
+    id: string,
+  ): Promise<PayrollPeriodRow | null> {
+    const row = result<PeriodDb>(
+      await client.query(
+        `select ${PERIOD_COLUMNS} from payroll_periods
+         where company_id=$1 and id=$2 and branch_id=any($3::uuid[]) for update`,
+        [companyId, id, branchIds],
+      ),
+    ).rows[0];
+    return row === undefined ? null : period(row);
+  }
+
+  public async replacePayrollLineDays(
+    client: PeopleTransaction,
+    companyId: string,
+    payrollPeriodId: string,
+    days: readonly (PayrollLineDayRow & { employeeId: string })[],
+  ): Promise<void> {
+    await client.query(`delete from payroll_period_line_days where company_id=$1 and payroll_period_id=$2`, [
+      companyId,
+      payrollPeriodId,
+    ]);
+    for (const day of days) {
+      await client.query(
+        `insert into payroll_period_line_days
+         (id,company_id,payroll_period_id,employee_id,work_date,scheduled_start,scheduled_end,is_day_off,
+          scheduled_minutes,worked_minutes,late_minutes,overtime_minutes,first_in_minute,last_out_minute,attendance_state)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [
+          randomUUID(),
+          companyId,
+          payrollPeriodId,
+          day.employeeId,
+          day.workDate,
+          day.scheduledStart,
+          day.scheduledEnd,
+          day.isDayOff,
+          day.scheduledMinutes,
+          day.workedMinutes,
+          day.lateMinutes,
+          day.overtimeMinutes,
+          day.firstInMinute,
+          day.lastOutMinute,
+          day.attendanceState,
+        ],
+      );
+    }
+  }
+
+  public async payrollLineDays(
+    companyId: string,
+    payrollPeriodId: string,
+    employeeId: string,
+  ): Promise<PayrollLineDayRow[]> {
+    const rows = result<LineDayDb>(
+      await this.database.pool.query(
+        `select ${LINE_DAY_COLUMNS} from payroll_period_line_days
+         where company_id=$1 and payroll_period_id=$2 and employee_id=$3 order by work_date asc`,
+        [companyId, payrollPeriodId, employeeId],
+      ),
+    ).rows;
+    return rows.map(lineDay);
+  }
+
+  public async payrollLine(
+    companyId: string,
+    payrollPeriodId: string,
+    employeeId: string,
+  ): Promise<PayrollPeriodLineRow | null> {
+    const row = result<LineDb>(
+      await this.database.pool.query(
+        `select ${LINE_COLUMNS} from payroll_period_lines
+         where company_id=$1 and payroll_period_id=$2 and employee_id=$3`,
+        [companyId, payrollPeriodId, employeeId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : line(row);
+  }
+
+  /** Same read, but locking the line row (used inside an adjustment
+   * transaction so the total it rewrites is computed from a stable row). */
+  public async lockPayrollLine(
+    client: PeopleTransaction,
+    companyId: string,
+    payrollPeriodId: string,
+    employeeId: string,
+  ): Promise<PayrollPeriodLineRow | null> {
+    const row = result<LineDb>(
+      await client.query(
+        `select ${LINE_COLUMNS} from payroll_period_lines
+         where company_id=$1 and payroll_period_id=$2 and employee_id=$3 for update`,
+        [companyId, payrollPeriodId, employeeId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : line(row);
+  }
+
+  public async updatePayrollLineAdjustment(
+    client: PeopleTransaction,
+    companyId: string,
+    lineId: string,
+    input: { adjustmentAmount: string; totalAmount: string },
+  ): Promise<PayrollPeriodLineRow> {
+    const row = result<LineDb>(
+      await client.query(
+        `update payroll_period_lines set adjustment_amount=$3,total_amount=$4
+         where company_id=$1 and id=$2 returning ${LINE_COLUMNS}`,
+        [companyId, lineId, input.adjustmentAmount, input.totalAmount],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Payroll line update did not return a row.');
+    return line(row);
+  }
+
+  /** Per employee, the signed NET (numeric, as text) of the period's
+   * NON-VOIDED adjustments: bonus adds, deduction subtracts. */
+  public async activeAdjustmentNetByEmployee(
+    client: PeopleTransaction,
+    companyId: string,
+    payrollPeriodId: string,
+  ): Promise<Map<string, string>> {
+    const rows = result<{ employee_id: string; net: string }>(
+      await client.query(
+        `select employee_id,
+                sum(case when kind='bonus' then amount else -amount end)::text as net
+         from payroll_period_adjustments
+         where company_id=$1 and payroll_period_id=$2 and voided_at is null
+         group by employee_id`,
+        [companyId, payrollPeriodId],
+      ),
+    ).rows;
+    return new Map(rows.map((row) => [row.employee_id, row.net]));
+  }
+
+  public async insertPayrollAdjustment(
+    client: PeopleTransaction,
+    input: {
+      id: string;
+      companyId: string;
+      branchId: string;
+      payrollPeriodId: string;
+      employeeId: string;
+      kind: string;
+      amount: string;
+      currencyCode: string;
+      reason: string;
+      createdBy: string;
+      timestamp: Date;
+    },
+  ): Promise<PayrollAdjustmentRow> {
+    const row = result<AdjustmentDb>(
+      await client.query(
+        `insert into payroll_period_adjustments
+         (id,company_id,branch_id,payroll_period_id,employee_id,kind,amount,currency_code,reason,created_by,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         returning ${ADJUSTMENT_COLUMNS}`,
+        [
+          input.id,
+          input.companyId,
+          input.branchId,
+          input.payrollPeriodId,
+          input.employeeId,
+          input.kind,
+          input.amount,
+          input.currencyCode,
+          input.reason,
+          input.createdBy,
+          input.timestamp,
+        ],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Payroll adjustment insertion did not return a row.');
+    return adjustment(row);
+  }
+
+  /** Locks (and returns) one adjustment of a period. */
+  public async lockPayrollAdjustment(
+    client: PeopleTransaction,
+    companyId: string,
+    payrollPeriodId: string,
+    adjustmentId: string,
+  ): Promise<PayrollAdjustmentRow | null> {
+    const row = result<AdjustmentDb>(
+      await client.query(
+        `select ${ADJUSTMENT_COLUMNS} from payroll_period_adjustments
+         where company_id=$1 and payroll_period_id=$2 and id=$3 for update`,
+        [companyId, payrollPeriodId, adjustmentId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : adjustment(row);
+  }
+
+  public async voidPayrollAdjustment(
+    client: PeopleTransaction,
+    companyId: string,
+    adjustmentId: string,
+    input: { actorId: string; reason: string; timestamp: Date },
+  ): Promise<PayrollAdjustmentRow> {
+    const row = result<AdjustmentDb>(
+      await client.query(
+        `update payroll_period_adjustments set voided_at=$3,voided_by=$4,void_reason=$5
+         where company_id=$1 and id=$2 and voided_at is null returning ${ADJUSTMENT_COLUMNS}`,
+        [companyId, adjustmentId, input.timestamp, input.actorId, input.reason],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new Error('Payroll adjustment void did not return a row.');
+    return adjustment(row);
+  }
+
+  public async payrollAdjustments(
+    companyId: string,
+    payrollPeriodId: string,
+    employeeId?: string,
+  ): Promise<PayrollAdjustmentRow[]> {
+    const values: unknown[] = [companyId, payrollPeriodId];
+    let employeeFilter = '';
+    if (employeeId !== undefined) {
+      values.push(employeeId);
+      employeeFilter = 'and employee_id=$3';
+    }
+    const rows = result<AdjustmentDb>(
+      await this.database.pool.query(
+        `select ${ADJUSTMENT_COLUMNS} from payroll_period_adjustments
+         where company_id=$1 and payroll_period_id=$2 ${employeeFilter}
+         order by created_at asc,id asc`,
+        values,
+      ),
+    ).rows;
+    return rows.map(adjustment);
   }
 
   public async payrollPeriodLines(companyId: string, payrollPeriodId: string): Promise<PayrollPeriodLineRow[]> {
@@ -1081,6 +1429,11 @@ export class PeopleRepository {
       // fixed for a malformed-UUID path param; this is the people
       // module's own missing case for an already-real, already-enforced
       // DB constraint.
+      // TASK 17.6: two concurrent calculations of one period used to be able to
+      // surface this raw 23505 as a 500; the period row lock now serializes
+      // them, and this mapping is the defense-in-depth backstop.
+      case 'payroll_period_lines_period_employee_uq':
+        return new PeopleError('resource_conflict', 'The payroll period was recalculated concurrently; retry.');
       case 'payroll_periods_branch_range_uq':
         return new PeopleError('resource_conflict', 'A payroll period already exists for this branch and date range.');
       default:

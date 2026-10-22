@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   char,
   check,
   date,
@@ -311,6 +312,19 @@ export const payrollPeriodLines = pgTable(
     currencyCode: char('currency_code', { length: 3 }).notNull(),
     computedAt: timestamp('computed_at', { withTimezone: true, mode: 'date' }).notNull(),
     computedBy: uuid('computed_by').notNull(),
+    // TASK 17.6 (Payroll V2) — signed NET of this period's non-voided manual
+    // adjustments for the employee (bonus adds, deduction subtracts), kept in
+    // sync by the service every time an adjustment is created/voided or the
+    // period is recalculated. `totalAmount` already includes it (so every
+    // existing consumer that sums `total_amount` — reports — stays correct):
+    //   total = max(0, base - deduction + bonus + adjustment).
+    adjustmentAmount: numeric('adjustment_amount', { precision: 19, scale: 4 }).notNull().default(sql`0`),
+    // TASK 17.6 — who this line was computed for, frozen at calculation time
+    // so a closed payroll never re-reads a later-edited employee name/code/
+    // job title. Nullable ONLY for lines computed before Payroll V2 existed.
+    employeeNameSnapshot: text('employee_name_snapshot'),
+    employeeCodeSnapshot: text('employee_code_snapshot'),
+    jobTitleSnapshot: text('job_title_snapshot'),
   },
   (table) => [
     unique('payroll_period_lines_company_id_id_uq').on(table.companyId, table.id),
@@ -343,6 +357,156 @@ export const payrollPeriodLines = pgTable(
   ],
 );
 
+export const payrollAdjustmentKinds = ['bonus', 'deduction'] as const;
+
+/**
+ * TASK 17.6 (Payroll V2) — manual, auditable payroll adjustments. Keyed to
+ * `(payroll_period, employee)` — NOT to `payroll_period_lines.id` — because
+ * `calculate` replaces every line of a draft period wholesale, so an
+ * adjustment hung off a line id would be orphaned or erased by a
+ * recalculation. `amount` is ALWAYS a positive magnitude; its effect on pay
+ * is explicit in `kind` (`bonus` adds, `deduction` subtracts). A financially
+ * relevant row is never deleted: it is VOIDED (who/when/why), and a void is
+ * the only way an adjustment stops counting. Adjustments can only be created
+ * or voided while the period is `draft` (a closed period is immutable).
+ */
+export const payrollPeriodAdjustments = pgTable(
+  'payroll_period_adjustments',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    branchId: uuid('branch_id').notNull(),
+    payrollPeriodId: uuid('payroll_period_id').notNull(),
+    employeeId: uuid('employee_id').notNull(),
+    kind: text('kind').notNull(),
+    amount: numeric('amount', { precision: 19, scale: 4 }).notNull(),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    reason: text('reason').notNull(),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: createdAtColumn(),
+    voidedAt: timestamp('voided_at', { withTimezone: true, mode: 'date' }),
+    voidedBy: uuid('voided_by'),
+    voidReason: text('void_reason'),
+  },
+  (table) => [
+    unique('payroll_period_adjustments_company_id_id_uq').on(table.companyId, table.id),
+    foreignKey({
+      columns: [table.companyId, table.branchId],
+      foreignColumns: [branches.companyId, branches.id],
+      name: 'payroll_period_adjustments_branch_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.payrollPeriodId],
+      foreignColumns: [payrollPeriods.companyId, payrollPeriods.id],
+      name: 'payroll_period_adjustments_period_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.employeeId],
+      foreignColumns: [employees.companyId, employees.id],
+      name: 'payroll_period_adjustments_employee_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.createdBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'payroll_period_adjustments_created_by_membership_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.voidedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'payroll_period_adjustments_voided_by_membership_fk',
+    }).onDelete('restrict'),
+    index('payroll_period_adjustments_period_employee_idx').on(
+      table.companyId,
+      table.payrollPeriodId,
+      table.employeeId,
+    ),
+    check('payroll_period_adjustments_kind_ck', sql`${table.kind} in ('bonus', 'deduction')`),
+    check('payroll_period_adjustments_amount_ck', sql`${table.amount} > 0`),
+    check('payroll_period_adjustments_currency_code_ck', sql`${table.currencyCode} ~ '^[A-Z]{3}$'`),
+    check(
+      'payroll_period_adjustments_reason_ck',
+      sql`char_length(btrim(${table.reason})) between 3 and 500`,
+    ),
+    check(
+      'payroll_period_adjustments_void_fields_ck',
+      sql`(${table.voidedAt} is null) = (${table.voidedBy} is null) and (${table.voidedAt} is null) = (${table.voidReason} is null)`,
+    ),
+    check(
+      'payroll_period_adjustments_void_reason_ck',
+      sql`${table.voidReason} is null or char_length(btrim(${table.voidReason})) between 3 and 500`,
+    ),
+  ],
+);
+
+export const payrollAttendanceStates = [
+  'complete',
+  'unscheduled_work',
+  'missing_clock_out',
+  'missing_clock_in',
+  'no_punches',
+  'day_off',
+  'no_schedule',
+] as const;
+
+/**
+ * TASK 17.6 (Payroll V2) — the per-day breakdown behind a payroll line,
+ * written by `calculate` in the SAME transaction (and replaced wholesale
+ * with the lines, exactly like them) so a closed period's daily detail is a
+ * frozen snapshot of what was calculated — never recomputed from
+ * later-edited schedules/punches. `first_in_minute`/`last_out_minute` are
+ * minutes since LOCAL (branch-timezone) midnight, the same representation
+ * the calculation itself uses, so display needs no timezone math.
+ */
+export const payrollPeriodLineDays = pgTable(
+  'payroll_period_line_days',
+  {
+    id: idColumn(),
+    companyId: companyIdColumn(),
+    payrollPeriodId: uuid('payroll_period_id').notNull(),
+    employeeId: uuid('employee_id').notNull(),
+    workDate: date('work_date', { mode: 'string' }).notNull(),
+    scheduledStart: time('scheduled_start'),
+    scheduledEnd: time('scheduled_end'),
+    isDayOff: boolean('is_day_off').notNull().default(false),
+    scheduledMinutes: integer('scheduled_minutes').notNull().default(0),
+    workedMinutes: integer('worked_minutes').notNull().default(0),
+    lateMinutes: integer('late_minutes').notNull().default(0),
+    overtimeMinutes: integer('overtime_minutes').notNull().default(0),
+    firstInMinute: integer('first_in_minute'),
+    lastOutMinute: integer('last_out_minute'),
+    attendanceState: text('attendance_state').notNull(),
+  },
+  (table) => [
+    uniqueIndex('payroll_period_line_days_period_employee_date_uq').on(
+      table.companyId,
+      table.payrollPeriodId,
+      table.employeeId,
+      table.workDate,
+    ),
+    foreignKey({
+      columns: [table.companyId, table.payrollPeriodId],
+      foreignColumns: [payrollPeriods.companyId, payrollPeriods.id],
+      name: 'payroll_period_line_days_period_scope_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.companyId, table.employeeId],
+      foreignColumns: [employees.companyId, employees.id],
+      name: 'payroll_period_line_days_employee_scope_fk',
+    }).onDelete('restrict'),
+    check('payroll_period_line_days_minutes_ck', sql`${table.scheduledMinutes} >= 0 and ${table.workedMinutes} >= 0 and ${table.lateMinutes} >= 0 and ${table.overtimeMinutes} >= 0`),
+    check(
+      'payroll_period_line_days_clock_minutes_ck',
+      sql`(${table.firstInMinute} is null or ${table.firstInMinute} between 0 and 1439) and (${table.lastOutMinute} is null or ${table.lastOutMinute} between 0 and 1439)`,
+    ),
+    check(
+      'payroll_period_line_days_state_ck',
+      sql`${table.attendanceState} in ('complete', 'unscheduled_work', 'missing_clock_out', 'missing_clock_in', 'no_punches', 'day_off', 'no_schedule')`,
+    ),
+  ],
+);
+
+export type PayrollPeriodAdjustment = typeof payrollPeriodAdjustments.$inferSelect;
+export type PayrollPeriodLineDay = typeof payrollPeriodLineDays.$inferSelect;
 export type Employee = typeof employees.$inferSelect;
 export type NewEmployee = typeof employees.$inferInsert;
 export type EmployeeSchedule = typeof employeeSchedules.$inferSelect;

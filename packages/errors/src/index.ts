@@ -230,6 +230,10 @@ export const infrastructureErrorCodes = [
   'duplicate_clock_in',
   'invalid_clock_out',
   'payroll_period_closed',
+  // TASK 17.6 (Payroll V2) — closing a payroll period that has no calculated
+  // lines: there is nothing to freeze, so it is refused instead of silently
+  // "closing" an empty payroll.
+  'payroll_incomplete',
   // TASK 16.8B — a branch's persisted `timezone` is not a real IANA zone
   // (production data corruption predating server-side validation; see
   // `AdministrationService`'s write-side guard and `SalesService.

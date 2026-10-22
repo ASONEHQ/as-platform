@@ -144,6 +144,62 @@ export interface PayrollPeriodLineRow {
   currencyCode: string;
   computedAt: Date;
   computedBy: string;
+  /** TASK 17.6 — signed NET of the employee's non-voided manual adjustments
+   * (bonus adds, deduction subtracts); `totalAmount` already includes it. */
+  adjustmentAmount: string;
+  /** TASK 17.6 — frozen at calculation time; `null` ONLY for lines computed
+   * before Payroll V2 existed (the client then falls back to the live
+   * employee record and says so). */
+  employeeNameSnapshot: string | null;
+  employeeCodeSnapshot: string | null;
+  jobTitleSnapshot: string | null;
+}
+
+export const payrollAdjustmentKinds = ['bonus', 'deduction'] as const;
+export type PayrollAdjustmentKind = (typeof payrollAdjustmentKinds)[number];
+
+/** Manual payroll adjustment. `amount` is ALWAYS a positive magnitude; the
+ * effect on pay is explicit in `kind` (bonus adds / deduction subtracts). */
+export interface PayrollAdjustmentRow {
+  id: string;
+  companyId: string;
+  branchId: string;
+  payrollPeriodId: string;
+  employeeId: string;
+  kind: PayrollAdjustmentKind;
+  amount: string;
+  currencyCode: string;
+  reason: string;
+  createdBy: string;
+  createdAt: Date;
+  voidedAt: Date | null;
+  voidedBy: string | null;
+  voidReason: string | null;
+}
+
+export type PayrollAttendanceState =
+  | 'complete'
+  | 'unscheduled_work'
+  | 'missing_clock_out'
+  | 'missing_clock_in'
+  | 'no_punches'
+  | 'day_off'
+  | 'no_schedule';
+
+/** One day of an employee's payroll week, as calculated (and frozen). */
+export interface PayrollLineDayRow {
+  workDate: string;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  isDayOff: boolean;
+  scheduledMinutes: number;
+  workedMinutes: number;
+  lateMinutes: number;
+  overtimeMinutes: number;
+  /** Minutes since LOCAL (branch timezone) midnight. */
+  firstInMinute: number | null;
+  lastOutMinute: number | null;
+  attendanceState: PayrollAttendanceState;
 }
 
 export interface PeopleMutationContext {
@@ -176,7 +232,8 @@ export type PeopleErrorCode =
   | 'employee_inactive'
   | 'duplicate_clock_in'
   | 'invalid_clock_out'
-  | 'payroll_period_closed';
+  | 'payroll_period_closed'
+  | 'payroll_incomplete';
 
 export class PeopleError extends Error {
   constructor(
