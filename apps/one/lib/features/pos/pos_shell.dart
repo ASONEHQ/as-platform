@@ -85,6 +85,8 @@ import 'refund_receipt_html.dart';
 import 'sale_folio.dart';
 import 'sale_session.dart';
 
+part 'pos_parties_commercial.dart';
+
 /// TASK 16.6 — mirrors `pos_branding_screen.dart`'s own `LogoFilePicker`
 /// typedef: an injectable file-picker override so the product image
 /// upload flow (`_EditProductDialog`) is testable without a real platform
@@ -28203,6 +28205,19 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
   String? _quoteError;
   PosPartyQuote? _quote;
 
+  // TASK 17.6 — saving a quote. `_editing` is the DRAFT being edited (null =
+  // a brand-new quote). `_saveKey` is created once per save attempt so a
+  // double tap or a retry after a timeout replays instead of duplicating, and
+  // is dropped whenever the operator changes anything.
+  final _notesController = TextEditingController();
+  String? _customerId;
+  String? _customerName;
+  PosSavedPartyQuote? _editing;
+  bool _saving = false;
+  String? _saveError;
+  String? _saveKey;
+  int _savedRefresh = 0;
+
   // TASK 16.22 — date/start-time + the live room-availability preview.
   DateTime? _eventDate;
   TimeOfDay? _startTime;
@@ -28226,6 +28241,7 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
     _childrenController.dispose();
     _adultsController.dispose();
     _extraHalfHoursController.dispose();
+    _notesController.dispose();
     super.dispose();
   }
 
@@ -28298,6 +28314,8 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
   // date/time.
   void _invalidateQuoteAndAvailability() {
     setState(() {
+      _saveKey = null;
+      _saveError = null;
       _quote = null;
       _availability = null;
       _selectedRoomId = null;
@@ -28403,6 +28421,169 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
     return TimeOfDay(hour: hour, minute: minute);
   }
 
+  Future<void> _pickQuoteCustomer() async {
+    final selected = await showDialog<_CustomerSelectorResult>(
+      context: context,
+      builder: (dialogContext) => _CustomerSelectorDialog(customersGateway: widget.customersGateway),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _customerId = selected.id;
+      _customerName = selected.displayName;
+      _saveKey = null;
+    });
+  }
+
+  /// Persists the quote the operator is looking at. The amounts are computed
+  /// and frozen by the server — never taken from this screen.
+  Future<void> _saveQuote() async {
+    final packageId = _packageId;
+    final branchId = _branchId;
+    if (_quote == null || packageId == null || branchId == null || _saving) return;
+    final children = int.tryParse(_childrenController.text.trim()) ?? 0;
+    final adults = int.tryParse(_adultsController.text.trim()) ?? 0;
+    final extraHalfHours = int.tryParse(_extraHalfHoursController.text.trim()) ?? 0;
+    final notes = _notesController.text.trim();
+    final eventDate = _eventDate;
+    final startTime = _startTime;
+    final editing = _editing;
+    _saveKey ??= 'one-party-quote-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+    setState(() {
+      _saving = true;
+      _saveError = null;
+    });
+    try {
+      final saved = editing == null
+          ? await widget.partiesGateway.saveQuote(
+              branchId: branchId,
+              packageId: packageId,
+              children: children,
+              adults: adults,
+              extraHalfHours: extraHalfHours,
+              customerId: _customerId,
+              roomId: _selectedRoomId,
+              eventDate: eventDate == null ? null : _isoDate(eventDate),
+              startTime: startTime == null ? null : _formatTimeOfDay(startTime),
+              notes: notes.isEmpty ? null : notes,
+              idempotencyKey: _saveKey,
+            )
+          : await widget.partiesGateway.updateSavedQuote(
+              editing.id,
+              version: editing.version,
+              packageId: packageId,
+              children: children,
+              adults: adults,
+              extraHalfHours: extraHalfHours,
+              customerId: _customerId,
+              roomId: _selectedRoomId,
+              eventDate: eventDate == null ? null : _isoDate(eventDate),
+              startTime: startTime == null ? null : _formatTimeOfDay(startTime),
+              notes: notes.isEmpty ? null : notes,
+            );
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _saveKey = null;
+        _editing = null;
+        _quote = null;
+        _savedRefresh++;
+      });
+      _showNotice(context, editing == null ? 'Cotización ${saved.quoteNumber} guardada.' : 'Cotización ${saved.quoteNumber} actualizada.');
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _saveError = posPartyErrorMessage(error);
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _saveError = 'No fue posible guardar la cotización.';
+      });
+    }
+  }
+
+  /// Loads a saved DRAFT back into the form. Its frozen amounts are shown
+  /// as saved; changing package, guests or extra time asks for a new price.
+  void _editSavedQuote(PosSavedPartyQuote quote) {
+    if (!_packages.any((pkg) => pkg.id == quote.packageId)) {
+      _showNotice(context, 'El paquete de esta cotización ya no está activo, así que no se puede editar.');
+      return;
+    }
+    String breakdown(String key) => quote.breakdown[key] as String? ?? '0.0000';
+    setState(() {
+      _editing = quote;
+      _packageId = quote.packageId;
+      _childrenController.text = '${quote.childrenCount}';
+      _adultsController.text = '${quote.adultsCount}';
+      _extraHalfHoursController.text = '${quote.extraHalfHours}';
+      _notesController.text = quote.notes ?? '';
+      _customerId = quote.customerId;
+      _customerName = quote.customerDisplayName;
+      final date = quote.eventDate?.split('-');
+      _eventDate = date != null && date.length == 3 ? DateTime(int.parse(date[0]), int.parse(date[1]), int.parse(date[2])) : null;
+      _startTime = quote.startTime == null ? null : _parseHms(quote.startTime!);
+      _availability = null;
+      _selectedRoomId = null;
+      _availabilityError = null;
+      _saveKey = null;
+      _saveError = null;
+      _quote = PosPartyQuote(
+        packageId: quote.packageId,
+        currencyCode: quote.currencyCode,
+        base: breakdown('base'),
+        childrenExtra: breakdown('children_extra'),
+        adultsExtra: breakdown('adults_extra'),
+        timeExtra: breakdown('time_extra'),
+        subtotal: quote.subtotalAmount,
+        discountTotal: quote.discountTotal,
+        taxTotal: quote.taxTotal,
+        total: quote.totalAmount,
+      );
+    });
+  }
+
+  void _stopEditing() => setState(() {
+    _editing = null;
+    _quote = null;
+    _saveKey = null;
+    _saveError = null;
+  });
+
+  /// Explicit, atomic conversion of a saved DRAFT quote into a reservation:
+  /// the reservation form opens with the quote's data and locked pricing.
+  Future<void> _convertSavedQuote(PosSavedPartyQuote quote) async {
+    final branchId = _branchId;
+    if (branchId == null) return;
+    final date = quote.eventDate?.split('-');
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _PartyReservationFormDialog(
+        context: widget.context,
+        controller: widget.controller,
+        partiesGateway: widget.partiesGateway,
+        customersGateway: widget.customersGateway,
+        branchId: branchId,
+        prefillPackageId: quote.packageId,
+        prefillChildren: quote.childrenCount,
+        prefillAdults: quote.adultsCount,
+        prefillExtraHalfHours: quote.extraHalfHours,
+        prefillRoomId: quote.roomId,
+        prefillEventDate: date != null && date.length == 3 ? DateTime(int.parse(date[0]), int.parse(date[1]), int.parse(date[2])) : null,
+        prefillStartTime: quote.startTime == null ? null : _parseHms(quote.startTime!),
+        prefillQuoteId: quote.id,
+        prefillQuoteNumber: quote.quoteNumber,
+        prefillCustomerId: quote.customerId,
+        prefillCustomerName: quote.customerDisplayName,
+      ),
+    );
+    if (saved == true && mounted) {
+      setState(() => _savedRefresh++);
+      _showNotice(context, 'Reservación creada desde ${quote.quoteNumber}.');
+    }
+  }
+
   Future<void> _convertToReservation() async {
     final packageId = _packageId;
     final branchId = _branchId;
@@ -28458,6 +28639,17 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
           // there's anything to pick from.
           _AdminListPhase.empty || _AdminListPhase.ready => _buildQuoteWorkspace(palette),
         },
+        if (_phase == _AdminListPhase.empty || _phase == _AdminListPhase.ready) ...[
+          const SizedBox(height: 12),
+          _SavedQuotesPanel(
+            partiesGateway: widget.partiesGateway,
+            branchId: _branchId,
+            canManage: _canManage,
+            refreshToken: _savedRefresh,
+            onEdit: _editSavedQuote,
+            onConvert: (quote) => unawaited(_convertSavedQuote(quote)),
+          ),
+        ],
       ],
     );
   }
@@ -28572,6 +28764,50 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                   ],
                 ),
                 const SizedBox(height: 12),
+                if (_canManage) ...[
+                  TextField(
+                    key: const Key('pos-fiestas-quote-notes'),
+                    controller: _notesController,
+                    maxLength: 2000,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Notas de la cotización (opcional)'),
+                    onChanged: (_) => _saveKey = null,
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _customerName ?? 'Sin cliente asignado',
+                          key: const Key('pos-fiestas-quote-customer-label'),
+                          style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                        ),
+                      ),
+                      TextButton(
+                        key: const Key('pos-fiestas-quote-pick-customer'),
+                        onPressed: () => unawaited(_pickQuoteCustomer()),
+                        child: Text(_customerId == null ? 'Buscar cliente' : 'Cambiar cliente'),
+                      ),
+                    ],
+                  ),
+                ],
+                if (_editing != null) ...[
+                  Container(
+                    key: const Key('pos-fiestas-quote-editing-banner'),
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: palette.actionTint, borderRadius: BorderRadius.circular(8)),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Editando ${_editing!.quoteNumber}. Si cambias paquete, invitados o tiempo extra, vuelve a cotizar antes de actualizar.',
+                            style: TextStyle(color: palette.text, fontSize: 12),
+                          ),
+                        ),
+                        TextButton(key: const Key('pos-fiestas-quote-stop-editing'), onPressed: _stopEditing, child: const Text('Descartar')),
+                      ],
+                    ),
+                  ),
+                ],
                 FilledButton.icon(
                   key: const Key('pos-fiestas-quote-submit'),
                   onPressed: _quoting || _packageId == null ? null : () => unawaited(_quotePackage()),
@@ -28605,6 +28841,22 @@ class _FiestasCotizadorState extends State<_FiestasCotizador> {
                     _QuoteLine(label: 'Descuento', amount: '-${_quote!.discountTotal}', currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Impuestos', amount: _quote!.taxTotal, currency: _quote!.currencyCode),
                   _QuoteLine(label: 'Total', amount: _quote!.total, currency: _quote!.currencyCode, emphasize: true),
+                  if (_canManage) ...[
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      key: const Key('pos-fiestas-quote-save'),
+                      onPressed: _saving ? null : () => unawaited(_saveQuote()),
+                      style: FilledButton.styleFrom(backgroundColor: palette.action),
+                      icon: _saving
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.save_outlined, size: 16),
+                      label: Text(_editing == null ? 'Guardar cotización' : 'Actualizar cotización'),
+                    ),
+                    if (_saveError != null) ...[
+                      const SizedBox(height: 6),
+                      Text(_saveError!, key: const Key('pos-fiestas-quote-save-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                    ],
+                  ],
                   // TASK 16.22 (Phase 9-12) — the genuine gap this task's
                   // own audit found: a quoted price alone never told an
                   // operator whether a room was actually bookable for
@@ -30667,6 +30919,10 @@ class _PartyReservationFormDialog extends StatefulWidget {
     this.prefillEventDate,
     this.prefillStartTime,
     this.prefillEndTime,
+    this.prefillQuoteId,
+    this.prefillQuoteNumber,
+    this.prefillCustomerId,
+    this.prefillCustomerName,
   });
   final AuthenticatedContext context;
   final PosReadController controller;
@@ -30674,6 +30930,15 @@ class _PartyReservationFormDialog extends StatefulWidget {
   final PosCustomersGateway customersGateway;
   final String branchId;
   final PosPartyReservation? existing;
+
+  // TASK 17.6 — set only when converting a SAVED draft quote: the server
+  // then takes the quote's frozen amounts, so package, guests and extra time
+  // are locked here (editing them would just be rejected). `prefillQuoteId`
+  // is sent as `quote_id`.
+  final String? prefillQuoteId;
+  final String? prefillQuoteNumber;
+  final String? prefillCustomerId;
+  final String? prefillCustomerName;
   final String? prefillPackageId;
   final int? prefillChildren;
   final int? prefillAdults;
@@ -30730,8 +30995,8 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
   @override
   void initState() {
     super.initState();
-    _customerId = widget.existing?.customerId;
-    _customerDisplayName = widget.existing?.customerDisplayName;
+    _customerId = widget.existing?.customerId ?? widget.prefillCustomerId;
+    _customerDisplayName = widget.existing?.customerDisplayName ?? widget.prefillCustomerName;
     _roomId = widget.existing?.roomId ?? widget.prefillRoomId;
     _packageId = widget.existing?.packageId ?? widget.prefillPackageId;
     // TASK 16.22 — a NEW reservation (no `existing`) picks up the
@@ -30880,6 +31145,7 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
       extraHalfHours: extraHalfHours,
       sellerUserId: _sellerUserId,
       notes: notes.isEmpty ? null : notes,
+      quoteId: _isEdit ? null : widget.prefillQuoteId,
     );
     try {
       if (_isEdit) {
@@ -30920,6 +31186,14 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(_isEdit ? 'Editar reservación' : 'Nueva reservación', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                if (widget.prefillQuoteId != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Se convierte desde la cotización ${widget.prefillQuoteNumber ?? ''}: paquete, invitados, tiempo extra y total quedan como se cotizaron.',
+                    key: const Key('pos-fiestas-reservation-from-quote'),
+                    style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                  ),
+                ],
                 const SizedBox(height: 14),
                 Row(
                   children: [
@@ -30965,7 +31239,7 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
                     initialValue: _packageId,
                     decoration: const InputDecoration(isDense: true, labelText: 'Paquete'),
                     items: [for (final pkg in _packages) DropdownMenuItem(value: pkg.id, child: Text(pkg.name))],
-                    onChanged: (value) => setState(() => _packageId = value),
+                    onChanged: widget.prefillQuoteId != null ? null : (value) => setState(() => _packageId = value),
                   ),
                 ],
                 const SizedBox(height: 10),
@@ -31006,6 +31280,7 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
                       child: TextField(
                         key: const Key('pos-fiestas-reservation-children'),
                         controller: _childrenController,
+                        enabled: widget.prefillQuoteId == null,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Niños'),
                       ),
@@ -31015,6 +31290,7 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
                       child: TextField(
                         key: const Key('pos-fiestas-reservation-adults'),
                         controller: _adultsController,
+                        enabled: widget.prefillQuoteId == null,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Adultos'),
                       ),
@@ -31024,6 +31300,7 @@ class _PartyReservationFormDialogState extends State<_PartyReservationFormDialog
                       child: TextField(
                         key: const Key('pos-fiestas-reservation-extra-time'),
                         controller: _extraHalfHoursController,
+                        enabled: widget.prefillQuoteId == null,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(isDense: true, labelText: 'Medias horas extra'),
                       ),
@@ -31189,11 +31466,22 @@ class _RecordPaymentDialog extends StatefulWidget {
 
 class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
   final _amountController = TextEditingController();
+  final _referenceController = TextEditingController();
+  final _notesController = TextEditingController();
+  // One key per submission: a double tap or a retry after a timeout replays
+  // the SAME request on the server instead of recording the money twice. It is
+  // renewed when the operator changes anything after a failed attempt.
+  String _idempotencyKey = _newKey();
   String _purpose = 'deposit';
+  String _method = 'cash';
   bool _loadingSession = true;
   PosCashSession? _session;
   bool _busy = false;
   String? _error;
+
+  static String _newKey() => 'one-party-payment-${DateTime.now().toUtc().microsecondsSinceEpoch}';
+
+  bool get _isCash => _method == 'cash';
 
   @override
   void initState() {
@@ -31204,7 +31492,13 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
   @override
   void dispose() {
     _amountController.dispose();
+    _referenceController.dispose();
+    _notesController.dispose();
     super.dispose();
+  }
+
+  void _edited() {
+    if (_error != null) _idempotencyKey = _newKey();
   }
 
   Future<void> _loadSession() async {
@@ -31227,18 +31521,29 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
 
   Future<void> _submit() async {
     final session = _session;
-    if (session == null) return;
+    if (_isCash && session == null) return;
     final amount = _amountController.text.trim();
     if (amount.isEmpty) {
       setState(() => _error = 'El monto es obligatorio.');
       return;
     }
+    final reference = _referenceController.text.trim();
+    final notes = _notesController.text.trim();
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      await widget.partiesGateway.recordPayment(widget.reservationId, purpose: _purpose, amount: amount, cashSessionId: session.id);
+      await widget.partiesGateway.recordPayment(
+        widget.reservationId,
+        purpose: _purpose,
+        amount: amount,
+        method: _method,
+        reference: _isCash || reference.isEmpty ? null : reference,
+        notes: notes.isEmpty ? null : notes,
+        cashSessionId: _isCash ? session!.id : null,
+        idempotencyKey: _idempotencyKey,
+      );
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on ApiException catch (error) {
@@ -31259,6 +31564,8 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
+    final waitingForSession = _isCash && _loadingSession;
+    final blockedByCash = _isCash && !_loadingSession && _session == null;
     return Dialog(
       backgroundColor: palette.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -31266,64 +31573,110 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
         padding: const EdgeInsets.all(20),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 380),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('Registrar pago', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
-              const SizedBox(height: 12),
-              if (_loadingSession)
-                const Center(child: CircularProgressIndicator())
-              else if (_session == null)
-                Text(
-                  'Abre la caja de esta sucursal para poder registrar pagos.',
-                  key: const Key('pos-fiestas-payment-no-session'),
-                  style: TextStyle(color: palette.error, fontSize: 12),
-                )
-              else ...[
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Registrar pago', style: TextStyle(color: palette.text, fontWeight: FontWeight.w800, fontSize: 16)),
+                const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  key: const Key('pos-fiestas-payment-purpose'),
-                  initialValue: _purpose,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Tipo de pago'),
-                  items: [for (final purpose in partyReservationPaymentPurposes) DropdownMenuItem(value: purpose, child: Text(_paymentPurposeLabel(purpose)))],
-                  onChanged: (value) => setState(() => _purpose = value ?? _purpose),
+                  key: const Key('pos-fiestas-payment-method'),
+                  initialValue: _method,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Forma de pago'),
+                  items: [for (final method in const ['cash', 'card', 'transfer']) DropdownMenuItem(value: method, child: Text(_partyPaymentMethodLabel(method)))],
+                  onChanged: _busy
+                      ? null
+                      : (value) {
+                          _edited();
+                          setState(() => _method = value ?? _method);
+                        },
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _partyPaymentMethodHint(_method),
+                  key: const Key('pos-fiestas-payment-method-hint'),
+                  style: TextStyle(color: palette.textMuted, fontSize: 11),
                 ),
                 const SizedBox(height: 10),
-                TextField(
-                  key: const Key('pos-fiestas-payment-amount'),
-                  controller: _amountController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(isDense: true, labelText: 'Monto'),
-                ),
-              ],
-              if (_error != null) ...[
-                const SizedBox(height: 8),
-                Text(_error!, key: const Key('pos-fiestas-payment-error'), style: TextStyle(color: palette.error, fontSize: 12)),
-              ],
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
-                      child: const Text('Cancelar'),
-                    ),
+                if (waitingForSession)
+                  const Center(child: CircularProgressIndicator())
+                else if (blockedByCash)
+                  Text(
+                    'Abre la caja de esta sucursal para poder registrar pagos.',
+                    key: const Key('pos-fiestas-payment-no-session'),
+                    style: TextStyle(color: palette.error, fontSize: 12),
+                  )
+                else ...[
+                  DropdownButtonFormField<String>(
+                    key: const Key('pos-fiestas-payment-purpose'),
+                    initialValue: _purpose,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Tipo de pago'),
+                    items: [for (final purpose in partyReservationPaymentPurposes) DropdownMenuItem(value: purpose, child: Text(_paymentPurposeLabel(purpose)))],
+                    onChanged: (value) {
+                      _edited();
+                      setState(() => _purpose = value ?? _purpose);
+                    },
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton(
-                      key: const Key('pos-fiestas-payment-save'),
-                      onPressed: (_session == null || _busy) ? null : () => unawaited(_submit()),
-                      style: FilledButton.styleFrom(backgroundColor: palette.action),
-                      child: _busy
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Guardar'),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('pos-fiestas-payment-amount'),
+                    controller: _amountController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Monto'),
+                    onChanged: (_) => _edited(),
+                  ),
+                  if (!_isCash) ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const Key('pos-fiestas-payment-reference'),
+                      controller: _referenceController,
+                      maxLength: 120,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        labelText: _method == 'card' ? 'Autorización / referencia (opcional)' : 'Referencia / folio de la transferencia (opcional)',
+                      ),
+                      onChanged: (_) => _edited(),
                     ),
+                  ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const Key('pos-fiestas-payment-notes'),
+                    controller: _notesController,
+                    maxLength: 500,
+                    decoration: const InputDecoration(isDense: true, labelText: 'Notas (opcional)'),
+                    onChanged: (_) => _edited(),
                   ),
                 ],
-              ),
-            ],
+                if (_error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_error!, key: const Key('pos-fiestas-payment-error'), style: TextStyle(color: palette.error, fontSize: 12)),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        style: OutlinedButton.styleFrom(foregroundColor: palette.textSecondary, side: BorderSide(color: palette.border)),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('pos-fiestas-payment-save'),
+                        onPressed: (waitingForSession || blockedByCash || _busy) ? null : () => unawaited(_submit()),
+                        style: FilledButton.styleFrom(backgroundColor: palette.action),
+                        child: _busy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Guardar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -32063,6 +32416,7 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
   _AdminListPhase _phase = _AdminListPhase.loading;
   PosPartyReservationDetail? _detail;
   PosPartyBalance? _balance;
+  List<PosPartyPayment> _payments = const [];
   PosPartyRoom? _room;
   PosPartyPackage? _package;
   String? _errorMessage;
@@ -32115,6 +32469,13 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
     try {
       final detail = await widget.partiesGateway.reservationDetail(widget.reservationId);
       final balance = await widget.partiesGateway.balance(widget.reservationId);
+      // The history is secondary: if it fails the reservation still opens.
+      var payments = const <PosPartyPayment>[];
+      try {
+        payments = await widget.partiesGateway.listPayments(widget.reservationId);
+      } on Object {
+        payments = const [];
+      }
       PosPartyRoom? room;
       PosPartyPackage? package;
       try {
@@ -32131,6 +32492,7 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
       setState(() {
         _detail = detail;
         _balance = balance;
+        _payments = payments;
         _room = room;
         _package = package;
         _pendingStatus = null;
@@ -32234,6 +32596,27 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
     );
     if (saved == true && mounted) {
       _changed = true;
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _voidPayment(PosPartyPayment payment) async {
+    final detail = _detail;
+    if (detail == null) return;
+    final voided = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => _VoidPaymentDialog(
+        partiesGateway: widget.partiesGateway,
+        cashGateway: widget.cashGateway,
+        reservationId: widget.reservationId,
+        branchId: detail.reservation.branchId,
+        payment: payment,
+        currency: detail.reservation.currencyCode,
+      ),
+    );
+    if (voided == true && mounted) {
+      _changed = true;
+      _showNotice(context, 'Pago anulado.');
       unawaited(_load());
     }
   }
@@ -32510,7 +32893,14 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
           ],
           _QuoteLine(label: 'Total cotizado', amount: _balance!.quotedTotal, currency: reservation.currencyCode),
           _QuoteLine(label: 'Pagado', amount: _balance!.totalPaid, currency: reservation.currencyCode),
-          _QuoteLine(label: 'Saldo pendiente', amount: _balance!.outstandingBalance, currency: reservation.currencyCode, emphasize: true),
+          _QuoteLine(
+            label: 'Saldo pendiente',
+            amount: _balance!.remainingBalance ?? _balance!.outstandingBalance,
+            currency: reservation.currencyCode,
+            emphasize: true,
+          ),
+          if ((double.tryParse(_balance!.overpaidAmount) ?? 0) > 0)
+            _QuoteLine(label: 'Pagado de más', amount: _balance!.overpaidAmount, currency: reservation.currencyCode),
         ],
         // TASK 16.20 (Part L1) — a real, backend-validated coupon, never a
         // client-side discount. Only editable while the reservation is
@@ -32573,6 +32963,15 @@ class _PartyReservationDetailDialogState extends State<_PartyReservationDetailDi
             ),
           ),
         ],
+        const SizedBox(height: 10),
+        Text('Pagos', style: TextStyle(color: palette.textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 6),
+        _PartyPaymentHistory(
+          payments: _payments,
+          currency: reservation.currencyCode,
+          canVoid: _canCancel,
+          onVoid: (payment) => unawaited(_voidPayment(payment)),
+        ),
         if (_cancelled) ...[
           const SizedBox(height: 10),
           Container(

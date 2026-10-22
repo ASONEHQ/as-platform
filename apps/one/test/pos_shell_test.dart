@@ -10211,10 +10211,14 @@ void main() {
         expect(tester.widget<FilledButton>(convertFinder).onPressed, isNull);
 
         // Tapping the OCCUPIED room does nothing — it is not selectable.
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-quote-room-room-busy')));
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-room-room-busy')));
         await tester.pumpAndSettle();
         expect(tester.widget<FilledButton>(convertFinder).onPressed, isNull);
 
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-quote-room-room-open')));
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('pos-fiestas-quote-room-room-open')));
         await tester.pumpAndSettle();
         expect(tester.widget<FilledButton>(convertFinder).onPressed, isNotNull);
@@ -10832,6 +10836,494 @@ void main() {
       await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('pos-fiestas-detail-record-payment')), findsNothing);
+    });
+  });
+
+  // TASK 17.6 — Fiestas commercial flow: saved quotations + payment ledger.
+  group('TASK 17.6 — saved quotes and party payments', () {
+    PosSavedPartyQuote savedQuote({
+      String id = 'quote-seed',
+      String number = 'COT-SEED0001',
+      String status = 'draft',
+      String total = '4060.0000',
+      String? cancelReason,
+    }) => PosSavedPartyQuote(
+      id: id,
+      branchId: 'branch-id',
+      quoteNumber: number,
+      status: status,
+      packageId: 'package-1',
+      packageName: 'Paquete como se cotizó',
+      childrenCount: 12,
+      adultsCount: 5,
+      extraHalfHours: 0,
+      currencyCode: 'MXN',
+      subtotalAmount: '3500.0000',
+      taxTotal: '560.0000',
+      totalAmount: total,
+      version: '3',
+      createdAt: DateTime.utc(2026, 9, 1),
+      roomId: 'room-1',
+      eventDate: '2026-11-14',
+      startTime: '10:00:00',
+      cancelReason: cancelReason,
+      breakdown: const {'base': '3500.0000', 'children_extra': '0.0000', 'adults_extra': '0.0000', 'time_extra': '0.0000'},
+    );
+
+    PosPartyPayment payment({
+      required String id,
+      String method = 'cash',
+      String amount = '1000.0000',
+      String purpose = 'deposit',
+      String? reference,
+      DateTime? voidedAt,
+      String? voidReason,
+    }) => PosPartyPayment(
+      id: id,
+      branchId: 'branch-id',
+      reservationId: 'reservation-1',
+      cashMovementId: method == 'cash' ? 'movement-$id' : null,
+      method: method,
+      reference: reference,
+      recordedOnly: method != 'cash',
+      purpose: purpose,
+      amount: amount,
+      createdBy: 'user-id',
+      createdAt: DateTime.utc(2026, 9, 2),
+      voidedAt: voidedAt,
+      voidReason: voidReason,
+    );
+
+    // The Fiestas "Lista" tab (outside this task) has pre-existing narrow-width
+    // overflows; layout errors are collected and only those raised by the
+    // commercial-flow widgets count here.
+    Future<List<String>> commercialLayoutErrors(Future<void> Function() body) async {
+      final original = FlutterError.onError;
+      final errors = <String>[];
+      FlutterError.onError = (details) => errors.add(details.toString());
+      try {
+        await body();
+      } finally {
+        FlutterError.onError = original;
+      }
+      const mine = [
+        'pos_parties_commercial.dart',
+        '_FiestasCotizador',
+        '_SavedQuotesPanel',
+        '_PartyPaymentHistory',
+        '_VoidPaymentDialog',
+        '_RecordPaymentDialog',
+        '_PartyReservationDetailDialog',
+      ];
+      return [for (final error in errors) if (mine.any(error.contains)) error];
+    }
+
+    // Below the reference breakpoint navigation is the hamburger drawer.
+    Future<void> goFiestas(WidgetTester tester) async {
+      final hamburger = find.byKey(const Key('pos-hamburger'));
+      if (hamburger.evaluate().isNotEmpty) {
+        await tester.tap(hamburger);
+        await tester.pumpAndSettle();
+      }
+      await _navigateToFiestas(tester);
+    }
+
+    Future<void> openCotizador(WidgetTester tester, _FakePartiesGateway gateway, {Size size = const Size(1440, 900), bool manage = true}) async {
+      await _pump(tester, size, context: _contextWithParties(manage: manage), partiesGateway: gateway);
+      await goFiestas(tester);
+      await tester.tap(find.byKey(const Key('pos-fiestas-tabs')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cotizador'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openReservationDetail(
+      WidgetTester tester,
+      _FakePartiesGateway gateway, {
+      bool cancel = false,
+      bool recordPayment = true,
+      Size size = const Size(1440, 900),
+    }) async {
+      await _pump(
+        tester,
+        size,
+        context: _contextWithParties(manage: true, cancel: cancel, recordPayment: recordPayment),
+        partiesGateway: gateway,
+      );
+      await goFiestas(tester);
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-reservation-1')));
+      await tester.pumpAndSettle();
+    }
+
+    _FakePartiesGateway paymentsGateway({List<PosPartyPayment> payments = const [], PosPartyBalance? balance}) {
+      final gateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+        reservationsResult: [_fixturePartyReservation()],
+        balanceResult: balance,
+      );
+      gateway.paymentsResult = List.of(payments);
+      return gateway;
+    }
+
+    testWidgets('saving a quote sends the inputs to the server, shows the folio and lists it as a draft — nothing is invented client-side', (
+      tester,
+    ) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()]);
+      await openCotizador(tester, gateway);
+      expect(find.byKey(const Key('pos-fiestas-saved-quotes-empty')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-quote-children')), '12');
+      await tester.enterText(find.byKey(const Key('pos-fiestas-quote-notes')), 'Pastel de chocolate');
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-submit')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-quote-save')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.saveQuoteCalls, hasLength(1));
+      final call = gateway.saveQuoteCalls.single;
+      expect(call['package_id'], 'package-1');
+      expect(call['children'], 12);
+      expect(call['notes'], 'Pastel de chocolate');
+      expect(call['key'], isNotNull);
+      expect(find.text('Cotización COT-TEST1 guardada.'), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-quote-1')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-status-quote-1')), findsOneWidget);
+      expect(find.text('Borrador'), findsOneWidget);
+      // The form was reset so a second tap cannot silently save a duplicate.
+      expect(find.byKey(const Key('pos-fiestas-quote-save')), findsNothing);
+    });
+
+    testWidgets('a read-only actor sees saved quotes and can print them, but cannot save, edit, convert or cancel', (tester) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()])..savedQuotes = [savedQuote()];
+      await openCotizador(tester, gateway, manage: false);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-quote-seed')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-print-quote-seed')), findsOneWidget);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-edit-quote-seed')), findsNothing);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-convert-quote-seed')), findsNothing);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-cancel-quote-seed')), findsNothing);
+      expect(find.byKey(const Key('pos-fiestas-quote-save')), findsNothing);
+    });
+
+    testWidgets('shows the quoted package and frozen total, labels each status, and only drafts get edit/convert/cancel', (tester) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()])
+        ..savedQuotes = [
+          savedQuote(),
+          savedQuote(id: 'quote-done', number: 'COT-DONE0001', status: 'converted'),
+          savedQuote(id: 'quote-off', number: 'COT-OFF00001', status: 'cancelled', cancelReason: 'Cliente desistio'),
+        ];
+      await openCotizador(tester, gateway);
+      expect(find.textContaining('Paquete como se cotizó'), findsNWidgets(3));
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-total-quote-seed')), findsOneWidget);
+      expect(find.text('Borrador'), findsOneWidget);
+      expect(find.text('Convertida en fiesta'), findsOneWidget);
+      expect(find.text('Cancelada'), findsOneWidget);
+      expect(find.text('Motivo: Cliente desistio'), findsOneWidget);
+      for (final id in ['quote-done', 'quote-off']) {
+        expect(find.byKey(Key('pos-fiestas-saved-quote-edit-$id')), findsNothing);
+        expect(find.byKey(Key('pos-fiestas-saved-quote-convert-$id')), findsNothing);
+        expect(find.byKey(Key('pos-fiestas-saved-quote-cancel-$id')), findsNothing);
+      }
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-edit-quote-seed')), findsOneWidget);
+    });
+
+    testWidgets('printing asks the server for the SAVED quote document', (tester) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()])..savedQuotes = [savedQuote()];
+      await openCotizador(tester, gateway);
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-print-quote-seed')));
+      await tester.pumpAndSettle();
+      expect(gateway.quoteDocumentCalls, ['quote-seed']);
+    });
+
+    testWidgets('cancelling a quote requires a reason and keeps it listed as cancelled — never deleted', (tester) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()])..savedQuotes = [savedQuote()];
+      await openCotizador(tester, gateway);
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-cancel-quote-seed')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-cancel-confirm')));
+      await tester.pumpAndSettle();
+      expect(gateway.cancelQuoteCalls, isEmpty);
+      expect(find.textContaining('Escribe el motivo'), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-saved-quote-cancel-reason')), 'Cliente desistio');
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-cancel-confirm')));
+      await tester.pumpAndSettle();
+      expect(gateway.cancelQuoteCalls, ['quote-seed:Cliente desistio']);
+      expect(find.byKey(const Key('pos-fiestas-saved-quote-quote-seed')), findsOneWidget);
+      expect(find.text('Cancelada'), findsOneWidget);
+    });
+
+    testWidgets('editing a draft loads its frozen amounts, then updates it with its version — a pricing change asks for a new quote first', (
+      tester,
+    ) async {
+      final gateway = _FakePartiesGateway(packagesResult: [_fixturePartyPackage()])..savedQuotes = [savedQuote()];
+      await openCotizador(tester, gateway);
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-edit-quote-seed')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-fiestas-quote-editing-banner')), findsOneWidget);
+      expect(find.text('4060.00 MXN'), findsWidgets);
+
+      await tester.enterText(find.byKey(const Key('pos-fiestas-quote-notes')), 'Solo cambia la nota');
+      await tester.ensureVisible(find.byKey(const Key('pos-fiestas-quote-save')));
+      await tester.pumpAndSettle();
+      expect(find.text('Actualizar cotización'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('pos-fiestas-quote-save')));
+      await tester.pumpAndSettle();
+      expect(gateway.updateQuoteCalls, hasLength(1));
+      expect(gateway.updateQuoteCalls.single['version'], '3');
+      expect(gateway.updateQuoteCalls.single['notes'], 'Solo cambia la nota');
+      expect(gateway.saveQuoteCalls, isEmpty);
+
+      // Changing a pricing input drops the frozen price: save is gone until re-quoted.
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-edit-quote-seed')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('pos-fiestas-quote-children')), '20');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('pos-fiestas-quote-save')), findsNothing);
+    });
+
+    testWidgets('converting a saved quote opens the reservation form with locked pricing and sends quote_id', (tester) async {
+      final gateway = _FakePartiesGateway(
+        roomsResult: [_fixturePartyRoom()],
+        packagesResult: [_fixturePartyPackage()],
+      )..savedQuotes = [savedQuote()];
+      await openCotizador(tester, gateway);
+      await tester.tap(find.byKey(const Key('pos-fiestas-saved-quote-convert-quote-seed')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pos-fiestas-reservation-from-quote')), findsOneWidget);
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-fiestas-reservation-children'))).enabled, isFalse);
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-fiestas-reservation-adults'))).enabled, isFalse);
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-fiestas-reservation-extra-time'))).enabled, isFalse);
+      expect(tester.widget<TextField>(find.byKey(const Key('pos-fiestas-reservation-children'))).controller?.text, '12');
+
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-end-time')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pos-fiestas-reservation-save')));
+      await tester.pumpAndSettle();
+
+      expect(gateway.createReservationCalls, hasLength(1));
+      final call = gateway.createReservationCalls.single;
+      expect(call.quoteId, 'quote-seed');
+      expect(call.packageId, 'package-1');
+      expect(call.childrenCount, 12);
+      expect(call.adultsCount, 5);
+      expect(call.eventDate, '2026-11-14');
+    });
+
+    testWidgets('a direct reservation (no saved quote) sends no quote_id', (tester) async {
+      final input = const PosPartyReservationInput(branchId: 'branch-id', packageId: 'package-1');
+      expect(input.toJson().containsKey('quote_id'), isFalse);
+      expect(const PosPartyReservationInput(quoteId: 'quote-x').toJson()['quote_id'], 'quote-x');
+    });
+
+    group('payment dialog', () {
+      Future<void> openPaymentDialog(WidgetTester tester, _FakePartiesGateway gateway) async {
+        await openReservationDetail(tester, gateway);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-detail-record-payment')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-detail-record-payment')));
+        await tester.pumpAndSettle();
+      }
+
+      testWidgets('cash is the default: it posts to the open cash session and says so', (tester) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        expect(find.text('Efectivo: se abona a la caja abierta de esta sucursal.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payment-reference')), findsNothing);
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '500');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls, hasLength(1));
+        final call = gateway.recordPaymentCalls.single;
+        expect(call.method, 'cash');
+        expect(call.cashSessionId, isNotNull);
+        expect(call.key, isNotNull);
+      });
+
+      testWidgets('card is only RECORDED: honest wording, a reference field, and no cash session is sent', (tester) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-method')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Tarjeta').last);
+        await tester.pumpAndSettle();
+        expect(find.text('Tarjeta registrada: el sistema no procesa ni verifica el cobro.'), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payment-reference')), findsOneWidget);
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '800');
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-reference')), 'AUT-4821');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        final call = gateway.recordPaymentCalls.single;
+        expect(call.method, 'card');
+        expect(call.reference, 'AUT-4821');
+        expect(call.cashSessionId, isNull);
+      });
+
+      testWidgets('transfer is recorded, never shown as verified', (tester) async {
+        final gateway = paymentsGateway();
+        await openPaymentDialog(tester, gateway);
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-method')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Transferencia').last);
+        await tester.pumpAndSettle();
+        expect(find.text('Transferencia registrada: el sistema no verifica el depósito.'), findsOneWidget);
+        expect(find.textContaining('verificad'), findsNothing);
+      });
+
+      testWidgets('a retry after a failure re-sends the SAME idempotency key, and editing the amount renews it', (tester) async {
+        final gateway = paymentsGateway();
+        gateway.recordPaymentFailure = const ApiException(
+          AppFailure(AppErrorKind.validation, 'boom', code: 'internal_error'),
+          statusCode: 500,
+        );
+        await openPaymentDialog(tester, gateway);
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '500');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-fiestas-payment-error')), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls, hasLength(2));
+        expect(gateway.recordPaymentCalls[0].key, gateway.recordPaymentCalls[1].key);
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-amount')), '600');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-save')));
+        await tester.pumpAndSettle();
+        expect(gateway.recordPaymentCalls, hasLength(3));
+        expect(gateway.recordPaymentCalls[2].key, isNot(gateway.recordPaymentCalls[1].key));
+      });
+    });
+
+    group('payment history, balance and voids', () {
+      testWidgets('lists every payment — voided ones stay visible, struck through, with their reason', (tester) async {
+        final gateway = paymentsGateway(
+          payments: [
+            payment(id: 'pay-cash'),
+            payment(id: 'pay-card', method: 'card', amount: '500.0000', reference: 'AUT-9'),
+            payment(id: 'pay-void', method: 'transfer', amount: '700.0000', voidedAt: DateTime.utc(2026, 9, 3), voidReason: 'No llegó el depósito'),
+          ],
+        );
+        await openReservationDetail(tester, gateway);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payments-history')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('pos-fiestas-payment-row-pay-cash')), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payment-row-pay-card')), findsOneWidget);
+        expect(find.text('Referencia: AUT-9'), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payment-voided-pay-void')), findsOneWidget);
+        expect(find.text('Anulado: No llegó el depósito'), findsOneWidget);
+        expect(find.byKey(const Key('pos-fiestas-payments-recorded-note')), findsOneWidget);
+        // No void button without party.cancel.
+        expect(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')), findsNothing);
+      });
+
+      testWidgets('an empty history says so honestly', (tester) async {
+        await openReservationDetail(tester, paymentsGateway());
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payments-empty')));
+        expect(find.byKey(const Key('pos-fiestas-payments-empty')), findsOneWidget);
+      });
+
+      testWidgets('voiding a cash payment needs a reason, sends the open cash session and a stable key, then shows it voided', (tester) async {
+        final gateway = paymentsGateway(payments: [payment(id: 'pay-cash')]);
+        await openReservationDetail(tester, gateway, cancel: true);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-pay-cash')));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-confirm')));
+        await tester.pumpAndSettle();
+        expect(gateway.voidPaymentCalls, isEmpty);
+        expect(find.byKey(const Key('pos-fiestas-payment-void-error')), findsOneWidget);
+
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-void-reason')), 'Cobro duplicado');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-confirm')));
+        await tester.pumpAndSettle();
+        expect(gateway.voidPaymentCalls, hasLength(1));
+        final call = gateway.voidPaymentCalls.single;
+        expect(call.paymentId, 'pay-cash');
+        expect(call.reason, 'Cobro duplicado');
+        expect(call.cashSessionId, isNotNull);
+        expect(call.key, isNotNull);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-voided-pay-cash')));
+        expect(find.text('Anulado: Cobro duplicado'), findsOneWidget);
+      });
+
+      testWidgets('voiding a card payment sends no cash session', (tester) async {
+        final gateway = paymentsGateway(payments: [payment(id: 'pay-card', method: 'card')]);
+        await openReservationDetail(tester, gateway, cancel: true);
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payment-void-pay-card')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-pay-card')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('pos-fiestas-payment-void-reason')), 'Cargo rechazado');
+        await tester.tap(find.byKey(const Key('pos-fiestas-payment-void-confirm')));
+        await tester.pumpAndSettle();
+        expect(gateway.voidPaymentCalls.single.cashSessionId, isNull);
+      });
+
+      testWidgets('the balance shows the server remaining and any overpayment — never a client computation', (tester) async {
+        final gateway = paymentsGateway(
+          balance: const PosPartyBalance(
+            subtotalAmount: '1000.00',
+            discountTotal: '0.00',
+            taxTotal: '0.00',
+            quotedTotal: '1000.00',
+            totalPaid: '1200.00',
+            outstandingBalance: '-200.00',
+            remainingBalance: '0.00',
+            overpaidAmount: '200.00',
+          ),
+        );
+        await openReservationDetail(tester, gateway);
+        await tester.ensureVisible(find.text('Pagado de más'));
+        expect(find.text('Pagado de más'), findsOneWidget);
+        expect(find.text('200.00 MXN'), findsWidgets);
+        expect(find.text('Saldo pendiente'), findsOneWidget);
+        expect(find.text('-200.00 MXN'), findsNothing);
+      });
+    });
+
+    for (final size in const [Size(1440, 900), Size(1365, 768), Size(1024, 768), Size(390, 844)]) {
+      testWidgets('saved quotes and the payment ledger lay out without overflow at ${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+        final gateway = paymentsGateway(
+          payments: [
+            payment(id: 'pay-cash'),
+            payment(id: 'pay-void', method: 'transfer', voidedAt: DateTime.utc(2026, 9, 3), voidReason: 'Motivo largo de anulación para probar el ajuste de línea'),
+          ],
+        )..savedQuotes = [savedQuote(), savedQuote(id: 'quote-done', number: 'COT-DONE0001', status: 'converted')];
+        final errors = await commercialLayoutErrors(() async {
+          await openCotizador(tester, gateway, size: size);
+          await tester.ensureVisible(find.byKey(const Key('pos-fiestas-saved-quote-quote-seed')));
+          await tester.pumpAndSettle();
+        });
+        expect(find.byKey(const Key('pos-fiestas-saved-quote-quote-seed')), findsOneWidget);
+        expect(errors, isEmpty);
+      });
+    }
+
+    testWidgets('the reservation detail with payments and voids has no overflow at 390x844', (tester) async {
+      final gateway = paymentsGateway(
+        payments: [
+          payment(id: 'pay-cash'),
+          payment(id: 'pay-void', method: 'card', voidedAt: DateTime.utc(2026, 9, 3), voidReason: 'Motivo largo de anulación para probar el ajuste de línea'),
+        ],
+      );
+      final errors = await commercialLayoutErrors(() async {
+        await openReservationDetail(tester, gateway, cancel: true, size: const Size(390, 844));
+        await tester.ensureVisible(find.byKey(const Key('pos-fiestas-payments-history')));
+        await tester.pumpAndSettle();
+      });
+      expect(find.byKey(const Key('pos-fiestas-payment-row-pay-cash')), findsOneWidget);
+      expect(errors, isEmpty);
     });
   });
 
@@ -14775,6 +15267,19 @@ class _FakePartiesGateway implements PosPartiesGateway {
 
   final PosPartyBalance? balanceResult;
 
+  // TASK 17.6 — party payment ledger + saved quotations. Mutable on purpose:
+  // tests seed the history/saved list and read back what the UI sent.
+  List<PosPartyPayment> paymentsResult = [];
+  final List<({String purpose, String amount, String method, String? reference, String? notes, String? cashSessionId, String? key})>
+  recordPaymentCalls = [];
+  final List<({String paymentId, String reason, String? cashSessionId, String? key})> voidPaymentCalls = [];
+  Object? recordPaymentFailure;
+  List<PosSavedPartyQuote> savedQuotes = [];
+  final List<Map<String, Object?>> saveQuoteCalls = [];
+  final List<Map<String, Object?>> updateQuoteCalls = [];
+  final List<String> cancelQuoteCalls = [];
+  final List<String> quoteDocumentCalls = [];
+
   final PosPartyCancellationResult? cancelResult;
   final List<String> cancelCalls = [];
 
@@ -15107,17 +15612,192 @@ class _FakePartiesGateway implements PosPartiesGateway {
     String reservationId, {
     required String purpose,
     required String amount,
-    required String cashSessionId,
-  }) async => PosPartyPayment(
-    id: 'payment-1',
-    branchId: 'branch-id',
-    reservationId: reservationId,
-    cashMovementId: 'movement-1',
-    purpose: purpose,
-    amount: amount,
-    createdBy: 'user-id',
-    createdAt: DateTime.utc(2026, 9, 4),
-  );
+    String method = 'cash',
+    String? reference,
+    String? notes,
+    String? cashSessionId,
+    String? idempotencyKey,
+  }) async {
+    recordPaymentCalls.add((
+      purpose: purpose,
+      amount: amount,
+      method: method,
+      reference: reference,
+      notes: notes,
+      cashSessionId: cashSessionId,
+      key: idempotencyKey,
+    ));
+    final failure = recordPaymentFailure;
+    if (failure != null) throw failure;
+    return PosPartyPayment(
+      id: 'payment-${recordPaymentCalls.length}',
+      branchId: 'branch-id',
+      reservationId: reservationId,
+      cashMovementId: method == 'cash' ? 'movement-1' : null,
+      method: method,
+      reference: reference,
+      notes: notes,
+      recordedOnly: method != 'cash',
+      purpose: purpose,
+      amount: amount,
+      createdBy: 'user-id',
+      createdAt: DateTime.utc(2026, 9, 4),
+    );
+  }
+
+  @override
+  Future<List<PosPartyPayment>> listPayments(String reservationId) async => List.of(paymentsResult);
+
+  @override
+  Future<PosPartyPayment> voidPayment(
+    String reservationId,
+    String paymentId, {
+    required String reason,
+    String? cashSessionId,
+    String? idempotencyKey,
+  }) async {
+    voidPaymentCalls.add((paymentId: paymentId, reason: reason, cashSessionId: cashSessionId, key: idempotencyKey));
+    final original = paymentsResult.firstWhere((payment) => payment.id == paymentId);
+    final voided = PosPartyPayment(
+      id: original.id,
+      branchId: original.branchId,
+      reservationId: original.reservationId,
+      cashMovementId: original.cashMovementId,
+      purpose: original.purpose,
+      amount: original.amount,
+      createdBy: original.createdBy,
+      createdAt: original.createdAt,
+      method: original.method,
+      reference: original.reference,
+      recordedOnly: original.recordedOnly,
+      voidedAt: DateTime.utc(2026, 9, 5),
+      voidReason: reason,
+    );
+    paymentsResult = [for (final payment in paymentsResult) payment.id == paymentId ? voided : payment];
+    return voided;
+  }
+
+  @override
+  Future<PosSavedPartyQuote> saveQuote({
+    required String branchId,
+    required String packageId,
+    required int children,
+    required int adults,
+    required int extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+    String? idempotencyKey,
+  }) async {
+    saveQuoteCalls.add({
+      'branch_id': branchId,
+      'package_id': packageId,
+      'children': children,
+      'adults': adults,
+      'extra_half_hours': extraHalfHours,
+      'customer_id': customerId,
+      'room_id': roomId,
+      'event_date': eventDate,
+      'start_time': startTime,
+      'notes': notes,
+      'key': idempotencyKey,
+    });
+    final saved = PosSavedPartyQuote(
+      id: 'quote-${saveQuoteCalls.length}',
+      branchId: branchId,
+      quoteNumber: 'COT-TEST${saveQuoteCalls.length}',
+      status: 'draft',
+      packageId: packageId,
+      packageName: 'Paquete guardado',
+      childrenCount: children,
+      adultsCount: adults,
+      extraHalfHours: extraHalfHours,
+      currencyCode: 'MXN',
+      subtotalAmount: '3500.0000',
+      taxTotal: '560.0000',
+      totalAmount: '4060.0000',
+      version: '1',
+      createdAt: DateTime.utc(2026, 9, 4),
+      notes: notes,
+      breakdown: const {'base': '3500.0000', 'children_extra': '0.0000', 'adults_extra': '0.0000', 'time_extra': '0.0000'},
+    );
+    savedQuotes = [saved, ...savedQuotes];
+    return saved;
+  }
+
+  @override
+  Future<List<PosSavedPartyQuote>> listSavedQuotes({String? status, String? branchId, int limit = 50}) async => List.of(savedQuotes);
+
+  @override
+  Future<PosSavedPartyQuote> updateSavedQuote(
+    String id, {
+    required String version,
+    String? packageId,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+  }) async {
+    updateQuoteCalls.add({'id': id, 'version': version, 'package_id': packageId, 'children': children, 'notes': notes});
+    final current = savedQuotes.firstWhere((quote) => quote.id == id);
+    return PosSavedPartyQuote(
+      id: current.id,
+      branchId: current.branchId,
+      quoteNumber: current.quoteNumber,
+      status: current.status,
+      packageId: packageId ?? current.packageId,
+      packageName: current.packageName,
+      childrenCount: children ?? current.childrenCount,
+      adultsCount: adults ?? current.adultsCount,
+      extraHalfHours: extraHalfHours ?? current.extraHalfHours,
+      currencyCode: current.currencyCode,
+      subtotalAmount: current.subtotalAmount,
+      taxTotal: current.taxTotal,
+      totalAmount: current.totalAmount,
+      version: '${int.parse(current.version) + 1}',
+      createdAt: current.createdAt,
+      notes: notes ?? current.notes,
+      breakdown: current.breakdown,
+    );
+  }
+
+  @override
+  Future<PosSavedPartyQuote> cancelSavedQuote(String id, {required String reason, String? idempotencyKey}) async {
+    cancelQuoteCalls.add('$id:$reason');
+    final current = savedQuotes.firstWhere((quote) => quote.id == id);
+    final cancelled = PosSavedPartyQuote(
+      id: current.id,
+      branchId: current.branchId,
+      quoteNumber: current.quoteNumber,
+      status: 'cancelled',
+      packageId: current.packageId,
+      packageName: current.packageName,
+      childrenCount: current.childrenCount,
+      adultsCount: current.adultsCount,
+      extraHalfHours: current.extraHalfHours,
+      currencyCode: current.currencyCode,
+      subtotalAmount: current.subtotalAmount,
+      taxTotal: current.taxTotal,
+      totalAmount: current.totalAmount,
+      version: current.version,
+      createdAt: current.createdAt,
+      cancelReason: reason,
+    );
+    savedQuotes = [for (final quote in savedQuotes) quote.id == id ? cancelled : quote];
+    return cancelled;
+  }
+
+  @override
+  Future<String> savedQuoteDocument(String id) async {
+    quoteDocumentCalls.add(id);
+    return '<html><body>Cotizacion $id</body></html>';
+  }
 
   @override
   Future<PosPartyBalance> balance(String reservationId) async =>

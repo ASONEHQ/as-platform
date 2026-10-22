@@ -41,6 +41,13 @@ String posPartyErrorMessage(ApiException error, {String? fallback}) {
       return 'El subtotal de esta reservación no alcanza el mínimo requerido por el cupón.';
     case 'coupon_usage_limit_reached':
       return 'Este cupón ya alcanzó su límite de usos.';
+    // TASK 17.6 — honest, specific commercial-flow rejections.
+    case 'quote_not_editable':
+      return 'Esta cotización ya no es un borrador (se convirtió en reservación o se canceló), así que no se puede modificar.';
+    case 'payment_already_voided':
+      return 'Este pago ya fue anulado.';
+    case 'version_conflict':
+      return 'Otra persona modificó este registro. Recárgalo y vuelve a intentar.';
     case 'resource_conflict':
       return fallback ?? 'La operación no se pudo completar porque el recurso está en un estado inesperado.';
     default:
@@ -224,13 +231,80 @@ abstract interface class PosPartiesGateway {
   // --- Payments / balance ------------------------------------------------------
 
   /// `POST /api/v1/party-reservations/{id}/payments`
-  /// (`party.payment.record`).
+  /// (`party.payment.record`). [method] is `cash` (default; needs
+  /// [cashSessionId], posts a real cash movement) | `card` | `transfer`
+  /// (no cash session; the system only RECORDS them — it never processes or
+  /// verifies them). Pass the SAME [idempotencyKey] on every retry of one
+  /// submission so a double tap can never record the money twice.
   Future<PosPartyPayment> recordPayment(
     String reservationId, {
     required String purpose,
     required String amount,
-    required String cashSessionId,
+    String method = 'cash',
+    String? reference,
+    String? notes,
+    String? cashSessionId,
+    String? idempotencyKey,
   });
+
+  /// `GET /api/v1/party-reservations/{id}/payments` (`party.read`) — the
+  /// whole history, oldest first, voided payments included and flagged.
+  Future<List<PosPartyPayment>> listPayments(String reservationId);
+
+  /// `POST /api/v1/party-reservations/{id}/payments/{paymentId}/void`
+  /// (`party.cancel`) — voids, never deletes. A cash payment needs the open
+  /// [cashSessionId] that returns the money.
+  Future<PosPartyPayment> voidPayment(
+    String reservationId,
+    String paymentId, {
+    required String reason,
+    String? cashSessionId,
+    String? idempotencyKey,
+  });
+
+  // --- Saved quotations (TASK 17.6) -------------------------------------------
+
+  /// `POST /api/v1/party-quotes` (`party.manage`) — persists a quote with
+  /// a frozen package snapshot and frozen amounts. NOT a reservation.
+  Future<PosSavedPartyQuote> saveQuote({
+    required String branchId,
+    required String packageId,
+    required int children,
+    required int adults,
+    required int extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+    String? idempotencyKey,
+  });
+
+  /// `GET /api/v1/party-quotes` (`party.read`), newest first.
+  Future<List<PosSavedPartyQuote>> listSavedQuotes({String? status, String? branchId, int limit = 50});
+
+  /// `PATCH /api/v1/party-quotes/{id}` (`party.manage`, `If-Match`) —
+  /// the server re-prices only when package/guests/extra time change.
+  Future<PosSavedPartyQuote> updateSavedQuote(
+    String id, {
+    required String version,
+    String? packageId,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+  });
+
+  /// `POST /api/v1/party-quotes/{id}/cancel` (`party.manage`).
+  Future<PosSavedPartyQuote> cancelSavedQuote(String id, {required String reason, String? idempotencyKey});
+
+  /// `GET /api/v1/party-quotes/{id}/document` (`party.read`) — the printable
+  /// HTML of the SAVED quote (frozen snapshot), as text.
+  Future<String> savedQuoteDocument(String id);
 
   /// `GET /api/v1/party-reservations/{id}/balance` (`party.read`).
   Future<PosPartyBalance> balance(String reservationId);
@@ -595,18 +669,148 @@ class ApiPosPartiesGateway implements PosPartiesGateway {
     String reservationId, {
     required String purpose,
     required String amount,
-    required String cashSessionId,
+    String method = 'cash',
+    String? reference,
+    String? notes,
+    String? cashSessionId,
+    String? idempotencyKey,
   }) async {
     final envelope = await _client.postJson(
       '/api/v1/party-reservations/$reservationId/payments',
-      idempotencyKey: _idempotencyKey('payment'),
-      body: {'purpose': purpose, 'amount': amount, 'cash_session_id': cashSessionId},
+      idempotencyKey: idempotencyKey ?? _idempotencyKey('payment'),
+      body: {
+        'purpose': purpose,
+        'amount': amount,
+        'method': method,
+        if (reference != null) 'reference': reference,
+        if (notes != null) 'notes': notes,
+        if (cashSessionId != null) 'cash_session_id': cashSessionId,
+      },
     );
+    return PosPartyPayment.fromJson(_dataOf(envelope, 'payment'));
+  }
+
+  @override
+  Future<List<PosPartyPayment>> listPayments(String reservationId) async {
+    final envelope = await _client.getJson('/api/v1/party-reservations/$reservationId/payments');
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing payments data.');
+    }
+    return [for (final item in data.whereType<Map<String, Object?>>()) PosPartyPayment.fromJson(item)];
+  }
+
+  @override
+  Future<PosPartyPayment> voidPayment(
+    String reservationId,
+    String paymentId, {
+    required String reason,
+    String? cashSessionId,
+    String? idempotencyKey,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/party-reservations/$reservationId/payments/$paymentId/void',
+      idempotencyKey: idempotencyKey ?? _idempotencyKey('payment-void'),
+      body: {'reason': reason, if (cashSessionId != null) 'cash_session_id': cashSessionId},
+    );
+    return PosPartyPayment.fromJson(_dataOf(envelope, 'payment'));
+  }
+
+  @override
+  Future<PosSavedPartyQuote> saveQuote({
+    required String branchId,
+    required String packageId,
+    required int children,
+    required int adults,
+    required int extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+    String? idempotencyKey,
+  }) async {
+    final envelope = await _client.postJson(
+      '/api/v1/party-quotes',
+      idempotencyKey: idempotencyKey ?? _idempotencyKey('quote'),
+      body: {
+        'branch_id': branchId,
+        'package_id': packageId,
+        'children_count': children,
+        'adults_count': adults,
+        'extra_half_hours': extraHalfHours,
+        if (customerId != null) 'customer_id': customerId,
+        if (roomId != null) 'room_id': roomId,
+        if (eventDate != null) 'event_date': eventDate,
+        if (startTime != null) 'start_time': startTime,
+        if (notes != null) 'notes': notes,
+      },
+    );
+    return PosSavedPartyQuote.fromJson(_dataOf(envelope, 'quote'));
+  }
+
+  @override
+  Future<List<PosSavedPartyQuote>> listSavedQuotes({String? status, String? branchId, int limit = 50}) async {
+    final query = <String, String>{'limit': '$limit', if (status != null) 'status': status, if (branchId != null) 'branch_id': branchId};
+    final envelope = await _client.getJson('/api/v1/party-quotes?${Uri(queryParameters: query).query}');
+    final data = envelope['data'];
+    if (data is! List<Object?>) {
+      throw const FormatException('Missing quotes data.');
+    }
+    return [for (final item in data.whereType<Map<String, Object?>>()) PosSavedPartyQuote.fromJson(item)];
+  }
+
+  @override
+  Future<PosSavedPartyQuote> updateSavedQuote(
+    String id, {
+    required String version,
+    String? packageId,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+  }) async {
+    final envelope = await _client.patchJson(
+      '/api/v1/party-quotes/$id',
+      ifMatch: '"$version"',
+      body: {
+        if (packageId != null) 'package_id': packageId,
+        if (children != null) 'children_count': children,
+        if (adults != null) 'adults_count': adults,
+        if (extraHalfHours != null) 'extra_half_hours': extraHalfHours,
+        if (customerId != null) 'customer_id': customerId,
+        if (roomId != null) 'room_id': roomId,
+        if (eventDate != null) 'event_date': eventDate,
+        if (startTime != null) 'start_time': startTime,
+        if (notes != null) 'notes': notes,
+      },
+    );
+    return PosSavedPartyQuote.fromJson(_dataOf(envelope, 'quote'));
+  }
+
+  @override
+  Future<PosSavedPartyQuote> cancelSavedQuote(String id, {required String reason, String? idempotencyKey}) async {
+    final envelope = await _client.postJson(
+      '/api/v1/party-quotes/$id/cancel',
+      idempotencyKey: idempotencyKey ?? _idempotencyKey('quote-cancel'),
+      body: {'reason': reason},
+    );
+    return PosSavedPartyQuote.fromJson(_dataOf(envelope, 'quote'));
+  }
+
+  @override
+  Future<String> savedQuoteDocument(String id) => _client.getText('/api/v1/party-quotes/$id/document');
+
+  static Map<String, Object?> _dataOf(Map<String, Object?> envelope, String what) {
     final data = envelope['data'];
     if (data is! Map<String, Object?>) {
-      throw const FormatException('Missing payment data.');
+      throw FormatException('Missing $what data.');
     }
-    return PosPartyPayment.fromJson(data);
+    return data;
   }
 
   @override
@@ -807,8 +1011,64 @@ class EmptyPosPartiesGateway implements PosPartiesGateway {
     String reservationId, {
     required String purpose,
     required String amount,
-    required String cashSessionId,
+    String method = 'cash',
+    String? reference,
+    String? notes,
+    String? cashSessionId,
+    String? idempotencyKey,
   }) => Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<List<PosPartyPayment>> listPayments(String reservationId) async => const [];
+
+  @override
+  Future<PosPartyPayment> voidPayment(
+    String reservationId,
+    String paymentId, {
+    required String reason,
+    String? cashSessionId,
+    String? idempotencyKey,
+  }) => Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<PosSavedPartyQuote> saveQuote({
+    required String branchId,
+    required String packageId,
+    required int children,
+    required int adults,
+    required int extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+    String? idempotencyKey,
+  }) => Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<List<PosSavedPartyQuote>> listSavedQuotes({String? status, String? branchId, int limit = 50}) async => const [];
+
+  @override
+  Future<PosSavedPartyQuote> updateSavedQuote(
+    String id, {
+    required String version,
+    String? packageId,
+    int? children,
+    int? adults,
+    int? extraHalfHours,
+    String? customerId,
+    String? roomId,
+    String? eventDate,
+    String? startTime,
+    String? notes,
+  }) => Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<PosSavedPartyQuote> cancelSavedQuote(String id, {required String reason, String? idempotencyKey}) =>
+      Future.error(StateError('No parties gateway is configured.'));
+
+  @override
+  Future<String> savedQuoteDocument(String id) => Future.error(StateError('No parties gateway is configured.'));
 
   @override
   Future<PosPartyBalance> balance(String reservationId) => Future.error(StateError('No parties gateway is configured.'));

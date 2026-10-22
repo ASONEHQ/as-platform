@@ -639,6 +639,7 @@ class PosPartyReservationInput {
     this.extraHalfHours,
     this.sellerUserId,
     this.notes,
+    this.quoteId,
   });
 
   final String? branchId;
@@ -656,7 +657,12 @@ class PosPartyReservationInput {
   final String? sellerUserId;
   final String? notes;
 
+  /// TASK 17.6 — set only when this reservation is the explicit conversion
+  /// of a saved DRAFT quote; the server then takes the frozen amounts.
+  final String? quoteId;
+
   Map<String, Object?> toJson() => {
+    if (quoteId != null) 'quote_id': quoteId,
     if (branchId != null) 'branch_id': branchId,
     if (customerId != null) 'customer_id': customerId,
     if (celebrantName != null) 'celebrant_name': celebrantName,
@@ -850,23 +856,47 @@ class PosPartyPayment {
     required this.amount,
     required this.createdBy,
     required this.createdAt,
+    this.method = 'cash',
+    this.reference,
+    this.notes,
+    this.recordedOnly = false,
+    this.voidedAt,
+    this.voidReason,
   });
 
   factory PosPartyPayment.fromJson(Map<String, Object?> json) => PosPartyPayment(
     id: json['id']! as String,
     branchId: json['branch_id']! as String,
     reservationId: json['reservation_id']! as String,
-    cashMovementId: json['cash_movement_id']! as String,
+    cashMovementId: json['cash_movement_id'] as String?,
     purpose: json['purpose']! as String,
     amount: json['amount']! as String,
     createdBy: json['created_by']! as String,
     createdAt: DateTime.parse(json['created_at']! as String),
+    method: json['method'] as String? ?? 'cash',
+    reference: json['reference'] as String?,
+    notes: json['notes'] as String?,
+    recordedOnly: json['recorded_only'] as bool? ?? false,
+    voidedAt: json['voided_at'] == null ? null : DateTime.parse(json['voided_at']! as String),
+    voidReason: json['void_reason'] as String?,
   );
 
   final String id;
   final String branchId;
   final String reservationId;
-  final String cashMovementId;
+
+  /// Null for card/transfer: no cash movement exists for them.
+  final String? cashMovementId;
+
+  /// `cash` | `card` | `transfer`. Only cash is verified by the system;
+  /// card/transfer are operator-recorded ([recordedOnly]).
+  final String method;
+  final String? reference;
+  final String? notes;
+  final bool recordedOnly;
+  final DateTime? voidedAt;
+  final String? voidReason;
+  bool get isVoided => voidedAt != null;
 
   /// `deposit` | `balance` | `additional`.
   final String purpose;
@@ -883,9 +913,17 @@ class PosPartyBalance {
     required this.quotedTotal,
     required this.totalPaid,
     required this.outstandingBalance,
+    this.remainingBalance,
+    this.overpaidAmount = '0.0000',
+    this.paymentsCount = 0,
+    this.voidedPaymentsCount = 0,
   });
 
   factory PosPartyBalance.fromJson(Map<String, Object?> json) => PosPartyBalance(
+    remainingBalance: json['remaining_balance'] as String?,
+    overpaidAmount: json['overpaid_amount'] as String? ?? '0.0000',
+    paymentsCount: (json['payments_count'] as num?)?.toInt() ?? 0,
+    voidedPaymentsCount: (json['voided_payments_count'] as num?)?.toInt() ?? 0,
     subtotalAmount: json['subtotal_amount'] as String?,
     discountTotal: json['discount_total'] as String? ?? '0.0000',
     taxTotal: json['tax_total'] as String? ?? '0.0000',
@@ -900,6 +938,13 @@ class PosPartyBalance {
   final String quotedTotal;
   final String totalPaid;
   final String outstandingBalance;
+
+  /// Server-authoritative remaining (never negative); null only for a
+  /// stale response that predates TASK 17.6.
+  final String? remainingBalance;
+  final String overpaidAmount;
+  final int paymentsCount;
+  final int voidedPaymentsCount;
 }
 
 /// `GET /party-reservations/{id}`'s full response — [reservation]'s own
@@ -1014,4 +1059,100 @@ class PosPartyPage<T> {
   const PosPartyPage({required this.items, required this.nextCursor});
   final List<T> items;
   final String? nextCursor;
+}
+
+/// TASK 17.6 — a SAVED party quotation (`/party-quotes`). Distinct from
+/// [PosPartyQuote], the live computed breakdown: this one is persisted, has a
+/// folio, a frozen package snapshot and frozen amounts, and is NEVER a
+/// reservation until it is explicitly converted.
+class PosSavedPartyQuote {
+  const PosSavedPartyQuote({
+    required this.id,
+    required this.branchId,
+    required this.quoteNumber,
+    required this.status,
+    required this.packageId,
+    required this.packageName,
+    required this.childrenCount,
+    required this.adultsCount,
+    required this.extraHalfHours,
+    required this.currencyCode,
+    required this.subtotalAmount,
+    this.discountTotal = '0.0000',
+    required this.taxTotal,
+    required this.totalAmount,
+    required this.version,
+    required this.createdAt,
+    this.customerId,
+    this.customerDisplayName,
+    this.roomId,
+    this.eventDate,
+    this.startTime,
+    this.notes,
+    this.convertedReservationId,
+    this.cancelReason,
+    this.breakdown = const {},
+  });
+
+  factory PosSavedPartyQuote.fromJson(Map<String, Object?> json) => PosSavedPartyQuote(
+    id: json['id']! as String,
+    branchId: json['branch_id']! as String,
+    quoteNumber: json['quote_number']! as String,
+    status: json['status']! as String,
+    packageId: json['package_id']! as String,
+    packageName: json['package_name']! as String,
+    childrenCount: (json['children_count']! as num).toInt(),
+    adultsCount: (json['adults_count']! as num).toInt(),
+    extraHalfHours: (json['extra_half_hours']! as num).toInt(),
+    currencyCode: json['currency_code']! as String,
+    subtotalAmount: json['subtotal_amount']! as String,
+    discountTotal: json['discount_total'] as String? ?? '0.0000',
+    taxTotal: json['tax_total']! as String,
+    totalAmount: json['total_amount']! as String,
+    version: json['version']! as String,
+    createdAt: DateTime.parse(json['created_at']! as String),
+    customerId: json['customer_id'] as String?,
+    customerDisplayName: json['customer_display_name'] as String?,
+    roomId: json['room_id'] as String?,
+    eventDate: json['event_date'] as String?,
+    startTime: json['start_time'] as String?,
+    notes: json['notes'] as String?,
+    convertedReservationId: json['converted_reservation_id'] as String?,
+    cancelReason: json['cancel_reason'] as String?,
+    breakdown: (json['breakdown'] as Map<String, Object?>?) ?? const {},
+  );
+
+  final String id;
+  final String branchId;
+  final String quoteNumber;
+
+  /// `draft` | `converted` | `cancelled`.
+  final String status;
+  final String packageId;
+
+  /// The package name AS QUOTED (frozen), not the live package's.
+  final String packageName;
+  final int childrenCount;
+  final int adultsCount;
+  final int extraHalfHours;
+  final String currencyCode;
+  final String subtotalAmount;
+  final String discountTotal;
+  final String taxTotal;
+  final String totalAmount;
+
+  /// Optimistic-concurrency version, sent back as `If-Match` on edit.
+  final String version;
+  final DateTime createdAt;
+  final String? customerId;
+  final String? customerDisplayName;
+  final String? roomId;
+  final String? eventDate;
+  final String? startTime;
+  final String? notes;
+  final String? convertedReservationId;
+  final String? cancelReason;
+  final Map<String, Object?> breakdown;
+
+  bool get isDraft => status == 'draft';
 }
