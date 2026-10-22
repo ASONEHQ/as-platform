@@ -404,6 +404,34 @@ integration('PostgreSQL party payment ledger (TASK 17.6)', { concurrent: false }
       expect(reversals).toHaveLength(1);
     });
 
+    it('two concurrent voids of one payment produce exactly one void and one compensating movement', async () => {
+      const reservationId = await newReservation();
+      const payment = await pay(reservationId);
+      const attempt = (): Promise<string> =>
+        reservations
+          .voidPayment(context(companyId, userId), branchIds, `v-${randomUUID()}`, reservationId, payment.value.id, {
+            reason: 'Doble clic simultaneo',
+            cashSessionId: sessionA,
+          })
+          .then(
+            () => 'ok' as const,
+            (error: unknown) => (error as { code?: string }).code ?? 'unknown',
+          );
+      const outcomes = await Promise.all([attempt(), attempt()]);
+      expect(outcomes.filter((outcome) => outcome === 'ok')).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome === 'payment_already_voided')).toHaveLength(1);
+      expect((await movementsOf(sessionA, reservationId)).filter((m) => m.movementType === 'cash_out')).toHaveLength(1);
+    });
+
+    it('two concurrent submissions with the SAME key record the money once', async () => {
+      const reservationId = await newReservation();
+      const key = `p-conc-${randomUUID()}`;
+      const results = await Promise.all([pay(reservationId, {}, key), pay(reservationId, {}, key)]);
+      expect(results[0].value.id).toBe(results[1].value.id);
+      expect((await reservations.balance(companyId, branchIds, reservationId)).totalPaid).toBe('1000.0000');
+      expect(await movementsOf(sessionA, reservationId)).toHaveLength(1);
+    });
+
     it('requires a real reason and 404s on an unknown payment', async () => {
       const reservationId = await newReservation();
       const payment = await pay(reservationId);

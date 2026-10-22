@@ -377,6 +377,36 @@ integration('PostgreSQL party quotes (TASK 17.6)', { concurrent: false }, () => 
       }
     });
 
+    it('lets exactly one of two concurrent conversions win (no duplicate reservation)', async () => {
+      const q = await create();
+      const attempt = (date: string): Promise<string> =>
+        reservations
+          .createReservation(context(companyId, userId), branchIds, `conv-${randomUUID()}`, {
+            branchId,
+            roomId,
+            packageId,
+            eventDate: date,
+            startTime: '10:00',
+            endTime: '12:00',
+            childrenCount: 12,
+            adultsCount: 5,
+            quoteId: q.value.id,
+          })
+          .then(
+            () => 'ok' as const,
+            (error: unknown) => (error as PartyError).code,
+          );
+      const outcomes = await Promise.all([attempt('2028-08-01'), attempt('2028-08-02')]);
+      expect(outcomes.filter((outcome) => outcome === 'ok')).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome === 'quote_not_editable')).toHaveLength(1);
+      const linked = await database.pool.query<{ n: string }>(
+        `select count(*)::text n from party_reservations where company_id=$1 and event_date in ('2028-08-01','2028-08-02')`,
+        [companyId],
+      );
+      expect(linked.rows[0]?.n).toBe('1');
+      expect((await quotes.quote(companyId, branchIds, q.value.id)).status).toBe('converted');
+    });
+
     it('rejects a conversion whose guests/package do not match the quote, leaving the quote draft', async () => {
       const q = await create();
       await expectPartyError(

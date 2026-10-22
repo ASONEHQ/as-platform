@@ -1,5 +1,7 @@
 # Parties Commercial Flow — Architecture Gap (TASK 17.5)
 
+> **Update (TASK 17.6):** the follow-ups proposed below were implemented; see `PARTIES_COMMERCIAL_FLOW_IMPLEMENTATION.md` for what exists now and what is still open. This document is kept as the original audit.
+
 Audit-only document. Nothing in this file was implemented by TASK 17.5 — every item
 below either requires a business-rule decision, a schema change, or both, and per
 this task's own migration rule, no migration was created.
