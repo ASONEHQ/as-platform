@@ -15,6 +15,7 @@ import {
   type PartyQuoteRow,
   type PartyQuoteStatus,
   type PartyReservationDocumentRow,
+  type PartyPaymentMethod,
   type PartyReservationPaymentPurpose,
   type PartyReservationPaymentRow,
   type PartyReservationRow,
@@ -77,7 +78,7 @@ const SNACK_COLUMNS =
 const SOCK_COLUMNS =
   'id,company_id,reservation_id,size,quantity,product_variant_id,stock_deducted,stock_deducted_at,issued_quantity,included_in_package,created_at';
 const PAYMENT_COLUMNS =
-  'id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,created_by,created_at';
+  'id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,method,reference,notes,created_by,created_at,voided_at,voided_by,void_reason,void_cash_movement_id';
 const DOCUMENT_COLUMNS = 'id,company_id,reservation_id,document_type,generated_by,created_at';
 
 interface RoomDb {
@@ -213,11 +214,18 @@ interface PaymentDb {
   company_id: string;
   branch_id: string;
   reservation_id: string;
-  cash_movement_id: string;
+  cash_movement_id: string | null;
   purpose: string;
   amount_snapshot: string;
+  method: string;
+  reference: string | null;
+  notes: string | null;
   created_by: string;
   created_at: Date | string;
+  voided_at: Date | string | null;
+  voided_by: string | null;
+  void_reason: string | null;
+  void_cash_movement_id: string | null;
 }
 interface DocumentDb {
   id: string;
@@ -369,8 +377,15 @@ function payment(row: PaymentDb): PartyReservationPaymentRow {
     cashMovementId: row.cash_movement_id,
     purpose: row.purpose as PartyReservationPaymentPurpose,
     amountSnapshot: row.amount_snapshot,
+    method: row.method as PartyPaymentMethod,
+    reference: row.reference,
+    notes: row.notes,
     createdBy: row.created_by,
     createdAt: new Date(row.created_at),
+    voidedAt: row.voided_at === null ? null : new Date(row.voided_at),
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
+    voidCashMovementId: row.void_cash_movement_id,
   };
 }
 function documentRow(row: DocumentDb): PartyReservationDocumentRow {
@@ -1556,9 +1571,12 @@ export class PartiesRepository {
       companyId: string;
       branchId: string;
       reservationId: string;
-      cashMovementId: string;
+      cashMovementId: string | null;
       purpose: PartyReservationPaymentPurpose;
       amountSnapshot: string;
+      method: PartyPaymentMethod;
+      reference: string | null;
+      notes: string | null;
       createdBy: string;
       timestamp: Date;
     },
@@ -1566,8 +1584,8 @@ export class PartiesRepository {
     const row = result<PaymentDb>(
       await client.query(
         `insert into party_reservation_payments
-         (id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,created_by,created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         (id,company_id,branch_id,reservation_id,cash_movement_id,purpose,amount_snapshot,method,reference,notes,created_by,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          returning ${PAYMENT_COLUMNS}`,
         [
           input.id,
@@ -1577,12 +1595,54 @@ export class PartiesRepository {
           input.cashMovementId,
           input.purpose,
           input.amountSnapshot,
+          input.method,
+          input.reference,
+          input.notes,
           input.createdBy,
           input.timestamp,
         ],
       ),
     ).rows[0];
     if (row === undefined) throw new Error('Payment insertion did not return a row.');
+    return payment(row);
+  }
+
+  /** Locks one payment row (company-scoped) for the rest of the transaction —
+   * voiding starts here so two voids can never interleave. */
+  public async lockPayment(
+    client: PartyTransaction,
+    companyId: string,
+    reservationId: string,
+    paymentId: string,
+  ): Promise<PartyReservationPaymentRow | null> {
+    const row = result<PaymentDb>(
+      await client.query(
+        `select ${PAYMENT_COLUMNS} from party_reservation_payments
+         where company_id=$1 and reservation_id=$2 and id=$3 for update`,
+        [companyId, reservationId, paymentId],
+      ),
+    ).rows[0];
+    return row === undefined ? null : payment(row);
+  }
+
+  /** Marks a payment voided (never deletes). The conditional `voided_at is null`
+   * makes a second void impossible even without the row lock. */
+  public async voidPayment(
+    client: PartyTransaction,
+    companyId: string,
+    paymentId: string,
+    input: { voidedBy: string; reason: string; voidCashMovementId: string | null; timestamp: Date },
+  ): Promise<PartyReservationPaymentRow> {
+    const row = result<PaymentDb>(
+      await client.query(
+        `update party_reservation_payments
+         set voided_at=$3, voided_by=$4, void_reason=$5, void_cash_movement_id=$6
+         where company_id=$1 and id=$2 and voided_at is null
+         returning ${PAYMENT_COLUMNS}`,
+        [companyId, paymentId, input.timestamp, input.voidedBy, input.reason, input.voidCashMovementId],
+      ),
+    ).rows[0];
+    if (row === undefined) throw new PartyError('payment_already_voided', 'This payment was already voided.');
     return payment(row);
   }
 

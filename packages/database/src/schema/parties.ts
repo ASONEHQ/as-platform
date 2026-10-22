@@ -828,14 +828,33 @@ export const partyReservationPayments = pgTable(
     companyId: companyIdColumn(),
     branchId: uuid('branch_id').notNull(),
     reservationId: uuid('reservation_id').notNull(),
-    cashMovementId: uuid('cash_movement_id').notNull(),
+    // TASK 17.6 — only a CASH payment posts a cash movement; a card/transfer
+    // payment is a RECORD of money the operator says was received elsewhere
+    // (the system does not process or verify it), so this is nullable and
+    // tied to `method` by `party_reservation_payments_method_movement_ck`.
+    cashMovementId: uuid('cash_movement_id'),
     purpose: text('purpose').notNull(),
     amountSnapshot: numeric('amount_snapshot', { precision: 19, scale: 4 }).notNull(),
+    method: text('method').notNull().default('cash'),
+    reference: text('reference'),
+    notes: text('notes'),
     createdBy: uuid('created_by').notNull(),
     createdAt: createdAtColumn(),
+    // TASK 17.6 — payments are never deleted: a mistaken one is VOIDED (kept,
+    // with who/when/why), and a cash one gets a compensating cash movement.
+    voidedAt: timestamp('voided_at', { withTimezone: true, mode: 'date' }),
+    voidedBy: uuid('voided_by'),
+    voidReason: text('void_reason'),
+    voidCashMovementId: uuid('void_cash_movement_id'),
   },
   (table) => [
     unique('party_reservation_payments_company_id_id_uq').on(table.companyId, table.id),
+    unique('party_reservation_payments_void_movement_uq').on(table.companyId, table.voidCashMovementId),
+    foreignKey({
+      columns: [table.companyId, table.voidedBy],
+      foreignColumns: [companyMemberships.companyId, companyMemberships.userId],
+      name: 'party_reservation_payments_voided_by_membership_fk',
+    }).onDelete('restrict'),
     // A cash movement is the payment fact exactly once — never linked to
     // two different reservations.
     unique('party_reservation_payments_movement_uq').on(table.companyId, table.cashMovementId),
@@ -860,6 +879,29 @@ export const partyReservationPayments = pgTable(
       sql`${table.purpose} in ('deposit', 'balance', 'additional')`,
     ),
     check('party_reservation_payments_amount_positive_ck', sql`${table.amountSnapshot} > 0`),
+    check('party_reservation_payments_method_ck', sql`${table.method} in ('cash', 'card', 'transfer')`),
+    // A cash payment IS a cash movement; card/transfer never is.
+    check(
+      'party_reservation_payments_method_movement_ck',
+      sql`(${table.method} = 'cash') = (${table.cashMovementId} is not null)`,
+    ),
+    check(
+      'party_reservation_payments_reference_ck',
+      sql`${table.reference} is null or char_length(btrim(${table.reference})) between 1 and 120`,
+    ),
+    check(
+      'party_reservation_payments_notes_ck',
+      sql`${table.notes} is null or char_length(btrim(${table.notes})) between 1 and 500`,
+    ),
+    // Void is all-or-none, carries a reason, and a voided CASH payment must
+    // point at its compensating movement (a non-cash one never has one).
+    check(
+      'party_reservation_payments_void_ck',
+      sql`(${table.voidedAt} is null and ${table.voidedBy} is null and ${table.voidReason} is null and ${table.voidCashMovementId} is null)
+        or (${table.voidedAt} is not null and ${table.voidedBy} is not null and ${table.voidReason} is not null
+            and char_length(btrim(${table.voidReason})) between 3 and 500
+            and ((${table.method} = 'cash') = (${table.voidCashMovementId} is not null)))`,
+    ),
   ],
 );
 

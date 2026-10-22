@@ -7,6 +7,7 @@ import { idempotencyKey } from '../catalog/catalog.schemas.js';
 import { withPartyErrors } from './parties.http-errors.js';
 import type {
   PartyMutationContext,
+  PartyPaymentMethod,
   PartyReservationPaymentPurpose,
   PartyReservationPaymentRow,
   PartyReservationRow,
@@ -131,8 +132,20 @@ function paymentHttp(value: PartyReservationPaymentRow): Readonly<Record<string,
     cash_movement_id: value.cashMovementId,
     purpose: value.purpose,
     amount: value.amountSnapshot,
+    method: value.method,
+    reference: value.reference,
+    notes: value.notes,
+    // Honest semantics: only a cash payment is system-verified (it posted a
+    // real cash movement). Card/transfer are operator-recorded, never
+    // processed or verified by this system.
+    recorded_only: value.method !== 'cash',
+    status: value.voidedAt === null ? 'active' : 'voided',
     created_by: value.createdBy,
     created_at: value.createdAt.toISOString(),
+    voided_at: value.voidedAt?.toISOString() ?? null,
+    voided_by: value.voidedBy,
+    void_reason: value.voidReason,
+    void_cash_movement_id: value.voidCashMovementId,
   };
 }
 function detailHttp(value: PartyReservationDetail): Readonly<Record<string, unknown>> {
@@ -868,7 +881,17 @@ export function registerPartyReservationRoutes(
 
   // --- Payments / balance --------------------------------------------------------------
 
-  app.post<{ Params: Params; Body: { purpose: PartyReservationPaymentPurpose; amount: string; cash_session_id: string } }>(
+  app.post<{
+    Params: Params;
+    Body: {
+      purpose: PartyReservationPaymentPurpose;
+      amount: string;
+      method?: PartyPaymentMethod;
+      reference?: string;
+      notes?: string;
+      cash_session_id?: string;
+    };
+  }>(
     '/api/v1/party-reservations/:id/payments',
     {
       schema: {
@@ -878,10 +901,13 @@ export function registerPartyReservationRoutes(
         body: {
           type: 'object',
           additionalProperties: false,
-          required: ['purpose', 'amount', 'cash_session_id'],
+          required: ['purpose', 'amount'],
           properties: {
             purpose: { type: 'string', enum: ['deposit', 'balance', 'additional'] },
             amount: { type: 'string', pattern: moneyPattern },
+            method: { type: 'string', enum: ['cash', 'card', 'transfer'] },
+            reference: { type: 'string', minLength: 1, maxLength: 120 },
+            notes: { type: 'string', minLength: 1, maxLength: 500 },
             cash_session_id: { type: 'string', format: 'uuid' },
           },
         },
@@ -898,10 +924,76 @@ export function registerPartyReservationRoutes(
           auth.permittedBranchIds,
           idempotencyKey(request.headers['idempotency-key']),
           request.params.id,
-          { purpose: body.purpose, amount: body.amount, cashSessionId: body.cash_session_id },
+          {
+            purpose: body.purpose,
+            amount: body.amount,
+            ...(body.method === undefined ? {} : { method: body.method }),
+            ...(body.reference === undefined ? {} : { reference: body.reference }),
+            ...(body.notes === undefined ? {} : { notes: body.notes }),
+            ...(body.cash_session_id === undefined ? {} : { cashSessionId: body.cash_session_id }),
+          },
         );
         if (created.replayed) reply.header('idempotency-replayed', 'true');
         return reply.code(201).send(successResponse(paymentHttp(created.value), request.requestContext));
+      }),
+  );
+
+  // TASK 17.6 — payment history (voided ones included and flagged).
+  app.get<{ Params: Params }>(
+    '/api/v1/party-reservations/:id/payments',
+    { schema: { tags: ['parties'], params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, response: { 200: responseSchema, ...commonErrors } } },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.read');
+        const items = await service.listPayments(auth.companyId, auth.permittedBranchIds, request.params.id);
+        return reply.send(successResponse(items.map(paymentHttp), request.requestContext));
+      }),
+  );
+
+  // TASK 17.6 — voids (never deletes) a payment; party.cancel is the
+  // cancellation-level authority this domain already has, deliberately stricter
+  // than party.payment.record. A cash void needs the open session that returns the money.
+  app.post<{ Params: Params & { paymentId: string }; Body: { reason: string; cash_session_id?: string } }>(
+    '/api/v1/party-reservations/:id/payments/:paymentId/void',
+    {
+      schema: {
+        tags: ['parties'],
+        params: {
+          type: 'object',
+          required: ['id', 'paymentId'],
+          properties: { id: { type: 'string' }, paymentId: { type: 'string' } },
+        },
+        headers: idempotencyHeaders,
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['reason'],
+          properties: {
+            reason: { type: 'string', minLength: 3, maxLength: 500 },
+            cash_session_id: { type: 'string', format: 'uuid' },
+          },
+        },
+        response: { 200: responseSchema, ...commonErrors },
+      },
+    },
+    async (request, reply) =>
+      withPartyErrors(async () => {
+        const auth = await requireAuthenticatedUser(request, authentication);
+        requirePermission(authentication, auth, 'party.cancel');
+        const result = await service.voidPayment(
+          mutationContext(request, auth.companyId, auth.userId),
+          auth.permittedBranchIds,
+          idempotencyKey(request.headers['idempotency-key']),
+          request.params.id,
+          request.params.paymentId,
+          {
+            reason: request.body.reason,
+            ...(request.body.cash_session_id === undefined ? {} : { cashSessionId: request.body.cash_session_id }),
+          },
+        );
+        if (result.replayed) reply.header('idempotency-replayed', 'true');
+        return reply.send(successResponse(paymentHttp(result.value), request.requestContext));
       }),
   );
 
@@ -922,6 +1014,10 @@ export function registerPartyReservationRoutes(
               quoted_total: value.quotedTotal,
               total_paid: value.totalPaid,
               outstanding_balance: value.outstandingBalance,
+              remaining_balance: value.remainingBalance,
+              overpaid_amount: value.overpaidAmount,
+              payments_count: value.paymentsCount,
+              voided_payments_count: value.voidedPaymentsCount,
             },
             request.requestContext,
           ),

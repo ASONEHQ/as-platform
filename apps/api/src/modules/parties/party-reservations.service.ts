@@ -29,6 +29,8 @@ import {
   partyReservationTransitions,
   type PartyMutationContext,
   type PartyPackageRow,
+  type PartyPaymentMethod,
+  partyPaymentMethods,
   type PartyQuoteRow,
   type PartyReservationDocumentRow,
   type PartyReservationPaymentPurpose,
@@ -567,13 +569,14 @@ export class PartyReservationsService {
       this.repository.paymentsForReservation(companyId, reservationRow.id),
       this.repository.documentsSummary(companyId, reservationRow.id),
     ]);
+    const activePayments = payments.filter((line) => line.voidedAt === null);
     let paidUnits = 0n;
-    for (const line of payments) paidUnits += moneyUnits(line.amountSnapshot);
+    for (const line of activePayments) paidUnits += moneyUnits(line.amountSnapshot);
     return {
       reservation: reservationRow,
       snacks,
       socks,
-      paymentsSummary: { totalPaid: formatMoney(paidUnits), count: payments.length },
+      paymentsSummary: { totalPaid: formatMoney(paidUnits), count: activePayments.length },
       documentsSummary: {
         count: documents.count,
         lastGeneratedAt: documents.lastGeneratedAt === null ? null : documents.lastGeneratedAt.toISOString(),
@@ -857,7 +860,9 @@ export class PartyReservationsService {
           // refund/cash-out. A manager handles any actual refund
           // separately via the real `POST /cash-sessions/{id}/movements`
           // (`cash_out`) endpoint.
-          const payments = await this.repository.paymentsForReservation(context.companyId, current.id);
+          const payments = (await this.repository.paymentsForReservation(context.companyId, current.id)).filter(
+            (line) => line.voidedAt === null,
+          );
           let paidUnits = 0n;
           for (const line of payments) paidUnits += moneyUnits(line.amountSnapshot);
           const totalPaid = formatMoney(paidUnits);
@@ -1371,10 +1376,39 @@ export class PartyReservationsService {
     branchIds: readonly string[],
     key: string,
     reservationId: string,
-    input: { purpose: PartyReservationPaymentPurpose; amount: string; cashSessionId: string },
+    input: {
+      purpose: PartyReservationPaymentPurpose;
+      amount: string;
+      /** Defaults to 'cash' (the original contract). */
+      method?: PartyPaymentMethod;
+      reference?: string;
+      notes?: string;
+      /** Required for cash (the drawer that receives it); not allowed otherwise. */
+      cashSessionId?: string;
+    },
   ): Promise<{ value: PartyReservationPaymentRow; replayed: boolean }> {
     const amount = positiveMoney(input.amount, 'amount');
-    const requestHash = hash({ reservationId, purpose: input.purpose, amount, cashSessionId: input.cashSessionId });
+    const method = input.method ?? 'cash';
+    if (!partyPaymentMethods.includes(method))
+      throw new PartyError('validation_error', 'method must be cash, card or transfer.');
+    // TASK 17.6 — only CASH touches a cash session. A card/transfer payment is
+    // a record of money received elsewhere: it must not claim a drawer, and a
+    // cash payment must name the open session that physically receives it.
+    if (method === 'cash' && input.cashSessionId === undefined)
+      throw new PartyError('validation_error', 'cash_session_id is required for a cash payment.');
+    if (method !== 'cash' && input.cashSessionId !== undefined)
+      throw new PartyError('validation_error', 'cash_session_id is only valid for a cash payment.');
+    const reference = input.reference === undefined ? null : nonBlank(input.reference, 'reference', 120);
+    const notes = input.notes === undefined ? null : nonBlank(input.notes, 'notes', 500);
+    const requestHash = hash({
+      reservationId,
+      purpose: input.purpose,
+      amount,
+      method,
+      reference,
+      notes,
+      cashSessionId: input.cashSessionId ?? null,
+    });
     return this.repository.transaction((client) =>
       this.repository.idempotent(
         client,
@@ -1407,35 +1441,42 @@ export class PartyReservationsService {
           // (see the task's own explicit instruction) — `cash_in` +
           // `reference_type='party_reservation'` mirrors the thin-link
           // pattern `cash_sale`/`cash_refund` already established.
-          const sessionRow = await this.cashRepository.lockSession(client, context.companyId, input.cashSessionId);
-          if (sessionRow?.branchId !== reservationRow.branchId)
-            throw new CashError('resource_not_found', 'The session was not found.');
-          if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
-          const movement = await this.cashRepository.insertMovement(client, {
-            id: randomUUID(),
-            companyId: context.companyId,
-            branchId: reservationRow.branchId,
-            cashSessionId: sessionRow.id,
-            movementType: 'cash_in',
-            amount,
-            currencyCode: sessionRow.currencyCode,
-            reasonCode: `party_${input.purpose}`,
-            note: reservationRow.reservationNumber,
-            referenceType: 'party_reservation',
-            referenceId: reservationRow.id,
-            occurredAt: context.timestamp,
-            createdBy: context.actorId,
-            deviceId: context.deviceId ?? null,
-          });
+          let cashMovementId: string | null = null;
+          if (method === 'cash') {
+            const sessionRow = await this.cashRepository.lockSession(client, context.companyId, input.cashSessionId ?? '');
+            if (sessionRow?.branchId !== reservationRow.branchId)
+              throw new CashError('resource_not_found', 'The session was not found.');
+            if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
+            const movement = await this.cashRepository.insertMovement(client, {
+              id: randomUUID(),
+              companyId: context.companyId,
+              branchId: reservationRow.branchId,
+              cashSessionId: sessionRow.id,
+              movementType: 'cash_in',
+              amount,
+              currencyCode: sessionRow.currencyCode,
+              reasonCode: `party_${input.purpose}`,
+              note: reservationRow.reservationNumber,
+              referenceType: 'party_reservation',
+              referenceId: reservationRow.id,
+              occurredAt: context.timestamp,
+              createdBy: context.actorId,
+              deviceId: context.deviceId ?? null,
+            });
+            cashMovementId = movement.id;
+          }
 
           const created = await this.repository.insertPayment(client, {
             id: randomUUID(),
             companyId: context.companyId,
             branchId: reservationRow.branchId,
             reservationId: reservationRow.id,
-            cashMovementId: movement.id,
+            cashMovementId,
             purpose: input.purpose,
             amountSnapshot: amount,
+            method,
+            reference,
+            notes,
             createdBy: context.actorId,
             timestamp: context.timestamp,
           });
@@ -1445,9 +1486,11 @@ export class PartyReservationsService {
             resourceId: created.id,
             payload: {
               reservation_id: reservationRow.id,
-              cash_movement_id: movement.id,
+              cash_movement_id: cashMovementId,
               purpose: created.purpose,
               amount: created.amountSnapshot,
+              method,
+              reference,
             },
           });
           return created;
@@ -1467,13 +1510,22 @@ export class PartyReservationsService {
     quotedTotal: string;
     totalPaid: string;
     outstandingBalance: string;
+    remainingBalance: string;
+    overpaidAmount: string;
+    paymentsCount: number;
+    voidedPaymentsCount: number;
   }> {
     const reservationRow = await this.reservation(companyId, branchIds, reservationId);
     const payments = await this.repository.paymentsForReservation(companyId, reservationRow.id);
+    const active = payments.filter((line) => line.voidedAt === null);
     let paidUnits = 0n;
-    for (const line of payments) paidUnits += moneyUnits(line.amountSnapshot);
+    for (const line of active) paidUnits += moneyUnits(line.amountSnapshot);
     const totalUnits = moneyUnits(reservationRow.quotedTotal);
     return {
+      remainingBalance: formatMoney(totalUnits > paidUnits ? totalUnits - paidUnits : 0n),
+      overpaidAmount: formatMoney(paidUnits > totalUnits ? paidUnits - totalUnits : 0n),
+      paymentsCount: active.length,
+      voidedPaymentsCount: payments.length - active.length,
       subtotalAmount: reservationRow.subtotalAmount,
       discountTotal: reservationRow.discountTotal,
       taxTotal: reservationRow.taxTotal,
@@ -1481,6 +1533,113 @@ export class PartyReservationsService {
       totalPaid: formatMoney(paidUnits),
       outstandingBalance: formatMoney(totalUnits - paidUnits),
     };
+  }
+
+  /** TASK 17.6 — the full payment history (voided ones included, flagged),
+   * oldest first, scoped to the actor's branches like the reservation itself. */
+  public async listPayments(
+    companyId: string,
+    branchIds: readonly string[],
+    reservationId: string,
+  ): Promise<readonly PartyReservationPaymentRow[]> {
+    const reservationRow = await this.reservation(companyId, branchIds, reservationId);
+    return this.repository.paymentsForReservation(companyId, reservationRow.id);
+  }
+
+  /**
+   * TASK 17.6 — voids a payment; it is NEVER deleted. A cash payment gets a
+   * compensating `cash_out` (linked to the original movement through
+   * `reversal_of_id`, which also makes a second reversal impossible) posted
+   * into the OPEN cash session the operator supplies — the drawer that
+   * physically returns the money, which may differ from the session that
+   * received it. A card/transfer payment has no cash to compensate: it just
+   * stops counting. The voided row keeps who/when/why.
+   */
+  public async voidPayment(
+    context: PartyMutationContext,
+    branchIds: readonly string[],
+    key: string,
+    reservationId: string,
+    paymentId: string,
+    input: { reason: string; cashSessionId?: string },
+  ): Promise<{ value: PartyReservationPaymentRow; replayed: boolean }> {
+    const reason = nonBlank(input.reason, 'reason', 500);
+    if (reason.length < 3) throw new PartyError('validation_error', 'reason must be at least 3 characters.');
+    const requestHash = hash({ reservationId, paymentId, reason, cashSessionId: input.cashSessionId ?? null });
+    return this.repository.transaction((client) =>
+      this.repository.idempotent(
+        client,
+        context,
+        'party_reservation_payment.void',
+        key,
+        requestHash,
+        'party_reservation_payment',
+        decodePayment,
+        async () => {
+          const reservationRow = await this.repository.lockReservation(client, context.companyId, reservationId);
+          if (reservationRow === null || !branchIds.includes(reservationRow.branchId))
+            throw new PartyError('resource_not_found', 'The reservation was not found.');
+          const current = await this.repository.lockPayment(client, context.companyId, reservationRow.id, paymentId);
+          if (current === null) throw new PartyError('resource_not_found', 'The payment was not found.');
+          if (current.voidedAt !== null)
+            throw new PartyError('payment_already_voided', 'This payment was already voided.');
+
+          let voidCashMovementId: string | null = null;
+          if (current.method === 'cash') {
+            if (input.cashSessionId === undefined)
+              throw new PartyError('validation_error', 'cash_session_id is required to void a cash payment.');
+            if (current.cashMovementId === null)
+              throw new PartyError('validation_error', 'This cash payment has no cash movement to compensate.');
+            const sessionRow = await this.cashRepository.lockSession(client, context.companyId, input.cashSessionId);
+            if (sessionRow?.branchId !== reservationRow.branchId)
+              throw new CashError('resource_not_found', 'The session was not found.');
+            if (sessionRow.status !== 'open') throw new CashError('cash_session_closed', 'The session is not open.');
+            const reversal = await this.cashRepository.insertMovement(client, {
+              id: randomUUID(),
+              companyId: context.companyId,
+              branchId: reservationRow.branchId,
+              cashSessionId: sessionRow.id,
+              movementType: 'cash_out',
+              amount: current.amountSnapshot,
+              currencyCode: sessionRow.currencyCode,
+              reasonCode: 'party_payment_void',
+              note: reservationRow.reservationNumber,
+              referenceType: 'party_reservation',
+              referenceId: reservationRow.id,
+              occurredAt: context.timestamp,
+              createdBy: context.actorId,
+              deviceId: context.deviceId ?? null,
+              category: null,
+              reversalOfId: current.cashMovementId,
+            });
+            voidCashMovementId = reversal.id;
+          } else if (input.cashSessionId !== undefined) {
+            throw new PartyError('validation_error', 'cash_session_id is only valid when voiding a cash payment.');
+          }
+
+          const voided = await this.repository.voidPayment(client, context.companyId, current.id, {
+            voidedBy: context.actorId,
+            reason,
+            voidCashMovementId,
+            timestamp: context.timestamp,
+          });
+          await this.repository.audit(client, context, {
+            action: 'party_reservation.payment_voided',
+            resourceType: 'party_reservation_payment',
+            resourceId: voided.id,
+            payload: {
+              reservation_id: reservationRow.id,
+              method: voided.method,
+              amount: voided.amountSnapshot,
+              reason,
+              original_cash_movement_id: voided.cashMovementId,
+              void_cash_movement_id: voidCashMovementId,
+            },
+          });
+          return voided;
+        },
+      ),
+    );
   }
 
   // --- Documents -----------------------------------------------------------------------
@@ -1558,8 +1717,15 @@ function decodeCancelResult(raw: unknown): { id: string; reservation: PartyReser
   return { ...value, reservation: decodeReservation(value.reservation) };
 }
 function decodePayment(raw: unknown): PartyReservationPaymentRow {
-  const value = raw as Omit<PartyReservationPaymentRow, 'createdAt'> & { createdAt: string };
-  return { ...value, createdAt: new Date(value.createdAt) };
+  const value = raw as Omit<PartyReservationPaymentRow, 'createdAt' | 'voidedAt'> & {
+    createdAt: string;
+    voidedAt: string | null;
+  };
+  return {
+    ...value,
+    createdAt: new Date(value.createdAt),
+    voidedAt: value.voidedAt === null ? null : new Date(value.voidedAt),
+  };
 }
 
 function escapeHtml(value: string): string {

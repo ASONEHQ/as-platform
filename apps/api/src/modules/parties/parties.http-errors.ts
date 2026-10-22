@@ -33,6 +33,8 @@ const partyErrorStatus: Readonly<Record<string, number>> = {
   // TASK 17.6 — a quote that is already converted/cancelled can no longer be
   // edited, cancelled or converted: a state conflict, not a validation error.
   quote_not_editable: 409,
+  // TASK 17.6 — voiding a payment twice is a state conflict.
+  payment_already_voided: 409,
 };
 
 // Mirrors `cash.http-errors.ts`'s own table exactly — recording a

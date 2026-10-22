@@ -757,6 +757,11 @@ export class CashService {
             );
           if (original.reversalOfId !== null)
             throw new CashError('cash_movement_not_reversible', 'A reversal itself cannot be reversed.');
+          if (original.referenceType === 'party_reservation')
+            throw new CashError(
+              'cash_movement_not_reversible',
+              'A party payment is corrected by voiding the payment on the reservation, not by reversing its cash movement.',
+            );
           if (await this.repository.hasReversal(client, context.companyId, original.id))
             throw new CashError('cash_movement_already_reversed', 'This movement was already reversed.');
           const reversedType: 'cash_in' | 'cash_out' = original.movementType === 'cash_in' ? 'cash_out' : 'cash_in';

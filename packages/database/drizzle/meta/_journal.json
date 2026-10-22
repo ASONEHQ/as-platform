@@ -365,6 +365,13 @@
       "when": 1792683315425,
       "tag": "0051_add_party_quotes",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792685560593,
+      "tag": "0052_add_party_payment_ledger",
+      "breakpoints": true
     }
   ]
 }

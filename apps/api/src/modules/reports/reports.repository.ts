@@ -833,7 +833,7 @@ export class ReportsRepository {
     branchIds: readonly string[],
     input: ReportScopeInput,
   ): Promise<CurrencyAmount[]> {
-    const where: string[] = ['p.company_id = $1', 'p.branch_id = any($2::uuid[])'];
+    const where: string[] = ['p.company_id = $1', 'p.branch_id = any($2::uuid[])', 'p.voided_at is null'];
     const values: unknown[] = [companyId, branchIds];
     if (input.branchId !== undefined) {
       values.push(input.branchId);

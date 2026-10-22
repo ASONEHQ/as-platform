@@ -1324,7 +1324,8 @@ export class CashRepository {
            coalesce(sum(amount_snapshot) filter (where purpose='deposit'),0) as deposits_collected,
            coalesce(sum(amount_snapshot),0) as total_collected
          from party_reservation_payments
-         where company_id=$1 and branch_id=$2 and created_at>=$3 and created_at<=$4`,
+         where company_id=$1 and branch_id=$2 and created_at>=$3 and created_at<=$4
+           and method='cash' and voided_at is null`,
         [companyId, branchId, windowStart, windowEnd],
       ),
       this.database.pool.query(
@@ -1332,7 +1333,8 @@ export class CashRepository {
          from party_reservation_payments p
          join party_reservations r on r.company_id=p.company_id and r.id=p.reservation_id
          where p.company_id=$1 and p.branch_id=$2
-           and r.created_at>=$3 and r.created_at<=$4 and p.created_at<=$4`,
+           and r.created_at>=$3 and r.created_at<=$4 and p.created_at<=$4
+           and p.voided_at is null`,
         [companyId, branchId, windowStart, windowEnd],
       ),
       this.database.pool.query(

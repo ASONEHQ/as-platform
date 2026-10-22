@@ -71,6 +71,7 @@ export class DashboardRepository {
          left join (
            select reservation_id, sum(amount_snapshot) paid
            from party_reservation_payments
+           where voided_at is null
            group by reservation_id
          ) p on p.reservation_id = r.id
          where r.company_id = $1 and r.branch_id = any($2::uuid[]) and r.status in ('held','pending_deposit','confirmed')
@@ -161,7 +162,11 @@ export class DashboardRepository {
       depositWhere.push(`p.branch_id = $${String(depositValues.length)}`);
     }
     depositValues.push(date);
-    depositWhere.push(`p.purpose = 'deposit'`, `(p.created_at at time zone 'UTC')::date = $${String(depositValues.length)}`);
+    depositWhere.push(
+      `p.purpose = 'deposit'`,
+      'p.voided_at is null',
+      `(p.created_at at time zone 'UTC')::date = $${String(depositValues.length)}`,
+    );
     const depositRows = result<{ currency_code: string; amount: string }>(
       await this.database.pool.query(
         `select r.currency_code, coalesce(sum(p.amount_snapshot),0)::text as amount

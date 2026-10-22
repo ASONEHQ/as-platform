@@ -237,6 +237,8 @@ export const infrastructureErrorCodes = [
   // TASK 17.6 — a saved party quote that is no longer a draft (converted into a
   // reservation, or cancelled) cannot be edited, cancelled or converted again.
   'quote_not_editable',
+  // TASK 17.6 — a party payment that was already voided cannot be voided again.
+  'payment_already_voided',
   // TASK 16.8B — a branch's persisted `timezone` is not a real IANA zone
   // (production data corruption predating server-side validation; see
   // `AdministrationService`'s write-side guard and `SalesService.

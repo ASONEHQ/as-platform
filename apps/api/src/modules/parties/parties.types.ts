@@ -195,16 +195,29 @@ export interface PartyReservationSockRow {
   createdAt: Date;
 }
 
+/** TASK 17.6 — HOW the money arrived. Only `cash` is verified by the system
+ * (it posts a real cash movement); `card`/`transfer` are RECORDS of money the
+ * operator states was received elsewhere — never processed or verified here. */
+export const partyPaymentMethods = ['cash', 'card', 'transfer'] as const;
+export type PartyPaymentMethod = (typeof partyPaymentMethods)[number];
+
 export interface PartyReservationPaymentRow {
   id: string;
   companyId: string;
   branchId: string;
   reservationId: string;
-  cashMovementId: string;
+  cashMovementId: string | null;
   purpose: PartyReservationPaymentPurpose;
   amountSnapshot: string;
+  method: PartyPaymentMethod;
+  reference: string | null;
+  notes: string | null;
   createdBy: string;
   createdAt: Date;
+  voidedAt: Date | null;
+  voidedBy: string | null;
+  voidReason: string | null;
+  voidCashMovementId: string | null;
 }
 
 export interface PartyReservationDocumentRow {
@@ -314,7 +327,9 @@ export type PartyErrorCode =
   | 'coupon_usage_limit_reached'
   // TASK 17.6 — an edit/cancel/convert attempted on a quote that is no longer
   // a draft (already converted into a reservation, or cancelled).
-  | 'quote_not_editable';
+  | 'quote_not_editable'
+  // TASK 17.6 — voiding a payment that was already voided.
+  | 'payment_already_voided';
 
 export class PartyError extends Error {
   constructor(
