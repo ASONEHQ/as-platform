@@ -174,11 +174,39 @@ class AuthController extends ChangeNotifier {
         AuthViewState(
           phase: previousPhase == AuthPhase.selectingBranch ? AuthPhase.authenticated : previousPhase,
           context: current,
-          failure: _failureOf(error),
+          failure: _branchSwitchFailure(error),
           selectionBranches: previousPhase == AuthPhase.branchSelectionRequired ? current.branches : const [],
         ),
       );
     }
+  }
+
+  /// Code carried by the failure a failed branch switch leaves in the state
+  /// (the shell shows it as a dismissible notice).
+  static const String branchSwitchFailedCode = 'branch_switch_failed';
+
+  AppFailure _branchSwitchFailure(Object error) {
+    final cause = _failureOf(error);
+    return AppFailure(
+      cause.kind,
+      cause.kind == AppErrorKind.unavailable
+          ? 'No fue posible cambiar de sucursal. Revisa tu conexión e inténtalo de nuevo.'
+          : 'No fue posible cambiar de sucursal. Sigues en la sucursal anterior.',
+      code: branchSwitchFailedCode,
+    );
+  }
+
+  /// Clears the branch-switch notice once the user has seen it.
+  void dismissBranchSwitchFailure() {
+    if (_state.failure?.code != branchSwitchFailedCode) return;
+    _emit(
+      AuthViewState(
+        phase: _state.phase,
+        context: _state.context,
+        selectionBranches: _state.selectionBranches,
+        selectionCompanies: _state.selectionCompanies,
+      ),
+    );
   }
 
   Future<void> switchCompany(String companyId) async {

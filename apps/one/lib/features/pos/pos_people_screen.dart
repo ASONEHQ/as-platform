@@ -41,6 +41,7 @@ import 'package:flutter/material.dart';
 import '../../app/app.dart' show PlatformScope;
 import '../../core/networking/api_client.dart';
 import '../authentication/auth_models.dart';
+import 'branch_required_panel.dart';
 import 'money.dart';
 import 'payroll_html.dart';
 import 'pos_people_gateway.dart';
@@ -62,6 +63,7 @@ class PosPeopleScreen extends StatefulWidget {
     required this.schedulesGateway,
     required this.timeClockGateway,
     required this.payrollGateway,
+    this.onBranchSelected,
   });
 
   final AuthenticatedContext context;
@@ -69,6 +71,10 @@ class PosPeopleScreen extends StatefulWidget {
   final PosSchedulesGateway schedulesGateway;
   final PosTimeClockGateway timeClockGateway;
   final PosPayrollGateway payrollGateway;
+
+  /// TASK 17.7.3 — the shell's single branch-switch path, offered by the
+  /// branch-required state of Horarios/Checador (both are per-branch).
+  final Future<void> Function(String? branchId)? onBranchSelected;
 
   @override
   State<PosPeopleScreen> createState() => _PosPeopleScreenState();
@@ -86,6 +92,19 @@ class _PosPeopleScreenState extends State<PosPeopleScreen> {
       _PeopleHeader(tab: _tab, onTabChanged: (value) => setState(() => _tab = value)),
       switch (_tab) {
         _PeopleTab.empleados => _EmpleadosTab(context: widget.context, gateway: widget.employeesGateway),
+        // TASK 17.7.3 — schedules and the time clock are per-branch. In the
+        // aggregate "Todas las sucursales" context they used to spin forever
+        // (nothing was ever requested); now they ask for a branch.
+        _PeopleTab.horarios when widget.context.session.branchId == null => BranchRequiredPanel(
+          context: widget.context,
+          message: 'Selecciona una sucursal para ver los horarios.',
+          onBranchSelected: widget.onBranchSelected,
+        ),
+        _PeopleTab.checador when widget.context.session.branchId == null => BranchRequiredPanel(
+          context: widget.context,
+          message: 'Selecciona una sucursal para usar el checador.',
+          onBranchSelected: widget.onBranchSelected,
+        ),
         _PeopleTab.horarios => _HorariosTab(
           context: widget.context,
           employeesGateway: widget.employeesGateway,

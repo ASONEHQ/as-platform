@@ -86,9 +86,15 @@ class FakeAuthGateway implements AuthGateway {
     String? branchId,
   }) async => credentials;
 
+  Object? switchBranchError;
+  int switchBranchCalls = 0;
+
   @override
-  Future<SessionCredentials> switchBranch(String? branchId) async =>
-      credentials;
+  Future<SessionCredentials> switchBranch(String? branchId) async {
+    switchBranchCalls++;
+    if (switchBranchError case final error?) throw error;
+    return credentials;
+  }
 
   @override
   Future<SessionCredentials> switchCompany(

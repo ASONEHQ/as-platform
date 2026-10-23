@@ -100,8 +100,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
     final summary = _bannerSummary;
+    final switchFailure = auth.state.failure?.code == AuthController.branchSwitchFailedCode ? auth.state.failure : null;
     return Column(
       children: [
+        // TASK 17.7.3 — a branch switch that failed leaves the user where
+        // they were; say so instead of failing silently.
+        if (switchFailure != null)
+          MaterialBanner(
+            key: const Key('branch-switch-failure'),
+            content: Text(switchFailure.message),
+            actions: [
+              TextButton(
+                key: const Key('branch-switch-failure-dismiss'),
+                onPressed: auth.dismissBranchSwitchFailure,
+                child: const Text('Entendido'),
+              ),
+            ],
+          ),
         if (summary != null) _DashboardTopBanner(summary: summary),
         Expanded(
           child: PosShell(

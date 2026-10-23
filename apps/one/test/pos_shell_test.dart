@@ -3755,6 +3755,111 @@ void main() {
     );
   });
 
+  group('Branch context UX (TASK 17.7.3)', () {
+    final companyWideCash = AuthenticatedContext(
+      session: _companyWideContext.session,
+      user: _companyWideContext.user,
+      companies: _companyWideContext.companies,
+      branches: _companyWideContext.branches,
+      companyWideAccess: true,
+      permissions: _contextWithCashPermissions.permissions,
+    );
+
+    for (final size in const [
+      Size(1440, 900),
+      Size(1365, 768),
+      Size(1024, 768),
+      Size(768, 1024),
+      Size(390, 844),
+    ]) {
+      testWidgets(
+        'the branch selector is reachable and lays out with no overflow at ${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+          await _pumpHarness(
+            tester,
+            _BranchSwitchingHarness(initialContext: companyWideCash),
+            size: size,
+          );
+          expect(find.byKey(const Key('pos-branch-switch')), findsOneWidget);
+          final label = tester.getRect(find.byKey(const Key('pos-context-label')));
+          expect(label.right, lessThanOrEqualTo(size.width));
+          await tester.tap(find.byKey(const Key('pos-branch-switch')));
+          await tester.pumpAndSettle();
+          expect(find.text('Sucursal A'), findsWidgets);
+          expect(find.text('Sucursal B'), findsWidgets);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'on a phone the selector works end to end: pick a branch from the top bar',
+      (tester) async {
+        final state = GlobalKey<_BranchSwitchingHarnessState>();
+        await _pumpHarness(
+          tester,
+          _BranchSwitchingHarness(key: state, initialContext: companyWideCash),
+          size: const Size(390, 844),
+        );
+        await tester.tap(find.byKey(const Key('pos-branch-switch')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sucursal B').last);
+        await tester.pumpAndSettle();
+        expect(state.currentState!.current.session.branchId, 'branch-b');
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'Caja without a branch says what is needed, offers the branches, and is not an account error',
+      (tester) async {
+        final state = GlobalKey<_BranchSwitchingHarnessState>();
+        await _pumpHarness(
+          tester,
+          _BranchSwitchingHarness(key: state, initialContext: companyWideCash),
+        );
+        await _navigateToCaja(tester);
+        expect(
+          find.text('Selecciona una sucursal para consultar la caja actual.'),
+          findsOneWidget,
+        );
+        expect(find.text('Esta sesión no tiene una sucursal asignada.'), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+
+        await tester.tap(find.byKey(const Key('branch-required-branch-a')));
+        await tester.pumpAndSettle();
+        expect(state.currentState!.current.session.branchId, 'branch-a');
+        expect(find.byKey(const Key('branch-required')), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'Caja for a user with no accessible branch shows an access message instead',
+      (tester) async {
+        final none = AuthenticatedContext(
+          session: SessionContext(
+            id: 'session-id',
+            userId: 'user-id',
+            companyId: 'company-id',
+            permittedBranchIds: const [],
+            companyWideAccess: false,
+            expiresAt: DateTime.utc(2099),
+          ),
+          user: _context.user,
+          companies: _context.companies,
+          branches: const [],
+          companyWideAccess: false,
+          permissions: _contextWithCashPermissions.permissions,
+        );
+        await _pumpHarness(tester, _BranchSwitchingHarness(initialContext: none));
+        await _navigateToCaja(tester);
+        expect(find.byKey(const Key('branch-required-none')), findsOneWidget);
+        expect(find.text('Tu usuario no tiene una sucursal autorizada.'), findsOneWidget);
+      },
+    );
+  });
+
   group('CLIENTE → CAJERO authorization (TASK 12.3A)', () {
     testWidgets('CAJERO to CLIENTE is direct — no authorization dialog', (
       tester,

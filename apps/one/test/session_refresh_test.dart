@@ -449,5 +449,37 @@ void main() {
       expect(h.controller.context, isNotNull);
       expect(server.branchSwitchCalls, 1, reason: 'tried once, never in a loop');
     });
+
+    test('a manual branch switch that fails keeps the session where it was and says so (never a login bounce)', () async {
+      final h = await _signedIn(startBranch: 'branch-1');
+      h.server.branchSwitchFails = true;
+      await h.controller.selectBranch('branch-2');
+      expect(h.controller.phase, AuthPhase.authenticated);
+      expect(h.controller.context?.session.branchId, 'branch-1');
+      expect(h.controller.state.failure?.code, AuthController.branchSwitchFailedCode);
+      expect(h.controller.state.failure?.message, contains('sucursal'));
+
+      h.controller.dismissBranchSwitchFailure();
+      expect(h.controller.state.failure, isNull);
+      expect(h.controller.phase, AuthPhase.authenticated);
+    });
+
+    test('a branch switch the user is not allowed to make never changes the session (UI state cannot widen access)', () async {
+      final h = await _signedIn();
+      expect(h.controller.context?.session.branchId, isNull);
+      h.server.branchSwitchFails = true; // the server refuses a branch outside the user\'s scope
+      await h.controller.selectBranch('branch-foreign');
+      expect(h.controller.context?.session.branchId, isNull);
+      expect(h.controller.context?.session.permittedBranchIds, isNot(contains('branch-foreign')));
+    });
+
+    test('a successful manual switch changes only the branch context and keeps the session', () async {
+      final h = await _signedIn();
+      await h.controller.selectBranch('branch-2');
+      expect(h.controller.phase, AuthPhase.authenticated);
+      expect(h.controller.context?.session.branchId, 'branch-2');
+      expect(h.controller.state.failure, isNull);
+      expect(h.server.refreshCalls, 0, reason: 'switching branch is not a re-login');
+    });
   });
 }

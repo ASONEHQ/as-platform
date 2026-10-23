@@ -11,6 +11,7 @@ import '../../core/networking/api_client.dart';
 import '../../design_system/tokens/as_tokens.dart';
 import '../authentication/auth_models.dart';
 import '../authentication/startup_visuals.dart';
+import 'branch_required_panel.dart';
 import 'money.dart';
 import 'pos_access_gateway.dart';
 import 'pos_access_screen.dart';
@@ -1164,7 +1165,13 @@ class _Topbar extends StatelessWidget {
                   ),
                 ),
               const Spacer(),
-              if (MediaQuery.sizeOf(context).width >= 600)
+              // TASK 17.7.3 — the branch selector is reachable at EVERY width
+              // (it used to disappear below 600px, leaving phones and small
+              // tablets with no way to pick a branch). Below 900px it shows a
+              // compact "store + branch name" chip; the company name returns
+              // on wide screens. Same single menu / same single switch path.
+              Flexible(
+                child:
                 // POS branch-context fix: the same chip V1 never had to
                 // represent (AS ONE is multi-tenant) — now a real
                 // `AuthController.selectBranch` switch, not just a
@@ -1201,8 +1208,10 @@ class _Topbar extends StatelessWidget {
                     // which stays untouched elsewhere in this file).
                     company: this.context.currentCompany?.name ?? 'ACCESS GO',
                     branch: branch,
+                    compact: !wide,
                   ),
                 ),
+              ),
               const SizedBox(width: 8),
               _RoundAction(
                 tooltip: 'Notificaciones',
@@ -3124,15 +3133,25 @@ class _CashSummaryRow extends StatelessWidget {
 }
 
 class _ContextLabel extends StatelessWidget {
-  const _ContextLabel({required this.company, required this.branch});
+  const _ContextLabel({
+    required this.company,
+    required this.branch,
+    this.compact = false,
+  });
   final String company;
   final String branch;
+
+  /// TASK 17.7.3 — below the wide breakpoint only the branch is shown (the
+  /// company name is secondary context and would not fit), always ellipsized.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      key: const Key('pos-context-label'),
+      constraints: BoxConstraints(maxWidth: compact ? 150 : 360),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 9 : 12, vertical: 7),
       decoration: BoxDecoration(
         color: palette.background,
         border: Border.all(color: palette.border),
@@ -3142,15 +3161,23 @@ class _ContextLabel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.storefront_outlined, size: 16, color: palette.blueDeep),
-          const SizedBox(width: 7),
-          Text(
-            '$company · $branch',
-            style: TextStyle(
-              color: palette.textSecondary,
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
+          SizedBox(width: compact ? 5 : 7),
+          Flexible(
+            child: Text(
+              compact ? branch : '$company · $branch',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: palette.textSecondary,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
+          if (compact) ...[
+            const SizedBox(width: 2),
+            Icon(Icons.arrow_drop_down, size: 16, color: palette.textSecondary),
+          ],
         ],
       ),
     );
@@ -3558,6 +3585,7 @@ class _Content extends StatelessWidget {
                     context: this.context,
                     cashGateway: cashGateway,
                     settingsGateway: settingsGateway,
+                    onBranchSelected: onBranchSelected,
                   ),
                   // TASK 12.8: the pre-reserved `PosModule.returns` slot
                   // ("Devoluciones") — a real, backend-paginated global
@@ -3703,6 +3731,7 @@ class _Content extends StatelessWidget {
                     schedulesGateway: schedulesGateway,
                     timeClockGateway: timeClockGateway,
                     payrollGateway: payrollGateway,
+                    onBranchSelected: onBranchSelected,
                   ),
                   // TASK 17.4.2 §3–§9: Configuración — real settings
                   // workspace organizing Negocio/Ticket/Hardware/Fiestas
@@ -20107,10 +20136,12 @@ class _Caja extends StatefulWidget {
     required this.context,
     required this.cashGateway,
     required this.settingsGateway,
+    this.onBranchSelected,
   });
   final AuthenticatedContext context;
   final PosCashGateway cashGateway;
   final PosSettingsGateway settingsGateway;
+  final Future<void> Function(String? branchId)? onBranchSelected;
 
   @override
   State<_Caja> createState() => _CajaState();
@@ -20154,6 +20185,7 @@ class _CajaState extends State<_Caja> {
             context: widget.context,
             cashGateway: widget.cashGateway,
             settingsGateway: widget.settingsGateway,
+            onBranchSelected: widget.onBranchSelected,
           )
         else
           _CutHistory(
@@ -20166,7 +20198,7 @@ class _CajaState extends State<_Caja> {
   }
 }
 
-enum _CajaPhase { loading, noRegister, closed, open, failure }
+enum _CajaPhase { loading, branchRequired, noRegister, closed, open, failure }
 
 /// The current-drawer view (Part M's own mockup): closed state prompts
 /// "Abrir caja"; open state shows the exact fields the mockup lists
@@ -20177,10 +20209,12 @@ class _CajaCurrent extends StatefulWidget {
     required this.context,
     required this.cashGateway,
     required this.settingsGateway,
+    this.onBranchSelected,
   });
   final AuthenticatedContext context;
   final PosCashGateway cashGateway;
   final PosSettingsGateway settingsGateway;
+  final Future<void> Function(String? branchId)? onBranchSelected;
 
   @override
   State<_CajaCurrent> createState() => _CajaCurrentState();
@@ -20214,10 +20248,10 @@ class _CajaCurrentState extends State<_CajaCurrent> {
     });
     final branchId = _branchId;
     if (branchId == null) {
-      setState(() {
-        _phase = _CajaPhase.failure;
-        _errorMessage = 'Esta sesión no tiene una sucursal asignada.';
-      });
+      // TASK 17.7.3 — "Todas las sucursales" is not an error: the current
+      // cash session belongs to one branch, so ask for one (or, if the user
+      // truly has none, say that instead).
+      setState(() => _phase = _CajaPhase.branchRequired);
       return;
     }
     try {
@@ -20584,6 +20618,12 @@ class _CajaCurrentState extends State<_CajaCurrent> {
         return const Padding(
           padding: EdgeInsets.symmetric(vertical: 48),
           child: Center(child: CircularProgressIndicator()),
+        );
+      case _CajaPhase.branchRequired:
+        return BranchRequiredPanel(
+          context: widget.context,
+          message: 'Selecciona una sucursal para consultar la caja actual.',
+          onBranchSelected: widget.onBranchSelected,
         );
       case _CajaPhase.failure:
         return _FailureState(
