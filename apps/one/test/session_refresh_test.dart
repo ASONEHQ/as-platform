@@ -137,7 +137,7 @@ class _FakeServer {
       case 'POST /api/v1/sales':
         salePosts++;
         if (!_valid(request)) return _expired();
-        final key = request.headers['Idempotency-Key'] ?? 'no-key-${salePosts}';
+        final key = request.headers['Idempotency-Key'] ?? 'no-key-$salePosts';
         final replay = _sales.containsKey(key);
         if (!replay) {
           salesExecuted++;
