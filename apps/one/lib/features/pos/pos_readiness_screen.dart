@@ -167,7 +167,13 @@ class _PosReadinessScreenState extends State<PosReadinessScreen> {
           ),
           const SizedBox(height: 8),
         ],
-        _ReadinessBanner(ready: saleReady),
+        _ReadinessBanner(
+          ready: saleReady,
+          // TASK 17.7.3 — the backend marks the sale stage ready as soon as ONE
+          // product is sellable, while other products may still lack a price
+          // (check status `warning`). Do not promise a fully-ready catalog then.
+          hasWarnings: saleReady && required.any((c) => c.code == 'product_prices' && c.status == PosReadinessStatus.warning),
+        ),
         const SizedBox(height: 14),
         if (data.branches.length > 1) ...[
           Align(
@@ -227,15 +233,22 @@ class _PosReadinessScreenState extends State<PosReadinessScreen> {
 }
 
 class _ReadinessBanner extends StatelessWidget {
-  const _ReadinessBanner({required this.ready});
+  const _ReadinessBanner({required this.ready, this.hasWarnings = false});
   final bool ready;
+  final bool hasWarnings;
 
   @override
   Widget build(BuildContext context) {
     final palette = PosPalette.of(context);
-    final color = ready ? palette.success : palette.warning;
+    final color = ready && !hasWarnings ? palette.success : palette.warning;
     return Container(
-      key: Key(ready ? 'pos-readiness-banner-ready' : 'pos-readiness-banner-pending'),
+      key: Key(
+        !ready
+            ? 'pos-readiness-banner-pending'
+            : hasWarnings
+            ? 'pos-readiness-banner-warning'
+            : 'pos-readiness-banner-ready',
+      ),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: color.withValues(alpha: .12),
@@ -244,11 +257,15 @@ class _ReadinessBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(ready ? Icons.check_circle : Icons.warning_amber_rounded, color: color, size: 20),
+          Icon(ready && !hasWarnings ? Icons.check_circle : Icons.warning_amber_rounded, color: color, size: 20),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              ready ? 'Tu sucursal está lista para vender.' : 'Aún faltan pasos para poder vender.',
+              !ready
+                  ? 'Aún faltan pasos para poder vender.'
+                  : hasWarnings
+                  ? 'Tu sucursal puede hacer una venta de prueba. Revisa los avisos antes de operar con todo el catálogo.'
+                  : 'Tu sucursal está lista para vender.',
               style: TextStyle(color: palette.text, fontWeight: FontWeight.w700, fontSize: 14),
             ),
           ),

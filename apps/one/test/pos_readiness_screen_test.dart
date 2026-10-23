@@ -192,6 +192,38 @@ void main() {
       expect(navigated, [PosModule.products]);
     });
 
+    testWidgets('sale-ready with unpriced products does not promise a fully-ready catalog (TASK 17.7.3)', (tester) async {
+      final gateway = _FakeGateway(
+        _tenant(
+          branches: [
+            _branch(
+              name: 'Sucursal QA',
+              stages: _stagesReadyNoInventory,
+              checks: [
+                _check(
+                  'product_prices',
+                  status: 'warning',
+                  surface: 'prices',
+                  count: 7,
+                  items: const [PosReadinessItem(id: 'p-1', label: 'Producto X requiere un precio de venta activo')],
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+      await _pump(tester, gateway: gateway);
+
+      expect(find.byKey(const Key('pos-readiness-banner-warning')), findsOneWidget);
+      expect(find.byKey(const Key('pos-readiness-banner-ready')), findsNothing);
+      expect(find.text('Tu sucursal está lista para vender.'), findsNothing);
+      expect(
+        find.text('Tu sucursal puede hacer una venta de prueba. Revisa los avisos antes de operar con todo el catálogo.'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('missing price: the backend-named products are listed under the row', (tester) async {
       final navigated = <PosModule>[];
       final gateway = _FakeGateway(
