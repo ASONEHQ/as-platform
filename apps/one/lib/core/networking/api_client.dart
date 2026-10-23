@@ -9,6 +9,25 @@ import '../errors/app_error.dart';
 typedef AccessTokenReader = String? Function();
 typedef CorrelationIdFactory = String Function();
 typedef UnauthorizedHandler = Future<void> Function();
+typedef CsrfTokenReader = String? Function();
+
+/// TASK 17.7.3 — called before EVERY authenticated request so the session
+/// owner can renew an access token that is expired or about to expire
+/// (single-flight, see `AuthController.ensureFreshAccessToken`). If it
+/// throws, the request is NOT sent — in particular a mutation is never
+/// submitted with a token already known to be dead.
+typedef BeforeAuthenticatedRequest = Future<void> Function();
+
+/// TASK 17.7.3 — zone marker for the session-management code itself
+/// (refresh, hydrate, logout): requests made inside it neither trigger the
+/// pre-flight renewal nor the reactive one. Without it a hydrate GET made
+/// DURING a refresh would wait on that same refresh (deadlock).
+const Symbol authInternalZoneKey = #asOneAuthInternal;
+
+/// Server codes meaning "the access token is expired/invalid or missing" —
+/// the only 401s a refresh can cure. (A 401 `invalid_credentials` from a
+/// PIN check must never trigger a refresh or a retry.)
+const Set<String> _accessExpiryCodes = {'session_expired', 'authentication_required'};
 
 class ApiException implements Exception {
   const ApiException(this.failure, {this.statusCode, this.details});
@@ -40,6 +59,14 @@ class ApiClient {
   final CorrelationIdFactory createCorrelationId;
   final Duration timeout;
   UnauthorizedHandler? onUnauthorized;
+  BeforeAuthenticatedRequest? beforeAuthenticatedRequest;
+
+  /// When set, a request that carries a CSRF token sends the CURRENT one at
+  /// the moment it is actually sent — a renewal that ran just before it
+  /// rotates the token, and a value captured earlier would be rejected.
+  CsrfTokenReader? readCsrfToken;
+
+  bool get _inAuthInternal => Zone.current[authInternalZoneKey] == true;
 
   Future<Map<String, Object?>> getJson(
     String path, {
@@ -61,7 +88,12 @@ class ApiClient {
   /// parsing (honest [ApiException], never fabricated) and only bypasses
   /// JSON decoding for a genuine 2xx body.
   Future<String> getText(String path, {bool authenticated = true}) async {
-    final response = await _perform('GET', path, authenticated: authenticated);
+    if (authenticated && !_inAuthInternal) await beforeAuthenticatedRequest?.call();
+    var response = await _perform('GET', path, authenticated: authenticated);
+    if (response.statusCode == 401 && authenticated && !_inAuthInternal && onUnauthorized != null) {
+      await onUnauthorized!();
+      response = await _perform('GET', path, authenticated: authenticated);
+    }
     if (response.statusCode >= 400) {
       _decode(response);
     }
@@ -100,13 +132,19 @@ class ApiClient {
     // no `payload` at all. Defaults to `false` so every pre-existing
     // `postJson` call site is completely unaffected.
     bool omitBody = false,
+    // TASK 17.7.3 — `null` (default): a request that carries an
+    // `Idempotency-Key` or `If-Match` is retried ONCE after a renewal if
+    // the server answered 401 (the server's own duplicate/CAS guard makes a
+    // replay safe — and a 401 means the handler never ran); any other
+    // mutation is NEVER resent. `true`/`false` force the decision.
+    bool? retryAfterRefresh,
   }) => _send(
     'POST',
     path,
     body: omitBody ? null : body,
     csrfToken: csrfToken,
     authenticated: authenticated,
-    retryAfterRefresh: false,
+    retryAfterRefresh: retryAfterRefresh,
     idempotencyKey: idempotencyKey,
     ifMatch: ifMatch,
   );
@@ -129,12 +167,13 @@ class ApiClient {
     String? ifMatch,
     String? idempotencyKey,
     bool authenticated = true,
+    bool? retryAfterRefresh,
   }) => _send(
     'PUT',
     path,
     body: body,
     authenticated: authenticated,
-    retryAfterRefresh: false,
+    retryAfterRefresh: retryAfterRefresh,
     ifMatch: ifMatch,
     idempotencyKey: idempotencyKey,
   );
@@ -149,12 +188,13 @@ class ApiClient {
     Map<String, Object?> body = const {},
     String? ifMatch,
     bool authenticated = true,
+    bool? retryAfterRefresh,
   }) => _send(
     'PATCH',
     path,
     body: body,
     authenticated: authenticated,
-    retryAfterRefresh: false,
+    retryAfterRefresh: retryAfterRefresh,
     ifMatch: ifMatch,
   );
 
@@ -167,11 +207,12 @@ class ApiClient {
     String path, {
     String? ifMatch,
     bool authenticated = true,
+    bool? retryAfterRefresh,
   }) => _send(
     'DELETE',
     path,
     authenticated: authenticated,
-    retryAfterRefresh: false,
+    retryAfterRefresh: retryAfterRefresh,
     ifMatch: ifMatch,
   );
 
@@ -193,26 +234,39 @@ class ApiClient {
     String? ifMatch,
     bool authenticated = true,
   }) async {
-    final token = authenticated ? readAccessToken() : null;
-    final request = http.MultipartRequest('POST', baseUrl.resolve(path))
-      ..headers.addAll({
-        'Accept': 'application/json',
-        'X-Correlation-ID': createCorrelationId(),
-        ...token == null ? const {} : {'Authorization': 'Bearer $token'},
-        ...ifMatch == null ? const {} : {'If-Match': ifMatch},
-      })
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          fieldName,
-          bytes,
-          filename: filename,
-          contentType: MediaType.parse(contentType),
-        ),
-      );
+    if (authenticated && !_inAuthInternal) await beforeAuthenticatedRequest?.call();
+    // A multipart request is single-use, so each attempt builds its own.
+    Future<http.Response> attempt() async {
+      final token = authenticated ? readAccessToken() : null;
+      final request = http.MultipartRequest('POST', baseUrl.resolve(path))
+        ..headers.addAll({
+          'Accept': 'application/json',
+          'X-Correlation-ID': createCorrelationId(),
+          ...token == null ? const {} : {'Authorization': 'Bearer $token'},
+          ...ifMatch == null ? const {} : {'If-Match': ifMatch},
+        })
+        ..files.add(
+          http.MultipartFile.fromBytes(
+            fieldName,
+            bytes,
+            filename: filename,
+            contentType: MediaType.parse(contentType),
+          ),
+        );
+      return http.Response.fromStream(await transport.send(request).timeout(timeout));
+    }
+
     try {
-      final response = await http.Response.fromStream(
-        await transport.send(request).timeout(timeout),
-      );
+      var response = await attempt();
+      if (response.statusCode == 401 &&
+          authenticated &&
+          !_inAuthInternal &&
+          onUnauthorized != null &&
+          _isAccessExpiry(response)) {
+        await onUnauthorized!();
+        if (ifMatch == null) throw _sessionRenewed;
+        response = await attempt();
+      }
       return _decode(response);
     } on TimeoutException {
       throw const ApiException(
@@ -233,11 +287,11 @@ class ApiClient {
     Map<String, Object?>? body,
     String? csrfToken,
     required bool authenticated,
-    required bool retryAfterRefresh,
+    required bool? retryAfterRefresh,
     String? idempotencyKey,
     String? ifMatch,
   }) async {
-    final response = await _perform(
+    Future<http.Response> attempt() => _perform(
       method,
       path,
       body: body,
@@ -246,24 +300,51 @@ class ApiClient {
       idempotencyKey: idempotencyKey,
       ifMatch: ifMatch,
     );
-    if (response.statusCode == 401 &&
-        authenticated &&
-        retryAfterRefresh &&
-        onUnauthorized != null) {
-      await onUnauthorized!();
-      return _decode(
-        await _perform(
-          method,
-          path,
-          body: body,
-          csrfToken: csrfToken,
-          authenticated: authenticated,
-          idempotencyKey: idempotencyKey,
-          ifMatch: ifMatch,
-        ),
-      );
+    final managed = authenticated && !_inAuthInternal;
+    // Renew a (nearly) expired access token BEFORE sending: the business
+    // action then goes out once, with a valid token. If the renewal fails
+    // this throws and nothing is submitted.
+    if (managed) await beforeAuthenticatedRequest?.call();
+    final response = await attempt();
+    if (response.statusCode != 401 || !managed || onUnauthorized == null) {
+      return _decode(response);
     }
-    return _decode(response);
+    if (method == 'GET') {
+      // A read is always safe to repeat (the historical behavior).
+      if (retryAfterRefresh == false) return _decode(response);
+      await onUnauthorized!();
+      return _decode(await attempt());
+    }
+    // A mutation: only an access-expiry 401 can be cured by renewing, and a
+    // 401 means the server rejected the call BEFORE running it.
+    if (!_isAccessExpiry(response)) return _decode(response);
+    final replaySafe = retryAfterRefresh ?? (idempotencyKey != null || ifMatch != null);
+    await onUnauthorized!();
+    // Not provably duplicate-safe (no Idempotency-Key / If-Match): never
+    // resend a possibly financial action on its own — the session is
+    // healthy again, the user simply repeats it.
+    if (!replaySafe) throw _sessionRenewed;
+    return _decode(await attempt());
+  }
+
+  static const ApiException _sessionRenewed = ApiException(
+    AppFailure(
+      AppErrorKind.authentication,
+      'Tu sesión se renovó. Vuelve a intentar la acción.',
+      code: 'session_renewed',
+    ),
+    statusCode: 401,
+  );
+
+  bool _isAccessExpiry(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, Object?>) return false;
+      final error = decoded['error'];
+      return error is Map<String, Object?> && _accessExpiryCodes.contains(error['code']);
+    } on Object {
+      return false;
+    }
   }
 
   Future<http.Response> _perform(
@@ -276,6 +357,7 @@ class ApiClient {
     String? ifMatch,
   }) async {
     final token = authenticated ? readAccessToken() : null;
+    final csrf = csrfToken == null ? null : (readCsrfToken?.call() ?? csrfToken);
     final request = http.Request(method, baseUrl.resolve(path))
       ..headers.addAll({
         'Accept': 'application/json',
@@ -290,7 +372,7 @@ class ApiClient {
         ...body == null ? const {} : {'Content-Type': 'application/json'},
         'X-Correlation-ID': createCorrelationId(),
         ...token == null ? const {} : {'Authorization': 'Bearer $token'},
-        ...csrfToken == null ? const {} : {'X-CSRF-Token': csrfToken},
+        ...csrf == null ? const {} : {'X-CSRF-Token': csrf},
         ...idempotencyKey == null ? const {} : {'Idempotency-Key': idempotencyKey},
         ...ifMatch == null ? const {} : {'If-Match': ifMatch},
       })

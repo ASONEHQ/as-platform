@@ -71,6 +71,10 @@ void bootstrap() {
   );
   authController = AuthController(gateway, vault, telemetry);
   api.onUnauthorized = authController.refresh;
+  // TASK 17.7.3 — renew an expiring access token before any authenticated
+  // request (single-flight), and always send the CURRENT CSRF token.
+  api.beforeAuthenticatedRequest = authController.ensureFreshAccessToken;
+  api.readCsrfToken = () => authController.csrfToken;
   runApp(
     AsOneApp(
       config: config,

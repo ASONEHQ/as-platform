@@ -10,16 +10,35 @@ import 'auth_gateway.dart';
 import 'auth_models.dart';
 
 class AuthController extends ChangeNotifier {
-  AuthController(this._gateway, this._vault, this._telemetry);
+  AuthController(
+    this._gateway,
+    this._vault,
+    this._telemetry, {
+    DateTime Function()? clock,
+  }) : _clock = clock ?? (() => DateTime.now().toUtc());
+
+  /// TASK 17.7.3 — an access token is renewed this long BEFORE it expires …
+  static const Duration refreshSkew = Duration(seconds: 60);
+
+  /// … and never more often than this (a storm guard if a server/clock
+  /// disagreement made every fresh token look already stale).
+  static const Duration minRefreshInterval = Duration(seconds: 10);
 
   final AuthGateway _gateway;
   final MemoryTokenVault _vault;
   final Telemetry _telemetry;
+  final DateTime Function() _clock;
   AuthViewState _state = const AuthViewState(phase: AuthPhase.bootstrapping);
   String? _csrfToken;
   String? _challengeToken;
   DateTime? _challengeExpiresAt;
   Future<void>? _refreshFuture;
+  // When the CURRENT access token stops being valid (the token response's own
+  // `expires_at`, never the session's), and when we last obtained one.
+  DateTime? _accessExpiresAt;
+  DateTime? _lastRefreshAt;
+  // One automatic "only branch" selection per login.
+  bool _autoBranchTried = false;
 
   AuthViewState get state => _state;
   AuthPhase get phase => _state.phase;
@@ -130,6 +149,7 @@ class AuthController extends ChangeNotifier {
       return;
     }
     if (branchId == null && !current.companyWideAccess) return;
+    final previousPhase = _state.phase;
     _emit(
       AuthViewState(
         phase: AuthPhase.selectingBranch,
@@ -141,7 +161,23 @@ class AuthController extends ChangeNotifier {
       await _acceptCredentials(await _gateway.switchBranch(branchId));
       _telemetry.recordEvent('branch_selection_success');
     } on Object catch (error) {
-      _handleFailure(error, retainedContext: current);
+      if (_isSessionTerminal(error)) {
+        _handleFailure(error, retainedContext: current);
+        return;
+      }
+      // TASK 17.7.3 — a branch switch that fails for any reason other than a
+      // dead session (transient network error, a branch the user may not
+      // use, …) must leave the user exactly where they were with an honest
+      // message — never bounce them to the login screen.
+      _telemetry.recordEvent('branch_selection_failure', attributes: {'class': _safeCode(error)});
+      _emit(
+        AuthViewState(
+          phase: previousPhase == AuthPhase.selectingBranch ? AuthPhase.authenticated : previousPhase,
+          context: current,
+          failure: _failureOf(error),
+          selectionBranches: previousPhase == AuthPhase.branchSelectionRequired ? current.branches : const [],
+        ),
+      );
     }
   }
 
@@ -225,10 +261,54 @@ class AuthController extends ChangeNotifier {
     }
   }
 
-  Future<void> refresh() =>
-      _refreshFuture ??= _guardedRefresh().whenComplete(() {
-        _refreshFuture = null;
-      });
+  Future<void> refresh() {
+    // A refresh requested from INSIDE session management itself (hydrate,
+    // logout) would wait on the very refresh it belongs to.
+    if (Zone.current[authInternalZoneKey] == true) {
+      return Future.error(
+        const ApiException(
+          AppFailure(AppErrorKind.authentication, 'La sesión expiró.', code: 'session_expired'),
+        ),
+      );
+    }
+    return _refreshFuture ??= _guardedRefresh().whenComplete(() {
+      _refreshFuture = null;
+    });
+  }
+
+  /// TASK 17.7.3 — wired to `ApiClient.beforeAuthenticatedRequest`. Renews
+  /// the access token (ONE shared refresh no matter how many requests ask at
+  /// once) when it is expired or within [refreshSkew] of expiring, so the
+  /// request that follows goes out once, with a valid token. Throws only when
+  /// the session is genuinely over — the caller must then NOT send its
+  /// request. A transient network failure is swallowed: the request is
+  /// attempted anyway and fails (or succeeds) on its own merits.
+  Future<void> ensureFreshAccessToken() async {
+    if (Zone.current[authInternalZoneKey] == true) return;
+    final expiresAt = _accessExpiresAt;
+    // The session is already over (expired/revoked): fail fast and send
+    // NOTHING — no request is made with a dead session, and nothing tries to
+    // renew one that cannot be renewed.
+    if (_state.phase == AuthPhase.expired || _state.phase == AuthPhase.revoked) {
+      throw const ApiException(
+        AppFailure(AppErrorKind.authentication, 'La sesión expiró. Inicia sesión nuevamente.', code: 'session_expired'),
+      );
+    }
+    if (_state.context == null || expiresAt == null) return;
+    final now = _clock();
+    if (expiresAt.difference(now) > refreshSkew) return;
+    final inFlight = _refreshFuture;
+    if (inFlight == null) {
+      final last = _lastRefreshAt;
+      if (last != null && now.difference(last) < minRefreshInterval) return;
+    }
+    try {
+      await refresh();
+    } on ApiException catch (error) {
+      if (_isTransient(error.failure.code)) return;
+      rethrow;
+    }
+  }
 
   // TASK 16.23E — `refresh()` is wired to `ApiClient.onUnauthorized` (see
   // `bootstrap.dart`), fired reactively whenever any GET request hits a
@@ -244,9 +324,18 @@ class AuthController extends ChangeNotifier {
   // generic per-screen error with no indication the real problem was the
   // session itself.
   Future<void> _guardedRefresh() async {
+    final previous = _state.context;
     try {
       await _refreshAndHydrate();
     } on Object catch (error) {
+      // TASK 17.7.3 — a transient failure (network down, timeout) while
+      // renewing mid-session must not replace the working screen with the
+      // full-screen "unavailable" page: the session is still valid, so
+      // restore it and let the request surface its own honest error.
+      if (previous != null && _isTransient(_safeCode(error))) {
+        _emit(AuthViewState(phase: AuthPhase.authenticated, context: previous));
+        rethrow;
+      }
       _handleFailure(error);
       rethrow;
     }
@@ -254,7 +343,13 @@ class AuthController extends ChangeNotifier {
 
   Future<void> _refreshAndHydrate({bool restored = false}) async {
     final csrf = _csrfToken;
-    if (csrf == null) throw const FormatException('Missing CSRF proof.');
+    // No CSRF proof means there is no browser session to renew: that is a
+    // finished session, not a malformed response.
+    if (csrf == null) {
+      throw const ApiException(
+        AppFailure(AppErrorKind.authentication, 'La sesión expiró.', code: 'session_expired'),
+      );
+    }
     final previous = _state.context;
     _emit(AuthViewState(phase: AuthPhase.refreshing, context: previous));
     try {
@@ -272,8 +367,35 @@ class AuthController extends ChangeNotifier {
   Future<void> _acceptCredentials(SessionCredentials credentials) async {
     _vault.replace(credentials.accessToken);
     _csrfToken = credentials.csrfToken;
+    // Recorded BEFORE hydrating so the requests hydrate makes already see a
+    // fresh token (and never ask for another renewal).
+    _accessExpiresAt = credentials.session.expiresAt;
+    _lastRefreshAt = _clock();
     try {
-      final hydrated = await _gateway.hydrate(credentials.session);
+      final hydrated = await runZoned(
+        () => _gateway.hydrate(credentials.session),
+        zoneValues: {authInternalZoneKey: true},
+      );
+      // TASK 17.7.3 — exactly one accessible branch and none selected: select
+      // it, instead of making a user choose between one option (or, for a
+      // company-wide user, sit in a context where cash/schedules/time clock
+      // cannot work). Generic — driven by the branches the backend returned.
+      final onlyBranch = _soleBranch(hydrated);
+      if (onlyBranch != null && !_autoBranchTried) {
+        _autoBranchTried = true;
+        SessionCredentials? switched;
+        try {
+          switched = await _gateway.switchBranch(onlyBranch.id);
+          _telemetry.recordEvent('branch_auto_selected');
+        } on Object catch (error) {
+          // Best effort: fall through to the normal state below.
+          _telemetry.recordEvent('branch_auto_select_failure', attributes: {'class': _safeCode(error)});
+        }
+        if (switched != null) {
+          await _acceptCredentials(switched);
+          return;
+        }
+      }
       final needsBranch =
           hydrated.session.branchId == null && !hydrated.companyWideAccess;
       _emit(
@@ -293,7 +415,8 @@ class AuthController extends ChangeNotifier {
 
   Future<void> logout() async {
     try {
-      await _gateway.logout();
+      // Logging out must never trigger a token renewal of its own.
+      await runZoned(() => _gateway.logout(), zoneValues: {authInternalZoneKey: true});
     } on Object {
       // Local logout is authoritative for UI safety even when the API is unavailable.
     } finally {
@@ -368,6 +491,26 @@ class AuthController extends ChangeNotifier {
     );
   }
 
+  BranchSummary? _soleBranch(AuthenticatedContext hydrated) {
+    if (hydrated.session.branchId != null) return null;
+    final branches = hydrated.branches;
+    if (branches.length != 1) return null;
+    final permitted = hydrated.session.permittedBranchIds;
+    if (permitted.isNotEmpty && !permitted.contains(branches.single.id)) return null;
+    return branches.single;
+  }
+
+  bool _isTransient(String code) => const {'api_unavailable', 'service_unavailable', 'timeout'}.contains(code);
+
+  bool _isSessionTerminal(Object error) =>
+      const {'session_expired', 'session_revoked', 'refresh_token_reused'}.contains(_safeCode(error));
+
+  AppFailure _failureOf(Object error) => switch (error) {
+    ApiException(:final failure) => failure,
+    FormatException() => const AppFailure(AppErrorKind.unknown, 'La respuesta del servicio no es válida.', code: 'malformed_response'),
+    _ => const AppFailure(AppErrorKind.unavailable, 'El servicio no está disponible.', code: 'api_unavailable'),
+  };
+
   String _safeCode(Object error) => switch (error) {
     ApiException(:final failure) => failure.code,
     FormatException() => 'malformed_response',
@@ -382,11 +525,14 @@ class AuthController extends ChangeNotifier {
   void _clearCredentials() {
     _vault.clear();
     _csrfToken = null;
+    _accessExpiresAt = null;
+    _lastRefreshAt = null;
   }
 
   void _clearAll() {
     _clearCredentials();
     _clearChallenge();
+    _autoBranchTried = false;
   }
 
   void _emit(AuthViewState next) {
